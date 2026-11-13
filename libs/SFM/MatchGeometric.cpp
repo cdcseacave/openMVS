@@ -399,6 +399,23 @@ bool SFM::MatchFeaturesGeometric(
 			pair.matches.push_back(candidates[0]);
 	};
 
+	// The candidates of keypoint i of img1, each handed to TestCandidate: the described keypoints of img2 near its
+	// tracked point when it has one, else (not tracked, or nothing of img2 near the tracked point) every described
+	// keypoint of img2, held to the epipolar constraint alone
+	const auto ForEachCandidate = [&](size_t i, const auto& TestCandidate) {
+		if (trackStatus[i]) {
+			Octree2f::IDXARR_TYPE neighbors;
+			octree.Collect(neighbors, trackedPoints2[i], spatialThreshold);
+			if (!neighbors.empty()) {
+				for (const Octree2f::IDX_TYPE idx : neighbors)
+					TestCandidate(idx);
+				return;
+			}
+		}
+		for (uint32_t j = 0; j < numDescribed2; ++j)
+			TestCandidate(j);
+	};
+
 	// Branch on the geometry the bearings can be measured against. PairsMatcher::GeometricFilter
 	// sets pair.F only when BOTH cameras are pinhole -- for spherical or mixed pairs the fundamental
 	// matrix is not geometrically meaningful (SphericalCamera::GetK returns IDENTITY) -- and F is
@@ -428,7 +445,7 @@ bool SFM::MatchFeaturesGeometric(
 			if (normFactor < FZERO_TOLERANCE)
 				continue;
 
-			// Find candidate matches near the epipolar line AND (if tracked) close to expectedPt2
+			// Find candidate matches near the epipolar line AND (if tracked) close to the tracked point
 			std::vector<cv::DMatch> candidates;
 			const auto TestCandidate = [&](size_t j) {
 				const cv::Point2f& pt2 = img2.keypoints[j].pt;
@@ -437,20 +454,7 @@ bool SFM::MatchFeaturesGeometric(
 					candidates.emplace_back((int)i, (int)j, 0.f);
 			};
 
-			if (trackStatus[i]) {
-				const Point2f& expectedPt2 = trackedPoints2[i];
-				Octree2f::IDXARR_TYPE neighbors;
-				octree.Collect(neighbors, expectedPt2, spatialThreshold);
-				if (neighbors.empty())
-					goto PBruteForceFallback;
-				for (const Octree2f::IDX_TYPE idx : neighbors)
-					TestCandidate(idx);
-			} else {
-				PBruteForceFallback:
-				// fallback: scan all described keypoints2 and use only epipolar constraint
-				for (uint32_t j = 0; j < numDescribed2; ++j)
-					TestCandidate(j);
-			}
+			ForEachCandidate(i, TestCandidate);
 			SelectAndAppendBest(candidates, (size_t)i);
 		}
 	} else if (pair.E.has_value()) {
@@ -497,20 +501,7 @@ bool SFM::MatchFeaturesGeometric(
 					candidates.emplace_back((int)i, (int)j, 0.f);
 			};
 
-			if (trackStatus[i]) {
-				const Point2f& expectedPt2 = trackedPoints2[i];
-				Octree2f::IDXARR_TYPE neighbors;
-				octree.Collect(neighbors, expectedPt2, spatialThreshold);
-				if (neighbors.empty())
-					goto SBruteForceFallback;
-				for (const Octree2f::IDX_TYPE idx : neighbors)
-					TestCandidate(idx);
-			} else {
-				SBruteForceFallback:
-				// fallback: scan all described keypoints2 and use only epipolar constraint
-				for (uint32_t j = 0; j < numDescribed2; ++j)
-					TestCandidate(j);
-			}
+			ForEachCandidate(i, TestCandidate);
 			SelectAndAppendBest(candidates, (size_t)i);
 		}
 	}

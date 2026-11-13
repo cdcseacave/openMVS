@@ -7152,6 +7152,54 @@ bool BAPinholeReprojectionJacobianTest()
 {
 	return PinholeReprojectionJacobianTest();
 }
+
+// EstimateSimilarityTransform recovers a known scale, rotation and translation from exact correspondences
+bool TestSimilarityTransform()
+{
+	#ifndef _RELEASE
+	std::mt19937 rng(123);
+	#else
+	std::random_device rd;
+	std::mt19937 rng(rd());
+	#endif
+
+	// Define a known similarity: scale * R * x + t
+	const double scale = 1.5;
+	Eigen::AngleAxisd aa(M_PI / 13.0, Eigen::Vector3d(0.3, 0.5, 0.2).normalized());
+	Matrix3x3 R = aa.toRotationMatrix();
+	Point3 t(0.7, -0.3, 0.2);
+
+	// Create a small set of 3D points
+	Point3Arr src, dst;
+	std::uniform_real_distribution<REAL> transDist(-100, 100);
+	for (int i = 0; i < 6; ++i) {
+		src.emplace_back(transDist(rng), transDist(rng), transDist(rng));
+		dst.emplace_back(scale * R * src[i] + t);
+	}
+
+	Transform tr;
+	if (EstimateSimilarityTransform(src, dst, tr) == 0) {
+		VERBOSE("SimilarityTransformUnitTest: EstimateSimilarityTransform failed");
+		return false;
+	}
+
+	// Check scale within tolerance
+	const double sErr = ABS(tr.scale - scale);
+	const double tol = 1e-2;
+	VERBOSE("SimilarityTransformUnitTest: scale=%f (expected %f)", tr.scale, scale);
+	if (sErr >= tol)
+		return false;
+
+	// Validate transform by applying it to source points and comparing to destination
+	double maxErr = 0.0;
+	for (size_t i = 0; i < src.size(); ++i) {
+		const Point3 mapped = tr.scale * tr.R * src[i] + tr.t;
+		double err = norm(mapped - dst[i]);
+		maxErr = MAXF(maxErr, err);
+	}
+	VERBOSE("SimilarityTransformUnitTest: All tests passed (max residual = %.6g)", maxErr);
+	return maxErr < 1e-6;
+}
 /*----------------------------------------------------------------*/
 
 
@@ -13701,81 +13749,6 @@ bool CappedSolveScaleTest()
 	return true;
 }
 
-bool DenseReprojectionBarTest()
-{
-	TD_TIMER_START();
-	std::mt19937 rng(20260914);
-
-	// Seven posed cameras of the arc share 30 exact tracks, plus two tracks whose observation in the
-	// last image is 7 pixels off: a described keypoint carries one, a dense keypoint the other. The
-	// displacement is vertical, across the plane of the arc, the direction the other six views
-	// constrain tightly: a least-squares triangulation then leaves most of it in the displaced view
-	// (about six sevenths, between the 4-pixel bar and twice it), where a displacement along the arc
-	// would be traded for depth and spread over every view.
-	constexpr unsigned numViews = 7;
-	constexpr float displacement = 7.f;
-	Scene scene;
-	BuildResectionArc(scene, numViews);
-	const std::vector<IIndex> allViews{0, 1, 2, 3, 4, 5, 6};
-	AddResectionTracks(scene, allViews, 30, rng);
-	if (!AddResectionTrack(scene, Point3(0.2, 0.1, -0.3), allViews)) {
-		VERBOSE("DenseReprojectionBarTest FAILED: the described track does not project inside every image");
-		return false;
-	}
-	const size_t idxDescribed = scene.tracks.size() - 1;
-	Image& lastImage = scene.images[numViews - 1];
-	lastImage.CloseDescribedKeypoints(); // every keypoint the last image gains from here on is dense
-	if (!AddResectionTrack(scene, Point3(-0.3, 0.2, 0.1), allViews)) {
-		VERBOSE("DenseReprojectionBarTest FAILED: the dense track does not project inside every image");
-		return false;
-	}
-	const size_t idxDense = scene.tracks.size() - 1;
-	for (const size_t idx : {idxDescribed, idxDense}) {
-		const Observation& obs = scene.tracks[idx].observations.back();
-		ASSERT(obs.imageID == numViews - 1);
-		lastImage.keypoints[obs.featureID].pt.y += displacement;
-	}
-	if (lastImage.IsDenseKeypoint(scene.tracks[idxDescribed].observations.back().featureID) ||
-		!lastImage.IsDenseKeypoint(scene.tracks[idxDense].observations.back().featureID)) {
-		VERBOSE("DenseReprojectionBarTest FAILED: the two displaced keypoints are not one described and one dense");
-		return false;
-	}
-	const auto Check = [&scene, idxDescribed, idxDense](const char* stage, unsigned expectedDescribed, unsigned expectedDense) {
-		if (scene.tracks[idxDescribed].numInliers != expectedDescribed || scene.tracks[idxDense].numInliers != expectedDense) {
-			VERBOSE("DenseReprojectionBarTest FAILED: %s kept %u/%u observations of the described track and %u/%u of "
-				"the dense one, expected %u and %u", stage, scene.tracks[idxDescribed].numInliers, numViews,
-				scene.tracks[idxDense].numInliers, numViews, expectedDescribed, expectedDense);
-			return false;
-		}
-		return true;
-	};
-
-	// At a 4-pixel bar with the dense observations held to twice that, the filter keeps the dense
-	// observation and drops the described one; held to the same bar, it drops both
-	FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 2.f);
-	if (!Check("the filter, with dense observations held to twice the 4-pixel bar,", numViews - 1, numViews))
-		return false;
-	FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 1.f);
-	if (!Check("the filter, at a 4-pixel bar for both kinds,", numViews - 1, numViews - 1))
-		return false;
-
-	// The triangulation reads the two bars the same way
-	for (Track& track : scene.tracks)
-		track.position = Point3(0, 0, 0);
-	TriangulateTracks(scene, false, 4.f, 1.f, 2.f);
-	if (!Check("the triangulation, with dense observations held to twice the 4-pixel bar,", numViews - 1, numViews))
-		return false;
-	for (Track& track : scene.tracks)
-		track.position = Point3(0, 0, 0);
-	TriangulateTracks(scene, false, 4.f, 1.f, 1.f);
-	if (!Check("the triangulation, at a 4-pixel bar for both kinds,", numViews - 1, numViews - 1))
-		return false;
-
-	VERBOSE("DenseReprojectionBarTest PASSED: the track filter and the triangulation hold a dense observation to its "
-		"own multiple of the reprojection bar (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
 bool FilterTracksUnposedTrackTest()
 {
 	TD_TIMER_START();
@@ -13810,7 +13783,7 @@ bool FilterTracksUnposedTrackTest()
 		return false;
 	}
 
-	FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 1.f);
+	FilterTracks(scene, 4.f, 1.f, 0.f, 0.f);
 	const Track& track = scene.tracks.back();
 	if (track.numInliers != 0) {
 		VERBOSE("FilterTracksUnposedTrackTest FAILED: the filter judged the track with one posed view at its default position "
@@ -13861,7 +13834,7 @@ bool FilterTracksUntriangulatedTrackTest()
 		return false;
 	}
 
-	FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 1.f);
+	FilterTracks(scene, 4.f, 1.f, 0.f, 0.f);
 	const Track& track = scene.tracks.back();
 	if (track.numInliers != 0 || scene.status.nTracks != 0) {
 		VERBOSE("FilterTracksUntriangulatedTrackTest FAILED: the filter kept %u of the %u observations of a track that was never triangulated "

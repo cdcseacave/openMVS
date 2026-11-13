@@ -402,8 +402,8 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight, const TrackConflictConf
 	// triangles corroborate, or the veto of the union in pair order, which keeps whichever link
 	// arrived first, when the cut is off or the component is too large for it; either way two
 	// keypoints of one image within the merge distance are one feature and stay one track.
-	// On alameda (1734 images, 12.7M links) the veto keeps the wrong keypoint in 22% of the
-	// conflicts a triangulation can judge, the cut with the merge in 17%.
+	// On a large capture the veto keeps the wrong keypoint in more of the conflicts a triangulation
+	// can judge than the cut with the merge does.
 	unsigned numConflicted = 0, numCut = 0, numVetoed = 0, numLarge = 0, numMerged = 0;
 	if (std::find(conflicted.begin(), conflicted.end(), true) != conflicted.end()) {
 		struct Edge { uint32_t root, a, b, order; float weight; };
@@ -599,10 +599,9 @@ void SFM::ComputeObservationSigmas(const Scene& scene,
 
 std::pair<float, float> SFM::FilterTracks(Scene& scene,
 	float maxReprojErrorPixels, float minAngleDegrees,
-	float multDepthNear, float multDepthFar, float denseReprojErrorFactor)
+	float multDepthNear, float multDepthFar)
 {
 	const float minAngleRadians = D2R(minAngleDegrees);
-	const float maxDenseReprojErrorPixels = maxReprojErrorPixels * denseReprojErrorFactor;
 
 	// Process each track
 	MeanStdMinMax<REAL> trackCompletenessStats;
@@ -642,7 +641,7 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 			const Point3 observedRay = img.pCamera->UnprojectNormalized(Cast<REAL>(kp.pt));
 			const REAL cosAngularError = ComputeAngle(observedRay.ptr(), Xcam.ptr());
 			const bool bDense = img.IsDenseKeypoint(obs.featureID);
-			const REAL minCosAngularError = COS(img.pCamera->PixelErrorToAngular(bDense ? maxDenseReprojErrorPixels : maxReprojErrorPixels));
+			const REAL minCosAngularError = COS(img.pCamera->PixelErrorToAngular(maxReprojErrorPixels));
 			if (cosAngularError < minCosAngularError) {
 				++(bDense ? numDenseDropped : numDescribedDropped);
 				continue; // outlier or behind the camera observation
@@ -737,7 +736,7 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 namespace {
 
 // Per-image inlier-observation index in CSR layout (avoids the O(images x tracks) membership
-// scan the filter used to run per image). Built once over the inlier prefix of
+// scan per image). Built once over the inlier prefix of
 // every track with >= 2 inliers: for image i, its observations live in
 // [offset[i], offset[i+1]) as parallel (track index, featureID) pairs.
 struct ImageObsCSR {
@@ -778,9 +777,9 @@ static void BuildImageObsCSR(const Scene& scene, ImageObsCSR& csr)
 
 // Deterministic sort-based covisibility: every track with >= minInliersPerTrack inliers
 // contributes one shared point to each unordered pair of its inlier images. Emits the pairs
-// as packed (lo<<32|hi) keys, sorts, run-length-encodes, and keeps edges whose total count is
+// as PairIdx keys (lower image index first), sorts, run-length-encodes, and keeps edges whose total count is
 // >= minCovisibilityCount. Output is sorted by (i,j) ascending, so every downstream consumer
-// (union-find, k-core) sees a fixed order (replaces the former unordered_map iteration order).
+// (union-find, k-core) sees a fixed order (not an unordered_map's iteration order).
 static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 	uint8_t minInliersPerTrack, std::vector<std::array<unsigned, 3>>& edges)
 {
@@ -797,8 +796,7 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 			const uint32_t ia = t.observations[a].imageID;
 			for (uint8_t b = a + 1; b < t.numInliers; ++b) {
 				const uint32_t ib = t.observations[b].imageID;
-				const uint32_t lo = MINF(ia, ib), hi = MAXF(ia, ib);
-				keys.push_back(((uint64_t)lo << 32) | hi);
+				keys.push_back(MakePairIdx(ia, ib).idx);
 			}
 		}
 	}
@@ -810,8 +808,8 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 			++e;
 		const unsigned count = (unsigned)(e - s);
 		if (count >= minCovisibilityCount) {
-			const uint64_t key = keys[s];
-			edges.push_back({ (unsigned)(key >> 32), (unsigned)(key & 0xffffffffu), count });
+			const PairIdx key(keys[s]);
+			edges.push_back({ key.i, key.j, count });
 		}
 		s = e;
 	}
@@ -893,8 +891,8 @@ static CutJunctionMap MeasureCutJunctions(const Scene& scene, const std::vector<
 //      largest connected component of what remains
 //    - Absolute, not scene-relative: densely-connected images always survive; only thinly-attached
 //      images and the tails/segments left behind when they are peeled are removed
-//    - Replaces a former median-MAD clustering that used a scene-relative threshold as a trust
-//      criterion and was unstable (nondeterministically over-cut densely-connected scenes)
+//    - A scene-relative threshold (a median-MAD clustering) would be unstable as a trust criterion:
+//      it can nondeterministically over-cut densely-connected scenes
 //
 // POSE-CONSISTENCY (optional, off by default; maxPoseInconsistencyAngle > 0):
 //    - The connectivity stages measure conditioning, not pose correctness: a wrongly positioned
@@ -927,7 +925,7 @@ static CutJunctionMap MeasureCutJunctions(const Scene& scene, const std::vector<
 //   // After building and filtering tracks
 //   BuildTracks(scene);
 //   FilterTracks(scene);
-//   IIndexArr removedIDs = FilterWeaklyConnectedImages(scene);
+//   RemovedImages removed = FilterWeaklyConnectedImages(scene);
 //
 // PARAMETER GUIDANCE:
 // ===================
@@ -979,13 +977,13 @@ RemovedImages SFM::FilterWeaklyConnectedImages(Scene& scene,
 	IIndexArr& filteredIDs = removed.all;
 	IIndexArr& contradictingIDs = removed.contradicting;
 
-	// One shared, entry-state CSR of per-image inlier observations: kills the former
-	// O(images x tracks) membership scan that the tier pre-filters ran per image.
+	// One shared, entry-state CSR of per-image inlier observations: no O(images x tracks)
+	// membership scan per image in the tier pre-filters.
 	constexpr int gridSize = 10; // 10x10 grid
 	constexpr uint8_t minInliersPerTrack = 3; // covisibility only counts tracks with >= 3 inliers
 	// a verified pair's word about a pose is read only past this many weighted inliers, and it agrees
 	// with the pose the model gives an image within this angle (rotation and baseline direction alike):
-	// below the former a pair says nothing either way
+	// below the inlier bar a pair says nothing either way
 	constexpr unsigned minContradictionInliers = 15;
 	constexpr float maxContradictionAngle = 5.f;
 	ImageObsCSR csr;
@@ -997,7 +995,7 @@ RemovedImages SFM::FilterWeaklyConnectedImages(Scene& scene,
 	//         degenerate baseline.
 	// Both verdicts are computed on the entry state (below) and applied together afterwards, so
 	// they are order-independent: invalidating one image never shifts another's angle medians or
-	// covisibility mid-loop (the old inline InvalidateImage made verdicts index-order dependent).
+	// covisibility mid-loop (an inline invalidation would make the verdicts index-order dependent).
 	const unsigned minNumObservationsForGrid = ROUND2INT<unsigned>(SQUARE(gridSize) * minObservationArea);
 	MeanStdMinMax<REAL> coverageStats;
 	TMatrix<uint8_t, gridSize, gridSize> occupiedCells;
@@ -1177,11 +1175,9 @@ RemovedImages SFM::FilterWeaklyConnectedImages(Scene& scene,
 		return removed;
 	}
 
-	// Step 4: Stable absolute weak-attachment removal (k-core), replacing a former median-MAD
-	// clustering. That clustering used a scene-relative threshold (median minus MAD of the edge
-	// weights) as a trust criterion, which is unstable: on densely-connected scenes it
-	// nondeterministically split off and discarded well-connected, trustworthy images (e.g. ~200
-	// on Tanks&Temples Courthouse, all immediately re-registered by the following resection).
+	// Step 4: Stable absolute weak-attachment removal (k-core). A scene-relative threshold (median
+	// minus MAD of the edge weights) as the trust criterion would be unstable: on densely-connected
+	// scenes it can nondeterministically split off and discard well-connected, trustworthy images.
 	// Trust is absolute, not relative to how dense the rest of the scene is: an image is weakly
 	// attached only when it shares enough covisibility with too few independent neighbors. So peel
 	// images whose covisibility degree (number of neighbors sharing >= minCovisibilityCount inlier

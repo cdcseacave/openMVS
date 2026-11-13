@@ -58,20 +58,18 @@ using namespace SFM;
 // A lens is held one to one this far past the farthest radius its camera's matches reach while it is
 // fitted, and past the image corner to be kept, or, given, to be held: right at the farthest match
 // the fit can walk into a lens that folds just beyond it, where the undistortion stops having one
-// answer and the cost stops being smooth (the prototype stalled at 1.13 px where the right lens gives
-// 0.48 without it)
+// answer and the cost stops being smooth (the fit then stalls well above the residual the right lens gives)
 constexpr REAL LENS_VALID_MARGIN = REAL(1.05);
 // Newton iterations of the undistortion inside the fit, on the radius from r_u = r_d: a fixed count,
 // so that the automatic derivatives of every residual run through the same iterations; it converges
 // wherever the lens is one to one out to the point, which LENS_VALID_MARGIN keeps true
 constexpr int LENS_UNDISTORT_ITERATIONS = 10;
-// Levenberg-Marquardt iterations of one fit, a bound well past what the fits take: Playground's first
-// joint fit converged in 40, the first of a synthetic scene of the strong lens (164 px at the corner)
-// in 69
+// Levenberg-Marquardt iterations of one fit, a bound well past what the fits take: real and strong-lens
+// synthetic scenes converge in well under a hundred
 constexpr int LENS_FIT_MAX_ITERATIONS = 200;
 // The inlier bar, pixels at each side's focal, of a pair's pose re-estimated through the fitted lens:
 // its matches were verified at MatchConfig::maxEpipolarError already, so this only has to tell the
-// pose that explains them from a reversed or turned one the pinhole left (the prototype's bar)
+// pose that explains them from a reversed or turned one the pinhole left
 constexpr double LENS_REESTIMATION_ERROR = 1.0;
 // RANSAC iterations of that re-estimation: the bounds PairsMatcher::GeometricFilter uses
 constexpr size_t LENS_REESTIMATION_MIN_ITERATIONS = 100;
@@ -485,8 +483,7 @@ std::vector<double> MedianErrors(const std::vector<FitPair>& pairs, const std::v
 
 // Every pair's pose estimated again by RANSAC on its matches undistorted through the current lenses,
 // and taken where it explains the pair better than the pose the joint fit walked to: a pair whose
-// pinhole pose was reversed or turned wrong cannot be walked back by a local fit (on Playground the
-// prototype replaced 5 poses, then 1, and moved the corner from 69.4 to 72.3 px, onto COLMAP's 72.5).
+// pinhole pose was reversed or turned wrong cannot be walked back by a local fit.
 // Returns the number of poses replaced.
 unsigned ReestimatePoses(std::vector<FitPair>& pairs, const std::vector<FitCamera>& cameras, double lossScale)
 {
@@ -897,7 +894,7 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config, c
 				if (counts[c] < config.lensFitMinPairs) {
 					roles[c] = Role::LEAVE;
 					outcome.status = LensFitOutcome::TOO_FEW_PAIRS;
-					// what an earlier fit found for it no longer stands
+					// nothing an earlier fit found for it stands
 					outcome.k1 = outcome.k2 = 0;
 					outcome.numPairs = 0;
 					outcome.medianBefore = outcome.medianAfter = outcome.cornerDisplacement = 0;

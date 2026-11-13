@@ -30,7 +30,7 @@
  */
 
 #include "../../libs/SFM.h"
-#include "../../libs/SFM/RoMa2Matcher.h" // RoMa2Onnx::IsAvailable()
+#include "../../libs/SFM/DenseMatcher.h" // DenseMatcher::IsAvailable()
 #include <boost/program_options.hpp>
 
 using namespace SFM;
@@ -127,17 +127,34 @@ public:
 	void Finalize();
 };
 
+// the --refine-intrinsics levels: the intrinsics flags of ReconstructionConfig each one stands for
+constexpr unsigned REFINE_INTRINSICS_FLAGS[] = {
+	ReconstructionConfig::INTRINSIC_NONE, ReconstructionConfig::INTRINSIC_MAIN, ReconstructionConfig::INTRINSIC_MAIN_EXTRA};
+
+// the level the configuration's own default intrinsics flags correspond to
+unsigned DefaultRefineIntrinsicsLevel(unsigned flags)
+{
+	for (unsigned level = 0; level < std::size(REFINE_INTRINSICS_FLAGS); ++level)
+		if (REFINE_INTRINSICS_FLAGS[level] == flags)
+			return level;
+	ASSERT("the default intrinsics flags are not one of the --refine-intrinsics levels" == NULL);
+	return 0;
+}
+
 bool Application::Initialize(size_t argc, LPCTSTR* argv)
 {
 	OPEN_LOG();
 	OPEN_LOGCONSOLE();
+
+	// every default of an option below is the one of the configuration it fills
+	const ReconstructionConfig defaults;
 
 	boost::program_options::options_description generic("Generic options");
 	generic.add_options()
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value((int)defaults.importCfg.archiveType), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -163,63 +180,63 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("import-poses-file", boost::program_options::value<std::string>(&OPT::strImportPosesFile)->default_value("poses.csv"), "import camera poses from file: .csv (OpenMVS pose CSV) or .json (frames.json)")
 		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional)")
 		("export-pose-quality", boost::program_options::value<std::string>(&OPT::strExportPoseQuality), "estimate the pose covariance during the final bundle adjustment and export the per-image quality report to CSV file (optional)")
-		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value(0), "mode for importing camera poses: 0=none, 1=poses+intrinsics, 2=poses only, 3=positions only")
-		("known-poses-convention", boost::program_options::value<std::string>(&OPT::strKnownPosesConvention), "camera-axes convention of the poses in a frames.json: arkit|opencv (default: auto-detect)")
+		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value((unsigned)defaults.importCfg.importPosesMode), "mode for importing camera poses: 0=none, 1=poses+intrinsics, 2=poses only, 3=positions only")
+		("known-poses-convention", boost::program_options::value<std::string>(&OPT::strKnownPosesConvention), "camera-axes convention of the poses in a frames.json: auto|arkit|opencv (default: auto, detect it from the poses)")
 		("import-openmvg-dir", boost::program_options::value<std::string>(&OPT::strImportOpenMVGDir), "import OpenMVG features from directory (optional)")
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (written right after matching, before reconstruction) (optional)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
-		("filter-triplets", boost::program_options::value<bool>(&OPT::bFilterTriplets)->default_value(TripletFilterConfig().enabled), "score the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): a pair is scored by how its coverage-discounted inlier count compares with the strongest pair of every triangle it belongs to; by default nothing is removed, the scores weigh the contradiction cut (see --max-pair-direction-residual) and the reconstruction seeds in the largest piece the paper's threshold leaves; with --triplet-cut every pair below the threshold goes; with the filter off the contradiction cut still runs, unweighted")
-		("triplet-cut", boost::program_options::value<bool>(&OPT::bTripletCut)->default_value(TripletFilterConfig().cut), "camera-triplet filter: the cutting rule -- every pair scoring below the threshold goes, the smaller face of a symmetric building is cut off (--triplet-second-face-score), otherwise below a threshold that shatters the graph the strictest one joining the pieces applies; unfolds a symmetric building, halves the registrations of an interior")
-		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: the paper's minimum edge score m in [0,1], from which the threshold tau = m(1-r)+r follows, r the maximum-degree ratio of the scored graph (0.3 medium and small ambiguous sets, 0.6 generic, 0.9 highly ambiguous)")
-		("triplet-second-face-score", boost::program_options::value(&OPT::fTripletSecondFaceScore)->default_value(TripletFilterConfig().secondFaceScore), "camera-triplet filter, with --triplet-cut: a stricter minimum score whose threshold names the two faces of a symmetric building (a majority piece and a second one of at least a third of it); the smaller face is then cut off; at or below --triplet-min-score the faces are not looked for")
-		("max-pair-direction-residual", boost::program_options::value(&OPT::fMaxPairDirectionResidual)->default_value(ReconstructionConfig().maxPairDirectionResidual), "the view graph's contradiction cut, after the camera-triplet filter: every pair whose rotation the global rotation averaging of the pairs contradicts goes; its translation stage also removes every pair whose baseline direction is more than this many degrees from the camera centres the pairs place, in [0,180]; 0 = no translation stage, the rotation stage alone")
-		("repair-contradicted-pairs", boost::program_options::value<bool>(&OPT::bRepairContradictedPairs)->default_value(ReconstructionConfig().repairContradictedPairs), "repair instead of remove, in the contradiction cut (does not act with --max-pair-direction-residual 0): a pair the cut removes comes back with a relative pose refitted at the averaged rotation when at least 80% of its matches agree with that pose, the camera centres the cut places confirm its baseline direction within 20 degrees, and its two images are the same spot or a third spot holds a pair with each")
-		("max-link-direction-error", boost::program_options::value(&OPT::fMaxLinkDirectionError)->default_value(ResectionConfig().maxLinkDirectionError), "the direction check of every resection: a resected pose is refused when the verified pairs to registered images whose baseline direction it contradicts outweigh the ones that agree; each pair is held to this many degrees as seen from the structure, atan(tan(this) / a) with a the larger of the pair's ray angle and the model's parallax of the two cameras, a pair both angles put under 2 degrees agrees, one that only one of them puts that close abstains, and a pair of unknown ray angle is held to the model's parallax alone; in [0,90] (past 90 degrees the tangent turns negative and every pair would contradict); 0 = no direction check at all (the inlier-share and rotation checks stay)")
-		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
-		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
-		("siftgpu-darkness-adaptivity", boost::program_options::value(&OPT::bSiftGPUDarknessAdaptivity)->default_value(false), "SiftGPU: lower the DoG threshold and curvature floor in dark areas")
-		("spherical-bottom-band", boost::program_options::value(&OPT::fSphericalBottomBand)->default_value(FeatureExtractionConfig().sphericalBottomBand), "spherical images: the fraction of the image height, counted from the bottom, whose features are discarded (the operator and the tripod are there), in [0,1); 0 = keep every feature; perspective images are not affected")
-		("siftgpu-cuda", boost::program_options::value(&OPT::bSiftGPUCUDA)->default_value(true), "SiftGPU feature extraction and matching backend: 1 = CUDA (if available), 0 = OpenGL/GLSL")
-		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
-		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(3), "consecutive images each image is matched with: the whole candidate set of the sequential mode, and a prior added to the vocabulary and retrieval candidates (0 = no prior)")
-		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(50), "target pairs per image for vocabulary and pose-guided matching")
-		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(true), "hold back part of the matching budget and re-invest it in pairs suggested by the geometrically verified matches (vocabulary and pose-guided matching)")
-		("release-descriptors", boost::program_options::value(&OPT::releaseDescriptors)->default_value(true), "release descriptors after matching to save memory")
-		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(false), "match only the image pairs and save the scene without reconstruction (release descriptors)")
-		("roma2", boost::program_options::value<bool>(&OPT::bROMA2)->default_value(false), "enable the in-process RoMa v2 model: DINOv3/GeM pair retrieval and dense matching (needs an exported model, see --roma2-model)")
+		("filter-triplets", boost::program_options::value<bool>(&OPT::bFilterTriplets)->default_value(defaults.tripletFilterCfg.enabled), "score the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): a pair is scored by how its coverage-discounted inlier count compares with the strongest pair of every triangle it belongs to; by default nothing is removed, the scores weigh the contradiction cut (see --max-pair-direction-residual) and the reconstruction seeds in the largest piece the paper's threshold leaves; with --triplet-cut every pair below the threshold goes; with the filter off the contradiction cut still runs, unweighted")
+		("triplet-cut", boost::program_options::value<bool>(&OPT::bTripletCut)->default_value(defaults.tripletFilterCfg.cut), "camera-triplet filter: the cutting rule -- every pair scoring below the threshold goes, the smaller face of a symmetric building is cut off (--triplet-second-face-score), otherwise below a threshold that shatters the graph the strictest one joining the pieces applies; unfolds a symmetric building, halves the registrations of an interior")
+		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(defaults.tripletFilterCfg.minScore), "camera-triplet filter: the paper's minimum edge score m in [0,1], from which the threshold tau = m(1-r)+r follows, r the maximum-degree ratio of the scored graph (0.3 medium and small ambiguous sets, 0.6 generic, 0.9 highly ambiguous)")
+		("triplet-second-face-score", boost::program_options::value(&OPT::fTripletSecondFaceScore)->default_value(defaults.tripletFilterCfg.secondFaceScore), "camera-triplet filter, with --triplet-cut: a stricter minimum score whose threshold names the two faces of a symmetric building (a majority piece and a second one of at least a third of it); the smaller face is then cut off; at or below --triplet-min-score the faces are not looked for")
+		("max-pair-direction-residual", boost::program_options::value(&OPT::fMaxPairDirectionResidual)->default_value(defaults.maxPairDirectionResidual), "the view graph's contradiction cut, after the camera-triplet filter: every pair whose rotation the global rotation averaging of the pairs contradicts goes; its translation stage also removes every pair whose baseline direction is more than this many degrees from the camera centres the pairs place, in [0,180]; 0 = no translation stage, the rotation stage alone")
+		("repair-contradicted-pairs", boost::program_options::value<bool>(&OPT::bRepairContradictedPairs)->default_value(defaults.repairContradictedPairs), "repair instead of remove, in the contradiction cut (does not act with --max-pair-direction-residual 0): a pair the cut removes comes back with a relative pose refitted at the averaged rotation when at least 80 percent of its matches agree with that pose, the camera centres the cut places confirm its baseline direction within 20 degrees, and its two images are the same spot or a third spot holds a pair with each")
+		("max-link-direction-error", boost::program_options::value(&OPT::fMaxLinkDirectionError)->default_value(defaults.resectionCfg.maxLinkDirectionError), "the direction check of every resection: a resected pose is refused when the verified pairs to registered images whose baseline direction it contradicts outweigh the ones that agree; each pair is held to this many degrees as seen from the structure, atan(tan(this) / a) with a the larger of the pair's ray angle and the model's parallax of the two cameras, a pair both angles put under 2 degrees agrees, one that only one of them puts that close abstains, and a pair of unknown ray angle is held to the model's parallax alone; in [0,90] (past 90 degrees the tangent turns negative and every pair would contradict); 0 = no direction check at all (the inlier-share and rotation checks stay)")
+		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(defaults.featuresCfg.maxFeaturesPerCell), "maximum features per grid cell (3x3 grid)")
+		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(defaults.featuresCfg.minFeaturesPerCell), "minimum features per cell before adjusting sensitivity")
+		("siftgpu-darkness-adaptivity", boost::program_options::value(&OPT::bSiftGPUDarknessAdaptivity)->default_value(defaults.featuresCfg.siftgpuDarknessAdaptivity), "SiftGPU: lower the DoG threshold and curvature floor in dark areas")
+		("spherical-bottom-band", boost::program_options::value(&OPT::fSphericalBottomBand)->default_value(defaults.featuresCfg.sphericalBottomBand), "spherical images: the fraction of the image height, counted from the bottom, whose features are discarded (the operator and the tripod are there), in [0,1); 0 = keep every feature; perspective images are not affected")
+		("siftgpu-cuda", boost::program_options::value(&OPT::bSiftGPUCUDA)->default_value(defaults.featuresCfg.useCUDA), "SiftGPU feature extraction and matching backend: 1 = CUDA (if available), 0 = OpenGL/GLSL")
+		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value((int)defaults.matchCfg.mode), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
+		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(defaults.matchCfg.matchSequenceOverlap), "consecutive images each image is matched with: the whole candidate set of the sequential mode, and a prior added to the vocabulary and retrieval candidates (0 = no prior)")
+		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(defaults.matchCfg.maxPairsPerImage), "target pairs per image for vocabulary and pose-guided matching")
+		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(defaults.matchCfg.verificationFeedback), "hold back part of the matching budget and re-invest it in pairs suggested by the geometrically verified matches (vocabulary and pose-guided matching)")
+		("release-descriptors", boost::program_options::value(&OPT::releaseDescriptors)->default_value(defaults.matchCfg.releaseDescriptors), "release descriptors after matching to save memory")
+		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(defaults.matchImagesOnly), "match only the image pairs and save the scene without reconstruction")
+		("roma2", boost::program_options::value<bool>(&OPT::bROMA2)->default_value(defaults.roma2Cfg.enabled), "enable the in-process RoMa v2 model: DINOv3/GeM pair retrieval and dense matching (needs an exported model, see --roma2-model)")
 		("roma2-model", boost::program_options::value<std::string>(&OPT::strROMA2Model), "directory with the RoMa v2 ONNX graphs + manifest (default: $OPENMVS_ROMA2_MODEL_PATH)")
-		("roma2-setting", boost::program_options::value<std::string>(&OPT::strROMA2Setting)->default_value("base"), "RoMa v2 export preset: turbo (320px), fast (512px) or base (640px)")
-		("roma2-match", boost::program_options::value<bool>(&OPT::bROMA2Match)->default_value(false), "one-pass dense pair matching: judge every candidate pair on its bidirectional warp alone, then guide its sparse matching and fill the rest of the overlap densely (a rejected pair is dropped, never descriptor-matched)")
-		("roma2-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(64), "images kept resident on the device while dense matching (12.5 MB each at base)")
-		("roma2-min-confidence", boost::program_options::value(&OPT::fROMA2MinConfidence)->default_value(0.1f), "dense matching: confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill")
-		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(0.10f), "dense matching: the verdict, as the smaller of the two inlier areas one fitted geometry explains -- of the first image's confident cells and of the second's (0.10 is about 0.15-0.17 of true overlap, 0.15 about 0.25; 0 admits every pair)")
-		("roma2-dense-matches", boost::program_options::value(&OPT::nROMA2DenseMatches)->default_value(2000), "dense matching: correspondences the dense fill adds per FULL FRAME of overlap; a pair draws that density over the part of its overlap its guided sparse matches did not already cover, capped by the smaller of the two inlier areas the verdict measured, so the dense keypoint density is bounded in both images; each costs a keypoint in both images plus a track")
-		("dense-matcher", boost::program_options::value<std::string>(&OPT::strDenseMatcher)->default_value("roma2"), "the dense matcher behind --roma2 true (retrieval descriptors and --roma2-match warps): roma2 or flexglue (needs --flexglue-model; the --roma2-* matching options then apply to its warps)")
+		("roma2-setting", boost::program_options::value<std::string>(&OPT::strROMA2Setting)->default_value(defaults.roma2Cfg.setting), "RoMa v2 export preset: turbo (320px), fast (512px) or base (640px)")
+		("roma2-match", boost::program_options::value<bool>(&OPT::bROMA2Match)->default_value(defaults.roma2Cfg.useMatching), "one-pass dense pair matching: judge every candidate pair on its bidirectional warp alone, then guide its sparse matching and fill the rest of the overlap densely (a rejected pair is dropped, never descriptor-matched)")
+		("roma2-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(defaults.roma2Cfg.slotBudget), "images kept resident on the device while dense matching (12.5 MB each at base)")
+		("roma2-min-confidence", boost::program_options::value(&OPT::fROMA2MinConfidence)->default_value(defaults.roma2Cfg.minConfidence), "dense matching: confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill")
+		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(defaults.roma2Cfg.minOverlap), "dense matching: the verdict, as the smaller of the two inlier areas one fitted geometry explains -- of the first image's confident cells and of the second's (0.10 is about 0.15-0.17 of true overlap, 0.15 about 0.25; 0 admits every pair)")
+		("roma2-dense-matches", boost::program_options::value(&OPT::nROMA2DenseMatches)->default_value(defaults.roma2Cfg.denseMatchesPerFrame), "dense matching: correspondences the dense fill adds per FULL FRAME of overlap; a pair draws that density over the part of its overlap its guided sparse matches did not already cover, capped by the smaller of the two inlier areas the verdict measured, so the dense keypoint density is bounded in both images; each costs a keypoint in both images plus a track")
+		("dense-matcher", boost::program_options::value<std::string>(&OPT::strDenseMatcher)->default_value(defaults.roma2Cfg.matcher), "the dense matcher behind --roma2 true (retrieval descriptors and --roma2-match warps): roma2 or flexglue (needs --flexglue-model; the --roma2-* matching options then apply to its warps)")
 		("flexglue-model", boost::program_options::value<std::string>(&OPT::strFlexGlueModel), "directory with FlexGlue's ONNX graphs flexglue_descriptor.onnx, flexglue_dense.onnx and flexglue_pose_h0.onnx (default: $OPENMVS_FLEXGLUE_MODEL_PATH)")
-		("dense-min-covisibility", boost::program_options::value(&OPT::fDenseMinCovisibility)->default_value(0.2f), "gate before the pair's verdict: a pair whose dense matcher gives a covisibility score (FlexGlue; RoMa2 gives none and is never gated) below this is dropped (0 = off)")
-		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
-		("camera-type", boost::program_options::value(&OPT::nCameraType)->default_value(-1), "camera model type: -1-from the image metadata (an equirectangular projection tag gives spherical, else pinhole), 0-pinhole, 1-spherical (equirectangular, width = 2 x height)")
-		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
-		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(0.f), "force focal-length (in pixels) for specified images (0 = disabled)")
-		("k1", boost::program_options::value(&OPT::k1)->default_value(0.f), "force k1 distortion coefficient for specified images (0 = not used)")
-		("k2", boost::program_options::value(&OPT::k2)->default_value(0.f), "force k2 distortion coefficient for specified images (0 = not used)")
+		("dense-min-covisibility", boost::program_options::value(&OPT::fDenseMinCovisibility)->default_value(defaults.roma2Cfg.minCovisibility), "gate before the pair's verdict: a pair whose dense matcher gives a covisibility score (FlexGlue; RoMa2 gives none and is never gated) below this is dropped (0 = off)")
+		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value(defaults.roma2Cfg.provider), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
+		("camera-type", boost::program_options::value(&OPT::nCameraType)->default_value((int)defaults.importCfg.cameraType - 1), "camera model type: -1-from the image metadata (an equirectangular projection tag gives spherical, else pinhole), 0-pinhole, 1-spherical (equirectangular, width = 2 x height)")
+		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(defaults.importCfg.defaultFocalRatio), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
+		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(defaults.importCfg.focalLength), "force focal-length (in pixels) for specified images (0 = disabled)")
+		("k1", boost::program_options::value(&OPT::k1)->default_value(defaults.importCfg.k1), "force k1 distortion coefficient for specified images (0 = not used)")
+		("k2", boost::program_options::value(&OPT::k2)->default_value(defaults.importCfg.k2), "force k2 distortion coefficient for specified images (0 = not used)")
 		("image-indices", boost::program_options::value<std::string>(&OPT::strImageIndices), "image indices to apply forced parameters (e.g., '0 5-10 15', empty = all images)")
-		("max-views-per-cluster", boost::program_options::value(&OPT::maxViewsPerCluster)->default_value(200), "maximum images per cluster for hierarchical reconstruction; clusters aim at two thirds of it (0 = disable clustering)")
-		("cluster-communities", boost::program_options::value<bool>(&OPT::bClusterCommunities)->default_value(false), "cluster by community detection + capacity packing instead of pure aggregative clustering")
-		("cluster-alignment", boost::program_options::value(&OPT::clusterAlignment)->default_value(1), "how sub-scenes are aligned before merging: 0 = similarity from 3D-3D track correspondences, 1 = generalized-camera PnP of one sub-scene's cameras against the other's tracks")
-		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(false), "use global solver for calibration instead of the hierarchical solver")
-		("extract-colors", boost::program_options::value<bool>(&OPT::bExtractColors)->default_value(false), "extract colors for reconstructed points")
-		("undistort-alpha", boost::program_options::value<float>(&OPT::undistortAlpha)->default_value(0.6f), "alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)")
-		("undistort-extension", boost::program_options::value<std::string>(&OPT::strUndistortExt)->default_value(".jxl"), "file extension/format for the exported undistorted images (e.g. .jpg, .png, .jxl)")
-		("align-gps-threshold", boost::program_options::value<float>(&OPT::thAlignGPS)->default_value(5.f), "maximum distance in meters for aligning GPS positions to reconstruction poses (0 = disabled)")
-		("gps-position-weight", boost::program_options::value(&OPT::gpsPositionWeight)->default_value(0.0), "horizontal weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
-		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(0.0), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
-		("ba-dense-weight", boost::program_options::value(&OPT::baDenseWeight)->default_value(-1.0), "bundle adjustment: loss weight of a reprojection residual on a dense (warp-sampled) keypoint, relative to the 1.0 a described one carries; negative (default) measures it as (sigma described/sigma dense)^2 on the scene each solve is about to fit and falls back to 0.25 on a scene too small to give either sigma; any value >= 0 pins it as given, so use [0,1] (1 = no down-weighting)")
-		("ba-max-obs", boost::program_options::value(&OPT::baMaxObservations)->default_value(SFM::BAConfig().maxObservationsPerImage), "bundle adjustment: the most observations one image contributes to a solve, of any keypoint kind (0 = no cap); the budget goes to the described keypoints first and the warp-sampled ones fill what is left, each kind spread evenly over the image frame, the longer tracks before the shorter ones and the remaining ties drawn again for every solve")
-		("ba-cap-min-obs", boost::program_options::value(&OPT::baCapMinObservations)->default_value(SFM::BAConfig().minObservationsForCap), "bundle adjustment: observations the scene must hold before the per-image cap above applies to any solve (0 = always); a scene small enough to be solved whole is solved whole")
-		("ba-pair-sigma", boost::program_options::value(&OPT::baPairSigma)->default_value(1.f), "bundle adjustment: standard deviation in degrees by which the model's relative rotation may differ from what a verified pair measured, the baseline direction being allowed twice as much; the pairs then hold the joints the tracks are too few to hold (0 = disabled, the solve fits reprojections alone)")
-		("refine-intrinsics", boost::program_options::value(&OPT::refineIntrinsics)->default_value(1), "bundle adjustment intrinsics refinement: 0=fixed intrinsics, 1=focal length and the first two radial terms (k1, k2), 2=those plus the third radial term, the principal point and the tangential terms")
+		("max-views-per-cluster", boost::program_options::value(&OPT::maxViewsPerCluster)->default_value(defaults.clusterCfg.maxViewsPerCluster), "maximum images per cluster for hierarchical reconstruction; clusters aim at two thirds of it (0 = disable clustering)")
+		("cluster-communities", boost::program_options::value<bool>(&OPT::bClusterCommunities)->default_value(defaults.clusterCfg.useCommunityDetection), "cluster by community detection + capacity packing instead of pure aggregative clustering")
+		("cluster-alignment", boost::program_options::value(&OPT::clusterAlignment)->default_value(defaults.globalAlignmentCfg.alignment), "how sub-scenes are aligned before merging: 0 = similarity from 3D-3D track correspondences, 1 = generalized-camera PnP of one sub-scene's cameras against the other's tracks")
+		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(defaults.useGlobalSolver), "reconstruct with the global solver (global rotation and position averaging) instead of the hierarchical one")
+		("extract-colors", boost::program_options::value<bool>(&OPT::bExtractColors)->default_value(defaults.extractColors), "extract colors for reconstructed points")
+		("undistort-alpha", boost::program_options::value<float>(&OPT::undistortAlpha)->default_value(ExportMVSConfig().undistortAlpha), "alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)")
+		("undistort-extension", boost::program_options::value<std::string>(&OPT::strUndistortExt)->default_value(ExportMVSConfig().extension), "file extension/format for the exported undistorted images (e.g. .jpg, .png, .jxl)")
+		("align-gps-threshold", boost::program_options::value<float>(&OPT::thAlignGPS)->default_value(defaults.thAlignGPS), "maximum distance in meters for aligning GPS positions to reconstruction poses (0 = disabled)")
+		("gps-position-weight", boost::program_options::value(&OPT::gpsPositionWeight)->default_value(defaults.baConfig.gpsPositionWeight), "horizontal weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
+		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(defaults.baConfig.gpsPositionWeightZ), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
+		("ba-dense-weight", boost::program_options::value(&OPT::baDenseWeight)->default_value(defaults.baConfig.denseObservationWeight), "bundle adjustment: loss weight of a reprojection residual on a dense (warp-sampled) keypoint, relative to the 1.0 a described one carries; negative (default) measures it as (sigma described/sigma dense)^2 on the scene each solve is about to fit and falls back to 0.25 on a scene too small to give either sigma; any value >= 0 pins it as given, so use [0,1] (1 = no down-weighting)")
+		("ba-max-obs", boost::program_options::value(&OPT::baMaxObservations)->default_value(defaults.baConfig.maxObservationsPerImage), "bundle adjustment: the most observations one image contributes to a solve, of any keypoint kind (0 = no cap); the budget goes to the described keypoints first and the warp-sampled ones fill what is left, each kind spread evenly over the image frame, the longer tracks before the shorter ones and the remaining ties drawn again for every solve; it acts only on a scene holding at least --ba-cap-min-obs observations")
+		("ba-cap-min-obs", boost::program_options::value(&OPT::baCapMinObservations)->default_value(defaults.baConfig.minObservationsForCap), "bundle adjustment: observations the scene must hold before the per-image cap above applies to any solve (0 = always); a scene small enough to be solved whole is solved whole; the default is high enough that the cap acts only on the very largest scenes")
+		("ba-pair-sigma", boost::program_options::value(&OPT::baPairSigma)->default_value(defaults.relativeRotationSigma), "bundle adjustment: standard deviation in degrees by which the model's relative rotation may differ from what a verified pair measured, the baseline direction being allowed twice as much; the pairs then hold the joints the tracks are too few to hold (0 = disabled, the solve fits reprojections alone)")
+		("refine-intrinsics", boost::program_options::value(&OPT::refineIntrinsics)->default_value(DefaultRefineIntrinsicsLevel(defaults.baIntrinsicFlags)), "bundle adjustment intrinsics refinement: 0=fixed intrinsics, 1=focal length and the first two radial terms (k1, k2), 2=those plus the third radial term, the principal point and the tangential terms")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -278,8 +295,12 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: unknown camera type %d (accepted: -1, 0, 1)", OPT::nCameraType);
 		return false;
 	}
-	if (OPT::refineIntrinsics > 2) {
+	if (OPT::refineIntrinsics >= std::size(REFINE_INTRINSICS_FLAGS)) {
 		LOG("error: unknown refine-intrinsics level %u (accepted: 0, 1, 2)", OPT::refineIntrinsics);
+		return false;
+	}
+	if (OPT::clusterAlignment > GlobalAlignmentConfig::ALIGN_CAMERAS) {
+		LOG("error: unknown cluster alignment %u (accepted: 0, 1)", OPT::clusterAlignment);
 		return false;
 	}
 	Util::ensureValidPath(OPT::strImportPosesFile);
@@ -332,7 +353,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --dense-min-covisibility is a covisibility score, it must be in [0,1] (got %g)", OPT::fDenseMinCovisibility);
 		return false;
 	}
-	if (OPT::bROMA2 && !RoMa2Onnx::IsAvailable()) {
+	if (OPT::bROMA2 && !DenseMatcher::IsAvailable()) {
 		LOG("error: --roma2 needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
 		return false;
 	}
@@ -362,7 +383,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	if (OPT::bROMA2Match && !OPT::bROMA2) {
-		// design decision 10 -- a requested-but-unavailable backend never silently degrades: the one
+		// a requested-but-unavailable backend never silently degrades: the one
 		// pass IS the matching round when it runs, and without --roma2 the enabled flag
 		// Scene::MatchPairs gates on (enabled && (needsDescriptors || needsWarps)) is false regardless
 		// of useMatching, so the descriptor round would quietly run the whole matching stage in its
@@ -372,10 +393,9 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::bROMA2 && !OPT::bROMA2Match && OPT::matchMode != static_cast<int>(MatchConfig::RETRIEVAL)) {
 		// the match mode decides whether the scene needs describing (Scene::MatchPairs' own
-		// wantsDescriptors), and --roma2-match and --export-retrieval-csv are the only other
-		// consumers of the model -- with none of the three, --roma2 has nothing to load a model
-		// for. Deliberately not checked here: the converse, --match-mode 4 without --roma2 -- a
-		// scene loaded from an .sfm may already carry global descriptors, and this parser cannot
+		// wantsDescriptors), and --roma2-match is the only other consumer of the model -- with
+		// neither, --roma2 has nothing to load a model for. Deliberately not checked here: the
+		// converse, --match-mode 4 without --roma2 -- a scene loaded from an .sfm may already carry global descriptors, and this parser cannot
 		// see what the source will import, only the flags (GlobalDescriptors::Build fails loudly
 		// and by name if it does not)
 		LOG("error: --roma2 has nothing to do without --roma2-match true or --match-mode 4 (RETRIEVAL)");
@@ -383,11 +403,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::bROMA2Match) {
 		// --roma2-match unconditionally needs the model to run the warp, unlike the descriptor-only
-		// cases above (--match-mode 4, --export-retrieval-csv): whether those need a model depends on
+		// case above (--match-mode 4): whether that needs a model depends on
 		// whether the scene already carries global descriptors, which this parser cannot see, so --
-		// same precedent as the converse case in the check above -- they are deliberately left to
+		// same precedent as the converse case in the check above -- it is deliberately left to
 		// Scene::MatchPairs' own named error, which fires only when a model turns out to actually be
-		// needed (design decision 10). This check just gives the hint before any feature extraction
+		// needed. This check just gives the hint before any feature extraction
 		// runs, for the one case the parser can be sure about regardless of scene state.
 		ROMA2Config roma2Cfg;
 		roma2Cfg.matcher = OPT::strDenseMatcher;
@@ -495,9 +515,7 @@ int main(int argc, LPCTSTR* argv)
 	// the rotation sigma names the pair constraints; the baseline direction follows at
 	// ReconstructionConfig::relativeTranslationSigmaFactor times it
 	cfg.relativeRotationSigma = MAXF(OPT::baPairSigma, 0.f);
-	cfg.baIntrinsicFlags = OPT::refineIntrinsics == 0 ? ReconstructionConfig::INTRINSIC_NONE :
-		OPT::refineIntrinsics == 1 ? ReconstructionConfig::INTRINSIC_MAIN :
-		ReconstructionConfig::INTRINSIC_MAIN_EXTRA;
+	cfg.baIntrinsicFlags = REFINE_INTRINSICS_FLAGS[OPT::refineIntrinsics];
 	cfg.estimatePoseUncertainty = !OPT::strExportPoseQuality.empty();
 	cfg.extractColors = OPT::bExtractColors;
 	cfg.clusterCfg.SetMaxViews(OPT::maxViewsPerCluster);

@@ -164,7 +164,7 @@ public:
 		outlierMatches = std::vector<DMatch>();
 		numFilteredInliers = -1;
 		numDenseInliers = 0;
-		weightedInliers = -1.f; // it describes matches that no longer exist
+		weightedInliers = -1.f; // it describes matches the pair has dropped
 	}
 	// Reset inlier matches by merging all matches back
 	void ResetInlierMatches() {
@@ -271,7 +271,7 @@ public:
 	// with weightSpatial = coverage (overlapArea) * angle (the baseline term), so the product below
 	// is cbrt(weightSpatial * overlapArea^2 * weightConnectivity) = coverage * cbrt(angle * connectivity).
 	// The coverage and the triangle consistency count in full, the two terms that rank how well a pair
-	// is matched against the references (#90); the angle and the connectivity keep their geometric mean,
+	// is matched against the references; the angle and the connectivity keep their geometric mean,
 	// so neither weak term alone annihilates a pair with hundreds of verified inliers.
 	inline float GetCompositeWeight() const {
 		const unsigned nCappedInliers = MINF(GetNumWeightedInliers(), 1000u); // cap inliers to avoid excessive weight
@@ -317,7 +317,7 @@ public:
 	// of its accept loop; this is for the caller that CHANGED the prefix without re-filtering the
 	// pair -- AppendDenseMatches, which must not put the dense supplement through the strict
 	// geometric filter (that is the whole design of the supplement) but must not leave the pair
-	// claiming a baseline measured on matches it no longer only has either.
+	// claiming a baseline measured before the supplement was added either.
 	// 0 when the pair has no relative pose to triangulate against, i.e. no measurable baseline.
 	float ComputeMeanRayAngle(const Image& img1, const Image& img2) const;
 	// The cosine of the triangulation angle of each track-forming match that triangulates at the
@@ -351,16 +351,14 @@ public:
 	//  - threshold: inlier distance threshold in pixels (for fundamental/essential) or symmetric transfer error (for homography)
 	//  - forceEpipolarType: -1=auto, 0=relativePose, 1=E, 2=F, 3=H
 	// The count and inlierMask cover ALL of `matches` -- the dense supplement and the strict filter's
-	// rejects included -- which is what the mask's matches.size() length always promised; on a
-	// partitioned pair this used to be truncated to the sparse segment.
+	// rejects included -- which is what the mask's matches.size() length promises, whether or
+	// not the pair is partitioned.
 	unsigned CheckEpipolarInliers(const Image& img1, const Image& img2, float threshold = 3.f, int forceEpipolarType = -1,
 		cv::InputOutputArray inlierMask = cv::noArray()) const;
 
 	// static functions for composing the essential matrix from relative pose and vice-versa
 	static Matrix3x3 ComposeEssentialMatrix(const Pose3D& pose);
 	static Pose3D DecomposeEssentialMatrix(const Matrix3x3& E);
-	// static function to compute epipole from essential matrix (in homogeneous coordinates)
-	static Point3 EpipoleFromEssentialMatrix(const Matrix3x3& E, bool leftImage);
 
 	// static functions for composing the fundamental matrix from essential + camera matrices and vice-versa
 	static Matrix3x3 ComposeFundamentalMatrix(const Matrix3x3& E, const Matrix3x3& K1, const Matrix3x3& K2, bool normalize = false);

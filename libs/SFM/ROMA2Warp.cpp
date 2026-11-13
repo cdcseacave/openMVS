@@ -160,8 +160,8 @@ struct WarpCandidate {
 //   Chaining is through the A SIDE ONLY: the B-side position is whatever the warp maps that cell to,
 //   a float that two pairs have no reason to agree on. So a chain grows along the images that play
 //   the A role of their pairs, and stops naturally wherever the confident overlaps stop coinciding.
-// Confidence remains the ELIGIBILITY test (the minConfidence bar in CollectWarpCandidates), it is
-// simply no longer the ranking: every candidate cell is one the warp is confident about, and among
+// Confidence is the ELIGIBILITY test (the minConfidence bar in CollectWarpCandidates), not the
+// ranking: every candidate cell is one the warp is confident about, and among
 // those the choice may as well be the one that two pairs can both make.
 inline int WarpCellLatticePriority(int x, int y)
 {
@@ -328,10 +328,9 @@ void SFM::ThinSampleByLatticePriority(
 	// pairs sharing image A therefore keep NESTED prefixes of one order over the cells rather than
 	// two subsets that happen not to meet -- the smaller budget's survivors are the larger's, cell
 	// for cell, so everything they still share is a keypoint at the same pixel of A and chains.
-	// (A stride through this pair's own list, which is what this used to be, has survivors that
-	// depend on the pair's sample count and the pair's ceiling, so two pairs that agreed on every
-	// winner kept different subsets of them and the chaining fell to the product of the two
-	// thinning ratios.) The priority is dyadic -- a level-k cell lies on a 2^k lattice -- so the
+	// (A stride through this pair's own list would have survivors that depend on the pair's sample
+	// count and the pair's ceiling, so two pairs that agreed on every winner would keep different
+	// subsets of them and the chaining would fall to the product of the two thinning ratios.) The priority is dyadic -- a level-k cell lies on a 2^k lattice -- so the
 	// prefix that keeps whole levels is spatially uniform whatever level it stops at, and the
 	// scramble makes the part-level remainder an unbiased subset of that level.
 	std::vector<unsigned> order(numSamples);

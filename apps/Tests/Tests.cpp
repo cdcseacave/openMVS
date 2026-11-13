@@ -514,8 +514,6 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::CappedSolveScaleTest())
 				return false;
-			if (!SFM::DenseReprojectionBarTest())
-				return false;
 			if (!SFM::FilterTracksUnposedTrackTest())
 				return false;
 			if (!SFM::FilterTracksUntriangulatedTrackTest())

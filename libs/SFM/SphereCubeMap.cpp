@@ -12,25 +12,18 @@ using namespace SFM;
 using namespace SFM::SphereCubeMap;
 
 
-// D E F I N E S ///////////////////////////////////////////////////
-
-// uncomment to enable save rendered faces to disk for visual inspection (debug only)
-//#define SFM_DEBUG_SPHERICAL_FACES
-
-
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace {
 
 // ------------------------------------------------------------------
-// 6-face cube rotation table — bit-exact with the pre-generalization
-// implementation so MVS-export outputs are unchanged.
+// 6-face cube rotation table, the face set the MVS export is defined by.
 //
 // Face order: +Z forward, -Z back, +X right, -X left, +Y, -Y.
 // All rotations are pure SO(3) elements (det=+1) that map the body
 // frame to a face frame whose +Z points along the named body axis.
 //
-// SphericalCamera now uses the Y-DOWN imaging convention (the same as
+// SphericalCamera uses the Y-DOWN imaging convention (the same as
 // MVS's pinhole formula and the OpenCV image frame), so the rendered
 // face images are vertically upright (sky at top for face 0). MVS's
 // K*cam.R*(X-C) chain produces pixel coordinates that match where each
@@ -165,9 +158,8 @@ std::vector<Matrix3x3> BuildFaceRotations20()
 }
 
 // ------------------------------------------------------------------
-// Per-face render kernel — file-local. Equivalent of the old RenderFace
-// but parameterised on the shared (f, cx, cy) instead of re-deriving
-// them from the 90°-FOV cube convention.
+// Per-face render kernel — file-local, parameterised on the shared (f, cx, cy)
+// instead of re-deriving them from the 90°-FOV cube convention.
 // ------------------------------------------------------------------
 template <typename TYPE>
 void RenderFaceKernel(
@@ -310,19 +302,6 @@ std::vector<TImage<TYPE>> SFM::SphereCubeMap::SphericalToTangentialFaces(
 	for (int k = 0; k < geometry.numFaces; ++k)
 		RenderFaceKernel(sphericalImageWrapped, sphericalImage.width(), sphCam, geometry.rotations[k],
 		                 f, cx, cy, geometry.faceSize, images[k]);
-
-	#ifdef SFM_DEBUG_SPHERICAL_FACES
-	// Debug: save rendered faces to disk for visual inspection.
-	// The output images are vertically upright (sky at top, ground at bottom for face 0)
-	// because SphericalCamera uses the Y-DOWN convention, same as MVS's pinhole
-	// formula, so the raw pixel coordinates match where each sampled equirect
-	// direction was written.
-	for (int k = 0; k < geometry.numFaces; ++k) {
-		String fileName = MAKE_PATH(String::FormatString("spherical_face_%02d.png", k));
-		if (!images[k].Save(fileName))
-			DEBUG("Warning: failed to save debug face image: %s", fileName.c_str());
-	}
-	#endif
 
 	return images;
 }

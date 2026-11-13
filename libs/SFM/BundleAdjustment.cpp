@@ -36,15 +36,6 @@ void SFM::QuaternionAndCenterToPose3D(const double* params, Pose3D& pose) {
 	pose.C = Eigen::Map<const Point3d::EVec>(params + 4);
 }
 
-// Convert OpenMVS pose to/from Ceres angle-axis parameterization [ax, ay, az, Cx, Cy, Cz]
-void SFM::Pose3DToAngleAxisAndCenter(const Pose3D& pose, double* params) {
-	ceres::RotationMatrixToAngleAxis(ceres::RowMajorAdapter3x3(pose.R.val), params);
-	Eigen::Map<Point3d::EVec>(params + 3) = (const Point3d::EVec)pose.C;
-}
-void SFM::AngleAxisAndCenterToPose3D(const double* params, Pose3D& pose) {
-	ceres::AngleAxisToRotationMatrix(params, ceres::RowMajorAdapter3x3(pose.R.val));
-	pose.C = Eigen::Map<const Point3d::EVec>(params + 3);
-}
 /*----------------------------------------------------------------*/
 
 
@@ -85,14 +76,14 @@ bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
 	// residual gauge null space left by the caller (datum removal or GPS-prior anchoring) is
 	// absorbed by this damping, instead of failing outright.
 	double maxDiag = 0.0;
-	for (int i = 0; i < S.rows(); ++i) maxDiag = std::max(maxDiag, std::abs(S.coeff(i, i)));
+	for (int i = 0; i < S.rows(); ++i) maxDiag = MAXF(maxDiag, std::abs(S.coeff(i, i)));
 	// Start near the numerical-zero scale and grow only until the factor is positive-definite, so
 	// the regularization touches just the gauge null space and does not cap (saturate) the
 	// covariance of genuinely weakly-constrained poses at 1/damping. When condFloorRel>0 the
 	// pivots are additionally driven above pivotFloor: this bounds the conditioning so a residual
 	// gauge null space (e.g. the global-scale mode) yields a finite variance instead of an inf.
 	const double pivotFloor = condFloorRel * maxDiag; // 0 when condFloorRel==0
-	double damping = std::max(1e-15 * maxDiag, 1e-300), applied = 0.0;
+	double damping = MAXF(1e-15 * maxDiag, 1e-300), applied = 0.0;
 	Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> ldlt;
 	Eigen::VectorXd D;
 	bool ok = false;
@@ -124,7 +115,7 @@ bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
 	Zout.makeCompressed();
 	Eigen::SparseMatrix<double>& Z = Zout;
 
-	const double dFloor = std::max(damping, pivotFloor);
+	const double dFloor = MAXF(damping, pivotFloor);
 	for (int j = n - 1; j >= 0; --j) {
 		std::vector<int> nz;
 		for (Eigen::SparseMatrix<double>::InnerIterator it(Lstrict, j); it; ++it)
@@ -137,7 +128,7 @@ bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
 			Z.coeffRef(i, j) = zij;
 			Z.coeffRef(j, i) = zij;
 		}
-		double zjj = 1.0 / std::max(D(j), dFloor);
+		double zjj = 1.0 / MAXF(D(j), dFloor);
 		for (int k : nz)
 			zjj -= Lstrict.coeff(k, j) * Z.coeff(k, j);
 		Z.coeffRef(j, j) = zjj;
@@ -461,9 +452,9 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 // solve -- a reconstruction runs fifty or more of them, so it settles.
 //
 // Measured rather than configured because k is a property of the CAPTURE, not of the dense matcher:
-// across different captures the dense sigma barely moved (1.14-1.79 px, the warp's sampling
-// scale) while the described sigma moved 3.6x, from 0.32 px where the texture is rich to 1.15 px
-// where it is not, taking k from 1.55 to 4.02. No constant is right in both places.
+// across captures the dense sigma barely moves (it is the warp's sampling scale) while the described
+// sigma varies several-fold, from small where the texture is rich to large where it is not. No
+// constant is right in both places.
 //
 // Clamped to [MIN_DENSE_OBSERVATION_WEIGHT, 1]: a dense correspondence is never a MORE precise
 // measurement than a described one, and never worth nothing -- on a capture where the descriptor
@@ -929,20 +920,6 @@ inline void SolveBundle(ceres::Solver::Options& options, ceres::Problem& problem
 	VERBOSE("warning: the sparse bundle adjustment failed (%s); solving it iteratively", summary.BriefReport().c_str());
 	options.linear_solver_type = ceres::ITERATIVE_SCHUR;
 	options.preconditioner_type = ceres::SCHUR_JACOBI;
-	#if 0 && (CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2))
-	// DISABLED: Power Bundle Adjustment (Weber et al., CVPR 2022) via the
-	// SCHUR_POWER_SERIES_EXPANSION preconditioner, gated on a large camera count (the reduced
-	// camera system it is meant to accelerate). Benchmarked against the SCHUR_JACOBI default and
-	// it loses at every scale tested, so it is left off. On an i7-13700KF (16C/24T) / RTX 4070 /
-	// 32GB / Win11, Ceres 2.2.0 + CUDA 13.0: House (83 cameras) ran 1.2-3.9x slower; Tanks&Temples
-	// Courthouse (1106 cameras) ran 1.6-1.7x slower on the 4-5.6M-residual bundles and HUNG for
-	// >81 min on a 6.3M-residual bundle (never converged), while SCHUR_JACOBI completed the whole
-	// reconstruction in ~54 min. CG convergence was erratic (non-monotonic in problem size).
-	// Re-enable/re-tune (e.g. without use_spse_initialization, and past a thousand cameras only)
-	// with a fresh benchmark on a scene with far more cameras than we had available.
-	options.preconditioner_type = ceres::SCHUR_POWER_SERIES_EXPANSION;
-	options.use_spse_initialization = true;
-	#endif
 	ceres::Solve(options, &problem, &summary);
 }
 
@@ -1504,13 +1481,14 @@ bool BundleAdjustment::Adjust()
 			DEBUG("Fixed view %u (reference, no GPS)", bestImgID);
 			// The reference pose leaves the scale free (the reprojections and the pair terms are all blind to it),
 			// and the iterations of a solve drift it; once the per-image cap leaves tracks out of the solve, their points
-			// stay at the old scale and their observations land pixels off: on Truck the capped solves shrank the
-			// model to 8-42% of its size, a reduced camera system singular along the scale failing its dense Cholesky
-			// factorization, and stranded 74% of the observations the cap left out. Hold it the way COLMAP does:
+			// stay at the old scale and their observations land pixels off: on a large capture the capped solves
+			// shrank the model to a fraction of its size, a reduced camera system singular along the scale failing
+			// its dense Cholesky factorization, and stranded most of the observations the cap left out. Hold it
+			// the way COLMAP does:
 			// one centre coordinate of a second camera kept where it is, the coordinate of that camera's largest
 			// offset from the reference, the camera the one with the most residuals among those at least the median
 			// distance from the reference, so that the coordinate held is a long lever and the camera a well-measured
-			// one; held, a capped solve changes the scale by 0.01% and strands 2%
+			// one; held, a capped solve leaves the scale where it was
 			if (config.refinePosesRotation && config.refinePosesPosition) {
 				const Point3 refCenter(scene.images[bestImgID].C);
 				const auto inSolve = [&](IIndex i) {

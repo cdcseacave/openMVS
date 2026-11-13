@@ -48,12 +48,6 @@ public:
 	// Returns the camera's view forward direction
 	inline Point3 Direction() const { return R.row(2); /* equivalent to R.t() * Vec(0,0,1) */ }
 
-	// Returns the camera's view up direction
-	inline Point3 UpDirection() const { return -R.row(1); /* equivalent to R.t() * Vec(0,-1,0) */ }
-
-	// Returns the camera's view right direction
-	inline Point3 RightDirection() const { return R.row(0); /* equivalent to R.t() * Vec(1,0,0) */ }
-
 	// Returns the depth of a 3D point from world to camera coordinates
 	inline REAL Depth(const Point3& X) const { return Direction().dot(X - C); }
 
@@ -61,9 +55,7 @@ public:
 	inline Point3 RayCameraToWorld(const Point3& X) const { return R.t() * X; }
 
 	// Compose/decompose projection matrix P = K*R*[I|-C]
-	Matrix4x4 GetP4fromRC() const; // composed transform matrix from R and C only (4x4)
 	PMatrix GetPfromRC() const; // compose P from R and C only
-	void DecomposePfromRC(const PMatrix&); // decompose P in R and C only
 
 	// Compute the inverse pose (world to camera -> camera to world)
 	inline Pose3D Inverse() const {
@@ -109,16 +101,6 @@ public:
 	// Transform a 3D point from camera to world coordinates
 	inline Point3 TransformPointC2W(const Point3& X) const {
 		return R.t() * X + C;
-	}
-
-	// Update camera position with delta
-	inline void UpdatePosition(const Point3& delta) {
-		C += delta;
-	}
-
-	// Update the camera rotation with the given delta (axis-angle)
-	inline void UpdateRotation(const Point3& delta) {
-		R.Apply((const Vec3&)delta);
 	}
 
 	#ifdef _USE_BOOST

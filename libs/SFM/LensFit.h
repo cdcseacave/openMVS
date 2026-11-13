@@ -45,7 +45,7 @@ struct SFM_API ViewGraphCalibratorConfig;
  * ==============================================================
  *
  * Every pair is verified through its cameras as they are: a pinhole without a lens when none is
- * given. Where the lens is strong (Playground's moves its corners by 72 px), the pairs that turn while
+ * given. Where the lens is strong (it moves the image corners by tens of pixels), the pairs that turn while
  * barely moving come out degrees short with their baselines reversed, and every reader of the pairs'
  * geometry inherits that. This fits one radial lens per camera that has none -- k1, k2 of the forward
  * model PinholeCamera, OpenCV and COLMAP's OPENCV share, x_d = x_u (1 + k1 r^2 + k2 r^4) on

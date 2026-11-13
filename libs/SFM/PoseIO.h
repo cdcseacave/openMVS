@@ -64,7 +64,7 @@ enum class FramesConvention {
 //   2  the sensor-native landscape orientation, which is what ARKit reports poses in -- it sits
 //      180 degrees from the landscape reached by rotating a display-oriented portrait raster
 //      90 degrees clockwise, so an ARKit capture needs one more quarter turn than the import
-//      applies (measured on a real iPhone capture: 0.55 deg of residual vs 68 deg at 1 turn)
+//      applies (on a real iPhone capture: 0.55 deg of residual vs 68 deg at 1 turn)
 // Getting it wrong conjugates every rotation by a multiple of Rz(90), which leaves its angle
 // intact but tilts its axis, so the poses stay plausible while relative rotations disagree by up
 // to twice the baseline rotation -- and no camera-axes flip can repair it.
