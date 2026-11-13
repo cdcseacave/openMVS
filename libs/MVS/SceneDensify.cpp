@@ -1167,15 +1167,15 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 				if (!confMap.empty()) confMap(x) = c;
 			}
 		} else {
-			Point2f dir1, dir2;
-			Normal2Dir(normalMap(xFirst), dir1);
-			Normal2Dir(normalMap(xLast), dir2);
-			const Point2f dirDiff((dir2-dir1)/float(count+1));
+			// the two normals face the camera along rays a few pixels apart, so no point between them vanishes
+			const Normal nDiff((normalMap(xLast)-normalMap(xFirst))/float(count+1));
+			Normal n(normalMap(xFirst));
 			for (unsigned i=1; i<=count; ++i) {
 				const ImageRef x(Pixel(i));
 				depthMap(x) = (d+=diff);
-				dir1 += dirDiff;
-				Dir2Normal(dir1, normalMap(x));
+				n += nDiff;
+				ASSERT(norm(n) > 0);
+				normalMap(x) = normalized(n);
 				if (!confMap.empty()) confMap(x) = c;
 			}
 		}
@@ -2483,8 +2483,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				REAL confidence(Conf2Weight(conf,depth));
 				ProjArr& pointProjs = projs.emplace_back();
 				pointProjs.emplace_back(Proj(x));
-				const PointCloud::Normal normal(!depthData.normalMap.empty() ? Cast<Normal::Type>(imageData.camera.R.t() * Cast<REAL>(depthData.normalMap(x))) : Normal(0, 0, -1));
-				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
+				const bool bNormals(!depthData.normalMap.empty());
+				ASSERT(bNormals || !bEstimateNormal); // EstimateNormalMaps() above supplies them when normals are fused
+				const PointCloud::Normal normal(bNormals ? PointCloud::Normal(Cast<Normal::Type>(imageData.camera.R.t() * Cast<REAL>(depthData.normalMap(x)))) : PointCloud::Normal::ZERO);
+				ASSERT(!bNormals || ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 				// check the projection in the neighbor depth-maps
 				Point3 X(point*confidence);
 				// the pixels are resident only when colors are fused, and an image whose
@@ -2515,9 +2517,11 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 						continue;
 					if (IsDepthSimilar(depthProjB, depthB, OPTDENSE::fDepthDiffThreshold)) {
 						// check if normals agree
-						const PointCloud::Normal normalB(!depthData.normalMap.empty() ? Cast<Normal::Type>(imageDataB.camera.R.t() * Cast<REAL>(depthDataB.normalMap(xB))) : Normal(0, 0, -1));
-						ASSERT(ISEQUAL(norm(normalB), 1.f, 1e-2f), "Norm = ", norm(normalB));
-						if (normal.dot(normalB) > normalError) {
+						// the normals are compared only when both depth-maps carry them
+						const bool bNormalsB(bNormals && !depthDataB.normalMap.empty());
+						const PointCloud::Normal normalB(bNormalsB ? PointCloud::Normal(Cast<Normal::Type>(imageDataB.camera.R.t() * Cast<REAL>(depthDataB.normalMap(xB)))) : PointCloud::Normal::ZERO);
+						ASSERT(!bNormalsB || ISEQUAL(norm(normalB), 1.f, 1e-2f), "Norm = ", norm(normalB));
+						if (!bNormalsB || normal.dot(normalB) > normalError) {
 							// add view to the 3D point
 							ASSERT(views.FindFirst(idxImageB) == PointCloud::ViewArr::NO_INDEX);
 							const float confB(depthDataB.confMap.empty() ? 1.f : depthDataB.confMap(xB));

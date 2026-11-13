@@ -110,6 +110,10 @@ bool InterfaceV8Test();
 // every size of an equirectangular image (load scale, resolution level, neighbor scale, pyramid) keeps
 // an even width, W = 2H, and the angular K of its camera
 bool SphericalImageSizeTest();
+
+// DepthMapsData::GapInterpolation fills a gap between two normals with unit normals within the angle between
+// them, for pinhole and spherical views, also across the seam of a spherical row
+bool GapInterpolationNormalsTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

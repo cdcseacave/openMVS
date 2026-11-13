@@ -207,6 +207,10 @@ bool SyntheticSphericalFusionTest();
 // and the observations of GT points land on their K' projections
 bool BrownUndistortOnLoadTest();
 
+// Scene::EstimateNeighborViewsPointCloud on two rigs (a panorama and its 6 cube faces at one center each) with
+// an empty point cloud: no assertion fires, every point is finite and is seen by the views of two rigs
+bool NeighborViewsPointCloudRigTest();
+
 // Tests.exe tool modes producing the validation numbers of the design docs (argv[0] is the mode;
 // without a known mode it prints their usage): the synthetic dataset, the synthetic PatchMatch and
 // fusion runs, the ScorePixel cost, depth-map and cloud evaluation against GT, the cube-face

@@ -248,11 +248,6 @@ void DepthData::GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>*
 		plane.Negate();
 	N = camera.R.t()*Point3(plane.m_vN);
 }
-void DepthData::GetNormal(const Point2f& pt, Point3f& N, const TImage<Point3f>* pPointMap) const
-{
-	const ImageRef ir(ROUND2INT(pt));
-	GetNormal(ir, N, pPointMap);
-} // GetNormal
 /*----------------------------------------------------------------*/
 
 

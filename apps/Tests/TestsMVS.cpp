@@ -2439,6 +2439,52 @@ bool SphericalImageSizeTest()
 }
 /*----------------------------------------------------------------*/
 
+// GapInterpolation fills a gap between two normals with unit normals lying within the angle between
+// them, for a pinhole view and for a spherical one, also across the column seam of its rows
+bool GapInterpolationNormalsTest()
+{
+	OPTDENSE::init();
+	OPTDENSE::update();
+	constexpr int width(64), height(32), row(10);
+	const Normal normalFirst(normalized(Normal(-0.6f, +0.05f, -0.8f)));
+	const Normal normalLast(normalized(Normal(-0.6f, -0.05f, -0.8f)));
+	const float cosBetween(normalFirst.dot(normalLast));
+	// the valid pixels uFirst and uLast of the row, with the gap between them (across the seam if uLast < uFirst)
+	const auto Run = [&](CameraModelType model, int uFirst, int uLast) {
+		Scene scene;
+		Image& image = scene.images.emplace_back();
+		image.model = model;
+		DepthMapsData depthMaps(scene);
+		DepthData depthData;
+		depthData.images.emplace_back().pImageData = &image;
+		depthData.depthMap.create(height, width);
+		depthData.depthMap.memset(0);
+		depthData.normalMap.create(height, width);
+		depthData.normalMap.memset(0);
+		depthData.depthMap(row, uFirst) = depthData.depthMap(row, uLast) = 5;
+		depthData.normalMap(row, uFirst) = normalFirst;
+		depthData.normalMap(row, uLast) = normalLast;
+		if (!depthMaps.GapInterpolation(depthData))
+			return false;
+		for (int u=(uFirst+1)%width; u!=uLast; u=(u+1)%width) {
+			const Normal& normal = depthData.normalMap(row, u);
+			if (depthData.depthMap(row, u) <= 0 || !ISEQUAL(norm(normal), 1.f, 1e-4f) ||
+				normal.dot(normalFirst) < cosBetween-1e-4f || normal.dot(normalLast) < cosBetween-1e-4f) {
+				VERBOSE("ERROR: GapInterpolationNormalsTest: pixel %d of the %s view got depth %g, normal (%g, %g, %g)",
+					u, model == CameraModelType::SPHERICAL ? "spherical" : "pinhole", depthData.depthMap(row, u), normal.x, normal.y, normal.z);
+				return false;
+			}
+		}
+		return true;
+	};
+	if (!Run(CameraModelType::PINHOLE, 20, 24) || !Run(CameraModelType::SPHERICAL, 20, 24) ||
+		!Run(CameraModelType::SPHERICAL, width-2, 2))
+		return false;
+	VERBOSE("GapInterpolationNormalsTest passed");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // Exercise ROI integration with the first point outside the ROI; this used to leave
 // default entries in the spatial-sort index and could reconstruct the wrong points.
 static bool ROIMeshReconstructionTest(Scene& scene)

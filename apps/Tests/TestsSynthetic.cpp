@@ -1537,6 +1537,40 @@ bool MVS::SyntheticSphericalFusionTest()
 /*----------------------------------------------------------------*/
 
 
+bool MVS::NeighborViewsPointCloudRigTest()
+{
+	TD_TIMER_START();
+	SynthViewArr views;
+	SynthGenerate(SynthMiddleConfig(256, 2, true), views);
+	IIndexArr viewIDs;
+	FOREACH(i, views)
+		viewIDs.push_back(i);
+	const ScopedTempDir tmpDir(_T("NeighborViewsPointCloudRig"));
+	if (!tmpDir.IsValid())
+		return false;
+	const ScopedWorkingFolder workingFolder(tmpDir.Path() + "/");
+	Scene scene;
+	if (!SynthBuildScene(views, viewIDs, tmpDir.Path() + "/", scene))
+		return false;
+	scene.pointcloud.Release();
+	if (!scene.EstimateNeighborViewsPointCloud() || scene.pointcloud.IsEmpty()) {
+		VERBOSE("ERROR: NeighborViewsPointCloudRigTest: no points between the rigs!");
+		return false;
+	}
+	FOREACH(p, scene.pointcloud.points) {
+		const PointCloud::Point& X = scene.pointcloud.points[p];
+		const PointCloud::ViewArr& pointViews = scene.pointcloud.pointViews[p];
+		if (!ISFINITE(X.x) || !ISFINITE(X.y) || !ISFINITE(X.z) || pointViews.size() != 2 ||
+			scene.images[pointViews[0]].platformID == scene.images[pointViews[1]].platformID) {
+			VERBOSE("ERROR: NeighborViewsPointCloudRigTest: point %u (%g, %g, %g) is not seen by views of two rigs!", p, X.x, X.y, X.z);
+			return false;
+		}
+	}
+	VERBOSE("NeighborViewsPointCloudRigTest passed: %u points (%s)", scene.pointcloud.points.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 bool MVS::BrownUndistortOnLoadTest()
 {
 	TD_TIMER_START();

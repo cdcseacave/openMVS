@@ -350,7 +350,6 @@ struct MVS_API DepthData {
 	const Camera& GetCamera() const { return GetView().camera; }
 
 	void GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
-	void GetNormal(const Point2f& x, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
 
 	void ApplyIgnoreMask(const BitMatrix&);
 
