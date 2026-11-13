@@ -2512,6 +2512,33 @@ bool WrapPixelTest()
 }
 /*----------------------------------------------------------------*/
 
+// the field of view of a full equirectangular image is 2pi x pi, a pinhole image keeps the planar angle
+bool ComputeFOVTest()
+{
+	constexpr int width(64), height(32);
+	Image image;
+	image.width = width;
+	image.height = height;
+	image.camera.K = KMatrix::IDENTITY;
+	image.model = CameraModelType::SPHERICAL;
+	image.camera.K(0,0) = width/(2*PI);
+	image.camera.K(1,1) = height/PI;
+	if (!ISEQUAL(image.ComputeFOV(0), 2*PI, 1e-9) || !ISEQUAL(image.ComputeFOV(1), PI, 1e-9)) {
+		VERBOSE("ERROR: ComputeFOVTest: the spherical image spans %g x %g, expected %g x %g!",
+			image.ComputeFOV(0), image.ComputeFOV(1), 2*PI, PI);
+		return false;
+	}
+	image.model = CameraModelType::PINHOLE;
+	image.camera.K(0,0) = image.camera.K(1,1) = width;
+	if (!ISEQUAL(image.ComputeFOV(0), 2*atan(0.5), 1e-9) || !ISEQUAL(image.ComputeFOV(1), 2*atan(0.25), 1e-9)) {
+		VERBOSE("ERROR: ComputeFOVTest: the pinhole image spans %g x %g!", image.ComputeFOV(0), image.ComputeFOV(1));
+		return false;
+	}
+	VERBOSE("ComputeFOVTest passed");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // the standalone confidence estimators read their window across the column seam of a spherical
 // depth-map: of constant range with radial camera-facing normals it is the same in every column
 bool ConfidenceSeamTest()

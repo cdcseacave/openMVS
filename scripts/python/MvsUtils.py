@@ -10,6 +10,7 @@ Example usage:
   from MvsUtils import loadDMAP, saveDMAP, loadMVSInterface
 '''
 
+import math
 import numpy as np
 
 
@@ -46,24 +47,30 @@ def scale_K(K, sx, sy):
   ], dtype=np.float64)
 
 
-def sample_depth_map(depth_map, x):
+def sample_depth_map(depth_map, x, wrap_columns=False):
   """
   Sample the depth map at the given coordinates using bilinear interpolation.
   Args:
     depth_map (numpy.ndarray): The depth map.
     x (numpy.ndarray): The real number coordinates to sample from.
+    wrap_columns (bool): The columns wrap around (equirectangular depth map), only the rows are bounded.
   Returns:
     float: The sampled depth value;
       0.0 if the coordinates are out of bounds or if the sampled depth is zero.
   """
-  x0 = int(x[0])
-  y0 = int(x[1])
-  x1 = x0 + 1
-  y1 = y0 + 1
-  if x0 < 0 or y0 < 0 or x1 >= depth_map.shape[1] or y1 >= depth_map.shape[0]:
-    return 0.0
+  x0 = math.floor(x[0])
+  y0 = math.floor(x[1])
   dx = x[0] - x0
   dy = x[1] - y0
+  x1 = x0 + 1
+  y1 = y0 + 1
+  if wrap_columns:
+    x0 %= depth_map.shape[1]
+    x1 %= depth_map.shape[1]
+  elif x0 < 0 or x1 >= depth_map.shape[1]:
+    return 0.0
+  if y0 < 0 or y1 >= depth_map.shape[0]:
+    return 0.0
   depth = (
     (depth_map[y0, x0] * (1.0 - dx) + depth_map[y0, x1] * dx) * (1.0 - dy) +
     (depth_map[y1, x0] * (1.0 - dx) + depth_map[y1, x1] * dx) * dy

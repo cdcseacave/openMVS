@@ -120,6 +120,7 @@ bool WrapPixelTest();
 
 // EstimateConfidenceFromDepth/Normal read across the column seam of a spherical depth-map
 bool ConfidenceSeamTest();
+bool ComputeFOVTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

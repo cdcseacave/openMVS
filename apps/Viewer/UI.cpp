@@ -2222,10 +2222,7 @@ void UI::ShowCameraInfoDialog(Window& window) {
 
 			// Show full intrinsic matrix
 			if (ImGui::CollapsingHeader("Camera Additional Information")) {
-				if (imageData.IsSpherical())
-					ImGui::Text("  Equirectangular: 360 x 180 degrees");
-				else
-					ImGui::Text("  FOV: x=%.2f, y=%.2f", R2D(imageData.ComputeFOV(0)), R2D(imageData.ComputeFOV(1)));
+				ImGui::Text("  FOV: x=%.2f, y=%.2f", R2D(imageData.ComputeFOV(0)), R2D(imageData.ComputeFOV(1)));
 				ImGui::Text("  Intrinsic Matrix K:");
 				ImGui::Text("    [%.2f  %.2f  %.2f]", camera.K(0, 0), camera.K(0, 1), camera.K(0, 2));
 				ImGui::Text("    [%.2f  %.2f  %.2f]", camera.K(1, 0), camera.K(1, 1), camera.K(1, 2));

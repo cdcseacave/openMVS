@@ -282,6 +282,11 @@ void Image::UpdateCamera(const PlatformArr& platforms)
 // computes camera's field of view for the given direction
 REAL Image::ComputeFOV(int dir) const
 {
+	if (IsSpherical()) {
+		// the angle the image spans: its size over the angular K (2pi x pi for a full panorama)
+		ASSERT(dir == 0 || dir == 1);
+		return dir == 0 ? REAL(width)/camera.K(0,0) : REAL(height)/camera.K(1,1);
+	}
 	switch (dir) {
 	case 0: // width
 		return 2*ATAN(REAL(width)/(camera.K(0,0)*2));

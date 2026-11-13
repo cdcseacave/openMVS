@@ -3726,7 +3726,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				DepthData& depthData(data.depthMaps.arrDepthData[idx]);
 				data.sgm.MatchMultiView(*this, idx, OPTDENSE::nNumViews, depthData);
 				if (OPTDENSE::nEstimateNormals == 2)
-					EstimateNormalMap(depthData.images.front().camera.K, depthData.depthMap, depthData.normalMap);
+					EstimateNormalMap(depthData.GetView().GetModelCamera(), depthData.depthMap, depthData.normalMap);
 				depthData.dMin = ZEROTOLERANCE<float>(); depthData.dMax = FLT_MAX;
 			} else {
 				// export the disparity-maps of the pairs this image forms with its neighbors using the SGM algorithm,
@@ -4063,7 +4063,7 @@ void Scene::PointCloudFilter(int thRemove)
 		// the cone of each point is the ray from the camera center to it (Collector::Init), its aperture
 		// the angle a pixel spans (on the equator of a panorama)
 		const Ray3f ray(Cast<float>(image.camera.C), Cast<float>(image.camera.Direction()));
-		const float angle(float(image.IsSpherical() ? 1/image.camera.K(0,0) : image.ComputeFOV(0)/image.width));
+		const float angle(float(image.ComputeFOV(0)/image.width));
 		collectors.emplace_back(ray, angle, pointcloud, visibility);
 	}
 

@@ -126,7 +126,7 @@ def scale_depth_map(scene, image_idx, depth_map, verbose=False):
           break
         px, py, depth_sfm = projectCamera(K, Xcam, spherical)
         x = np.array([px, py])
-        depth_dmap = sample_depth_map(depth_map, x)
+        depth_dmap = sample_depth_map(depth_map, x, wrap_columns=spherical)
         if depth_dmap <= 0:
           break
         depths_sfm.append(depth_sfm)

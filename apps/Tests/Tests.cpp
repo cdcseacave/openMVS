@@ -337,6 +337,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!MVS::ConfidenceSeamTest())
 				return false;
+			if (!MVS::ComputeFOVTest())
+				return false;
 			if (!MVS::NeighborViewsPointCloudRigTest())
 				return false;
 			if (!MVS::EstimatePointCloudNormalsSphericalTest())

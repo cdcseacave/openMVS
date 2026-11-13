@@ -2413,7 +2413,7 @@ bool MVS::ExportNormalMap(const String& fileName, const NormalMap& normalMap)
 				Image8U3::Type(
 					CLAMP(ROUND2INT((1.f-n.x)*127.5f), 0, 255),
 					CLAMP(ROUND2INT((1.f-n.y)*127.5f), 0, 255),
-					CLAMP(ROUND2INT(    -n.z *255.0f), 0, 255)
+					CLAMP(ROUND2INT((1.f-n.z)*127.5f), 0, 255)
 				);
 		} (normalMap[i]);
 	}
