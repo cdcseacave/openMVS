@@ -18,6 +18,21 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+// The parallax, in pixels of the pair's cameras, under which a pair's baseline direction is noise: the median ray
+// angle of its matches is within the measurement noise of the matches, so the direction the pair gives is random and
+// an arm placed from it lands anywhere. 16 pixels are the 2 degrees of a spherical image of 2880 pixels, where the
+// arms under it are wrong one time in four (21 of 85 on the block starts of two captures), against 0.75 degrees on a
+// perspective image of 1229 pixels of focal, where the arms under 2 degrees are wrong one time in 70
+constexpr float kMinArmParallaxPixels = 16.f;
+
+// Does the pair fix no baseline direction of its own, so that its arm would be placed at a random direction?
+static bool FixesNoBaselineDirection(const ImagePair& pair, const Scene& scene)
+{
+	ASSERT(pair.meanRayAngle >= 0.f); // measured by ComputePairsWeights
+	const REAL pixelAngle = REAL(0.5) * (scene.images[pair.ID1].pCamera->PixelErrorToAngular(1) + scene.images[pair.ID2].pCamera->PixelErrorToAngular(1));
+	return pair.meanRayAngle > 0.f && pair.meanRayAngle < kMinArmParallaxPixels * pixelAngle;
+}
+
 // The star evidence of the pairs that join the reference view to another view: the pair's weighted
 // inliers times the share of its inliers that triangulate at its own relative pose with a ray angle
 // of at least minAngle degrees, the inliers that measure a distance (a pair of far points fixes no
@@ -346,6 +361,7 @@ bool StarInitializer::Initialize(
 		unsigned numEvidence; // the inliers of the pair that fix a distance (see ComputeStarEvidence)
 		Pose3D relPose; // relative pose to reference
 		bool nearDuplicate; // the pair is a near-duplicate (PairsWeightingConfig::IsNearDuplicate): never the floor's yardstick
+		bool noDirection; // the pair fixes no baseline direction (FixesNoBaselineDirection): no arm, once the floor and the cap have chosen
 	};
 	CLISTDEF0IDX(ConnectedView, IIndex) candidates;
 	const UnsignedArr pairEvidence(ComputeStarEvidence(scene, refID, config.evidenceMinAngle));
@@ -365,7 +381,7 @@ bool StarInitializer::Initialize(
 		// Absolute: target pose relative to source (which is identity)
 		// If source is ID2, we need inverse transform
 		Pose3D pose(sourceID == pair.ID1 ? pair.relativePose.value() : pair.relativePose->Inverse());
-		candidates.push_back({targetID, pairEvidence[idxPair], pose, config.pairsWeighting.IsNearDuplicate(pair)});
+		candidates.push_back({targetID, pairEvidence[idxPair], pose, config.pairsWeighting.IsNearDuplicate(pair), FixesNoBaselineDirection(pair, scene)});
 	}
 	if (candidates.size() < config.minViews-1) {
 		VERBOSE("error: insufficient initial views (%u < %u)",
@@ -403,6 +419,17 @@ bool StarInitializer::Initialize(
 	// Keep only up to maxViews
 	if (candidates.size() > config.maxViews)
 		candidates.resize(config.maxViews);
+	// The arms of the pairs that fix no baseline direction are not placed: the floor and the cap chose the arms as they
+	// would without this, and a removed arm leaves a gap, never a weaker arm in its place; the view is left to the resection
+	IIndex numArms = 0;
+	FOREACH(i, candidates)
+		if (!candidates[i].noDirection)
+			candidates[numArms++] = candidates[i];
+	candidates.resize(numArms);
+	if (candidates.empty()) {
+		VERBOSE("error: no neighbour of the reference view fixes a baseline direction");
+		return false;
+	}
 	// Set absolute poses for connected views
 	IIndexArr connectedViews(0, candidates.size());
 	for (const ConnectedView& cv : candidates) {

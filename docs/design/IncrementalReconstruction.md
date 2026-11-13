@@ -64,6 +64,31 @@ with many inliers and a dozen that fix a distance), the evidence floor is 57 and
 evidence admits more low-evidence views: Outdoor_004 block 3's star took one wrong camera there (0 wrong
 after the reconstruction).
 
+A pair whose baseline direction is noise places no arm. Its median ray angle is under
+`kMinArmParallaxPixels` (16) pixels of its two cameras (`FixesNoBaselineDirection`, StarInitializer.cpp;
+one pixel is the mean of the two cameras' `PixelErrorToAngular(1)`, so the bar is 2 degrees on a spherical
+image of 2880 pixels and 0.75 degrees on a perspective image of 1229 pixels of focal), and the direction
+it gives is then random: the view is left to the resection. The floor and the cap choose the arms exactly
+as they would without the rule, and the rule only removes from the chosen ones: a removed arm leaves a
+gap and no weaker arm takes its place. The start fails only when no arm is left. On the 988 arms of the
+block starts of nine captures, the arms under 16 pixels are 85 on the spherical captures of which 21 are
+wrong (a direction more than 15 or a rotation more than 5 degrees off the reference), and 2 on the
+perspective captures of which 1 is; one bar in pixels removes the same 22 wrong arms as 2 degrees does and
+65 right arms where 2 degrees removes 133, and only one right arm of the perspective captures.
+
+| capture (reload of the same matched scene) | wrong block starts | arms removed (right / wrong) | right / wrong images | pose score |
+|---|---|---|---|---|
+| Outdoor_004 | 0 -> 0 | 21 / 0 | 767 / 7 -> 767 / 0 | 0.7307 -> 0.7330 |
+| Outdoor_004, band scene | 3 -> 1 | 35 / 4 | 777 / 0 -> 777 / 0 | 0.7482 -> 0.7497 |
+| Indoor_044, band scene | 0 -> 0 | 25 / 0 | 1087 / 0 -> 1087 / 0 | 0.7122 -> 0.7107 |
+| Palace | 0 -> 0 | 1 / 0 | 495 / 1 -> 494 / 1 | 0.8232 -> 0.8223 |
+| CAB_0120 | 2 -> 2 | 0 / 0 | 23 / 41 -> 23 / 41 | 0.2049 -> 0.2049 |
+
+Rejected: the bar in degrees (2 degrees removes the strong right arms of perspective captures, 13
+right arms on CAB_0120 and 18 on Playground, and on CAB_0120 the evidence floor then falls and a weaker,
+wrong arm takes their place: a third wrong start and a pose score of 0.2049 -> 0.1846); the rule before the
+evidence floor and the cap (the same weaker arm takes the place of a removed one).
+
 A view that shares only far points with the reference (a skyline, a building across the street) has
 inliers by the hundreds and a unit baseline that guesses its distance at the scale of the near views, and
 the star it enters fixes a distance no match backs: it is left to the resection, which registers it from

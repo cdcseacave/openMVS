@@ -11626,8 +11626,68 @@ bool StarEvidenceTest()
 				return false;
 			}
 	}
+	// the arms of pairs under the star's parallax bar (16 pixels of their cameras) are not placed: their baseline direction is noise, so
+	// near views 1 and 2 (pairs of 1 degree) stay out of the star and views 3 to 5 (10 degrees) are in it
+	{
+		Scene noisy;
+		buildScene(noisy, sides, {nearPoints, farPoints});
+		for (Image& img : noisy.images)
+			img.InvalidatePose();
+		for (ImagePair& pair : noisy.pairs)
+			pair.meanRayAngle = D2R(pair.ID2 <= 2 ? 1.f : 10.f);
+		LogCapture log;
+		if (!StarInitializer::Initialize(noisy, keyframeCfg)) {
+			VERBOSE("StarEvidenceTest FAILED: the star beside two pairs of 1 degree of ray angle was refused:\n%s", log.text.c_str());
+			return false;
+		}
+		for (IIndex v = 1; v <= numNear; ++v)
+			if (noisy.images[v].HasPose() != (v > 2)) {
+				VERBOSE("StarEvidenceTest FAILED: near view %u %s the star beside two pairs of 1 degree of ray angle", v, v > 2 ? "is not in" : "is in");
+				return false;
+			}
+	}
+	// the arms the floor and the cap chose are the arms the star would have without the rule: with the cap at 3 the star holds
+	// three of the near views; one of them has a pair of 1 degree, and it leaves a gap, no fourth view takes its place
+	{
+		StarInitConfig cappedCfg(keyframeCfg);
+		cappedCfg.maxViews = 3;
+		Scene chosen;
+		buildScene(chosen, sides, {nearPoints, farPoints});
+		for (Image& img : chosen.images)
+			img.InvalidatePose();
+		for (ImagePair& pair : chosen.pairs)
+			pair.meanRayAngle = D2R(10.f);
+		if (!StarInitializer::Initialize(chosen, cappedCfg)) {
+			VERBOSE("StarEvidenceTest FAILED: the star of the cap of 3 was refused");
+			return false;
+		}
+		std::vector<IIndex> arms;
+		for (IIndex v = 1; v < chosen.images.size(); ++v)
+			if (chosen.images[v].HasPose())
+				arms.push_back(v);
+		if (arms.size() != 3) {
+			VERBOSE("StarEvidenceTest FAILED: the star of the cap of 3 has %zu arms", arms.size());
+			return false;
+		}
+		Scene gap;
+		buildScene(gap, sides, {nearPoints, farPoints});
+		for (Image& img : gap.images)
+			img.InvalidatePose();
+		for (ImagePair& pair : gap.pairs)
+			pair.meanRayAngle = D2R(pair.ID2 == arms[0] ? 1.f : 10.f);
+		if (!StarInitializer::Initialize(gap, cappedCfg)) {
+			VERBOSE("StarEvidenceTest FAILED: the star of the cap of 3 with a pair of 1 degree was refused");
+			return false;
+		}
+		for (IIndex v = 1; v < gap.images.size(); ++v)
+			if (gap.images[v].HasPose() != (v == arms[1] || v == arms[2])) {
+				VERBOSE("StarEvidenceTest FAILED: view %u %s the star of the cap of 3 with a pair of 1 degree (arms without it: %u, %u, %u)", v,
+					gap.images[v].HasPose() ? "is in" : "is not in", arms[0], arms[1], arms[2]);
+				return false;
+			}
+	}
 	VERBOSE("StarEvidenceTest PASSED: %u far views left out of the star by evidence, near distances within %.3f%%, no star without evidence, "
-		"the keyframe configuration initializes, the star goes on with the neighbours the floor keeps, the star beside a burst of %u near-duplicate frames starts with the wider views (%s)",
+		"the keyframe configuration initializes, the star goes on with the neighbours the floor keeps, the star beside a burst of %u near-duplicate frames starts with the wider views, no arm is placed from a pair under the parallax bar (%s)",
 		numFar, (maxRatio / minRatio - 1) * 100, numBurst, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -11741,6 +11801,10 @@ bool NearDuplicateYardstickTest()
 		r.overlap12 = scene.FindPair(1, 2)->overlapArea;
 		for (Image& img : scene.images)
 			img.InvalidatePose();
+		// the median ray angle of a wide pair falls under the star's parallax bar (its matches are mostly the far points), where the star
+		// places no arm; the wide pairs read what their near points give, so the star below is the yardstick's alone
+		for (IIndex j = numBurst + 1; j < scene.images.size(); ++j)
+			scene.FindPair(0, j)->meanRayAngle = D2R(10.f);
 		StarInitConfig cfg;
 		cfg.refineFocalLength = false;
 		cfg.pairsWeighting = weighting;
