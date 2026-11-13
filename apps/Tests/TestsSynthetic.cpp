@@ -1700,7 +1700,7 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 		image.UpdateCamera(scene.platforms);
 	}
 	// the target view of each point, chosen as EstimatePointCloudNormals does: every column of a panorama
-	// takes a patch, the rows keep the patch radius from the poles; a point that one of its views sees within
+	// takes a patch, the rows keep the bilinear patch (patchRadius+1) from the poles; a point that one of its views sees within
 	// patchRadius+1 rows of a pole is left out: its patch in that view crosses the pole, whose rows are not
 	// wrapped, so the residual of that view is constant and lmmin stops before its first step (the camera
 	// path runs through the seam: a point below one panorama is seen on the seam of the next one)
@@ -1718,7 +1718,7 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 			const auto [projection, depth] = image.GetModelCamera().ProjectPointP(X);
 			if (projection.y < patchRadius+1 || projection.y > image.height - (patchRadius+2))
 				bPole = true;
-			if (depth <= 0 || projection.y < patchRadius || projection.y > image.height - (patchRadius+1))
+			if (depth <= 0 || projection.y < patchRadius+1 || projection.y > image.height - (patchRadius+2))
 				continue;
 			const float angle = ACOS(ComputeAngleN(coarse[p].ptr(), viewDir.ptr()));
 			const float score = EXP(SQUARE(angle) * sigmaAngleInv) / image.camera.GetFootprintImage(depth);

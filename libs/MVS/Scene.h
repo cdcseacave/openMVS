@@ -83,6 +83,8 @@ public:
 	// texturing, the neighbor views from a mesh) refuse a scene with spherical images: false, with an
 	// error naming the stage and the cube-map export, if the scene has any
 	bool CheckPinholeOnly(LPCTSTR stage) const;
+	// how a scene with spherical images reaches those stages, for their error and the Viewer notice
+	static constexpr LPCTSTR PINHOLE_ONLY_HINT = _T("convert the panoramas to cube-map faces (an OpenMVS SfM scene is exported so with CreateStructure --spherical-export cubemap) to run the mesh pipeline");
 	bool IsBounded() const { return obb.IsValid(); }
 	bool HasTransform() const { return transform != Matrix4x4::IDENTITY; }
 

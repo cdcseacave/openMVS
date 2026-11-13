@@ -3281,8 +3281,8 @@ static bool ShowPinholeOnlyNotice(const Scene& scene) {
 	if (layer == nullptr || !layer->hasSphericalImages)
 		return false;
 	ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.3f, 1.f));
-	ImGui::TextWrapped("The scene has spherical images: ReconstructMesh, RefineMesh and TextureMesh support pinhole cameras only. "
-		"Export the scene from the SfM with --spherical-export cubemap to run the mesh pipeline.");
+	ImGui::TextWrapped("The scene has spherical images: ReconstructMesh, RefineMesh and TextureMesh support pinhole cameras only; %s.",
+		MVS::Scene::PINHOLE_ONLY_HINT);
 	ImGui::PopStyleColor();
 	return true;
 }

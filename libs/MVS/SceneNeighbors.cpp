@@ -248,8 +248,9 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 		FOREACH(j, images) {
 			const Image& imageData2 = images[j];
 			// no pair with an invalid view, nor with one at the same center (the cameras of a rig, the faces
-			// of a cubemap): there is no baseline to intersect the views over
-			if (i == j || !imageData2.IsValid() || imageData.camera.C == imageData2.camera.C)
+			// of a cubemap, up to the precision their poses were stored with): there is no baseline to
+			// intersect the views over
+			if (i == j || !imageData2.IsValid() || ISZERO(norm(imageData.camera.C - imageData2.camera.C)))
 				continue;
 			if (imageData.IsSpherical() || imageData2.IsSpherical()) {
 				ProjectSphereGridToImage(i, j);

@@ -126,8 +126,7 @@ bool Scene::CheckPinholeOnly(LPCTSTR stage) const
 {
 	if (!HasSphericalImages())
 		return true;
-	VERBOSE("error: the scene has spherical images, %s supports pinhole cameras only; "
-		"export the scene from the SfM with --spherical-export cubemap to run the mesh pipeline", stage);
+	VERBOSE("error: the scene has spherical images, %s supports pinhole cameras only; %s", stage, PINHOLE_ONLY_HINT);
 	return false;
 }
 

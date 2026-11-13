@@ -270,7 +270,8 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 			const Point3f viewDir = normalized(camera.C - Cast<REAL>(point));
 			// Project point to image
 			const auto [projection, depth] = imageData.GetModelCamera().ProjectPointP(point);
-			if (depth <= 0 || !imageData.image.isInsideWithBorder<float>(projection, patchRadius))
+			// the bilinear target patch reaches patchRadius+1 pixels past the projection
+			if (depth <= 0 || !imageData.image.isInsideWithBorder<float>(projection, patchRadius+1))
 				continue;
 			// Compute view score: angle compatibility and footprint
 			const float angle = ACOS(ComputeAngleN(normal.ptr(), viewDir.ptr()));
@@ -290,25 +291,22 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 		// Extract target patch - convert to grayscale intensities
 		std::array<float,nTexels> targetPatch;
 		double targetMean(0);
-		int validTexels = 0;
+		int texel = 0;
 		for (int dy = -patchRadius; dy <= patchRadius; ++dy) {
 			for (int dx = -patchRadius; dx <= patchRadius; ++dx) {
 				const Point2f samplePos = bestProjection + Point2f(dx, dy);
-				if (targetImage.image.isInsideWithBorder<float,1>(samplePos)) {
-					const Pixel32F pixelValue = targetImage.image.sample<Sampler,Pixel32F>(sampler, samplePos);
-					const float intensity = pixelValue.r * 0.299f + pixelValue.g * 0.587f + pixelValue.b * 0.114f;
-					targetPatch[validTexels++] = intensity;
-					targetMean += intensity;
-				}
+				ASSERT((targetImage.image.isInsideWithBorder<float,1>(samplePos)));
+				const Pixel32F pixelValue = targetImage.image.sample<Sampler,Pixel32F>(sampler, samplePos);
+				const float intensity = pixelValue.r * 0.299f + pixelValue.g * 0.587f + pixelValue.b * 0.114f;
+				targetPatch[texel++] = intensity;
+				targetMean += intensity;
 			}
 		}
-		if (validTexels < nTexels)
-			continue;
 		targetMean /= nTexels;
 
 		// Compute target patch variance
 		double targetVariance(0);
-		for (int i = 0; i < validTexels; ++i) {
+		for (int i = 0; i < nTexels; ++i) {
 			const double diff = static_cast<double>(targetPatch[i]) - targetMean;
 			targetPatch[i] = diff; // Store normalized values
 			targetVariance += diff * diff;
