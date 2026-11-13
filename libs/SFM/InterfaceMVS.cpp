@@ -192,7 +192,7 @@ bool SFM::ImportMVS(const String& fileName, Scene& scene, bool loadColors)
 				continue;
 			track.observations.emplace_back(vw.imageID, NO_ID);
 		}
-		track.numInliers = (uint8_t)std::min<size_t>(track.observations.size(), (size_t)std::numeric_limits<uint8_t>::max());
+		track.numInliers = (uint8_t)MINF<size_t>(track.observations.size(), (size_t)std::numeric_limits<uint8_t>::max());
 		if (!track.IsValid())
 			continue;
 		scene.tracks.emplace_back(std::move(track));

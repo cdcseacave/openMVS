@@ -76,14 +76,14 @@ bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
 	// residual gauge null space left by the caller (datum removal or GPS-prior anchoring) is
 	// absorbed by this damping, instead of failing outright.
 	double maxDiag = 0.0;
-	for (int i = 0; i < S.rows(); ++i) maxDiag = std::max(maxDiag, std::abs(S.coeff(i, i)));
+	for (int i = 0; i < S.rows(); ++i) maxDiag = MAXF(maxDiag, std::abs(S.coeff(i, i)));
 	// Start near the numerical-zero scale and grow only until the factor is positive-definite, so
 	// the regularization touches just the gauge null space and does not cap (saturate) the
 	// covariance of genuinely weakly-constrained poses at 1/damping. When condFloorRel>0 the
 	// pivots are additionally driven above pivotFloor: this bounds the conditioning so a residual
 	// gauge null space (e.g. the global-scale mode) yields a finite variance instead of an inf.
 	const double pivotFloor = condFloorRel * maxDiag; // 0 when condFloorRel==0
-	double damping = std::max(1e-15 * maxDiag, 1e-300), applied = 0.0;
+	double damping = MAXF(1e-15 * maxDiag, 1e-300), applied = 0.0;
 	Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> ldlt;
 	Eigen::VectorXd D;
 	bool ok = false;
@@ -115,7 +115,7 @@ bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
 	Zout.makeCompressed();
 	Eigen::SparseMatrix<double>& Z = Zout;
 
-	const double dFloor = std::max(damping, pivotFloor);
+	const double dFloor = MAXF(damping, pivotFloor);
 	for (int j = n - 1; j >= 0; --j) {
 		std::vector<int> nz;
 		for (Eigen::SparseMatrix<double>::InnerIterator it(Lstrict, j); it; ++it)
@@ -128,7 +128,7 @@ bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
 			Z.coeffRef(i, j) = zij;
 			Z.coeffRef(j, i) = zij;
 		}
-		double zjj = 1.0 / std::max(D(j), dFloor);
+		double zjj = 1.0 / MAXF(D(j), dFloor);
 		for (int k : nz)
 			zjj -= Lstrict.coeff(k, j) * Z.coeff(k, j);
 		Z.coeffRef(j, j) = zjj;

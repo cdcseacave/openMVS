@@ -777,7 +777,7 @@ static void BuildImageObsCSR(const Scene& scene, ImageObsCSR& csr)
 
 // Deterministic sort-based covisibility: every track with >= minInliersPerTrack inliers
 // contributes one shared point to each unordered pair of its inlier images. Emits the pairs
-// as packed (lo<<32|hi) keys, sorts, run-length-encodes, and keeps edges whose total count is
+// as PairIdx keys (lower image index first), sorts, run-length-encodes, and keeps edges whose total count is
 // >= minCovisibilityCount. Output is sorted by (i,j) ascending, so every downstream consumer
 // (union-find, k-core) sees a fixed order (replaces the former unordered_map iteration order).
 static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
@@ -796,8 +796,7 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 			const uint32_t ia = t.observations[a].imageID;
 			for (uint8_t b = a + 1; b < t.numInliers; ++b) {
 				const uint32_t ib = t.observations[b].imageID;
-				const uint32_t lo = MINF(ia, ib), hi = MAXF(ia, ib);
-				keys.push_back(((uint64_t)lo << 32) | hi);
+				keys.push_back(MakePairIdx(ia, ib).idx);
 			}
 		}
 	}
@@ -809,8 +808,8 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 			++e;
 		const unsigned count = (unsigned)(e - s);
 		if (count >= minCovisibilityCount) {
-			const uint64_t key = keys[s];
-			edges.push_back({ (unsigned)(key >> 32), (unsigned)(key & 0xffffffffu), count });
+			const PairIdx key(keys[s]);
+			edges.push_back({ key.i, key.j, count });
 		}
 		s = e;
 	}

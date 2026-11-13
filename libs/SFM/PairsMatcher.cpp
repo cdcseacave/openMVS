@@ -116,7 +116,7 @@ public:
 		IIndex prevImageID1 = NO_ID, prevImageID2 = NO_ID;
 		const int batchSize = 1000;
 		for (size_t batchStart = 0; batchStart < pairsToMatch.size(); batchStart += batchSize) {
-			const size_t batchEnd = std::min(batchStart + batchSize, pairsToMatch.size());
+			const size_t batchEnd = MINF(batchStart + batchSize, pairsToMatch.size());
 			// Main thread: GPU matching
 			for (size_t _idx = batchStart; _idx < batchEnd; ++_idx) {
 				++progress;
