@@ -389,6 +389,8 @@ bool ExifFocalUntrustedTest();
 // The camera model an import gives every image: read from the metadata by default, forced spherical or
 // pinhole by ImportConfig::cameraType (an equirectangular panorama that carries no projection tag)
 bool CameraTypeImportTest();
+// A spherical import of an image that is not 2:1 logs an error naming the image and leaves it without a camera, like any image whose metadata fails.
+bool SphericalImageSizeImportTest();
 
 // Pose-frame detection: recover both the camera-axes convention and, for EXIF-rotated images,
 // the in-plane rotation of an imported frames.json from the matched pairs
@@ -551,6 +553,9 @@ bool FilterTracksUntriangulatedTrackTest();
 // track with no inliers: IsInlier() is what the adjustments that follow read, and the caller counts the track
 // as failed.
 bool TriangulationFailureTest();
+// TriangulateSkewLLS on spherical cameras determines a point whose bearing lies across the optical axis (dz near 0),
+// which the two rows of [d]x R it once kept did not.
+bool SphericalTriangulationTest();
 
 // The image filter tells the images it removed for contradicting the model (their verified pairs to
 // the kept images disagree with the pose the model gives them, by more inlier weight than agrees)

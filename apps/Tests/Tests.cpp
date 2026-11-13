@@ -292,6 +292,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::CameraTypeImportTest())
 				return false;
+			if (!SFM::SphericalImageSizeImportTest())
+				return false;
 			if (!SFM::TestSimilarityTransform())
 				return false;
 			if (!SFM::KnownPosesImportTest())
@@ -519,6 +521,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::FilterTracksUntriangulatedTrackTest())
 				return false;
 			if (!SFM::TriangulationFailureTest())
+				return false;
+			if (!SFM::SphericalTriangulationTest())
 				return false;
 			if (!SFM::ContradictingImagesTest())
 				return false;

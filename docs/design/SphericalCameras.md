@@ -40,7 +40,8 @@ and `sin(latitude)`, wrapping the seam) instead of the pixel grid; the rest of t
 (`PairWeight.md`).
 
 **Triangulation and tracks.** `TriangulateTracks` calls `TriangulateSkewLLS` for every track whatever the camera type; it
-works on bearings. `TriangulateDLT` mixes a 2D pinhole-normalized coordinate with a 3 x 4 projection matrix, asserts
+works on unit bearings and weighs every direction of a ray the same, a ray 90 degrees off the forward axis included
+(`TrackBuilding.md`). `TriangulateDLT` mixes a 2D pinhole-normalized coordinate with a 3 x 4 projection matrix, asserts
 pinhole cameras, and is called by the tests only, not by any production code. `ComputeTracksMeanReprojectionError` and
 `FilterTracks` use bearings gated by `PixelErrorToAngular`, so back-hemisphere observations are neither misreported nor
 silently discarded (`TrackBuilding.md`).
@@ -144,7 +145,8 @@ error, so the pinhole results are unchanged.
 
 ## 7. Invariants and constraints
 
-- `SphericalCamera` requires `width == 2 * height`.
+- `SphericalCamera` requires `width == 2 * height`. `Image::LoadMetadata` fails for a spherical image of another shape
+  with an error naming it, and the import keeps that image without a camera.
 - Estimation inputs are unit bearings from `UnprojectNormalized` only; `Unproject()` must never feed RANSAC, DLT or angle
   computations.
 - `pair.F` exists only for a pair of pinhole cameras; every consumer checks `pair.F.has_value()` and otherwise uses
@@ -186,5 +188,3 @@ whose F1 difference (0.0018) is below the 0.008 noise of comparing different mat
 - Dense reconstruction works only on the rendered faces, so seams and the fixed face count and size are inherent to the
   current MVS path.
 - Pose-uncertainty estimation is not validated for spherical cameras.
-- `Image::LoadMetadata` warns for a spherical image that is not 2:1 and then constructs the camera, whose constructor
-  asserts.

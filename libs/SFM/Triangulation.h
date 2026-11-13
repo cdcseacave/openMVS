@@ -32,8 +32,8 @@ class SFM_API Scene;
 	* cameras the 2D unproject is front-hemisphere biased (it aliases back-hemisphere
 	* features onto the front), so this formulation cannot represent observations with
 	* |longitude| > pi/2. Use TriangulateSkewLLS() instead — it operates on 3D unit
-	* bearing vectors from Camera::UnprojectNormalized() and is singularity-free for
-	* all camera models.
+	* bearing vectors from Camera::UnprojectNormalized() and has no preferred
+	* direction, so it serves all camera models.
 	*
 	* @param track The track to triangulate.
 	* @param images Scene images with pinhole cameras and poses
@@ -54,7 +54,8 @@ SFM_API unsigned TriangulateDLT(
 
 /**
 	* @brief Robust triangulation using the skew-symmetric formulation ([d]_x * (R * Pw + t) = 0).
-	* It builds an overdetermined system A * Pw = b with 2 independent rows per observation.
+	* It builds an overdetermined system A * Pw = b with the 3 rows of [d]_x * R per observation (rank 2 for
+	* every unit bearing d; two of the rows alone are ill-conditioned for a ray near the axis they leave out).
 	* It ignores invalid observations (views without pose).
 	* @param track The track to triangulate.
 	* @param images Scene images with cameras and poses.

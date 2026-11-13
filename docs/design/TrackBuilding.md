@@ -76,8 +76,12 @@ parallel.
 - `outliersOnly` skips the tracks that are already inliers.
 - `TriangulateSkewLLS` works on the unit bearing `d` of each posed observation
   (`Camera::UnprojectNormalized`, so it is the same for pinhole and spherical cameras) and solves
-  `[d]_x (R P + t) = 0` for the point `P`: two rows per observation, the first two rows of the
-  skew-symmetric product, an overdetermined linear least squares solved by SVD. It then keeps the
+  `[d]_x (R P + t) = 0` for the point `P`: the three rows of `[d]_x R` per observation, an
+  overdetermined linear least squares solved by SVD. The block has rank 2 for every unit `d` and
+  the squared residual is `|d x (R P + t)|^2`, the same weight in every direction of the ray. Two of
+  the three rows would not do: the pair `(0, -dz, dy)`, `(dz, 0, -dx)` becomes parallel as `dz` goes
+  to 0 (a ray 90 degrees off the camera's forward axis, as common for a panorama as any other ray),
+  where the observation would fix the point only along the optical axis. It then keeps the
   observations that project in front of the camera within `reprojThreshold` pixels of their keypoint,
   solves again over those inliers alone, and moves them
   to the front of `observations`.

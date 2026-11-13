@@ -325,9 +325,12 @@ bool Image::LoadMetadata(float defaultFocalRatio, CameraType cameraType)
 	if (cameraType != CameraType::UNDEFINED)
 		isSpherical = (cameraType == CameraType::SPHERICAL);
 	if (isSpherical) {
+		// a wrong input file, not an internal state: the load fails naming the image, which the
+		// import keeps without a camera (the SphericalCamera constructor asserts the 2:1 shape)
 		if (w != 2 * h) {
-			VERBOSE("warning: image '%s' is marked spherical but has %dx%d; equirectangular input requires width == 2 * height",
+			VERBOSE("error: image '%s' is marked spherical but has %dx%d; equirectangular input requires width == 2 * height",
 				Util::getFileName(fileName).c_str(), w, h);
+			return false;
 		}
 		SphericalCamera* cam = new SphericalCamera(cv::Size(w, h));
 		pCamera = cam;

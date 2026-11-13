@@ -146,7 +146,7 @@ unsigned SFM::TriangulateSkewLLS(
 	// Invariant throughout: cams[j] corresponds to track.observations[j].
 	// We maintain this by always performing the same swap on both arrays.
 	struct CameraData {
-		Matrix3x3::EMat DR; // D_cross * R
+		Matrix3x3::EMat DR; // D_cross * R (all three rows: rank 2, isotropic in the ray's angle)
 		Point3::EVec Dt; // -D_cross * t
 	};
 	CLISTDEF0IDX(CameraData, uint32_t) cams(0, track.observations.size());
@@ -160,6 +160,7 @@ unsigned SFM::TriangulateSkewLLS(
 		// Ray direction in camera coordinates (unproject)
 		const cv::KeyPoint& kp = img.keypoints[obs.featureID];
 		const Point3 dir = img.pCamera->UnprojectNormalized(Cast<REAL>(kp.pt));
+		ASSERT(ISEQUAL(norm(dir), REAL(1)));
 		// Build DR and Dt
 		const Matrix3x3 Dcross(
 			0, -dir.z, dir.y,
@@ -174,16 +175,18 @@ unsigned SFM::TriangulateSkewLLS(
 	if (cams.size() < minInliers)
 		return 0;
 
-	// Build the system A * Pw = b (2*N x 3)
-	Eigen::MatrixXd A(2*cams.size(), 3);
-	Eigen::VectorXd bvec(2*cams.size());
+	// Build the system A * Pw = b (3*N x 3): the three rows of [d]x R of each observation. [d]x has
+	// rank 2 for every unit d, but any two of its rows are nearly parallel when the ray lies close
+	// to the axis that row pair leaves out (the first two rows when dz is near 0, a ray 90 degrees
+	// off the forward axis), so keeping two rows weights the constraints unevenly by the ray's
+	// direction. The three rows give each observation the same weight in every direction: the
+	// squared residual is |d x (R Pw + t)|^2.
+	Eigen::MatrixXd A(3*cams.size(), 3);
+	Eigen::VectorXd bvec(3*cams.size());
 	FOREACH(i, cams) {
 		const CameraData& cam = cams[i];
-		// Use the first two independent rows
-		A.row(2*i+0) = cam.DR.row(0);
-		bvec(2*i+0) = cam.Dt(0);
-		A.row(2*i+1) = cam.DR.row(1);
-		bvec(2*i+1) = cam.Dt(1);
+		A.middleRows<3>(3*i) = cam.DR;
+		bvec.segment<3>(3*i) = cam.Dt;
 	}
 	// Solve least-squares with SVD
 	track.position = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(bvec);
@@ -219,14 +222,12 @@ unsigned SFM::TriangulateSkewLLS(
 
 	// Refine using only inliers (now at positions 0..numInliers-1 of both arrays)
 	if (track.numInliers < cams.size()) {
-		Eigen::MatrixXd A2(2*track.numInliers, 3);
-		Eigen::VectorXd b2(2*track.numInliers);
+		Eigen::MatrixXd A2(3*track.numInliers, 3);
+		Eigen::VectorXd b2(3*track.numInliers);
 		for (uint32_t k = 0; k < (uint32_t)track.numInliers; ++k) {
 			const CameraData& cam = cams[k];
-			A2.row(2 * k + 0) = cam.DR.row(0);
-			b2(2 * k + 0) = cam.Dt(0);
-			A2.row(2 * k + 1) = cam.DR.row(1);
-			b2(2 * k + 1) = cam.Dt(1);
+			A2.middleRows<3>(3*k) = cam.DR;
+			b2.segment<3>(3*k) = cam.Dt;
 		}
 		track.position = A2.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b2);
 		ASSERT(ISFINITE(track.position));

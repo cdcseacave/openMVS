@@ -126,12 +126,11 @@ result fails the run and asks for an explicit convention. The winning frame rewr
 
 - Every image has a camera after import, shared with identical ones; an image whose header cannot be read is reported and
   left without one.
-- A `SphericalCamera` has width exactly twice its height.
+- A `SphericalCamera` has width exactly twice its height; a spherical image of another shape fails its metadata load
+  with an error naming it and stays without a camera.
 - A pose from a file is applied at most once and only to an image matched unambiguously.
 - A pose-frame detection that cannot decide never guesses.
 
 ## Open items
 
-- `Image::LoadMetadata` warns for a spherical image whose size is not 2:1 and then constructs the camera, whose constructor
-  asserts the ratio.
 - `--k1` or `--k2` without `--focal-length` marks the camera trusted although its focal still comes from the ladder above.
