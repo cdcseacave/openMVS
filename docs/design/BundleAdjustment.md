@@ -12,7 +12,7 @@ from the scene as it stands; there is one entry point per scope:
   every other view and point is held out of the problem. Intrinsics are never refined.
 
 Both are configured by `BAConfig`. Who calls which, and when, is owned by the callers: the star
-initializer (`StarInitialization.md`), the resection (`Resection.md`: local and full cadence), the
+initializer (`IncrementalReconstruction.md`, "The star initializer"), the resection (`IncrementalReconstruction.md`, "The resection": local and full cadence), the
 merge (`HierarchicalSFM.md`) and the reconstruction's final adjustment (`SfMPipeline.md`).
 
 ## Parameters being refined

@@ -17,7 +17,7 @@ import torch.nn.functional as F
 
 PATCH = 16
 LAYER_IDX = [11, 17]            # features.py:87-89, 0-based blocks; final norm applied; CLS+4 registers dropped
-FACET_BLOCKS = [15, 20]         # EXPORT_REQUEST.md: v_proj of blocks 15 and 20 (0-indexed), in that order
+FACET_BLOCKS = [15, 20]         # v_proj of blocks 15 and 20 (0-indexed), in that order
 FACETS_POWER = 0.3              # the request's sign(d)|d|^0.3; the one symbol both _facets_retrieval (what
                                  # the traced graph bakes in) and pool_retrieval (the CPU reference, and what
                                  # export.py's manifest publishes) read power from, so the two can't drift
@@ -348,7 +348,7 @@ def _facets_retrieval(value_facets, power=FACETS_POWER):
 
 
 def pool_retrieval(tensor, recipe="facets", power=FACETS_POWER):
-    """The Python reference of the FACETS/LAYERS pooling recipes (EXPORT_REQUEST.md's design) --
+    """The Python reference of the FACETS/LAYERS pooling recipes --
     what _facets_retrieval (the on-device graph pooling) and, until task 1b deleted it, the C++
     PoolRetrievalDescriptor were both judged against.
 

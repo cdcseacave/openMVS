@@ -75,7 +75,7 @@ above 0; 0 skips it (`RemoveTranslationContradictions`).
    world frame of the rotation stage.
 2. Solved pairs: the judged pairs that are usable and have a score other than 0.
 3. The scale of every solved pair comes from the pair-scale equations of `ComputePairScales`
-   (`StarInitialization.md`), solved per connected component of the pair-scale graph, robustly
+   (`IncrementalReconstruction.md`, "The star initializer"), solved per connected component of the pair-scale graph, robustly
    (`RobustAverage`, Geman-McClure at a scale bar of 1.05 in the log of the scale, `kRobustRounds`
    10 rounds) around `GlobalScaleEstimator`. Only a component of at least 10 pairs is solved; the
    components are visited largest first.

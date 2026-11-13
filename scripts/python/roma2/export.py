@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export RoMa v2 (https://github.com/Parskatt/RoMaV2) to ONNX for OpenMVS's in-process ROMA2 matcher.
 
-Two static fp32 graphs per preset (spec: megaloc-vs-dinov3-2026-08-28/EXPORT_REQUEST.md; layout: polyml
+Two static fp32 graphs per preset (layout: polyml
 romav2/{graphs,export}.py):
   roma_<setting>_descriptor_fp32.onnx    image[1,3,S,S] (RGB planar, [0,1]) -> layers[1,2,S/16,S/16,1024]
                                          (norm(block 11), norm(block 17)),

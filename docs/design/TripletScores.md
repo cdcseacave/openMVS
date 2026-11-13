@@ -73,7 +73,7 @@ the images of the largest connected component of the unfiltered graph and to com
 least 1% of that component's nodes (every component when the ceiling leaves none). The images of
 the largest piece are the seed views, returned in every mode. `Scene::ReconstructHierarchical`
 hands each sub-scene its share of them and the star initializer chooses its reference view among
-them (`StarInitialization.md`): after a cutting rule the seed's side of a symmetric building is the
+them (`IncrementalReconstruction.md`, "The star initializer"): after a cutting rule the seed's side of a symmetric building is the
 model, and the heaviest image overall sits in the densest cluster of look-alike views.
 
 ## The cutting rule (`--triplet-cut`)

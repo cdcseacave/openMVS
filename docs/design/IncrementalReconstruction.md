@@ -49,12 +49,12 @@ however few. A near-duplicate pair (`ImagePair::IsNearDuplicate`: its 10x10 over
 `maxDuplicateRayAngle`, 1.5 degrees; `StarInitConfig::pairsWeighting`, set by the scene) sets neither the
 floor, nor the reference view, nor the pair the star's scale is fixed on (the reference's strongest pair
 otherwise). Tuned against the reference poses of 33 captures (a pair fixes no distance when the true
-parallax of its shared points is under 1.5 degrees; records-2026-11-05-duplicates/rule-075-15.md): 85% of
+parallax of its shared points is under 1.5 degrees): 85% of
 the pairs the rule flags fix no distance, and the yardstick moves off a pair that fixes no distance for
 2045 images and off one that does for 296. The overlap condition keeps out the frames turned on the spot
 by a large rotation, whose ray angle is small too.
 
-| Floor of a neighbour's evidence (11 captures, 8 threads, reloads, without the near-duplicate rule; records-2026-11-05-duplicates/report-final.md) | final wrong | F1 summed |
+| Floor of a neighbour's evidence (11 captures, 8 threads, reloads, without the near-duplicate rule) | final wrong | F1 summed |
 |---|---|---|
 | 0.2 x mean inlier count of the three heaviest | 22.5 | 9.728 |
 | 0.2 x mean evidence of the three strongest (shipped) | 20.5 | 9.763 |
