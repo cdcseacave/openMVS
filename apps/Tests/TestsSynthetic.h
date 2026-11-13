@@ -187,6 +187,11 @@ bool SyntheticSphericalTest();
 // test's CPU accuracy; skipped without a GPU
 bool SyntheticSphericalGPUTest(bool forceCPU);
 
+// GPU PatchMatch (CUDA, or Metal on Apple) on the cube faces of one panorama rig with the panoramas of two
+// other rigs as their neighbors (pinhole references, spherical neighbors: the MODEL_PINHOLE_REF kernels),
+// held to the CPU accuracy on the same views; skipped without a GPU
+bool SyntheticMixedGPUTest(bool forceCPU);
+
 // the confidence recalibration on the GPU (CUDA, or Metal on Apple) against the CPU sweep on the same
 // inputs; skipped without a GPU
 bool GPUConfidenceTest(bool forceCPU);

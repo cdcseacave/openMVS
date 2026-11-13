@@ -296,8 +296,9 @@ struct DMapFile {
 	DepthMap depthMap;
 	NormalMap normalMap;
 	KMatrix K; RMatrix R; CMatrix C;
+	IIndexArr IDs; // the reference view, then its neighbors
 	bool Load(const String& fileName, bool normals) {
-		String imageFileName; IIndexArr IDs; cv::Size imageSize; Depth dMin, dMax;
+		String imageFileName; cv::Size imageSize; Depth dMin, dMax;
 		ConfidenceMap confMap; ViewsMap viewsMap;
 		return ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, K, R, C, dMin, dMax, depthMap, normalMap, confMap, viewsMap,
 			normals ? HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL : HeaderDepthDataRaw::HAS_DEPTH);
@@ -1254,6 +1255,81 @@ bool MVS::SyntheticSphericalGPUTest(bool forceCPU)
 		return false;
 	}
 	VERBOSE("SyntheticSphericalGPUTest passed on %s (%s)", SYNTH_GPU_BACKEND, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// PatchMatch on the cube faces of the middle of three panorama rigs with the panoramas of the two other rigs:
+// the faces (pinhole references whose every neighbor is spherical: the MODEL_PINHOLE_REF kernels on the GPU)
+// scored into evaluator; the panoramas are references too, not scored; logs the table
+static bool SynthMixedRun(int panoWidth, const SynthDenseOptions& options, DepthEvaluator& evaluator)
+{
+	LPCTSTR const backend(options.gpu ? SYNTH_GPU_BACKEND : _T("CPU"));
+	const SynthConfig config(SynthMiddleConfig(panoWidth, 3, true));
+	const int middlePano(config.firstPano + 1);
+	SynthViewArr views;
+	SynthGenerate(config, views);
+	// the faces of the middle rig, then the panoramas of the two others
+	IIndexArr viewIDs;
+	FOREACH(i, views)
+		if (views[i].face >= 0 && views[i].pano == middlePano)
+			viewIDs.push_back(i);
+	const IIndex numFaces(viewIDs.size());
+	FOREACH(i, views)
+		if (views[i].face < 0 && views[i].pano != middlePano)
+			viewIDs.push_back(i);
+	ASSERT(numFaces == 6 && viewIDs.size() == numFaces + 2);
+	double seconds;
+	if (!SynthDense(views, viewIDs, options, 1, seconds, [&](const Scene& scene) {
+		for (IIndex i = 0; i < numFaces; ++i) {
+			DMapFile dmap;
+			if (!dmap.Load(ComposeDepthFilePath(scene.images[i].ID, "dmap"), true)) {
+				VERBOSE("ERROR: synthetic mixed scene: missing depth-map of face %u!", i);
+				return false;
+			}
+			ASSERT(dmap.IDs.front() == scene.images[i].ID);
+			if (dmap.IDs.size() < 2) {
+				VERBOSE("ERROR: synthetic mixed scene: face %u has no neighbor!", i);
+				return false;
+			}
+			for (IIndex j = 1; j < dmap.IDs.size(); ++j) {
+				if (!scene.images[dmap.IDs[j]].IsSpherical()) {
+					VERBOSE("ERROR: synthetic mixed scene: face %u has the pinhole neighbor %u!", i, dmap.IDs[j]);
+					return false;
+				}
+			}
+			const SynthView& view = views[viewIDs[i]];
+			evaluator.Add(view.depthMap, view.normalMap, dmap.depthMap, dmap.normalMap, view.camera.model);
+		}
+		return true;
+	}))
+		return false;
+	const SynthCamera& camera = views[viewIDs[0]].camera;
+	VERBOSE("synthetic mixed: %s PatchMatch on %u cube faces of %dx%d px, their neighbors the %u panoramas of the other rigs: %.2f s\n%s",
+		backend, numFaces, camera.width, camera.height, viewIDs.size() - numFaces, seconds, evaluator.Print().c_str());
+	return true;
+}
+
+bool MVS::SyntheticMixedGPUTest(bool forceCPU)
+{
+	if (forceCPU || !SynthGPUAvailable()) {
+		VERBOSE("SyntheticMixedGPUTest skipped: no GPU");
+		return true;
+	}
+	TD_TIMER_START();
+	SynthDenseOptions options;
+	options.gpu = true;
+	DepthEvaluator evaluator;
+	if (!SynthMixedRun(384, options, evaluator))
+		return false;
+	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL));
+	const DepthEvaluator::Stats center(evaluator.GetStats(DepthEvaluator::CENTER)), border(evaluator.GetStats(DepthEvaluator::BORDER));
+	// bounds: the CPU accuracy of SynthMixedRun on the same views less a margin
+	if (!(all.completeness > 0.80) || !(all.absRelMedian < 0.003) || !(all.within1 > 0.80) || !(all.within5 > 0.96) ||
+		!(all.normalMedianDeg < 3.5) || !(center.completeness > 0.97) || !(border.completeness > 0.65)) {
+		VERBOSE("ERROR: SyntheticMixedGPUTest: %s depth accuracy below the CPU baseline!", SYNTH_GPU_BACKEND);
+		return false;
+	}
+	VERBOSE("SyntheticMixedGPUTest passed on %s (%s)", SYNTH_GPU_BACKEND, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
