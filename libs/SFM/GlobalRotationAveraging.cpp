@@ -963,6 +963,7 @@ unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotati
 		pair.matches = std::move(sparse);
 		pair.matches.insert(pair.matches.end(), dense.begin(), dense.end());
 		pair.weightedInliers = -1.f; // it describes matches that no longer exist
+		pair.returnedByRepair = true;
 		pair.relativePose = repair.pose;
 		pair.E = ImagePair::ComposeEssentialMatrix(repair.pose);
 		if (image1.pCamera->GetType() == CameraType::PINHOLE && image2.pCamera->GetType() == CameraType::PINHOLE)

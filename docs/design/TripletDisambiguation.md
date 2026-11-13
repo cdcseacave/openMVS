@@ -96,8 +96,14 @@ rest of the graph contradicts, in two stages.
   look-alikes between two spots vouches only for itself). The bars do not depend on the pair's
   parallax angle. A repaired pair carries the new relative pose (E, and F between pinholes), its
   agreeing matches as its sparse and dense segments (the other sparse matches become outliers, the
-  other dense ones are dropped), a ray angle measured again, and counts as kept; the weights are
-  recomputed with everything else. One log line: pairs repaired of those removed and the seconds.
+  other dense ones are dropped), a ray angle measured again, and counts as kept (`ImagePair::returnedByRepair`). The weights
+  are recomputed with everything else, except that a repaired pair forms no triangle
+  (`ComputePairsWeights`): it carries the averaged rotation, so every triangle it closes with kept
+  pairs closes by construction and says nothing, yet counted as a valid triangle for each of those
+  pairs it raised their triangle share; its own triangle share is 0, it is an edge of no other
+  pair's triangles, and it is no image's yardstick of the connectivity term unless it is the
+  image's only pair. Every kept pair therefore weighs what it weighs in the graph without the
+  repaired pairs. One log line: pairs repaired of those removed and the seconds.
 
 Cost: the stage takes 1 to 78 ms per capture at 8 threads over the 33 captures of the validation
 (4 to 28 ms on the six below), at most 0.0025% of a reconstruction's wall, because only a pair that
@@ -117,6 +123,12 @@ to 871 registered in part or not), so its row is not a comparison of the repair.
 | 17ac94cc | 496 | 147 | 11 ms | 553 -> 553 | 521 -> 521 | 8 -> 8 | 0.6415 -> 0.6404 |
 | 6DCA1E8E | 1172 | 42 | 13 ms | 785 -> 725 | 464 -> 467 | 8 -> 5 | 0.7541 -> 0.7678 |
 
+The weights, the capture 4e5c6f6d reloaded with the merge's spread rule (pre-cut scene, 8 threads): 268
+right / 4 wrong with the repair off, 250 / 28 with the repair counting in the triangles of the other
+pairs, 268 / 3 with the rule above. Over 18 captures of the evaluation 679 pairs come back: 647 right,
+20 wrong, 12 unjudged; 12 of the 16 badly wrong ones (rotation over 5 or direction over 30 degrees)
+are vouched for only by pairs that are themselves wrong.
+
 5ada248e registers 534 or 530 images from run to run without the repair too (the same four
 images), and no repaired pair touches them. Truth of the repaired pairs against the reference, over
 the 33 captures (1563 repaired of 15389 removed; right = rotation within 5 and direction within 15
@@ -128,7 +140,9 @@ degrees), by the pair's parallax angle:
 | 8 to 20 | 280 | 262 | 18 |
 | 20 and over | 1236 | 1145 | 91 |
 
-Rejected alternatives, each replayed on the 33 captures' removed pairs: a share bar of 0.5 under 8
+Rejected alternatives, each replayed on the 33 captures' removed pairs (the first measured on the 18
+captures of the weight check): a minimum number of vouching images (3: gives up 38 right pairs for 8
+wrong ones removed, and does not restore 4e5c6f6d: 249 right / 33 wrong); a share bar of 0.5 under 8
 degrees of parallax (+315 right pairs at 92% precision, no change in any registration); the rotation
 refined within a 1 or 2 degree ball before the fit (+76 right at 88%, +104 at 80%); a bar on the
 epipolar residual that carries the parallax (the unnormalised triple product, 0.2 to 0.5 degrees:

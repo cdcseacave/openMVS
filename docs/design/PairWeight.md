@@ -26,10 +26,12 @@ cut, and then frozen (the blocks of a hierarchical run keep the scene's weights)
   has no weight at all. The product in `GetCompositeWeight` is written as
   `cbrt(weightSpatial * overlapArea^2 * connectivity)`, which equals coverage x cbrt(angle x connectivity).
 - `connectivity` (`weightConnectivity`, step 4 of `ComputePairsWeights`): `WI` over the geometric mean
-  of the two images' yardsticks (each image's strongest pair, a near-duplicate pair left out unless the
-  image has nothing else), capped at 1. The pair's evidence against its images' best; nothing else.
+  of the two images' yardsticks (each image's strongest pair, a near-duplicate or repaired pair left out
+  unless the image has nothing else), capped at 1. The pair's evidence against its images' best; nothing else.
 - `triangles` (`weightTriplet`, step 3): valid / (valid + invalid + 5) over the triangles the pair
-  closes, a triangle valid when its rotations compose to within 5 degrees.
+  closes, a triangle valid when its rotations compose to within 5 degrees. A pair the contradiction
+  cut's repair brought back forms no triangle: its share is 0 and it is an edge of no other pair's
+  triangles (its rotation is the averaged one, so its triangles close by construction).
 
 The coverage and the triangle consistency count in full: they are the two terms that rank how well a
 pair is matched against the reference reconstructions. The angle and the connectivity keep their

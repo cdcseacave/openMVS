@@ -177,7 +177,7 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 	for (boost::tie(ei, ei_end) = boost::edges(g); ei != ei_end; ++ei) {
 		unsigned pairIdx = g[*ei];
 		ImagePair& pair = scene.pairs[pairIdx];
-		if (!pair.relativePose.has_value()) {
+		if (!pair.relativePose.has_value() || pair.returnedByRepair) {
 			pair.weightTriplet = 0.f;
 			continue;
 		}
@@ -201,6 +201,8 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 			// Found triangle u-v-k
 			unsigned idx_uk = g[boost::edge(u, k, g).first];
 			unsigned idx_vk = g[edge_vk.first];
+			if (scene.pairs[idx_uk].returnedByRepair || scene.pairs[idx_vk].returnedByRepair)
+				continue; // a repaired pair closes every triangle by construction: it counts in none
 			float cosAngle = GetRotationError(pair, scene.pairs[idx_vk], scene.pairs[idx_uk], u, v, k);
 			if (cosAngle > minCosAngleError) {
 				// Valid triplet: cycle closure error is within threshold
@@ -231,7 +233,7 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 		// this assertion is therefore a statement about that invariant, not a bar a configuration
 		// can trip
 		ASSERT(w > 0, "ComputePairsWeights: non-positive intrinsic weight in connectivity computation");
-		const bool nearDuplicate = config.IsNearDuplicate(pair);
+		const bool nearDuplicate = config.IsNearDuplicate(pair) || pair.returnedByRepair; // a repaired pair, as a near-duplicate one, is no image's yardstick unless it is the image's only pair
 		yardsticks[pair.ID1].Add(w, nearDuplicate);
 		yardsticks[pair.ID2].Add(w, nearDuplicate);
 	}

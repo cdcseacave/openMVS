@@ -101,6 +101,10 @@ public:
 	// Not serialized (the archive layout is read by tools built before them) and not geometry: no Reset clears them
 	std::optional<float> covisibility;
 	std::optional<PosePrior> posePrior;
+	// The contradiction cut's repair brought this pair back (RepairContradictedPairs): it carries the averaged rotation, so
+	// its triangles close by construction and say nothing; ComputePairsWeights lets it form none. Not serialized: the weights
+	// are, and a loaded scene keeps those it was saved with; one reconstructed again weighs its pairs afresh
+	bool returnedByRepair{false};
 
 	// Overlap metrics
 	float overlapRatio;       // ratio of tracked/matched features

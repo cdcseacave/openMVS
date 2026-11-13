@@ -15220,20 +15220,23 @@ bool TranslationCutTest()
 		// back, none counted as removed, each with the rotation of the averaging and the baseline direction its matches
 		// give, which are the exact ones; a flipped pair whose matches are shifted by one feature agrees with nothing and
 		// stays removed
+		const auto plant = [&](Scene& scene) {
+			flip(*findPair(scene, 3, 9));
+			turn(*findPair(scene, 2, 11));
+			ImagePair* pRotated = findPair(scene, 6, 14);
+			pRotated->relativePose->R = RMatrix(Point3(0, D2R(REAL(30)), 0)) * pRotated->relativePose->R;
+			ImagePair* pShifted = findPair(scene, 4, 12);
+			flip(*pShifted);
+			for (size_t i = 0; i + 1 < pShifted->matches.size(); ++i)
+				pShifted->matches[i].trainIdx = pShifted->matches[i + 1].trainIdx;
+		};
 		Scene scene; build(scene);
 		const size_t numPairs = scene.pairs.size();
 		const std::set<std::pair<IIndex,IIndex>> planted{{3, 9}, {2, 11}, {6, 14}};
 		std::map<std::pair<IIndex,IIndex>, Pose3D> exact;
 		for (const auto& [a, b] : planted)
 			exact[{a, b}] = findPair(scene, a, b)->relativePose.value();
-		flip(*findPair(scene, 3, 9));
-		turn(*findPair(scene, 2, 11));
-		ImagePair* pRotated = findPair(scene, 6, 14);
-		pRotated->relativePose->R = RMatrix(Point3(0, D2R(REAL(30)), 0)) * pRotated->relativePose->R;
-		ImagePair* pShifted = findPair(scene, 4, 12);
-		flip(*pShifted);
-		for (size_t i = 0; i + 1 < pShifted->matches.size(); ++i)
-			pShifted->matches[i].trainIdx = pShifted->matches[i + 1].trainIdx;
+		plant(scene);
 		const unsigned removed = run(scene, maxDirectionResidual, true);
 		const auto kept = keptPairs(scene);
 		if (removed != 1 || kept.size() != numPairs - 1 || kept.count({4, 12})) {
@@ -15248,6 +15251,32 @@ bool TranslationCutTest()
 				VERBOSE("ERROR: TranslationCutTest: the repaired pair (%u,%u) is %g degrees off in rotation and %g in direction", ids.first, ids.second, rotationError, directionError);
 				return false;
 			}
+		}
+		// the weights are final before the repair: a repaired pair forms no triangle, so its triangle share is 0 and every
+		// other pair weighs what it weighs in the graph without the repaired pairs
+		Scene without; build(without);
+		plant(without);
+		run(without, maxDirectionResidual);
+		unsigned numReturned = 0;
+		for (const ImagePair& pair : scene.pairs) {
+			if (pair.returnedByRepair) {
+				++numReturned;
+				if (pair.weightTriplet != 0.f) {
+					VERBOSE("ERROR: TranslationCutTest: the repaired pair (%u,%u) has the triangle share %g, expected 0", pair.ID1, pair.ID2, pair.weightTriplet);
+					return false;
+				}
+				continue;
+			}
+			ImagePair* pOther = findPair(without, pair.ID1, pair.ID2);
+			if (pOther == NULL || !ISEQUAL(pair.GetCompositeWeight(), pOther->GetCompositeWeight())) {
+				VERBOSE("ERROR: TranslationCutTest: the pair (%u,%u) weighs %g with the repair and %g without the repaired pairs", pair.ID1, pair.ID2,
+					pair.GetCompositeWeight(), pOther ? pOther->GetCompositeWeight() : -1.f);
+				return false;
+			}
+		}
+		if (numReturned != planted.size()) {
+			VERBOSE("ERROR: TranslationCutTest: %u repaired pairs flagged, expected %zu", numReturned, planted.size());
+			return false;
 		}
 	}
 	{
