@@ -12,9 +12,8 @@ per (pixel, hypothesis, view), so pinhole, Brown and spherical views can be mixe
 
 Scope: depth-maps (CPU with `--gpu-device -2`, CUDA, Metal), the photometric confidence, and the fusion of
 the depth-maps into the dense cloud (CPU). Not supported for a scene with spherical images, with a clear
-error or a warning:
-- SGM (`--fusion-mode` < 0) and the neighbor views selected from a mesh: error;
-- tower mode (`Scene::InitTowerScene`): switched off, with a warning.
+error: SGM (`--fusion-mode` < 0) and the neighbor views selected from a mesh. The tower mode
+(`Scene::InitTowerScene`) sees its points through `ModelCamera` and runs on spherical images as on pinhole ones.
 
 The confidence recalibration runs on spherical references and neighbours as on pinhole ones, fused
 into the last geometric-consistency iteration on CUDA and Metal (`DepthMapConfidence.md`, camera
@@ -198,8 +197,9 @@ Everything downstream of the estimator reaches a view's geometry through `ModelC
 (`libs/MVS/Image.h`, from `Image::GetModelCamera()` or `DepthData::ViewData::GetModelCamera()`): pinhole
 calls are the camera's own (bit-identical), spherical calls go through `Spherical<REAL>`.
 - `TransformPointI2C/I2W(x, depth)`, `ProjectPointP(X)` (pixel and range), `ProjectPointC(Xc)`,
-  `TransformPointW2I`, `RayPoint`; `GetPixel(x, size, ir)` (rounded pixel, column wrapped, false if
-  outside); `ColumnOffset(a, b, width)` (shortest offset around a panorama).
+  `TransformPointW2I`, `RayPoint`; `WrapPixel(ir, size)` (integer pixel, column wrapped, false if
+  outside), the seam primitive for integer pixels; `GetPixel(x, size, ir)` (rounded, then `WrapPixel`);
+  `ColumnOffset(a, b, width)` (shortest offset around a panorama).
 - `WrapColumn(c, width)` (`DepthGeometry.h`, `HOST_DEVICE`) is the one column wrap of the host code; the
   CUDA and Metal kernels keep their own copy.
 - Consumers, each with the model of every view it touches (mixed scenes fuse as such):
@@ -250,6 +250,7 @@ Depth-maps, fraction of GT pixels within 1 / 5 % and abs-rel median:
 | | B | Metal | 0.982 | 0.00041 | 0.986 | 0.995 |
 | synthetic 512x256 | B | CPU | 0.956 | 0.00147 | 0.919 | 0.986 |
 | | B | CUDA / Metal | 0.964 | 0.00138 / 0.00139 | 0.931 | 0.988 |
+| synthetic 384, 6 faces 96x96 against 2 panoramas | B | CPU / Metal | 0.838 / 0.990 | 0.00247 / 0.00225 | 0.839 / 0.880 | 0.976 / 0.977 |
 | Holo360D 1440 | A / B / C | CPU | 0.954 / 0.954 / 0.774 | 0.182 / 0.201 / 0.130 | | 0.352 / 0.346 / 0.375 |
 | | A / B / C | CUDA | 0.680 / 0.681 / 0.644 | 0.0460 / 0.0471 / 0.0945 | | 0.513 / 0.509 / 0.406 |
 | | B | Metal | 0.681 | 0.0471 | | 0.509 |
@@ -347,8 +348,8 @@ per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness
   with a texel buffer summed into locals); a whole single-threaded densify shows no difference, GCC none at all.
 - Pinhole CPU on arm64: +5 % multi-threaded from the release/acquire fences of the per-pixel estimate
   hand-over (a `dmb`, where x86 orders the stores for free).
-- CUDA clamps the rows at the poles where the CPU rejects the view. Mixed pinhole/spherical scenes run the
-  `MODEL_PINHOLE_REF` kernels (CUDA, Metal), untested.
+- CUDA clamps the rows at the poles where the CPU rejects the view. The `MODEL_PINHOLE_REF` kernels (pinhole
+  reference, spherical neighbors) are tested on Metal (`SyntheticMixedGPUTest`), not on CUDA.
 - The shape constants of the confidence recalibration were calibrated on pinhole ground truth; a
   spherical calibration (Holo360D) is untested.
 - The view gate still ranks hypotheses that leave a pixel different views; a soft weight by the
@@ -356,3 +357,6 @@ per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness
 - The corner waits cover up to 64 concurrent estimators; with more threads the corner anti-diagonals between
   64 and the thread count are read from the previous pass.
 - `GapInterpolation` does not cross the poles; the rows next to the poles stay unestimated.
+- `Scene::EstimatePointCloudNormals` (`SceneGeometry.cpp`): the columns of a panorama wrap through a margin,
+  the rows do not. A view whose patch crosses a pole row is not a point's target and scores the largest
+  residual otherwise; a point whose every view has its patch cross a pole row stays unrefined.

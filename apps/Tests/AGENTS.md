@@ -127,12 +127,24 @@ Tests (MVS suite 2), each bound being the measured accuracy less a margin:
 | Test | Checks |
 |------|--------|
 | `BrownUndistortOnLoadTest()` | Brown views read through `MVS::Image` match the pinhole render at `K'`; ignore mask = undistortion mask; observations on their `K'` projections, also after `Scene::ScaleImages` (files stored distorted, lens scaled); the MeshLab raster of a Brown image holds its undistorted pixels and the camera at `K'` |
+| `NeighborViewsPointCloudRigTest()` | `Scene::EstimateNeighborViewsPointCloud` on two rigs (a panorama and its 6 faces at one center each) without sparse points: no assertion, every point finite and seen by the views of two rigs |
+| `EstimatePointCloudNormalsSphericalTest()` | `Scene::EstimatePointCloudNormals` on 3 panoramas at half resolution: the scene images keep their resolution, camera and pixels; every point whose target view projects within 4 columns of the seam is refined (points next to a pole left out), its mean normal error within 1.5x that of the others |
+| `TowerSphericalTest()` | `Scene::InitTowerScene` on 24 panoramas in three rings around the pillar, on their seam: every tower point has a horizontal normal and two panoramas seeing it from the side it faces |
 | `SyntheticDepthBaselineTest()` | GT consistency across the models, then CPU PatchMatch on the 18 128x128 faces of 3 panoramas |
 | `SyntheticSphericalTest()` | CPU PatchMatch on 3 512x256 panoramas, overall and per band (seam held to its antipodal band) |
 | `MetalModelMathTest()` | Apple only: the Metal mirror of `CameraModels.h` / `DepthGeometry.h` against the C++ models |
 | `SyntheticSphericalGPUTest()` | the same panoramas on CUDA or Metal, moved 1e6 m from the origin (as accurate as there: the estimator only relates the views); skipped without a GPU or with `forceCPU` |
+| `SyntheticMixedGPUTest()` | CUDA or Metal on the 6 96x96 faces of the middle of 3 rigs with the 384x192 panoramas of the 2 others as their only neighbors (pinhole reference, spherical neighbors: the `MODEL_PINHOLE_REF` kernels), held to the CPU accuracy on the same views; skipped without a GPU or with `forceCPU` |
 | `GPUConfidenceTest()` | the confidence recalibration on CUDA or Metal against the CPU sweep, on noisy GT depth-maps, for a cube face then a panorama against the faces and panoramas of two others (every pair of camera models); both separate the outliers; skipped without a GPU or with `forceCPU` |
 | `SyntheticSphericalFusionTest()` | CPU PatchMatch + dense fusion of the panoramas, cloud precision/recall per band |
+
+## Spherical seam and model consistency (`TestsMVS.cpp`)
+
+MVS suite, before the synthetic tests: `GapInterpolationNormalsTest()` (`GapInterpolation` fills a gap
+between two normals with unit normals within their angle, pinhole and spherical, also across the seam of a
+spherical row), `WrapPixelTest()` (`ModelCamera::WrapPixel` wraps the columns of a spherical camera only,
+never rows), `ConfidenceSeamTest()` (`EstimateConfidenceFromDepth/Normal` read across the seam of a spherical
+depth-map), `ComputeFOVTest()` (`Image::ComputeFOV`: 2π x π for a full panorama, the pinhole angles otherwise).
 
 ## Camera models (`TestsMVS.cpp`)
 

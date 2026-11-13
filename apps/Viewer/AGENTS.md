@@ -51,7 +51,7 @@ main() [Viewer.cpp]
 Use `Window::RequestRedraw()` to post a GLFW event that wakes the wait-for-events loop.
 
 ### Background Worker
-`Scene::thread` processes `Scene::events` for async workflow and image-load execution. Workflows are tied to a stable layer ID; results are finalized on the main thread via `CheckWorkflowCompletion()` → `FinalizeWorkflow()`. Layer-container mutation is disabled while background work holds layer/image references.
+`Scene::thread` processes `Scene::events` for async workflow and image-load execution. Workflows are tied to a stable layer ID; results are finalized on the main thread via `CheckWorkflowCompletion()` → `FinalizeWorkflow()`. Layer-container mutation is disabled while background work holds layer/image references. An image load (`EVTLoadImage`) decodes into a copy of the `MVS::Image` and hands its pixels to the overlay: the scene image keeps its resolution, scale and camera, and the worker writes nothing the UI thread reads.
 
 ## Rendering Pipeline
 
@@ -220,6 +220,8 @@ Async MVS pipeline stages executable from the Viewer UI:
 | ReconstructMesh | `ReconstructMeshWorkflowOptions` | `minPointDistance`, `decimateMesh`, `closeHoles`, `smoothSteps` |
 | RefineMesh | `RefineMeshWorkflowOptions` | `resolutionLevel`, `maxViews`, `scales`, `regularityWeight` |
 | TextureMesh | `TextureMeshWorkflowOptions` | `resolutionLevel`, `ratioDataSmoothness`, `globalSeamLeveling`, `maxTextureSize` |
+
+The mesh workflows (ReconstructMesh, RefineMesh, TextureMesh) support pinhole cameras only (`MVS::Scene::CheckPinholeOnly`): for a layer with spherical images (`Layer::hasSphericalImages`, set in `RefreshLayerState`, read instead of the scene a running workflow owns) their dialogs show a notice pointing to `--spherical-export cubemap` and disable Run, and the Batch window deselects them.
 
 ### State Machine
 `WorkflowState`: IDLE → RUNNING → COMPLETED / FAILED. Tracked via atomics (`workflowState`, `currentWorkflowType`, `geometryModified`). Each worker event owns an immutable copy of its options. Batch execution queues workflow types and starts the next stage from main-thread finalization, so stages run sequentially against the same active layer. `workflowHistory` records duration and success for stats display. Protected by `workflowMutex`.
