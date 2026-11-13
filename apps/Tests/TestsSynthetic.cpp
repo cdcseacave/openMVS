@@ -1571,6 +1571,124 @@ bool MVS::NeighborViewsPointCloudRigTest()
 }
 /*----------------------------------------------------------------*/
 
+bool MVS::EstimatePointCloudNormalsSphericalTest()
+{
+	TD_TIMER_START();
+	constexpr int seamBand(4); // columns on each side of the seam
+	constexpr int patchRadius(3); // the target patch of EstimatePointCloudNormals
+	constexpr float sigmaAngleInv(-1.f / (2.f * SQUARE(D2R(15.f)))); // its view score
+	SynthViewArr views;
+	SynthGenerate(SynthMiddleConfig(256, 3, false), views);
+	IIndexArr viewIDs;
+	FOREACH(i, views)
+		viewIDs.push_back(i);
+	const ScopedTempDir tmpDir(_T("EstimatePointCloudNormalsSpherical"));
+	if (!tmpDir.IsValid())
+		return false;
+	const ScopedWorkingFolder workingFolder(tmpDir.Path() + "/");
+	Scene scene;
+	if (!SynthBuildScene(views, viewIDs, tmpDir.Path() + "/", scene))
+		return false;
+	// the images prepared at half resolution, as a pipeline stage leaves them, the first one with its pixels
+	FOREACH(i, scene.images) {
+		Image& image = scene.images[i];
+		if (!image.ReloadImage(image.width/2, i == 0))
+			return false;
+		image.UpdateCamera(scene.platforms);
+	}
+	const ImageArr prepared(scene.images);
+	// the coarse normals (the mean viewing direction), then the refined ones
+	if (!scene.EstimatePointCloudNormals(false))
+		return false;
+	const PointCloud::NormalArr coarse(scene.pointcloud.normals);
+	scene.pointcloud.normals.Release();
+	if (!scene.EstimatePointCloudNormals(true))
+		return false;
+	FOREACH(i, scene.images) {
+		const Image& image = scene.images[i];
+		const Image& before = prepared[i];
+		if (image.width != before.width || image.height != before.height || image.scale != before.scale ||
+			image.camera.K != before.camera.K || image.image.empty() != before.image.empty() || image.image.data != before.image.data) {
+			VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: image %u changed from %ux%u (scale %g, fx %g, cx %g, %s) to %ux%u (scale %g, fx %g, cx %g, %s)!", i,
+				before.width, before.height, before.scale, before.camera.K(0,0), before.camera.K(0,2), before.image.empty() ? "no pixels" : "pixels",
+				image.width, image.height, image.scale, image.camera.K(0,0), image.camera.K(0,2), image.image.empty() ? "no pixels" : "pixels");
+			return false;
+		}
+	}
+	// the images at the resolution the normals are refined at
+	ImageArr refineImages(scene.images);
+	for (Image& image: refineImages) {
+		image.ReleaseImage();
+		if (!image.ReloadImage(1024, false))
+			return false;
+		image.UpdateCamera(scene.platforms);
+	}
+	// the target view of each point, chosen as EstimatePointCloudNormals does: every column of a panorama
+	// takes a patch, the rows keep the patch radius from the poles; a point of two views is refined on one
+	// residual for the two angles of its normal, which lmmin can end as degenerate (the trajectory runs
+	// through the seam, the epipoles lie there), so the points seen by three views or more must be refined
+	unsigned numSeam(0), numSeamPosed(0), numSeamSkipped(0), numRest(0);
+	double errSeam(0), errRest(0);
+	FOREACH(p, scene.pointcloud.points) {
+		const PointCloud::Point& X = scene.pointcloud.points[p];
+		IIndex bestView(NO_ID);
+		float bestScore(-1.f);
+		Point2f bestProjection;
+		for (const IIndex idxView: scene.pointcloud.pointViews[p]) {
+			const Image& image = refineImages[idxView];
+			const Point3f viewDir = normalized(image.camera.C - Cast<REAL>(X));
+			const auto [projection, depth] = image.GetModelCamera().ProjectPointP(X);
+			if (projection.y < patchRadius || projection.y > image.height - (patchRadius+1))
+				continue;
+			const float angle = ACOS(ComputeAngleN(coarse[p].ptr(), viewDir.ptr()));
+			const float score = EXP(SQUARE(angle) * sigmaAngleInv) / image.camera.GetFootprintImage(depth);
+			if (score > bestScore) {
+				bestScore = score;
+				bestView = idxView;
+				bestProjection = projection;
+			}
+		}
+		// skip a target patch across a pole
+		if (bestView == NO_ID || bestProjection.y < patchRadius+1 || bestProjection.y > refineImages[bestView].height - (patchRadius+2))
+			continue;
+		const Image& target = refineImages[bestView];
+		const Point3f& normal = scene.pointcloud.normals[p];
+		const EVec3 C(target.camera.C);
+		const SynthHit hit(SynthTrace(C, EVec3(Cast<REAL>(X)) - C));
+		const double err(ACOS(MINF(ABS(EVec3(Cast<REAL>(normal)).dot(hit.normal)), 1.0)));
+		if (bestProjection.x < seamBand - 0.5f || bestProjection.x > target.width - seamBand - 0.5f) {
+			if (scene.pointcloud.pointViews[p].size() > 2) {
+				++numSeamPosed;
+				if (normal == coarse[p])
+					++numSeamSkipped;
+			}
+			errSeam += err;
+			++numSeam;
+		} else {
+			errRest += err;
+			++numRest;
+		}
+	}
+	if (numSeamPosed == 0 || numRest == 0) {
+		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: %u points on the seam (%u of three views or more) and %u elsewhere!", numSeam, numSeamPosed, numRest);
+		return false;
+	}
+	errSeam = R2D(errSeam / numSeam);
+	errRest = R2D(errRest / numRest);
+	if (numSeamSkipped > 0) {
+		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: %u of the %u points of three views or more whose target view projects on the seam are not refined!", numSeamSkipped, numSeamPosed);
+		return false;
+	}
+	if (errSeam > 1.5 * errRest) {
+		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: mean normal error %.2f deg on the seam, %.2f deg elsewhere!", errSeam, errRest);
+		return false;
+	}
+	VERBOSE("EstimatePointCloudNormalsSphericalTest passed: %u points on the seam (%u of three views or more, all refined), %u elsewhere: mean normal error %.2f deg there, %.2f deg elsewhere (%s)",
+		numSeam, numSeamPosed, numRest, errSeam, errRest, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 bool MVS::BrownUndistortOnLoadTest()
 {
 	TD_TIMER_START();

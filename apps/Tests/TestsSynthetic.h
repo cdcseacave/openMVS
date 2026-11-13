@@ -211,6 +211,12 @@ bool BrownUndistortOnLoadTest();
 // an empty point cloud: no assertion fires, every point is finite and is seen by the views of two rigs
 bool NeighborViewsPointCloudRigTest();
 
+// Scene::EstimatePointCloudNormals on three panoramas of the synthetic scene prepared at half resolution: the
+// scene images keep their resolution, camera and pixels; every point of three views or more whose target view
+// projects within 4 columns of the seam is refined, and the mean normal error of the points projecting there
+// is within 1.5x that of the other points
+bool EstimatePointCloudNormalsSphericalTest();
+
 // Tests.exe tool modes producing the validation numbers of the design docs (argv[0] is the mode;
 // without a known mode it prints their usage): the synthetic dataset, the synthetic PatchMatch and
 // fusion runs, the ScorePixel cost, depth-map and cloud evaluation against GT, the cube-face

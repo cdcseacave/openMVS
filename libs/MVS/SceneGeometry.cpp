@@ -101,28 +101,6 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 	// project each pixel from the target view patch to every reference view and compute the ZNCC score;
 	// use gradient descent to refine the normal estimate, keeping the depth constant.
 
-	// Load images
-	// TODO: replace with images cache
-	bool bImagesReloaded(false);
-	#ifdef SCENE_USE_OPENMP
-	#pragma omp parallel for
-	for (int64_t _idx=0; _idx<(int64_t)images.size(); ++_idx) {
-		const IIndex idx(static_cast<IIndex>(_idx));
-	#else
-	FOREACH(idx, images) {
-	#endif
-		Image& imageData = images[idx];
-		if (!imageData.IsValid())
-			continue;
-		if (imageData.image.empty())
-			bImagesReloaded = true; // need to reload images
-		if (!imageData.ReloadImage(1024)) {
-			DEBUG("error: cannot reload image '%s'", imageData.name.c_str());
-			exit(EXIT_FAILURE);
-		}
-		imageData.UpdateCamera(platforms);
-	}
-
 	// Refine normals using lmmin optimization with ZNCC correlation
 	constexpr int patchRadius = 3; // Half-size of the patch window
 	constexpr int patchSize = patchRadius * 2 + 1;
@@ -133,6 +111,50 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 	const Sampler sampler;
 	typedef RobustNorm::Cauchy<double> RobustNormFunc;
 	const RobustNormFunc robust(0.7);
+
+	// load the images into copies: the pixels serve this refinement only, the scene images keep their
+	// resolution and cameras
+	// TODO: replace with images cache
+	ImageArr scaledImages(images.size());
+	#ifdef SCENE_USE_OPENMP
+	bool bAbort(false);
+	#pragma omp parallel for
+	for (int64_t _idx=0; _idx<(int64_t)images.size(); ++_idx) {
+		#pragma omp flush (bAbort)
+		if (bAbort)
+			continue;
+		const IIndex idx(static_cast<IIndex>(_idx));
+	#else
+	FOREACH(idx, images) {
+	#endif
+		if (!images[idx].IsValid())
+			continue;
+		Image& view = scaledImages[idx];
+		view = images[idx];
+		view.ReleaseImage(); // the copy shares the pixels of the scene image: decode into its own buffer
+		if (!view.ReloadImage(1024)) {
+			#ifdef SCENE_USE_OPENMP
+			bAbort = true;
+			#pragma omp flush (bAbort)
+			continue;
+			#else
+			return false;
+			#endif
+		}
+		view.UpdateCamera(platforms);
+		if (view.IsSpherical()) {
+			// the columns of a panorama wrap: repeat them in a margin on both sides and move the principal point
+			// by it, so a patch across the seam is sampled like any other; a target patch reaches patchRadius
+			// past a projection, and bilinear sampling needs one more pixel
+			constexpr int seamMargin = patchRadius + 2;
+			cv::copyMakeBorder(view.image, view.image, 0, 0, seamMargin, seamMargin, cv::BORDER_WRAP);
+			view.camera.K(0,2) += seamMargin;
+		}
+	}
+	#ifdef SCENE_USE_OPENMP
+	if (bAbort)
+		return false;
+	#endif
 
 	// Define optimization data structure
 	struct NormalOptimizationData {
@@ -239,7 +261,7 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 		float bestScore = -1.f;
 		Point2f bestProjection;
 		FOREACH(viewIdx, views) {
-			const Image& imageData = images[views[viewIdx]];
+			const Image& imageData = scaledImages[views[viewIdx]];
 			ASSERT(imageData.IsValid() && !imageData.image.empty());
 			const Camera& camera = imageData.camera;
 			const Point3f viewDir = normalized(camera.C - Cast<REAL>(point));
@@ -260,7 +282,7 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 		}
 		if (bestTargetIdx == NO_ID)
 			continue;
-		const Image& targetImage = images[views[bestTargetIdx]];
+		const Image& targetImage = scaledImages[views[bestTargetIdx]];
 
 		// Extract target patch - convert to grayscale intensities
 		std::array<float,nTexels> targetPatch;
@@ -294,7 +316,7 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 		// Create optimization data
 		Point2d paramN;
 		Normal2Dir(normal, paramN); // Convert normal to spherical coordinates
-		NormalOptimizationData optData(point, views, images, bestTargetIdx, bestProjection,
+		NormalOptimizationData optData(point, views, scaledImages, bestTargetIdx, bestProjection,
 									   targetPatch, targetVariance, sampler, robust);
 		// Setup and run lmmin optimization
 		constexpr int numParams(2);
@@ -311,12 +333,6 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 				normal = -normal; // Flip normal if it points away from target camera
 		}
 		// Note: If optimization fails, keep the original normal estimate
-	}
-
-	if (bImagesReloaded) {
-		// Release images
-		for (Image& imageData: images)
-			imageData.ReleaseImage();
 	}
 	return true;
 } // EstimatePointCloudNormals
