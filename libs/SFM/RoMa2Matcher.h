@@ -118,7 +118,6 @@ public:
 	OrtTensor MakeCode() override { return MakeLayers(); }
 	bool DescribeImage(const float* planarRgb, OrtTensor& layers, std::vector<float>& retrieval) override { return Describe(planarRgb, layers, NULL, retrieval); }
 	bool MatchPair(const OrtTensor& layersA, const OrtTensor& layersB, const PairInput&, PairOutput& out) override; // the coarse warps; RoMa2 has no covisibility or pose to give
-	inline bool NeedsIntrinsics() const override { return false; }
 
 	inline int WarpSize() const { return Manifest().warpSize; }
 	inline const std::vector<int64_t>& LayersShape() const { return Manifest().layersShape; }

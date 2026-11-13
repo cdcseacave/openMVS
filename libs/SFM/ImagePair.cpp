@@ -84,12 +84,6 @@ unsigned ImagePair::RecoverPose(
 	return numBest;
 }
 
-Point3 ImagePair::EpipoleFromEssentialMatrix(const Matrix3x3& E, bool leftImage) {
-	Eigen::Matrix3d eE(leftImage ? E : Matrix3x3(E.t()));
-	Eigen::JacobiSVD<Eigen::Matrix3d> svd(eE, Eigen::ComputeFullU | Eigen::ComputeFullV);
-	return svd.matrixV().block<3, 1>(0, 2).eval();
-}
-
 Matrix3x3 ImagePair::ComposeFundamentalMatrix(const Matrix3x3& E, const Matrix3x3& K1, const Matrix3x3& K2, bool normalize)
 {
 	// Compose fundamental matrix from essential matrix and camera intrinsics
@@ -116,29 +110,6 @@ float ImagePair::ComputeAngleBaselineWeight(float meanAngleDegrees)
 		            // is only defensible while "no angle" means "not measurable" -- with a relative
 		            // pose the angle IS measurable over every track-forming match (FilterMatches,
 		            // ImagePair::ComputeMeanRayAngle), and a pair that has one must carry it
-
-	#if 0
-	// Multiplicative Factor:
-	//   - Small θ_avg (< 2°): Poor baseline - noisy depth estimation
-	//   - Medium θ_avg (5-30°): Good baseline - reliable triangulation
-	//   - Large θ_avg (> 60°): Wide baseline - harder matching but potentially better if matches exist
-	// use a Gaussian-like weighting centered at an optimal angle (e.g., 15°) to favor medium baselines
-	constexpr float OPTIMAL_ANGLE = 15.f;
-	constexpr float ANGLE_WIDTH = 25.f;
-	constexpr float SMALL_ANGLE = 4.f;
-    constexpr float STEEPNESS = 0.8f;
-	constexpr float COMMON = 6.68099f;
-
-	// Avoid too small angles
-	if (meanAngleDegrees < COMMON) {
-		// Sigmoid that transition fast to 0 below SMALL_ANGLE
-		return 1.f / (1.f + EXP(-STEEPNESS * (meanAngleDegrees - SMALL_ANGLE)));
-	}
-
-	// Gaussian-like weighting centered at OPTIMAL_ANGLE
-	return EXP(-SQUARE((meanAngleDegrees - OPTIMAL_ANGLE) / ANGLE_WIDTH));
-
-	#else
 
 	// Angle Baseline Weighting:
 	// Penalize very small angles (weak baseline) and very large angles (harder matching)
@@ -167,7 +138,6 @@ float ImagePair::ComputeAngleBaselineWeight(float meanAngleDegrees)
 	// Rapid exponential decay beyond threshold (C1-continuous with the quadratic penalty)
 	const float excessDeviation = deviation - slowThreshold;
 	return (1.f - maxSlowPenalty) * EXP(-excessDeviation / 10.5f);
-	#endif
 }
 
 
@@ -346,8 +316,8 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	// GetNumFilteredInliers(), which is short of matches.size() on any pair carrying a partition (a
 	// dense supplement, or the rejects of an earlier strict-filter pass). In-tree every caller
 	// arrives after a ResetInlierMatches()/ResetMatches(), i.e. with numFilteredInliers == -1 and
-	// the default already spanning `matches`, so this is the contract stated explicitly rather than
-	// a live bug fix -- but the method is SFM_API and the next caller need not arrive that way.
+	// the default already spanning `matches`, so this states the contract explicitly rather than
+	// fixing a bug; the method is SFM_API and a caller need not arrive that way.
 	const auto [pts1, pts2] = GetMatchedPoints(img1, img2, true);
 	// The dense (ROMAv2 warp) supplement votes on meanRayAngle, like every other track-forming
 	// match: a ray angle is a GEOMETRIC quantity, and the coarseness that keeps a dense position out
@@ -419,10 +389,9 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(CLAMP(cosAngles.GetMedian(), -1.f, 1.f));
 	// The stable_partition below re-derives the dense segment from `mask`'s surviving inliers by
 	// re-evaluating HasDenseEnd, which is the one documented false negative of this re-derivation
-	// (docs/design/ROMA2InProcess.md): a supplement match whose BOTH endpoints collapsed onto
-	// coincident described keypoints now reads as sparse. Measuring the size of that disclosed gap
-	// was an explicit condition of accepting the re-derivation, so count it here -- before
-	// PartitionMatchesByMask reorders `matches` and the old dense range
+	// (docs/design/DenseMatching.md): a supplement match whose BOTH endpoints collapsed onto
+	// coincident described keypoints now reads as sparse. The size of that gap is reported, so count
+	// it here -- before PartitionMatchesByMask reorders `matches` and the recorded dense range
 	// [numFilteredInliers, numFilteredInliers+numDenseInliers) stops describing anything.
 	unsigned numSupplementReclassifiedSparse = 0;
 	if (bHasDenseKeypoints && numFilteredInliers >= 0 && numDenseInliers > 0) {

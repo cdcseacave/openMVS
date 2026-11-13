@@ -116,7 +116,7 @@ public:
 		IIndex prevImageID1 = NO_ID, prevImageID2 = NO_ID;
 		const int batchSize = 1000;
 		for (size_t batchStart = 0; batchStart < pairsToMatch.size(); batchStart += batchSize) {
-			const size_t batchEnd = std::min(batchStart + batchSize, pairsToMatch.size());
+			const size_t batchEnd = MINF(batchStart + batchSize, pairsToMatch.size());
 			// Main thread: GPU matching
 			for (size_t _idx = batchStart; _idx < batchEnd; ++_idx) {
 				++progress;
@@ -352,16 +352,6 @@ PairsMatcher::GeometryBranch PairsMatcher::SelectGeometryBranch(const MatchConfi
 	return GeometryBranch::FUNDAMENTAL;
 }
 
-LPCTSTR PairsMatcher::GeometryBranchName(GeometryBranch branch)
-{
-	switch (branch) {
-	case GeometryBranch::SHARED_FOCAL: return _T("shared-focal");
-	case GeometryBranch::ESSENTIAL:    return _T("essential");
-	case GeometryBranch::FUNDAMENTAL:  return _T("fundamental");
-	}
-	return _T("unknown");
-}
-
 
 bool PairsMatcher::GeometricFilter(
 	const Image& img1,
@@ -388,8 +378,8 @@ bool PairsMatcher::GeometricFilter(
 	ASSERT(img1.HasCamera() && img2.HasCamera());
 	// Configure RANSAC options.
 	// PoseLib master: RelativePoseOptions wraps RansacOptions + BundleOptions and
-	// holds the inlier threshold (max_error) directly. The estimate_* free functions
-	// no longer take a separate BundleOptions parameter.
+	// holds the inlier threshold (max_error) directly; the estimate_* free functions
+	// take no separate BundleOptions parameter.
 	poselib::RelativePoseOptions opt;
 	opt.max_error = maxEpipolarError; // reprojection error threshold, the caller's (config.maxEpipolarError through the three-argument form)
 	opt.ransac.min_iterations = 100; // min iterations
@@ -684,7 +674,7 @@ bool PairsMatcher::MatchPair(
 		pair.ID2 = img2.ID;
 		// Match features using the matcher owned by this thread: matchers.size() is the pool's own
 		// thread count (both are scene.nMaxThreads), so the pool index is a collision-free slot,
-		// unlike the hashed thread id this used to fold into the same range.
+		// unlike a hashed thread id folded into the same range.
 		// MatchPair is also called directly on the caller's thread (a single pair matched outside
 		// any pool, as the tests do); there is no pool index then, and that caller is the only
 		// user of the matchers, so slot 0 is free for it.
@@ -742,7 +732,7 @@ bool PairsMatcher::EnsureGlobalDescriptorsIndex()
 {
 	// no opt-in gate and no vocabulary-tree fallback: RETRIEVAL mode is itself the explicit
 	// opt-in, and a scene not fully described is an error here rather than a silently
-	// different ranking algorithm (design decision 10)
+	// different ranking algorithm
 	if (globalDescriptors)
 		return globalDescriptors->IsValid();
 	if (!BuildGlobalDescriptorsIndex()) {
@@ -1545,8 +1535,8 @@ void PairsMatcher::FilterRedundantKeypoints()
 			// response*size comparison for near-coincident pairs can report a < b, b < c and c < a
 			// on such a triple, and a dense warp draw makes near-coincident samples the rule. The
 			// response*size preference lives in the grouping pass below instead, where the rescan
-			// picks each run's best member outright; for any input on which the old duplicate-aware
-			// comparator was well defined (duplicate groups cleanly separated) the runs formed here
+			// picks each run's best member outright; for any input on which a duplicate-aware
+			// comparator would be well defined (duplicate groups cleanly separated) the runs formed here
 			// and the survivors chosen from them are identical.
 			std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
 				const cv::KeyPoint& ka = img.keypoints[a];
@@ -1876,7 +1866,7 @@ void PairsMatcher::FilterRedundantKeypoints()
 		// sparse count. Debug-only, one-directional -- see the declaration.
 		// Checked only while the strict matches filter is on. With it off nothing re-partitions a
 		// re-verified pair, so dense matches legitimately sit inside numFilteredInliers and count as
-		// descriptor evidence -- the disclosed gap documented in docs/design/ROMA2InProcess.md, whose
+		// descriptor evidence -- the disclosed gap documented in docs/design/DenseMatching.md, whose
 		// size is a measurement question, not a broken invariant. An assertion that fires on a
 		// configuration the design declines to protect stops meaning "a bug happened".
 		if (config.IsMatchesFilterOn())

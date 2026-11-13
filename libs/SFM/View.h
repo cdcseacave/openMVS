@@ -125,7 +125,6 @@ public:
 	}
 
 	// Compose/decompose projection matrix P = K*R*[I|-C]
-	Matrix4x4 GetP4() const; // the composed projection matrix (4x4) assuming valid P
 	PMatrix GetP() const; // compose P from K, R and C
 	void DecomposeP(const PMatrix&); // decompose P in K, R and C
 
@@ -154,10 +153,6 @@ public:
 	inline Point3 Ray(const Point2& x) const {
 		ASSERT(HasCamera());
 		return RayCameraToWorld(pCamera->Unproject(x));
-	}
-	inline Point3 RayNormalized(const Point2& x) const {
-		ASSERT(HasCamera());
-		return RayCameraToWorld(pCamera->UnprojectNormalized(x));
 	}
 
 	#ifdef _USE_BOOST

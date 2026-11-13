@@ -269,6 +269,10 @@ bool FlexGlueReconstructTest();
 // columns are compared in the manifold's tangent space, the only place the solver sees them
 bool BAPinholeReprojectionJacobianTest();
 
+// EstimateSimilarityTransform recovers a known similarity from six exact correspondences: the scale to 1e-2 and
+// the mapped source points to 1e-6
+bool TestSimilarityTransform();
+
 // ComputeObservationSigmas recovers the displacement the BULK of a synthetic scene's described and
 // dense observations carry, with a tenth of each population thrown far out and a tenth left almost
 // on the point so that only a median answers it, and reports zero dense observations on a scene that
@@ -535,11 +539,6 @@ bool CappedAdjustmentTriangulationTest();
 // A global solve with the per-image observation cap, one camera held and no GPS, keeps the cameras' scale, so the
 // tracks the cap left out of it are still where their observations see them after it
 bool CappedSolveScaleTest();
-
-// A dense (warp-sampled) observation is the less precise measurement, so the track filter and the
-// triangulation hold it to its own multiple of the reprojection bar a described one answers to
-// (FilterTracks / TriangulateTracks denseReprojErrorFactor).
-bool DenseReprojectionBarTest();
 
 // The track filter judges only a track that can have a position, one with two posed views (the rule the
 // triangulation applies): a track with a single posed view was never triangulated and holds the default

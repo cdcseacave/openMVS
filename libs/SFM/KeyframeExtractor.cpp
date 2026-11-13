@@ -19,12 +19,6 @@
 using namespace SFM;
 
 
-// D E F I N E S ///////////////////////////////////////////////////
-
-// uncomment to enable debug visualization for feature matching
-//#define SFM_DEBUG_MATCHING
-
-
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace SFM::KeyframeExtractor {
@@ -122,193 +116,6 @@ struct CachedFrame {
 	float sharpness = 0.f;
 };
 
-#ifdef SFM_DEBUG_MATCHING
-// Sample and draw the great-circle epipolar curve defined by E*b1 on image 2,
-// splitting the polyline across the equirectangular longitude seam for spherical cameras.
-// Works for any central camera via Camera::Project.
-// displayScale multiplies projected pixel coords (for drawing on a downscaled canvas);
-// wrap-split and projection math remain in original image coords.
-static void DrawSphericalEpipolarCurve(
-	cv::Mat& canvas, int xOffset, float displayScale,
-	const Camera& cam2, const Matrix3x3& E, const Point3& b1,
-	const cv::Scalar& color,
-	int numSamples = 256)
-{
-	// Epipolar plane normal in camera 2 frame: n = E * b1
-	// (done via Matrix3x3 * Point3, then hop to Eigen for basis math)
-	const Point3 nPt = E * b1;
-	const double nNorm = norm(nPt);
-	if (nNorm < 1e-9)
-		return;
-
-	// Orthonormal basis {u, v} spanning the plane perpendicular to n
-	const Eigen::Vector3d nu = nPt / nNorm;
-	const Eigen::Vector3d axis = (ABS(nu.z()) < 0.9) ? Eigen::Vector3d::UnitZ() : Eigen::Vector3d::UnitX();
-	const Eigen::Vector3d u = axis.cross(nu).normalized();
-	const Eigen::Vector3d v = nu.cross(u);
-
-	// Sample bearings around the great circle and project through cam2
-	std::vector<cv::Point2f> pts(numSamples);
-	std::vector<uint8_t> valid(numSamples);
-	for (int i = 0; i < numSamples; ++i) {
-		const double t = (2.0 * M_PI) * i / numSamples;
-		const Eigen::Vector3d b2e = COS(t) * u + SIN(t) * v;
-		const Point3 b2(b2e);
-		const auto res = cam2.Project(b2);
-		pts[i] = res.first;
-		valid[i] = res.second ? 1 : 0;
-	}
-
-	// Connect consecutive samples, skipping seam wraps (|dx| > width/2) and back-facing rays
-	const double wrapThr = cam2.GetWidth() * 0.5;
-	for (int i = 0; i < numSamples; ++i) {
-		const int j = (i + 1) % numSamples;
-		if (!valid[i] || !valid[j])
-			continue;
-		if (ABS(pts[i].x - pts[j].x) > wrapThr)
-			continue;
-		cv::line(canvas,
-			cv::Point2f(pts[i].x * displayScale + (float)xOffset, pts[i].y * displayScale),
-			cv::Point2f(pts[j].x * displayScale + (float)xOffset, pts[j].y * displayScale),
-			color, 1);
-	}
-}
-
-// Debug visualization: tracked points, final matches, and epipolar overlay.
-// Pinhole pairs draw straight F-lines on image 2; any spherical side draws great-circle curves via E.
-// resolutionLevel: number of times to halve image resolution before drawing (0 = full-res, 2 = quarter-res),
-//                  so overlay strokes stay visible after window downscaling.
-void DrawMatchesWithEpipolar(
-	const Image& img1, const Image& img2,
-	const std::vector<Point2f>& trackedPoints1,
-	const std::vector<Point2f>& trackedPoints2,
-	const std::vector<uchar>& trackStatus,
-	const std::vector<DMatch>& matches,
-	const std::optional<Matrix3x3>& F,
-	const std::optional<Matrix3x3>& E,
-	unsigned resolutionLevel = 0,
-	float trackedPercent = 0.01f,
-	float matchedPercent = 0.01f)
-{
-	trackedPercent = CLAMP(trackedPercent, 0.f, 1.f);
-	matchedPercent = CLAMP(matchedPercent, 0.f, 1.f);
-	const float s = 1.f / (float)(1 << resolutionLevel);
-
-	// Pre-downscale canvases (pyrDown applies a 5x5 Gaussian then halves — avoids aliasing).
-	cv::Mat canvas1 = img1.pixels, canvas2 = img2.pixels;
-	for (unsigned lvl = 0; lvl < resolutionLevel; ++lvl) {
-		cv::pyrDown(canvas1, canvas1);
-		cv::pyrDown(canvas2, canvas2);
-	}
-
-	std::default_random_engine rng(0);
-	std::uniform_int_distribution<int> colDist(0, 255);
-
-	// --- Tracked visualization (camera-model independent) ---
-	cv::Mat displayTracked;
-	cv::hconcat(canvas1, canvas2, displayTracked);
-	const int offset = canvas1.cols;
-
-	std::vector<int> trackedIdx;
-	for (size_t i = 0; i < trackStatus.size(); ++i)
-		if (trackStatus[i]) trackedIdx.push_back((int)i);
-	int nTrackedToDraw = CEIL2INT(trackedIdx.size() * trackedPercent);
-	nTrackedToDraw = CLAMP(nTrackedToDraw, 0, (int)trackedIdx.size());
-
-	std::shuffle(trackedIdx.begin(), trackedIdx.end(), rng);
-	for (int k = 0; k < nTrackedToDraw; ++k) {
-		int i = trackedIdx[k];
-		const cv::Point2f& p1 = trackedPoints1[i];
-		const cv::Point2f& p2 = trackedPoints2[i];
-		cv::Scalar col(colDist(rng), colDist(rng), colDist(rng));
-		cv::circle(displayTracked, cv::Point2f(p1.x*s, p1.y*s), 5, col, 2);
-		cv::circle(displayTracked, cv::Point2f(p2.x*s + offset, p2.y*s), 5, col, 2);
-		cv::line(displayTracked, cv::Point2f(p1.x*s, p1.y*s), cv::Point2f(p2.x*s + offset, p2.y*s), col, 1);
-	}
-
-	const int numTracked = (int)trackedIdx.size();
-	cv::putText(displayTracked, cv::format("Tracked (drawn %d/%d)", nTrackedToDraw, numTracked),
-		cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
-
-	// --- Keypoint matches + epipolar overlay ---
-	cv::Mat displayMatches;
-	cv::hconcat(canvas1, canvas2, displayMatches);
-
-	// Sample up to 20 keypoints for epipolar overlay (same budget as before)
-	const int maxLines = 20;
-	const int available = (int)img1.keypoints.size();
-	const int numEpiSamples = MINF(maxLines, available);
-	std::vector<int> sampleIdx(available);
-	for (int i = 0; i < available; ++i)
-		sampleIdx[i] = i;
-	std::shuffle(sampleIdx.begin(), sampleIdx.end(), rng);
-	const cv::Scalar epiCol(200, 255, 200); // light green
-
-	if (img1.pCamera->GetType() == CameraType::SPHERICAL || img2.pCamera->GetType() == CameraType::SPHERICAL) {
-		// Great-circle overlay via bearing vectors and the essential matrix
-		if (E.has_value()) {
-			for (int ii = 0; ii < numEpiSamples; ++ii) {
-				const cv::Point2f& pt1 = img1.keypoints[sampleIdx[ii]].pt;
-				const Point3 b1 = img1.pCamera->UnprojectNormalized(Point2(pt1.x, pt1.y));
-				DrawSphericalEpipolarCurve(displayMatches, offset, s, *img2.pCamera, E.value(), b1, epiCol);
-			}
-		}
-	} else if (F.has_value()) {
-		// Pinhole: straight epipolar line from F*(x,y,1)
-		const Matrix3x3& Fmat = F.value();
-		const int w = img2.pixels.cols, h = img2.pixels.rows;
-		for (int ii = 0; ii < numEpiSamples; ++ii) {
-			int idx = sampleIdx[ii];
-			const cv::Point2f& pt1 = img1.keypoints[idx].pt;
-			Point3 pt1_h(pt1.x, pt1.y, 1.0);
-			Point3 line = Fmat * pt1_h;
-			cv::Point2f p1, p2;
-			if (ABS(line.y) > 1e-6) {
-				p1 = cv::Point2f(0, (float)(-line.z / line.y));
-				p2 = cv::Point2f((float)w, (float)(-(line.x * w + line.z) / line.y));
-			} else if (ABS(line.x) > 1e-6) {
-				p1 = cv::Point2f((float)(-line.z / line.x), 0);
-				p2 = cv::Point2f((float)(-line.z / line.x), (float)h);
-			} else {
-				continue;
-			}
-			cv::line(displayMatches,
-				cv::Point2f(p1.x*s + offset, p1.y*s),
-				cv::Point2f(p2.x*s + offset, p2.y*s),
-				epiCol, 1);
-		}
-	}
-
-	// Draw subset of final matches with random colors
-	int nMatchesToDraw = CEIL2INT(matches.size() * matchedPercent);
-	nMatchesToDraw = CLAMP(nMatchesToDraw, 0, (int)matches.size());
-	std::vector<int> matchIdx(matches.size());
-	for (size_t i = 0; i < matches.size(); ++i)
-		matchIdx[i] = (int)i;
-	std::shuffle(matchIdx.begin(), matchIdx.end(), rng);
-
-	for (int k = 0; k < nMatchesToDraw; ++k) {
-		const DMatch& match = matches[matchIdx[k]];
-		const cv::Point2f& pt1 = img1.keypoints[match.queryIdx].pt;
-		const cv::Point2f& pt2 = img2.keypoints[match.trainIdx].pt;
-		cv::Scalar col(colDist(rng), colDist(rng), colDist(rng));
-		cv::circle(displayMatches, cv::Point2f(pt1.x*s, pt1.y*s), 5, col, 2);
-		cv::circle(displayMatches, cv::Point2f(pt2.x*s + offset, pt2.y*s), 5, col, 2);
-		cv::line(displayMatches, cv::Point2f(pt1.x*s, pt1.y*s), cv::Point2f(pt2.x*s + offset, pt2.y*s), col, 1);
-	}
-
-	cv::putText(displayMatches, cv::format("Matches (drawn %d/%d)", nMatchesToDraw, (int)matches.size()),
-		cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
-
-	// Show both windows
-	cv::namedWindow("Geometric Matching - Tracked", cv::WINDOW_NORMAL);
-	cv::namedWindow("Geometric Matching - Matches", cv::WINDOW_NORMAL);
-	cv::imshow("Geometric Matching - Tracked", displayTracked);
-	cv::imshow("Geometric Matching - Matches", displayMatches);
-	cv::waitKey(0);
-	cv::destroyAllWindows();
-}
-#endif
 
 
 // Keyframe post-processing event: save image and run matching (runs in background worker)
@@ -384,21 +191,11 @@ public:
 
 			DEBUG_EXTRA("Created pair between keyframes %d and %d with %u matches",
 				prevID, currID, pair.GetNumFilteredInliers());
-
-			#ifdef SFM_DEBUG_MATCHING
-			DrawMatchesWithEpipolar(prevImg, currImg,
-				trackedPrevPts, trackedCurrPts, trackedStatus,
-				pair.matches, pair.F, pair.E, /*resolutionLevel=*/ 2);
-			#endif
 		}
 
 
 		// Release pixels in shared scene storage to free memory
-		#ifdef SFM_DEBUG_MATCHING
-		prevImg.ReleasePixels();
-		#else
 		currImg.ReleasePixels();
-		#endif
 
 		pcs.Leave();
 		return true;
@@ -724,21 +521,12 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 				VERBOSE("warning: failed to extract features from keyframe %d", keyframeID);
 			}
 
-			// Enqueue a single post-processing event (save + matching);
-			// if the matches have to be displayed for debugging,
-			// the post processing must be done in the main thread to allow OpenCV GUI calls.
-			#ifndef SFM_DEBUG_MATCHING
+			// Enqueue a single post-processing event (save + matching)
 			workerQueue.AddEvent(new
-			#endif
 				KeyframePostProcessEvent(keyframeID-1, keyframeID,
 					scene, pairsMatcher, *pCamera, config.focalLength > 0,
 					keyframePoints, chosen.trackedPoints, chosen.status, chosen.overlapRatio, chosen.overlapArea,
-					sceneCs, focalEstimates, k1Estimates, k2Estimates, config.refineCalibration == KeyframeConfig::TWO_VIEW)
-			#ifdef SFM_DEBUG_MATCHING
-				.Run();
-			#else
-			);
-			#endif
+					sceneCs, focalEstimates, k1Estimates, k2Estimates, config.refineCalibration == KeyframeConfig::TWO_VIEW));
 
 			// Convert keypoints to points for tracking
 			// keyframePoints: fixed reference positions (constant until next keyframe)
@@ -774,8 +562,6 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 
 	// Compute pair weights
 	ComputePairsWeights(scene, matchConfig.weightingCfg);
-
-	//scene.Save(MAKE_PATH("scene_keyframes.sfm"));
 
 	// Auto-calibrate intrinsics (if enabled and sufficient estimates)
 	// Only update if user didn't provide known intrinsics (config.focalLength <= 0)

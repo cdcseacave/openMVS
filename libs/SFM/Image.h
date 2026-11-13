@@ -21,17 +21,6 @@
 
 namespace SFM {
 
-// Stores metrics describing how well the reference view is connected to a neighbor view
-struct SFM_API ViewScore {
-	uint32_t ID;       // image ID of the neighbor view
-	uint32_t points;   // number of shared tracks between views
-	float angle;       // average angle between viewing rays (radians)
-	float area;        // overlap area ratio (fraction of reference image covered by shared points) [0-1]
-};
-typedef CLISTDEF0IDX(ViewScore, uint32_t) ViewScoreArr;
-/*----------------------------------------------------------------*/
-
-
 // Image class manages per-image data including pixels, features, descriptors, and view
 class SFM_API Image : public View
 {
@@ -264,15 +253,6 @@ typedef CLISTDEF2IDX(Image, IIndex) ImageArr;
 /*----------------------------------------------------------------*/
 
 
-// Helper: convert vector of KeyPoints to vector of Point2f
-inline std::vector<Point2f> ConvertToPoints(const std::vector<cv::KeyPoint>& keypoints)
-{
-	std::vector<Point2f> points;
-	points.reserve(keypoints.size());
-	for (const auto& kp : keypoints)
-		points.emplace_back(kp.pt.x, kp.pt.y);
-	return points;
-}
 // Helper: convert vector of Point2f to vector of KeyPoints
 inline std::vector<cv::KeyPoint> ConvertToKeypoints(const std::vector<Point2f>& points)
 {

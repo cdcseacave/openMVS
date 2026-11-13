@@ -38,15 +38,12 @@
 
 namespace SFM {
 
-// A pinhole camera in the pixels of the working-orientation image (the corner of the top-left pixel is the origin)
-struct SFM_API PinholeIntrinsics {
-	float fx, fy, cx, cy;
-};
+struct SFM_API ROMA2Config;
 
-// What a dense matcher is told about the two images of a pair besides their descriptors
+// What a dense matcher is told about the two images of a pair besides their descriptors: their pixel sizes (no model
+// reads a camera: RoMa2 has no camera input and FlexGlue's pose head H1 reads none)
 struct SFM_API PairInput {
-	cv::Size sizeA, sizeB;               // pixel sizes of the two images
-	PinholeIntrinsics intrA, intrB;      // their cameras as the pipeline holds them at the matching stage (before the lens fit and the focal refinement)
+	cv::Size sizeA, sizeB;
 };
 
 // What a dense matcher returns for one pair. The warps (both directions, on the matcher's grid) are the one
@@ -66,6 +63,14 @@ class SFM_API DenseMatcher
 {
 public:
 	virtual ~DenseMatcher() = default;
+
+	// Whether this build can load a dense matcher (it has ONNX Runtime support)
+	static bool IsAvailable();
+	// A new, not yet loaded matcher of the kind config.matcher names ("roma2" or "flexglue"); needs IsAvailable()
+	static std::unique_ptr<DenseMatcher> Create(const ROMA2Config& config);
+	// The size of the global retrieval descriptors the matcher config names will produce, known before it is loaded
+	// (FlexGlue's is fixed, RoMa2's is its manifest's); 0 where it cannot be told (no model folder or no manifest in it)
+	static unsigned ExpectedRetrievalSize(const ROMA2Config& config);
 
 	// Load the model from its folder ("setting" is the model's preset where it has several) on the provider
 	// ("auto"|"cuda"|"coreml"|"dml"|"cpu"); false with a message on any failure
@@ -87,8 +92,6 @@ public:
 	virtual bool DescribeImage(const float* planarRgb, OrtTensor& code, std::vector<float>& retrieval) = 0;
 	// Match the pair of codes (A, B)
 	virtual bool MatchPair(const OrtTensor& codeA, const OrtTensor& codeB, const PairInput& input, PairOutput& out) = 0;
-	// Whether MatchPair reads PairInput's intrinsics, so that the caller must hold a pinhole camera for every image
-	virtual bool NeedsIntrinsics() const = 0;
 };
 /*----------------------------------------------------------------*/
 

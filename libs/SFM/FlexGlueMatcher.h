@@ -38,7 +38,7 @@
 
 namespace SFM {
 
-// The manifest of a FlexGlue model bundle, flexglue_<setting>.json (docs/FlexGlueModel.md): the two graph files and the sizes the
+// The manifest of a FlexGlue model bundle, flexglue_<setting>.json (docs/DenseMatcherModels.md): the two graph files and the sizes the
 // graphs are built for, checked against the shapes this build reads
 struct SFM_API FlexGlueManifest
 {
@@ -56,7 +56,7 @@ struct SFM_API FlexGlueManifest
 /*----------------------------------------------------------------*/
 
 // FlexGlue (a DINOv3 ConvNeXt-B backbone and a transformer matcher) as a DenseMatcher, from the model bundle the export script writes
-// (docs/design/DenseMatcher.md): the manifest flexglue_<setting>.json and its two graphs, the descriptor graph (the image squashed to
+// (docs/design/DenseMatching.md): the manifest flexglue_<setting>.json and its two graphs, the descriptor graph (the image squashed to
 // 512 x 512 -> the stride-8 feature map, 256 x 64 x 64, and the unit 256-D retrieval descriptor, that map GeM-pooled) and the match graph
 // (two feature maps -> both warps on a 128 x 128 grid with their confidences gated by FlexGlue's own checks, the covisibility score
 // "do the two images show the same place", and the H1 pose head's coarse relative rotation and baseline direction, read from the
@@ -87,7 +87,6 @@ public:
 	OrtTensor MakeCode() override;
 	bool DescribeImage(const float* planarRgb, OrtTensor& features, std::vector<float>& retrieval) override;
 	bool MatchPair(const OrtTensor& featuresA, const OrtTensor& featuresB, const PairInput& input, PairOutput& out) override;
-	bool NeedsIntrinsics() const override { return false; }
 
 private:
 	OnnxModel descriptor, match;

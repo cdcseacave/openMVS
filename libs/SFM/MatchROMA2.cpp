@@ -57,29 +57,18 @@ typedef std::vector<float> PlanarImage;
 
 #ifdef _USE_ONNXRUNTIME
 
-// What a dense matcher is told about the pair (A, B): the pixel sizes and, for a pinhole camera, the intrinsics
-// the pipeline holds now (the matching stage runs before the lens fit and the focal refinement)
+// What a dense matcher is told about the pair (A, B): the pixel sizes
 PairInput MakePairInput(const Image& imgA, const Image& imgB)
 {
 	PairInput input;
 	input.sizeA = imgA.GetSize();
 	input.sizeB = imgB.GetSize();
-	PinholeIntrinsics* intr[2] = {&input.intrA, &input.intrB};
-	const Image* images[2] = {&imgA, &imgB};
-	for (int i = 0; i < 2; ++i) {
-		*intr[i] = PinholeIntrinsics{0.f, 0.f, 0.f, 0.f};
-		if (images[i]->GetCameraType() == CameraType::PINHOLE) {
-			const KMatrix K = images[i]->GetK();
-			// OpenMVS pixel centres are at integer coordinates (the default principal point is (w-1)/2, Image.cpp), PinholeIntrinsics' origin is the corner
-			*intr[i] = PinholeIntrinsics{(float)K(0,0), (float)K(1,1), (float)K(0,2) + 0.5f, (float)K(1,2) + 0.5f};
-		}
-	}
 	return input;
 }
 
 // Pool task: load (if not already resident) and preprocess one image into the planar RGB
 // buffer the descriptor graph expects. Uses the working-orientation pixels (Image::LoadPixels
-// rotates portrait to landscape -- design decision 12), the same pixels the keypoints were
+// rotates portrait to landscape), the same pixels the keypoints were
 // extracted from. Each image is touched by exactly one pool task, and by the calling thread
 // only after that task's future has resolved (PrefetchRing::Take, below), so no locking is
 // needed on Image.
@@ -175,8 +164,7 @@ private:
 };
 
 // Restores a pass's OpenCV thread count, log-console pause, and progress bar on scope exit,
-// including through an exception (they used to be plain statements reachable only on the
-// non-throwing path). Finish() runs the restoration immediately and is what the normal path
+// including through an exception. Finish() runs the restoration immediately and is what the normal path
 // calls, right before the summary DEBUG line, so that line isn't swallowed by the paused
 // console; the destructor calls it too (idempotent) as the safety net for any exceptional exit.
 // Shared by the describe and the dense-matching passes, which differ only in the progress
@@ -407,7 +395,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const Pai
 			ASSERT(nextSubmit > nextLoad);
 			const PlanarImage* const planar = ring.Take();
 			slotImage[load.slot] = NO_ID;
-			// value_facets stays on the device: the warp pass never reads it back (design decision 4)
+			// value_facets stays on the device: the warp pass never reads it back
 			if (planar && roma2.DescribeImage(planar->data(), slotLayers[load.slot], discardedRetrieval)) {
 				slotImage[load.slot] = load.image;
 			} else {
@@ -629,7 +617,7 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2)
 		ring.Submit(i);
 
 	unsigned numDescribed = 0;
-	OrtTensor layers(roma2.MakeCode()); // reused across every image (design decision 7: the describe pass keeps only the pooled vector, not the layers)
+	OrtTensor layers(roma2.MakeCode()); // reused across every image: the describe pass keeps only the pooled vector, not the layers
 	if (!layers.IsValid()) {
 		VERBOSE("error: could not allocate the ROMA2 layers tensor");
 		return 0;
@@ -640,7 +628,7 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2)
 		const PlanarImage* const planar = ring.Take();
 		Image& img = scene.images[i];
 		// the graph's own on-device retrieval pooling (RoMa2Onnx::Describe), read straight into
-		// descriptor -- the CPU pooling this pass used to fall back to is gone, one path remains
+		// descriptor
 		if (planar && roma2.DescribeImage(planar->data(), layers, descriptor)) {
 			ASSERT(descriptor.size() == roma2.RetrievalSize());
 			img.globalDescriptor = cv::Mat(1, (int)descriptor.size(), CV_32F, descriptor.data()).clone();
@@ -1278,7 +1266,7 @@ void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 	} else {
 		// overlapRatio/overlapArea stay at their reset value (0): a created pair is weighted exactly
 		// like any other pair, ComputePairsWeights computing its own overlap proxy for it. Stamping
-		// a full 1/1 overlap here (what the old NPZ import did) would survive PairsMatcher::Match --
+		// a full 1/1 overlap here would survive PairsMatcher::Match --
 		// nothing else writes overlapRatio -- and hand every dense pair a best-possible overlap
 		// score it was never measured to have
 		idxPair = (IIndex)scene.pairs.size();
@@ -1295,6 +1283,22 @@ void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 
 // T H E   O N E   P A S S ////////////////////////////////////////////
 
+#ifdef _USE_ONNXRUNTIME
+// The summary line of the one pass, in the one field list the measurement tools parse; a pass that stopped
+// before the warp pass and the store ran has every field they would have filled at 0
+static void LogOnePassSummary(size_t numCandidates, unsigned numJudged, unsigned numAdmitted, unsigned numStored,
+	unsigned numDenseOnly, unsigned numSlots, unsigned numLoads, unsigned numReloads, unsigned numAlreadyStored,
+	unsigned numUnprepared, unsigned numFailedLoads, unsigned numFailedMatches, unsigned numDenseMatches, const String& elapsed)
+{
+	DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
+		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
+		(unsigned)numCandidates, numJudged, numAdmitted, numStored, numDenseOnly,
+		numSlots, numLoads, numReloads,
+		numAlreadyStored, numUnprepared, numFailedLoads, numFailedMatches, numDenseMatches,
+		elapsed.c_str());
+}
+#endif
+
 bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const PairIdxArr& candidatePairs,
 	const ROMA2Config& config, unsigned& numStored)
 {
@@ -1305,11 +1309,6 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 		return true;
 	TD_TIMER_STARTD();
 	Scene& scene = pairsMatcher.GetScene();
-	if (roma2.NeedsIntrinsics() && std::any_of(scene.images.begin(), scene.images.end(),
-		[](const Image& img) { return !img.HasCamera() || img.GetCameraType() != CameraType::PINHOLE; })) {
-		VERBOSE("error: the dense matcher's pose head needs a pinhole camera for every image (FlexGlue does not run on spherical images)");
-		return false;
-	}
 	// every candidate pair indexes scene.images directly (slot planning, loads, the pair keys), so
 	// image IDs must be their own indices - the convention the whole matcher assumes
 	ASSERT(std::all_of(scene.images.begin(), scene.images.end(),
@@ -1348,14 +1347,8 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 		pairs.push_back(p);
 	}
 	if (pairs.empty()) {
-		// same field list as the summary line below (the measurement tools parse both the same way):
 		// nothing past this point ran, so every field the warp pass and the store would have filled is 0
-		DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
-			"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
-			candidatePairs.size(), 0u, 0u, 0u, 0u,
-			0u, 0u, 0u,
-			numAlreadyStored, numUnprepared, 0u, 0u, 0u,
-			TD_TIMER_GET_FMT().c_str());
+		LogOnePassSummary(candidatePairs.size(), 0, 0, 0, 0, 0, 0, 0, numAlreadyStored, numUnprepared, 0, 0, 0, TD_TIMER_GET_FMT());
 		return true; // no candidate left to judge is an empty pass, not a failed one
 	}
 
@@ -1439,12 +1432,9 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 	}
 	if (config.minCovisibility > 0.f && numGated.load() + numJudged.load() > 0)
 		DEBUG("ROMA2 covisibility gate: %u of %u warped pairs below %g", numGated.load(), numGated.load() + numJudged.load(), config.minCovisibility);
-	DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
-		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
-		candidatePairs.size(), numJudged.load(), numAdmitted.load(), numStored, numDenseOnly,
+	LogOnePassSummary(candidatePairs.size(), numJudged.load(), numAdmitted.load(), numStored, numDenseOnly,
 		stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads,
-		numAlreadyStored, numUnprepared, stats.numFailedLoads, stats.numFailedMatches, (unsigned)numDenseMatches,
-		TD_TIMER_GET_FMT().c_str());
+		numAlreadyStored, numUnprepared, stats.numFailedLoads, stats.numFailedMatches, (unsigned)numDenseMatches, TD_TIMER_GET_FMT());
 	return true;
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never

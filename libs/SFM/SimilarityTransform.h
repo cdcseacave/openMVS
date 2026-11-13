@@ -68,10 +68,6 @@ SFM_API unsigned EstimateSimilarityTransformWithRotations(
 /*----------------------------------------------------------------*/
 
 
-// Similarity transform refinement unit test
-SFM_API bool TestSimilarityTransform();
-/*----------------------------------------------------------------*/
-
 } // namespace SFM
 
 #endif // _SFM_SIMILARITYTRANSFORM_H_

@@ -2,21 +2,15 @@
 
 ## 1. Purpose and scope
 
-`FeaturesExtractor` with `detectorType = SIFTGPU` (CreateStructure `--detector-type SIFTGPU`) extracts
-SIFT keypoints and RootSIFT descriptors on the GPU for the sparse reconstruction. This record covers
-the host side in `libs/SFM/FeaturesExtractor.cpp` (image decoding, SiftGPU parameters, per-image
-feature selection) and the detector itself in the local vcpkg port `ports/siftgpu/source/src`
-(CUDA: `ProgramCU.cu`, `PyramidCU.cpp`, `CuTexImage.cpp`; OpenGL: `ProgramGLSL.cpp`, `PyramidGL.cpp`,
-`ShaderMan.cpp`). The backend is selected by `FeatureExtractionConfig::useCUDA` (CreateStructure
-`--siftgpu-cuda`, 1 by default; 0 or a CPU-only `--cuda-device` selects OpenGL/GLSL, also for the
-SiftGPU matcher); the OpenGL path implements the same detector, orientation and options and gives the
-same features up to floating-point differences. Matching, the other detectors and the SfM are
-documented elsewhere.
-
-The port is built by vcpkg in manifest mode with `VCPKG_OVERLAY_PORTS=ports`; vcpkg hashes the port
-sources, so a CMake configure after a change rebuilds only `siftgpu`, as long as the vcpkg toolchain
-(and with it the ABI hash of every package) is unchanged. A changed toolchain makes vcpkg remove and
-rebuild all dependencies first.
+`FeaturesExtractor` with `detectorType = SIFTGPU` (CreateStructure `--detector-type SIFTGPU`, the command line's default)
+extracts SIFT keypoints and RootSIFT descriptors on the GPU for the sparse reconstruction. This document covers the host
+side in `libs/SFM/FeaturesExtractor.cpp` (image decoding, SiftGPU parameters, per-image feature selection) and the detector
+itself in the local vcpkg port `ports/siftgpu/source/src` (CUDA: `ProgramCU.cu`, `PyramidCU.cpp`, `CuTexImage.cpp`;
+OpenGL: `ProgramGLSL.cpp`, `PyramidGL.cpp`, `ShaderMan.cpp`). The backend is selected by
+`FeatureExtractionConfig::useCUDA` (CreateStructure `--siftgpu-cuda`, 1 by default; 0 or a CPU-requesting `--gpu-device`
+selects OpenGL/GLSL, also for the SiftGPU matcher); the OpenGL path implements the same detector, orientation and options
+and gives the same features up to floating-point differences. The other detectors, the grid extraction they share and
+RootSIFT are in `FeatureExtraction.md`.
 
 ---
 
@@ -80,13 +74,12 @@ The gradients in SiftGPU's window (Gaussian weight σ_w = 1.5·σ_kp, radius 3σ
 circular moments `M_k = Σ w·|g|·exp(i·k·θ)`, k = 0..5, by repeated complex multiplication with the
 gradient direction (no binning). The orientation density smoothed by a wrapped Gaussian of
 0.35 rad, `D(φ) = Σ_k g_k·Re(M_k·exp(-i·k·φ))` with `g_0 = 1`, `g_k = 2·exp(-k²·0.35²/2)`, is sampled
-at the 36 former bin centres `(t + 0.5)·10°`; the peak search, the parabolic refinement and the second
+at 36 sample angles `(t + 0.5)·10°`; the peak search, the parabolic refinement and the second
 orientation (a local maximum above 0.8 of the highest, `-mo 2`, threshold `-ot`, read by CUDA and
 GLSL) are SiftGPU's. Two local maxima are at least two samples (20°) apart, and the 0.35 rad
-smoothing merges directions closer than about 40° into one peak. 0.35 rad matches the
-six `[1 1 1]/3` smoothing passes of SiftGPU's 36-bin histogram, which this replaces; the angle is no
-longer quantized before smoothing. The density is the same in CUDA and GLSL (`OrientationMomentMacros`,
-`OrientationGain`).
+smoothing merges directions closer than about 40° into one peak. 0.35 rad equals the smoothing of
+six `[1 1 1]/3` passes over a 36-bin histogram, and the angle is not quantized before smoothing. The density is the
+same in CUDA and GLSL (`OrientationMomentMacros`, `OrientationGain`).
 
 Features with two orientations are split on the GPU: `CountOrientations_Kernel` counts per block,
 the host scans the block counts of all levels after one download, and `ExpandOrientations_Kernel`
@@ -126,111 +119,76 @@ budget keeps every keypoint.
 | Decode look-ahead | pool threads + 1, 960 MB | `ProcessImages` |
 
 SiftGPU's own defaults for `-cmin` (0 = off) and `-da` (off) leave other users of the library on
-the original detector; the orientation estimator has no switch. SiftGPU keeps its options and backend
-in process-global state, so `FeaturesExtractor` passes the backend and `-da` explicitly on every
-initialization.
+the original detector; the orientation estimator has no switch.
 
 ## 4. Invariants and constraints
 
-- `-cmin` is compared with the curvature of the level's DoG divided by σ², so it is independent of
-  the octave; changing `-d` or the pyramid sigmas changes its meaning.
-- A texture object belongs to the buffer it is bound to and lives until that buffer is reallocated
-  (a 2D one until the view size changes); kernels may run asynchronously after the host function
-  that bound it returns, so it is destroyed only once they are done.
-- The CUDA and GLSL detectors must stay equivalent: the same thresholds, floor, darkness factor and
-  orientation density (feature counts within about 0.3%, orientation error within 0.01°).
-- With darkness adaptation off and the same settings, the optimized CUDA pipeline reproduced the
-  previous pipeline byte for byte (1,164 images); keep that check for refactors that should not
-  change results.
+- `-cmin` is compared with the curvature of the level's DoG divided by sigma^2, so it is independent of the octave;
+  changing `-d` or the pyramid sigmas changes its meaning.
+- A texture object belongs to the buffer it is bound to and lives until that buffer is reallocated (a 2D one until the
+  view size changes); kernels may run asynchronously after the host function that bound it returns, so it is destroyed
+  only once they are done.
+- The CUDA and GLSL detectors stay equivalent: the same thresholds, floor, darkness factor and orientation density
+  (feature counts within about 0.3%, orientation error within 0.01 deg).
+- SiftGPU keeps its options and backend in process-global state, so `FeaturesExtractor` passes the backend and every
+  option explicitly on each initialization.
+- The SiftGPU context is bound to one thread; decoding and the post-processing of the features run on the pool.
+
+---
 
 ## 5. Validation of the shipped defaults
 
-Benchmark: feature matching against reference poses of 7 TnT and 13 ETH3D scenes (1,294 image
-pairs), plus a synthetic suite with exact homographies; SfM on the extracted SiftGPU features
-(9 scenes, 3-5 multithreaded runs, median camera-centre error relative to the camera extent;
-Courtroom excluded where noted because about 10% of its reference cameras are flipped). Run-to-run SfM noise is a few hundredths of a percent per scene
-average (office alone spans 0.5-0.9%).
+Benchmark: feature matching against reference poses of 7 TnT and 13 ETH3D scenes (1,294 image pairs), a synthetic suite
+with exact homographies, and SfM on the extracted features (3-5 multithreaded runs, median camera-centre error relative
+to the camera extent). Run-to-run SfM noise is a few hundredths of a percent per scene average.
 
-| Change | Measure | Before | Shipped |
-|---|---|---|---|
-| Decoding on the pool | ETH3D 24 MP, images/s (facade, office) | 5.0, 7.4-8.0 | 12.8, 16.4 |
-| CUDA list generation, cached textures, GPU orientation split, one download | GPU ms per 1920x1080 image | 28 | 21 |
-| (same) | CreateStructure Ignatius, 263 images: extraction | 8.8 s | 5.5 s |
-| Threshold 0.005 + 3x3 cap → 0.0025 + 256 px grid | weak-cell coverage, weak scenes, native | 0.31 | 0.60 |
-| (same) | SfM centre error, 9 scenes | 0.380% | 0.366% |
-| + floor 0.001, threshold 0.001, edge 12.5 | ratio-test precision, 20 scenes, native / 8192 | 0.648 / 0.576 | 0.664 / 0.607 |
-| (same) | weak-cell coverage, 20 scenes, native | 0.617 | 0.678 |
-| (same) | correct mutual matches per pair, native | 2193 | 2028 |
-| (same) | pose AUC@10, native / 2048 | 0.892 / 0.773 | 0.891 / 0.781 |
-| (same) | SfM centre error, 9 scenes | 0.366% | 0.338% |
-| Moment orientation | median orientation error, synthetic rotation/scale | 0.90° | 0.73° |
-| (same) | top-1 / correct matches, synthetic | 0.944 / 11,381 | 0.946 / 11,410 |
-| (same) | pose AUC@10, 5 dev scenes, weak / textured, native | 0.884 / 0.881 | 0.897 / 0.896 |
-| (same) | SfM centre error, 8 scenes | 0.297% | 0.295% |
-| GLSL parity | orientation error CUDA / GLSL | | 0.733° / 0.727° |
-| (same) | features per image, 20 Meetingroom images, CUDA / GLSL | | 10,257 / 10,233 |
+| Measure | Shipped value |
+|---|---|
+| ETH3D 24 MP images per second with decoding on the pool (facade, office) | 12.8, 16.4 |
+| GPU time per 1920x1080 image (CUDA list generation, cached textures, GPU orientation split, one download) | 21 ms |
+| CreateStructure feature extraction, Ignatius, 263 images | 5.5 s |
+| Ratio-test precision, 20 scenes, native size / 8192 features | 0.664 / 0.607 |
+| Weak-cell coverage, 20 scenes, native size | 0.678 |
+| Correct mutual matches per pair, native size | 2028 |
+| Pose AUC@10, native / 2048 features | 0.891 / 0.781 |
+| Median orientation error, synthetic rotation and scale (moment estimator) | 0.73 deg |
+| Top-1 ratio / correct matches, synthetic | 0.946 / 11,410 |
+| Pose AUC@10, 5 dev scenes, weak / textured, native | 0.897 / 0.896 |
+| SfM centre error, 8 scenes | 0.295% |
+| Orientation error CUDA / GLSL | 0.733 deg / 0.727 deg |
+| Features per image, 20 Meetingroom images, CUDA / GLSL | 10,257 / 10,233 |
+| Darkness adaptation off / on (default off), SfM centre error / share of cameras within 1 deg and 1%, all features kept: 8 normal scenes | 0.343% / 89.7% / 0.277% / 91.7% |
+| Darkness adaptation off / on, 5 low-light scenes (about -3 EV with photon and read noise) | 0.419% / 84.2% / 0.434% / 71.8% |
 
-Darkness adaptation, all features kept (no per-image cap), SfM centre error / share of cameras within
-1° and 1%: normal scenes (8) 0.343% / 89.7% off, 0.277% / 91.7% on; low-light copies (5 scenes, about -3 EV with photon and read noise) 0.419% / 84.2% off,
-0.434% / 71.8% on. Capped at 8192 or 2048 features per image it lowers match precision on weak scenes
-(0.29 → 0.26 at 8192). Hence off by default: it helps uncapped extraction of well exposed images.
+Darkness adaptation helps uncapped extraction of well exposed images and, with the per-image cap at 8192 or 2048,
+lowers match precision on weak scenes (0.29 to 0.26 at 8192); hence it is off by default.
 
-CreateStructure on Ignatius registers 262 of 263 images with the shipped orientation (two runs) and
-263 with the histogram; the dropped image was borderline before (19 2D-3D correspondences for a
-minimum of 15, 12 now).
-
-One orientation per keypoint instead of up to two reduces extraction time by 4.09% but loses
-weak-region supports in 13 of 20 mesh-evaluated scenes at the default budget, with pose regressions
-on Ignatius and DarkPipes; up to two orientations are kept. The SfM part of this comparison covers
-227 of the 264 planned runs.
-
-Second-orientation threshold 0.9 instead of 0.8 (ETH3D: 3 textured, 5 weak, 4 low-light copies with
-and without darkness adaptation; SfM 3 runs, every feature kept): it halves the share of keypoints
-with a second orientation (about 14% → 7%), which frees about 7% of the budget for new locations on
-capped images, but costs 4-5% of the correct matches on the uncapped weak and low-light scenes (weak:
-1,230 → 1,167 per pair, top-1 0.543 → 0.527, SfM points −4%) with no gain on textured ones (2,440 →
-2,430). SfM centre error: textured 0.192% → 0.207%, weak 0.460% → 0.463%, low-light 0.488% → 0.426%
-(0.537% → 0.420% with darkness adaptation), the low-light gain coming from two of four scenes and
-within run-to-run noise; registered images and track lengths are unchanged. 0.8 is kept.
+---
 
 ## 6. Rejected alternatives
 
-- Fixed 256 px cell quota without redistribution: 14% fewer correct matches, pose AUC@10 0.888 vs
-  0.892 (20 scenes), no SfM gain (0.368% vs 0.366%).
-- Threshold 0.0015 or 0.001 without the curvature floor: more features, no more correct matches.
-- CLAHE before upload: doubled decode time without a matching gain.
-- Floor 0.0007 with threshold 0.001 (edge 20): highest weak-cell coverage (0.757), SfM 0.365% vs
-  0.338%.
-- Curvature from a smoothed 5x5 fit instead of 3x3 differences: no better.
-- Stability recheck (offset agreement with the preceding DoG level): removed 69-78% of the
-  keypoints at 0.2 px², worse on every metric at 1 or 4 px².
-- Local contrast margin on the extremum: weak-cell coverage collapsed to 0.28.
-- 4 levels per octave: +5% correct matches at native, lower top-1, mixed pose AUC; first octave 0:
-  3x fewer features, worse.
-- Darkness adaptation of the DoG threshold only: no effect, the floor rejects the added extrema.
-- Square-root darkness factor: better match precision, worse SfM (0.325% on normal scenes, 0.459% on
-  low-light ones); a size-dependent noise floor on the factor rarely applied.
-- 6 or 7 harmonics, smoothing 0.30 rad: within noise of 5 harmonics at 0.35 rad.
-- Shared-memory orientation histogram: no measurable speed difference.
-- Adaptive non-maximal suppression (incl. robust radius, c = 0.9), SSC/KD/range suppression,
-  quadtrees, variance partitioning, weighted FPS, Poisson sampling: no consistent gain in correct
-  matches, weak coverage or reconstruction; more uniform spacing alone is not enough.
-- Overlapping grid cells with protected spatial floors: more total matches (548 -> 585 per pair at
-  8192) but fewer weak-region matches (29.3 -> 28.4).
-- Intra-image descriptor uniqueness or response × scale × descriptor entropy as the ranking: lost
-  4-10% of the weak-region matches at 8192.
-- Ranking by DoG contrast (alone or after a coarse 6-cell share): more repeatable and better at an
-  8192 budget (SfM 0.359% vs 0.397%), worse at the default 27,000 (0.341% vs 0.318%); it would also
-  need SiftGPU to return the DoG value of each keypoint.
-- Own-image stability prepass (four transformed extractions + self-matching): 4.6-10.4 s/image vs
-  0.4-0.8 s, for 0.3%/3.6% more correct/weak-region inliers and no better poses.
-- DPP selection (per grid block or full image): no consistent gain, 47-51 s/image at 2048.
-- Primary-first budget (secondary orientations only on new locations in saturated cells): fewer
-  weak-region supports (DarkPipes 251 -> 221).
-- One orientation per keypoint, or a second-orientation threshold of 0.9: see §5.
+- A fixed 256 px cell quota without redistribution: 14% fewer correct matches, no SfM gain.
+- A lower DoG threshold (0.0015 or 0.001) without the curvature floor: more features, no more correct matches.
+- A stability recheck against the preceding DoG level: removed 69-78% of the keypoints at 0.2 px^2 and was worse on every
+  metric at 1 or 4 px^2.
+- One orientation per keypoint instead of up to two: loses weak-region supports in 13 of 20 scenes at the default budget;
+  a second-orientation threshold of 0.9 instead of 0.8 costs 4-5% of the correct matches on weak and low-light scenes.
+- 4 levels per octave (+5% correct matches but lower top-1, mixed pose AUC) and first octave 0 (3x fewer features).
+- Darkness adaptation of the DoG threshold only (no effect; the floor rejects the added extrema) and a square-root
+  darkness factor (better match precision, worse SfM).
+- Ranking by DoG contrast for the per-image selection: better at an 8192 budget, worse at the default 27,000, and it
+  needs SiftGPU to return the DoG value of each keypoint.
+- Adaptive non-maximal suppression, SSC/KD/range suppression, quadtrees, weighted farthest-point or Poisson sampling,
+  DPP selection, overlapping cells with protected floors, descriptor-uniqueness rankings: no consistent gain in correct
+  matches, weak coverage or reconstruction.
+- CLAHE before upload: doubled the decode time without a matching gain.
+- An own-image stability prepass (four transformed extractions and self-matching): 4.6-10.4 s per image against 0.4-0.8 s,
+  for no better poses.
+
+---
 
 ## 7. Open items
 
-- A cheap image-local ranker that retains weak-region support and useful alternate orientations
-  remains unresolved; native DoG export cost and any resulting quality gain require measurement.
+- A cheap image-local ranker that retains weak-region support and useful alternate orientations is unresolved; the cost of
+  exporting the DoG value of each keypoint and any quality gain require measurement.
 - Darkness adaptation needs a noise-aware threshold to help on underexposed images.

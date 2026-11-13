@@ -32,8 +32,7 @@ class SFM_API Scene;
 // k the ratio of the dense to the described reprojection sigma, taken at the head of every solve,
 // because a warp correspondence localizes a point several times less precisely than a descriptor
 // one. Not the view graph's number: what a dense match is worth as evidence that two images overlap
-// is PairsWeightingConfig::denseFrameInliers, a different question whose answer once happened to
-// share this value.
+// is PairsWeightingConfig::denseFrameInliers, a different question.
 constexpr double DENSE_OBSERVATION_WEIGHT = 0.25;
 
 /**
@@ -94,20 +93,17 @@ struct SFM_API BAConfig
 	// in the scene's inlier tracks, 0 = the same dense weight for every image. An image with hundreds
 	// of detections already has its pose fixed by them, and the warp samples of its matchings, a
 	// coarser measurement whose errors neighbouring samples share, can only pull it; an image with
-	// few detections keeps most of its dense say. Ships with maxDenseObservationWeight below: alone,
-	// on the eleven captures whose reference poses were verified, it left more images wrong than the
-	// same dense weight for every image (55 against 39).
+	// few detections keeps most of its dense say. Used together with maxDenseObservationWeight below:
+	// alone it leaves more images wrong than the same dense weight for every image.
 	unsigned denseHalfWeightObservations = 300;
 
 	// The most an image's dense residual weighs, after the scaling above, 0 = no ceiling. The weight
 	// the scene measures (0.06-0.15 on the captures) puts the warp samples, whose errors neighbouring
 	// samples share, well above what they are worth against the detections, so nearly every image is
-	// held to the ceiling and only one rich in detections goes below it. Measured on the eleven
-	// captures (three runs of each, 12/8/16 threads), with the scaling above against the same dense
-	// weight for every image: completeness/accuracy F1 +0.009 [+0.002, +0.017] (95%, paired bootstrap
-	// over images and runs), the gain in accuracy, no capture worse; an interior's real failure
-	// (15 images) is avoided in 4 of 6 runs against none of 9, and a tail that enters the model on
-	// a guessed baseline lands wrong in 6 of 9 runs with the ceiling as without it.
+	// held to the ceiling and only one rich in detections goes below it. Against the same dense weight
+	// for every image this lowers the weight of the images that need it least and improves the accuracy
+	// of the result, and it avoids the real failure of an interior capture that a tail entering the
+	// model on a guessed baseline does not escape either way.
 	double maxDenseObservationWeight = 0.01;
 
 	// The most observations one image contributes to a solve, of any keypoint kind, 0 = all. What a
@@ -146,11 +142,6 @@ struct SFM_API BAConfig
 		refineRadialDistortion3 = true;
 		refinePrincipalPoint = true;
 		refineTangentialDistortion = true;
-	}
-	void RefineAllIntrinsics() {
-		RefineExtendedIntrinsics();
-		refineFocalLengthAspectRatio = true;
-		refineRadialDistortion456 = true;
 	}
 
 	// check if any intrinsic refinement is enabled
@@ -377,11 +368,6 @@ SFM_API double EstimateDenseObservationWeight(const Scene& scene, const BAConfig
 // params[7] = { qw, qx, qy, qz, Cx, Cy, Cz }
 SFM_API void Pose3DToQuaternionAndCenter(const Pose3D& pose, double* params);
 SFM_API void QuaternionAndCenterToPose3D(const double* params, Pose3D& pose);
-
-// Convert OpenMVS pose to/from Ceres angle-axis parameterization
-// params[6] = { ax, ay, az, Cx, Cy, Cz }
-SFM_API void Pose3DToAngleAxisAndCenter(const Pose3D& pose, double* params);
-SFM_API void AngleAxisAndCenterToPose3D(const double* params, Pose3D& pose);
 /*----------------------------------------------------------------*/
 
 

@@ -8,7 +8,7 @@ bundle adjustment and dropping images whose evidence falls apart.
 
 Pair selection (`PairsMatcher.h/cpp`) proposes which pairs to attempt and matches and verifies them
 (`MatchGeometric.h/cpp`); the triplet filter (`ViewGraphTriplets.h/cpp`, see
-`TripletDisambiguation.md`) scores them and the contradiction cut that follows
+`TripletScores.md`) scores them and the contradiction cut that follows
 (`FilterPairsByContradiction`) removes the pairs a look-alike or repeated structure fabricated. The star
 initializer (`StarInitializer.h/cpp`) picks a well-connected reference view and registers a handful of
 its best-evidenced neighbours at once, seeding the model the resection (`Resection.h/cpp`, `PoseLink.h`)
@@ -31,7 +31,7 @@ verifies almost every time; 0 turns the prior off.
 ## The star initializer
 
 The reference view is the image with the most weighted inliers (among the seed views the triplet filter
-names, see `TripletDisambiguation.md`), a near-duplicate pair's inliers left out unless the image has no
+names, see `ContradictionCut.md`), a near-duplicate pair's inliers left out unless the image has no
 other pair; it is a neighbour's evidence, not its inlier count, that lists
 the neighbour in its star. A pair carries a relative pose of unit baseline, so a neighbour's distance to
 the reference is known only through the matches that triangulate: the star's evidence of a pair is its
@@ -197,10 +197,8 @@ share; after every solve the model is filtered at the bar and its pointless trac
 allowed solve included, so a capped adjustment ends as a converged one does.
 
 Between the adjustments, the tracks are triangulated and filtered against `maxReprojError` (4 px) and
-`minAngleThreshold`. Both kinds of observation answer to that bar. `FilterTracks` and `TriangulateTracks`
-can hold a dense (warp-sampled) observation to a multiple of it (`denseReprojErrorFactor`, 1 by default and
-in every call the reconstruction makes): the warp is computed at a fixed resolution, so a dense keypoint's
-pixel error grows with the image size where a detected keypoint's does not.
+`minAngleThreshold`. Described and dense (warp-sampled) observations answer to the same bar
+(`TrackBuilding.md`).
 
 A track seen by fewer than two posed images has no position that two posed views determine, so the triangulation
 leaves it out and the filter does not judge it: it either was never triangulated and still holds the default
@@ -220,7 +218,7 @@ for such a track, and the rule above covers what that reaches.
 
 Reprojection residuals fit each track's observations against the camera model, robustified by a Huber
 loss (2 px in the resection's own solves); a dense (warp-sampled) keypoint's residual is discounted
-relative to a described one's (measured, or pinned with `--ba-dense-weight`; see `ROMA2InProcess.md`).
+relative to a described one's (measured, or pinned with `--ba-dense-weight`; see `BundleAdjustment.md`).
 What a solve costs is the number of observations it fits, and one image can bring thousands of them
 -- warp samples where it was matched densely, detections where it was not -- so each image
 contributes at most `maxObservationsPerImage` (1500, `--ba-max-obs`) of any kind. The budget goes to
