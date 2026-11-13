@@ -2,16 +2,15 @@
 
 ## 1. Purpose and scope
 
-Every bundle adjustment implicitly knows how well each camera is localized: the inverse of the
-Gauss-Newton Hessian at the solution is the covariance of the estimated parameters. This feature
-reads that covariance off the **last global bundle adjustment** run during reconstruction, records
-it per image on the scene, exports it as a CSV quality report, and visualizes it in the Viewer as
-per-camera error ellipsoids.
+Every bundle adjustment (`BundleAdjustment.md`) implicitly knows how well each camera is localized:
+the inverse of the Gauss-Newton Hessian at the solution is the covariance of the estimated
+parameters. This feature reads that covariance off one dedicated global bundle adjustment run at
+the end of the reconstruction, records it per image on the scene, exports it as a CSV quality
+report, and visualizes it in the Viewer as per-camera error ellipsoids.
 
 ```
 Scene::Reconstruct (estimatePoseUncertainty)      CreateStructure --export-pose-quality
-  final BA ──┐                                             │
-  GPS-prior BA (supersedes) ──> Scene::poseUncertainty ──> quality.csv ──> Viewer --pose-quality-file
+  covariance BA (GPS-prior BA when GPS weights are set) ──> Scene::poseUncertainty ──> quality.csv ──> Viewer --pose-quality-file
 ```
 
 The primary use case is geo-referenced accuracy: on a GPS-aligned scene refined with GPS priors,
@@ -52,7 +51,7 @@ A second entry point, `BundleAdjustment::ComputePoseUncertaintyCeres()`, compute
 per-image covariance from the same solved problem using `ceres::Covariance` (`DENSE_SVD`) instead
 of the custom Schur + selected-inverse path, with matched conditioning (intrinsics fixed, points
 marginalized, same gauge/datum). It is `O(n^3)` — a validation-only cross-check
-(`GPSPriorPoseUncertaintyTest`, §5), not part of the pipeline.
+(used by `GPSPriorPoseUncertaintyTest`), not part of the pipeline.
 
 ### Gauge semantics
 
@@ -69,18 +68,19 @@ A monocular BA has a 7-DOF gauge freedom (similarity). Two regimes:
 ### Pipeline integration — `Scene::Reconstruct`
 
 Gated on `ReconstructionConfig::estimatePoseUncertainty` (set by CreateStructure when
-`--export-pose-quality` is given):
+`--export-pose-quality` is given). After the final adjustment, the weak-image filter, the closing
+resection and the alignment (to the imported prior poses, else to GPS), one more global adjustment
+runs in instance form with every intrinsic held fixed (they converged in the final adjustment) and
+records `Scene::poseUncertainty`:
 
-1. The **final global BA** runs in instance form and records `Scene::poseUncertainty`.
-   The covariance must be read **before** `FilterTracks`: the solved Ceres problem holds raw
+1. When GPS weights are configured and the scene is geo-aligned, this is the **GPS-prior BA**, and
+   the record holds absolute ENU covariances.
+2. Otherwise it is the plain adjustment, and the record is relative to its gauge datum.
+3. The covariance is read **before** the following `FilterTracks`: the solved Ceres problem holds raw
    pointers into the track array, which filtering invalidates.
-2. If GPS alignment succeeded and GPS weights are configured, the **GPS-prior BA** runs after
-   `AlignToGPS` and **supersedes** the record with absolute ENU covariances (also covering images
-   resected between the two BAs; images resected after the recorded BA keep not-computed entries).
-3. `Scene::Transform` keeps the record consistent with the world frame across any subsequent
-   similarity transform (including `AlignToGPS` itself when the GPS-prior BA does not run):
-   `Cov' = scale² · R · Cov · Rᵀ`; the rotation variance is body-frame and unaffected.
-4. `poseUncertainty` is serialized with the `.sfm` scene, so a saved reconstruction retains its
+4. `Scene::Transform` keeps the record consistent with the world frame across any later similarity
+   transform: `Cov' = scale² · R · Cov · Rᵀ`; the rotation variance is body-frame and unaffected.
+5. `poseUncertainty` is serialized with the `.sfm` scene, so a saved reconstruction retains its
    quality record.
 
 ### GPS-prior bundle adjustment
@@ -143,6 +143,8 @@ rotation sigmas; the gauge datum is labeled "reference".
 
 - The covariance must be read before `FilterTracks` runs, since the solved Ceres problem holds
   raw pointers into the track array that filtering invalidates.
+- `ComputePoseUncertainty()` returns an empty array, and the record is then empty, when the solve
+  failed, fewer than two poses are free or the gauge is rank-deficient.
 - `ComputePoseUncertainty()` conditions on fixed intrinsics (intrinsics excluded from the
   Jacobian); the result is a per-image quality signal, not a full-parameter covariance.
 - Without GPS priors, the global scale mode is gauge-unanchored: variances saturate at the
@@ -157,23 +159,7 @@ rotation sigmas; the gauge datum is labeled "reference".
   reprojection residuals that the `pixel_scale` balancing term does not account for.
 - CSV image IDs, not filenames, are the correlation key back to the `.mvs` project.
 
-## 5. Validation of the shipped defaults
-
-none recorded
-
-Correctness (not default-tuning) is exercised by three tests in `apps/Tests/TestsSFM.cpp`:
-`PipelineTest` (covariance present, finite, Cauchy-Schwarz-consistent, exactly one datum),
-`GPSPriorPoseUncertaintyTest` (GPS-prior BA on a synthetic geo-aligned scene: datum-free absolute
-covariances, no NaNs with missing accuracy metadata, poses within GPS accuracy, and agreement with
-the `ComputePoseUncertaintyCeres()` cross-check), and `PoseUncertaintyExportTest` (CSV write/re-read,
-`.mvs` image-ID roundtrip, `Scene::Transform` covariance mapping against a random Sim(3), `.sfm`
-serialization roundtrip).
-
-## 6. Rejected alternatives
-
-none recorded
-
-## 7. Open items
+## 5. Open items
 
 - GPS-prior residual weighting does not account for the angular reprojection residuals used by
   spherical cameras, so absolute covariances from the GPS-prior BA are not validated for that

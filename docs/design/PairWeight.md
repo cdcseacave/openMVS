@@ -12,15 +12,19 @@ cut, and then frozen (the blocks of a hierarchical run keep the scene's weights)
 
 - `WI`, the weighted inliers (`ImagePair::GetNumWeightedInliers`, written by `ComputePairsWeights`
   into `weightedInliers`): the sparse inliers plus the dense inliers at
-  `PairsWeightingConfig::DenseScale()` (`denseFrameInliers` / `denseMatchesPerFrame`, 25 / 2000), so a
-  whole dense frame counts as a modest descriptor pair. Capped at 1000 in the weight.
+  `PairsWeightingConfig::DenseScale()` (`denseFrameInliers` / `denseMatchesPerFrame`, 50 / 2000), so a
+  whole dense frame counts as a modest descriptor pair and a pair with fewer dense inliers counts
+  proportionally fewer. Capped at 1000 in the weight.
 - `coverage` (`ImagePair::overlapArea`, `ComputePairCoverage`): the share of a 10 x 10 grid the pair's
   track-forming matches occupy, the smaller of the two images'. Pinhole images bin on the pixel grid;
   spherical images on equal-solid-angle cells over the whole sphere (azimuth, sine of latitude), so a
   panorama pair's coverage is a share of the full sphere.
 - `angle` (`ImagePair::ComputeAngleBaselineWeight` on `meanRayAngle`): 1 at 15 degrees of mean ray
-  angle, a gentle quadratic loss down to 0.7 at 24 degrees, exponential decay past it, a steep
-  quadratic below 1.5 degrees; 1 for a pair without a measured angle.
+  angle, falling quadratically (1 - 0.3 (d / 9)^2, d the distance from 15 degrees) to 0.7 at 24
+  degrees and, on the narrow side, at 6 degrees; above 24 degrees an exponential decay
+  (0.7 exp(-(angle - 24) / 10.5)); below 6 degrees the same quadratic continues to 0.325 at 1.5
+  degrees, under which it falls as 0.325 (angle / 1.5)^2; 1 when the mean ray angle is not positive
+  (no angle measured).
 - `weightSpatial` (`ComputeIntrinsicWeight`) stores coverage x angle; it is 0 for a pair with fewer
   than `minInliers` (15) track-forming matches or whose weighted inliers round to 0, and such a pair
   has no weight at all. The product in `GetCompositeWeight` is written as
@@ -68,49 +72,46 @@ positive wherever it computes triangles and connectivity, and the evidence posit
 
 ## Validation
 
-Pre-cut matched scenes reloaded at 8 threads, one run each, the weight-scaled rotation averaging in
-both columns (T/records-2026-11-11-weight). Per cell: registered / right / wrong / pose score
-[wrong block starts; wrong registrations block / pool / post-merge].
+Pre-cut matched scenes reloaded at 8 threads, one run each, with the default bars. Per cell:
+registered / right / wrong / pose score [wrong block starts; wrong registrations at block / pool /
+post-merge stage]. Right and wrong are judged against reference poses.
 
-| capture | the previous weight (inlier-ratio boost, cbrt of all terms, bar 3) | this weight |
+| capture | registered / right / wrong / pose score | wrong block starts; wrong registrations |
 |---|---|---|
-| Palace | 495 / 494 / 1 / 0.8103 [0; 8 / 7 / 0] | 495 / 494 / 1 / 0.8191 [0; 11 / 5 / 0] |
-| 4e5c6f6d | 291 / 250 / 32 / 0.9140 [0; 71 / 0 / 26] | 281 / 269 / 3 / 0.9489 [0; 34 / 17 / 28] |
-| 17ac94cc | 553 / 521 / 8 / 0.6443 [0; 57 / 1 / 0] | 551 / 520 / 6 / 0.6234 [0; 56 / 2 / 3] |
-| 5ada248e | 530 / 524 / 5 / 0.9562 [0; 31 / 0 / 29] | 531 / 525 / 4 / 0.9562 [0; 13 / 1 / 21] |
-| Outdoor_004 | 767 / 767 / 0 / 0.7196 [0; 44 / 0 / 1] | 774 / 767 / 7 / 0.7310 [0; 13 / 0 / 0] |
-| Indoor_044 (track bar 0.9) | 1087 / 1087 / 0 / 0.7138 (a reload without the monitor) | 1087 / 1087 / 0 / 0.7141 [0; 13 / 0 / 0] |
-| 6DCA1E8E (track bar 0.9) | 841 / 464 / 7 / 0.7527 [0; 167 / 1 / 99] | 667 / 465 / 7 / 0.7510 [0; 146 / 0 / 82] |
+| Palace | 495 / 494 / 1 / 0.8191 | 0; 11 / 5 / 0 |
+| 4e5c6f6d | 281 / 269 / 3 / 0.9489 | 0; 34 / 17 / 28 |
+| 17ac94cc | 551 / 520 / 6 / 0.6234 | 0; 56 / 2 / 3 |
+| 5ada248e | 531 / 525 / 4 / 0.9562 | 0; 13 / 1 / 21 |
+| Outdoor_004 (panorama) | 774 / 767 / 7 / 0.7310 | 0; 13 / 0 / 0 |
 
-6DCA1E8E ends one of two ways from run to run (its images 617-871, which no reference judges,
-registered or not); its two runs ended in different ways, and the images the references judge are
-the same. 4e5c6f6d's gain is the formula's: the same 269 right / 3 wrong at a track bar of 0.9.
-
-The track/cut bar on Outdoor_004 (this formula; right / wrong / pose score): 0.9 at every use
-660 / 107 / 0.6507; the clustering bar alone at 1.22 666 / 101 / 0.6503; the track/cut bar alone at
-1.22 767 / 7 / 0.7310; every bar at 1.22 767 / 7 / 0.7295. At 0.9 the image that starts the failure
-registers in its block on 37 inliers 5.3 degrees off its links (32 inliers, 0.5 degrees at 1.22), the
-block's error spreads to 28 neighbours of a revisited spot, and three blocks attached only through
-that spot follow it (78 images right in their own blocks, wrong in the model). The 342 pairs between
-0.9 and 1.22 are 15% wrong-pose against 1% above 1.22; they are panorama pairs, whose coverage
-(median 0.18, against 0.33 to 0.42 on the normal-camera captures) enters the weight in full.
+The track/cut bar on Outdoor_004 (right / wrong / pose score): 0.9 at every use 660 / 107 / 0.6507;
+the clustering bar alone at 1.22 666 / 101 / 0.6503; the track/cut bar alone at 1.22 767 / 7 /
+0.7310; every bar at 1.22 767 / 7 / 0.7295. At 0.9 the image that starts the failure registers in
+its block on 37 inliers 5.3 degrees off its links (32 inliers, 0.5 degrees at 1.22), the block's
+error spreads to 28 neighbours of a revisited spot, and three blocks attached only through that spot
+follow it (78 images right in their own blocks, wrong in the model). The 342 pairs between 0.9 and
+1.22 are 15% wrong-pose against 1% above 1.22; they are panorama pairs, whose coverage (median
+0.18, against 0.33 to 0.42 on the normal-camera captures) enters the weight in full.
 
 ## Rejected alternatives
 
-- The triangle term squared, (0.1 + triangles)^2, bars 0.75: folds Palace (286 right, 209 wrong), with
-  the median-scaled rotation averaging too.
-- That squared weight for the tracks while the cut keeps the previous one: two weights for one
-  quantity, no gain (Palace 0.8009).
-- The cut weighted without the triplet score: loses Palace's 78 right junction pairs.
+- The triangle term squared, (0.1 + triangles)^2, with bars at 0.75: folds Palace (286 right, 209 wrong).
+- That squared weight for the tracks while the cut keeps another: two weights for one quantity, no gain.
+- The cut weighted without the triplet score: loses 78 right junction pairs of Palace.
 - A track/cut bar of 0.9 as the default (it stays the more aggressive setting): about 100 wrong images on Outdoor_004, no gain elsewhere.
-- The inlier-ratio boost on the connectivity: rank correlation 0.05 with the references' ranking.
+- An inlier-ratio boost on the connectivity: rank correlation 0.05 with the references' ranking.
 - The triplet score raised to a power in the cut: no more false pairs removed.
+- A coverage term computed on the sparse matches alone: no gain on any capture, and right images lost on a lidar one.
+- Gating the dense-only pairs by triangle closure: hurts a long indoor capture at every bar tried (0.2 to 0.4: 144 to 184 wrong images against 56 to 66).
+- A static cap on the dense inliers (a quarter each, 300 at most) instead of the frame-anchored
+  scale: it flattens every link of an image whose pairs all exceed it, so on a textureless interior
+  a near and a far link weigh the same through the connectivity term.
+- A dense frame target of 100 (1/20 of the draw): 77 to 80 wrong images against 50 to 61 at 50; 150 is refused too.
 
 ## Open items
 
-- 17ac94cc's pose score falls with this formula (0.6443 -> 0.6234, the same right images; mean score
-  over them 0.4823 -> 0.4592); the track bar does not carry it (0.6292 at 0.9).
-- Outdoor_004's images 508-514 register wrong in their block under both weights; the final weak-image
-  filter removes the three the previous weight registers and keeps them under this one.
-- The resection accepts an image on 37 inliers 5.3 degrees off every one of its links (the link
-  quorum's bar is 15 degrees): the Outdoor_004 failure at a track bar of 0.9 starts there.
+- The resection accepts an image on a few dozen inliers several degrees off every one of its links
+  (the link quorum's bar is 15 degrees); at a track bar of 0.9 a failure starts there.
+- A panorama pair's coverage is low and enters the weight in full, so the bar separates wrong
+  pairs less sharply on panoramas than on normal cameras.
+- The weak-image filter keeps some images that sit wrong in their block under this weight.
