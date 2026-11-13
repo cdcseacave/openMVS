@@ -285,8 +285,10 @@ bool DepthData::Load(const String& fileName, unsigned flags)
 	Camera camera;
 	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap, flags, &bConfAdjusted))
 		return false;
-	ASSERT(!IDs.empty() && (!IsValid() || IDs.front() == GetView().GetID()));
+	ASSERT(!IDs.empty() && (!IsValid() || (IDs.front() == GetView().GetID() && size == imageSize)));
 	ASSERT(depthMap.size() == imageSize);
+	// a depth-data loaded on its own, without the views that set its size, takes it from the file
+	size = imageSize;
 	ASSERT(depthMap.size() == size);
 	return true;
 }
