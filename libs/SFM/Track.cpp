@@ -599,10 +599,9 @@ void SFM::ComputeObservationSigmas(const Scene& scene,
 
 std::pair<float, float> SFM::FilterTracks(Scene& scene,
 	float maxReprojErrorPixels, float minAngleDegrees,
-	float multDepthNear, float multDepthFar, float denseReprojErrorFactor)
+	float multDepthNear, float multDepthFar)
 {
 	const float minAngleRadians = D2R(minAngleDegrees);
-	const float maxDenseReprojErrorPixels = maxReprojErrorPixels * denseReprojErrorFactor;
 
 	// Process each track
 	MeanStdMinMax<REAL> trackCompletenessStats;
@@ -642,7 +641,7 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 			const Point3 observedRay = img.pCamera->UnprojectNormalized(Cast<REAL>(kp.pt));
 			const REAL cosAngularError = ComputeAngle(observedRay.ptr(), Xcam.ptr());
 			const bool bDense = img.IsDenseKeypoint(obs.featureID);
-			const REAL minCosAngularError = COS(img.pCamera->PixelErrorToAngular(bDense ? maxDenseReprojErrorPixels : maxReprojErrorPixels));
+			const REAL minCosAngularError = COS(img.pCamera->PixelErrorToAngular(maxReprojErrorPixels));
 			if (cosAngularError < minCosAngularError) {
 				++(bDense ? numDenseDropped : numDescribedDropped);
 				continue; // outlier or behind the camera observation
