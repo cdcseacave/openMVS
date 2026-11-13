@@ -3273,6 +3273,20 @@ void UI::ShowDensifyWorkflowWindow(Window& window) {
 	ImGui::End();
 }
 
+// the mesh workflows support pinhole cameras only (MVS::Scene::CheckPinholeOnly): draws the notice and
+// returns true if the active layer has spherical images, read from the layer state, not the scene,
+// which a running workflow owns
+static bool ShowPinholeOnlyNotice(const Scene& scene) {
+	const Scene::Layer* layer = scene.GetActiveLayer();
+	if (layer == nullptr || !layer->hasSphericalImages)
+		return false;
+	ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.3f, 1.f));
+	ImGui::TextWrapped("The scene has spherical images: ReconstructMesh, RefineMesh and TextureMesh support pinhole cameras only. "
+		"Export the scene from the SfM with --spherical-export cubemap to run the mesh pipeline.");
+	ImGui::PopStyleColor();
+	return true;
+}
+
 void UI::ShowReconstructWorkflowWindow(Window& window) {
 	if (!showReconstructWorkflow)
 		return;
@@ -3342,7 +3356,8 @@ void UI::ShowReconstructWorkflowWindow(Window& window) {
 		ImGui::SetTooltip("Crop the final mesh to the Region of Interest bounds.\nVertices and faces outside the ROI will be removed.");
 
 	ImGui::Separator();
-	const bool canRun = scene.IsOpen() && hasPoints;
+	const bool bPinholeOnly(ShowPinholeOnlyNotice(scene));
+	const bool canRun = scene.IsOpen() && hasPoints && !bPinholeOnly;
 	ImGui::BeginDisabled(!canRun || scene.IsWorkflowRunning());
 	if (ImGui::Button("Run")) {
 		showReconstructWorkflow = false;
@@ -3352,7 +3367,7 @@ void UI::ShowReconstructWorkflowWindow(Window& window) {
 	ImGui::SameLine();
 	if (ImGui::Button("Close"))
 		showReconstructWorkflow = false;
-	if (!canRun)
+	if (!canRun && !bPinholeOnly)
 		ImGui::TextDisabled("Requires a dense point-cloud.");
 
 	ImGui::End();
@@ -3432,7 +3447,8 @@ void UI::ShowRefineWorkflowWindow(Window& window) {
 	ImGui::Separator();
 	const bool workflowRunning = scene.IsWorkflowRunning();
 	const MVS::Scene* mvsScene = workflowRunning ? nullptr : &scene.GetScene();
-	const bool canRun = mvsScene != nullptr && mvsScene->IsValid() && !mvsScene->mesh.IsEmpty();
+	const bool bPinholeOnly(ShowPinholeOnlyNotice(scene));
+	const bool canRun = mvsScene != nullptr && mvsScene->IsValid() && !mvsScene->mesh.IsEmpty() && !bPinholeOnly;
 	ImGui::BeginDisabled(!canRun || workflowRunning);
 	if (ImGui::Button("Run")) {
 		showRefineWorkflow = false;
@@ -3442,7 +3458,7 @@ void UI::ShowRefineWorkflowWindow(Window& window) {
 	ImGui::SameLine();
 	if (ImGui::Button("Close"))
 		showRefineWorkflow = false;
-	if (!canRun)
+	if (!canRun && !bPinholeOnly)
 		ImGui::TextDisabled("Requires an existing mesh.");
 
 	ImGui::End();
@@ -3536,7 +3552,8 @@ void UI::ShowTextureWorkflowWindow(Window& window) {
 		ImGui::SetTooltip("Maximum texture atlas size in pixels per dimension.\nMultiple textures are created if needed.\nLarger values allow higher resolution textures, but require more memory (0 - no limit)");
 
 	ImGui::Separator();
-	const bool canRun = scene.IsOpen() && hasMesh;
+	const bool bPinholeOnly(ShowPinholeOnlyNotice(scene));
+	const bool canRun = scene.IsOpen() && hasMesh && !bPinholeOnly;
 	ImGui::BeginDisabled(!canRun || scene.IsWorkflowRunning());
 	if (ImGui::Button("Run")) {
 		showTextureWorkflow = false;
@@ -3546,7 +3563,7 @@ void UI::ShowTextureWorkflowWindow(Window& window) {
 	ImGui::SameLine();
 	if (ImGui::Button("Close"))
 		showTextureWorkflow = false;
-	if (!canRun)
+	if (!canRun && !bPinholeOnly)
 		ImGui::TextDisabled("Requires a mesh and images.");
 
 	ImGui::End();
@@ -3570,6 +3587,7 @@ void UI::ShowBatchWorkflowWindow(Window& window) {
 
 	ImGui::TextUnformatted("Select workflow modules to run sequentially.");
 	ImGui::Separator();
+	const bool bPinholeOnly(ShowPinholeOnlyNotice(scene));
 
 	// Persistent selection and ordering
 	static bool selectedModules[5] = { true, true, true, true, true }; // Estimate ROI, Densify, Reconstruct, Refine, Texture
@@ -3590,13 +3608,13 @@ void UI::ShowBatchWorkflowWindow(Window& window) {
 			break;
 		case 2: // Reconstruct
 			// Reconstruct requires points OR densify selected to produce points
-			if (!(prereqMet = hasPoints || selectedModules[1]))
+			if (!(prereqMet = (hasPoints || selectedModules[1]) && !bPinholeOnly))
 				selectedModules[idx] = false;
 			break;
 		case 3: // Refine
 		case 4: // Texture
 			// Refine/Texture require a mesh OR reconstruct selected to produce a mesh
-			if (!(prereqMet = hasMesh || selectedModules[2]))
+			if (!(prereqMet = (hasMesh || selectedModules[2]) && !bPinholeOnly))
 				selectedModules[idx] = false;
 			break;
 		}

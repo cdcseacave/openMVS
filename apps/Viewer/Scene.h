@@ -75,6 +75,7 @@ public:
 		Point3f sceneSize{0, 0, 0};
 		float sceneDistance{1.f};
 		PointConfidenceFilter pointConfidence; // range set by RefreshLayerState
+		bool hasSphericalImages{false}; // set by RefreshLayerState: the mesh workflows support pinhole cameras only
 
 		Layer() = default;
 		Layer(const Layer&) = delete;

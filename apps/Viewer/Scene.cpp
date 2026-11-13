@@ -640,6 +640,7 @@ void Scene::RefreshLayerState(Layer& layer, bool rebuildImages)
 		layer.sceneSize = Point3f(bounds.GetSize().cast<float>());
 	layer.sceneDistance = layer.images.empty() ? 1.f : scene.ComputeDistanceCameras2Scene(0.1f, true);
 	layer.pointConfidence.Reset(scene.pointcloud);
+	layer.hasSphericalImages = scene.HasSphericalImages();
 	if (layer.label.empty()) {
 		layer.label = Util::getFileNameExt(layer.sceneName);
 	}
