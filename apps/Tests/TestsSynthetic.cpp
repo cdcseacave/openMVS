@@ -1692,6 +1692,80 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 }
 /*----------------------------------------------------------------*/
 
+bool MVS::TowerSphericalTest()
+{
+	TD_TIMER_START();
+	constexpr int width(512), height(256);
+	constexpr unsigned numRings(3), numPerRing(8);
+	constexpr double ringRadius(1.5), ringZ[numRings] = {0.5, 2.5, 4.5};
+	const ScopedTempDir tmpDir(_T("TowerSpherical"));
+	if (!tmpDir.IsValid())
+		return false;
+	const ScopedWorkingFolder workingFolder(tmpDir.Path() + "/");
+	Scene scene(1);
+	const Spherical<REAL> sphere(Spherical<REAL>::FromSize(width, height));
+	KMatrix K(KMatrix::IDENTITY);
+	K(0,0) = sphere.fx; K(1,1) = sphere.fy; K(0,2) = sphere.cx; K(1,2) = sphere.cy;
+	Platform& platform = scene.platforms.emplace_back();
+	platform.cameras.emplace_back(ScaleK(K, REAL(1)/Camera::GetNormalizationScale(width, height)), RMatrix::IDENTITY, CMatrix::ZERO).model = CameraModelType::SPHERICAL;
+	// three stacked rings of 8 panoramas around the pillar, 24 headings 15 deg apart, each panorama
+	// level (its rows down -z) and looking away from the pillar, which so lies on its seam
+	for (unsigned r=0; r<numRings; ++r) {
+		for (unsigned j=0; j<numPerRing; ++j) {
+			const double angle(D2R(45.0*j + 15.0*r));
+			const Point3 dir(cos(angle), sin(angle), 0);
+			Platform::Pose& pose = platform.poses.emplace_back();
+			pose.C = Point3(pillarAxis.x() + ringRadius*dir.x, pillarAxis.y() + ringRadius*dir.y, ringZ[r]);
+			pose.R = RMatrix(cv::Matx33d(dir.y, -dir.x, 0, 0, 0, -1, dir.x, dir.y, 0));
+			Image& image = scene.images.emplace_back();
+			image.platformID = image.cameraID = 0;
+			image.poseID = image.ID = scene.images.size()-1;
+			image.width = width; image.height = height; image.scale = 1;
+			image.UpdateCamera(scene.platforms);
+		}
+	}
+	scene.nCalibratedImages = scene.images.size();
+	// the sparse points on the pillar surface, seen by every panorama
+	for (int z=0; z<=20; ++z) {
+		for (int a=0; a<8; ++a) {
+			const double angle(D2R(45.0*a));
+			scene.pointcloud.points.emplace_back(float(pillarAxis.x() + pillarRadius*cos(angle)), float(pillarAxis.y() + pillarRadius*sin(angle)), float(0.25*z));
+			PointCloud::ViewArr& views = scene.pointcloud.pointViews.emplace_back();
+			FOREACH(v, scene.images)
+				views.push_back(v);
+		}
+	}
+	scene.InitTowerScene(-1);
+	// the tower cloud: a horizontal unit normal per point, and at least two panoramas seeing the point
+	// from the side its normal faces (within the angle of two pixels, DrawCircle reading the ray of the
+	// rounded pixel)
+	const PointCloud& pc = scene.pointcloud;
+	if (pc.IsEmpty() || pc.normals.size() != pc.points.size()) {
+		VERBOSE("ERROR: TowerSphericalTest: %u tower points with %u normals!", pc.points.size(), pc.normals.size());
+		return false;
+	}
+	const float maxCos(2*FTWO_PI/width);
+	FOREACH(p, pc.points) {
+		const Point3f& X = pc.points[p];
+		const Normal& n = pc.normals[p];
+		const PointCloud::ViewArr& views = pc.pointViews[p];
+		if (views.size() < 2 || !ISEQUAL(norm(n), 1.f) || !ISZERO(n.z)) {
+			VERBOSE("ERROR: TowerSphericalTest: point %u (%g, %g, %g) has %u views, normal (%g, %g, %g)!", p, X.x, X.y, X.z, views.size(), n.x, n.y, n.z);
+			return false;
+		}
+		for (const PointCloud::View v: views) {
+			const Point3f ray(normalized(X - Cast<float>(scene.images[v].camera.C)));
+			if (n.dot(ray) >= maxCos) {
+				VERBOSE("ERROR: TowerSphericalTest: point %u (%g, %g, %g) is seen by view %u from behind its normal (cos %g)!", p, X.x, X.y, X.z, v, n.dot(ray));
+				return false;
+			}
+		}
+	}
+	VERBOSE("TowerSphericalTest passed: %u tower points (%s)", pc.points.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 bool MVS::BrownUndistortOnLoadTest()
 {
 	TD_TIMER_START();

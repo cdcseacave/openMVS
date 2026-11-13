@@ -217,6 +217,11 @@ bool NeighborViewsPointCloudRigTest();
 // 1.5x that of the other points
 bool EstimatePointCloudNormalsSphericalTest();
 
+// Scene::InitTowerScene on 24 panoramas in three stacked rings around the pillar of the synthetic scene, the
+// pillar on their seam: the tower cloud is not empty and every point carries a horizontal normal and at least
+// two panoramas seeing it from the side the normal faces
+bool TowerSphericalTest();
+
 // Tests.exe tool modes producing the validation numbers of the design docs (argv[0] is the mode;
 // without a known mode it prints their usage): the synthetic dataset, the synthetic PatchMatch and
 // fusion runs, the ScorePixel cost, depth-map and cloud evaluation against GT, the cube-face

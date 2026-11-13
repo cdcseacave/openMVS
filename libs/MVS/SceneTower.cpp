@@ -158,12 +158,11 @@ size_t Scene::DrawCircle(PointCloud& pc, PointCloud::PointArr& outCircle, const 
 		PointCloud::ViewArr views;
 		FOREACH(idxImg, images) {
 			const Image& image = images[idxImg];
-			const Point3f xz(image.camera.TransformPointW2I3(Cast<REAL>(newPoint)));
-			const Point2f x(xz.x, xz.y);
-			if (!Image8U::isInside<float>(x, image.GetSize()) ||
-				xz.z <= 0)
+			const ModelCamera camera(image.GetModelCamera());
+			Point2f x;
+			if (!camera.ProjectPointInside(newPoint, image.GetSize(), x))
 				continue;
-			if (n.dot(Cast<float>(image.camera.RayPoint<REAL>(x))) >= 0)
+			if (n.dot(Cast<float>(camera.RayPoint(Point2(x)))) >= 0)
 				continue;
 			views.emplace_back(idxImg);
 		}
@@ -355,11 +354,6 @@ void Scene::InitTowerScene(const int towerMode)
 		return;
 	if (!ComputeTowerCylinder(centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ, towerMode))
 		return;
-	if (HasSphericalImages()) {
-		// the tower points are seen through the pinhole cameras (DrawCircle)
-		VERBOSE("warning: the tower mode supports pinhole cameras only; disabled for the spherical images");
-		return;
-	}
 
 	// add nTargetPoints points on each circle
 	PointCloud towerPC(BuildTowerMesh(pointcloud, centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ, false));

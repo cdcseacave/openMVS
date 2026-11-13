@@ -343,6 +343,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!MVS::EstimatePointCloudNormalsSphericalTest())
 				return false;
+			if (!MVS::TowerSphericalTest())
+				return false;
 			if (!MVS::DMapCacheKeepsRequestedImageTest())
 				return false;
 			if (!MVS::SyntheticDepthBaselineTest())
