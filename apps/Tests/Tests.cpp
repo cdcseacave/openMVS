@@ -630,6 +630,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::OneCameraDirectionTest())
 				return false;
+			if (!SFM::RigScaleTwoCamerasTest())
+				return false;
 			if (!SFM::RingLoopClosureTest())
 				return false;
 			if (!SFM::BiasedClosingSeamTest())

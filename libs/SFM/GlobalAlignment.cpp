@@ -537,8 +537,8 @@ void RefineSimilarity(const std::vector<SeamObservation>& observations, float ma
 }
 
 // Whether the rig behind the given observations of one direction observes a scale: the spread of
-// the rig cameras holding minCameraInliers of them -- every camera holding one when fewer than two
-// do -- over the median depth of their points. A rig collapsed onto one point sees no parallax.
+// the rig cameras holding minCameraInliers of them over the median depth of their points; fewer
+// than two such cameras observe none. A rig collapsed onto one point sees no parallax.
 bool RigObservesScale(
 	const std::vector<SeamObservation>& observations, const std::vector<uint32_t>& indices,
 	const Transform& T, const GlobalAlignmentConfig& config)
@@ -553,15 +553,12 @@ bool RigObservesScale(
 		camera.second = obs.C;
 		depths.push_back(norm((obs.forward ? T : TInv) * obs.X - obs.C));
 	}
-	std::vector<Point3> centres, holding;
-	for (const auto& [image, camera] : rig) {
-		holding.push_back(camera.second);
+	ASSERT(!depths.empty());
+	std::vector<Point3> centres;
+	for (const auto& [image, camera] : rig)
 		if (camera.first >= config.minCameraInliers)
 			centres.push_back(camera.second);
-	}
 	if (centres.size() < 2)
-		centres.swap(holding);
-	if (centres.size() < 2 || depths.empty())
 		return false;
 	REAL spread = 0;
 	FOREACH(i, centres)

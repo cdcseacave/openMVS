@@ -21599,6 +21599,72 @@ bool OneCameraDirectionTest()
 }
 /*----------------------------------------------------------------*/
 
+static const SeamCandidate* ReadingOf(const std::vector<SeamCandidate>& readings, SeamCandidate::Source source);
+
+// A reading observes a scale only when two of its rig's cameras each hold minCameraInliers of its inliers: one camera
+// holding them and a second holding a few observe none. Three blocks of a ring; the cross pairs of (0, 2) kept only on
+// two cameras of block 2, the second of them reduced to one cross pair of a few matches. The direction of block 2's
+// rig on block 0's points is read (the first camera carries it) and observes no scale; with both cameras holding their
+// full pairs it observes one.
+bool RigScaleTwoCamerasTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{3, 16};
+	const GlobalAlignmentConfig alignCfg;
+	const auto ReadPair02 = [&](unsigned numSecondMatches, SeamCandidate& reading) {
+		Scene scene;
+		std::vector<IIndexArr> blocks;
+		std::vector<Pose3D> gtPoses;
+		GenerateRingScene(cfg, scene, blocks, gtPoses);
+		const std::set<IIndex> a(blocks[0].begin(), blocks[0].end()), b(blocks[2].begin(), blocks[2].end());
+		const IIndex first = blocks[2].back(), second = blocks[2][blocks[2].size() - 2];
+		bool secondKept = false;
+		RFOREACH(i, scene.pairs) {
+			ImagePair& pair = scene.pairs[i];
+			const IIndex imgA = a.count(pair.ID1) ? pair.ID1 : pair.ID2, imgB = imgA == pair.ID1 ? pair.ID2 : pair.ID1;
+			if (!a.count(imgA) || !b.count(imgB))
+				continue;
+			if (imgB == first || (imgB == second && numSecondMatches == 0))
+				continue;
+			if (imgB == second && !secondKept && pair.matches.size() > numSecondMatches) {
+				pair.matches.resize(numSecondMatches);
+				secondKept = true;
+				continue;
+			}
+			scene.pairs.RemoveAtMove(i);
+		}
+		ComputePairsWeights(scene);
+		std::vector<Scene> subScenes;
+		std::vector<IIndexArr> localToGlobals;
+		std::vector<SEACAVE::Transform> applied;
+		BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+		GlobalAlignment alignment(scene, alignCfg);
+		alignment.PrepareSeamEvidence(subScenes, localToGlobals);
+		std::vector<SeamCandidate> readings;
+		alignment.EstimateSeamPair(subScenes, 0, 2, readings);
+		const SeamCandidate* rig = ReadingOf(readings, SeamCandidate::RIG_B_ON_A);
+		if (rig == NULL)
+			return false;
+		reading = *rig;
+		return true;
+	};
+	SeamCandidate thin, full;
+	if (!ReadPair02(4, thin) || !ReadPair02(0, full)) {
+		VERBOSE("RigScaleTwoCamerasTest FAILED: premise, block 2's rig on block 0's points gave no reading");
+		return false;
+	}
+	if (thin.scaleObservable || !full.scaleObservable) {
+		VERBOSE("RigScaleTwoCamerasTest FAILED: the rig of one camera holding its inliers and one holding 4 matches %s a scale "
+			"(none expected), the rig of two cameras holding theirs %s one (expected)",
+			thin.scaleObservable ? "observes" : "does not observe", full.scaleObservable ? "observes" : "does not observe");
+		return false;
+	}
+	VERBOSE("RigScaleTwoCamerasTest PASSED: one camera holding the inliers and a second holding a few observe no scale, two "
+		"cameras holding theirs observe one (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // A ring whose blocks were each reconstructed bent by a degree along their own cameras: the twelve
 // degrees the loop then misses are spread over its seams, and the merged model leaves the
 // correspondences of every seam a few pixels apart, past the reprojection bar and within the loose

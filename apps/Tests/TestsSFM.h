@@ -736,6 +736,7 @@ bool RivalModesOnCycleTest();
 bool OneCameraSideTest();
 // A direction seen by one camera gives no reading; a block joined by single cameras only is released
 bool OneCameraDirectionTest();
+bool RigScaleTwoCamerasTest();
 // The correspondences a ring of bent blocks leaves past the bar and within the loose bar join their
 // tracks at the merge and end inliers within the bar after the final adjustment
 bool BentBlockClosureTest();
