@@ -1624,21 +1624,25 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 		image.UpdateCamera(scene.platforms);
 	}
 	// the target view of each point, chosen as EstimatePointCloudNormals does: every column of a panorama
-	// takes a patch, the rows keep the patch radius from the poles; a point of two views is refined on one
-	// residual for the two angles of its normal, which lmmin can end as degenerate (the trajectory runs
-	// through the seam, the epipoles lie there), so the points seen by three views or more must be refined
-	unsigned numSeam(0), numSeamPosed(0), numSeamSkipped(0), numRest(0);
+	// takes a patch, the rows keep the patch radius from the poles; a point that one of its views sees within
+	// patchRadius+1 rows of a pole is left out: its patch in that view crosses the pole, whose rows are not
+	// wrapped, so the residual of that view is constant and lmmin stops before its first step (the camera
+	// path runs through the seam: a point below one panorama is seen on the seam of the next one)
+	unsigned numSeam(0), numSeamSkipped(0), numRest(0), numPole(0);
 	double errSeam(0), errRest(0);
 	FOREACH(p, scene.pointcloud.points) {
 		const PointCloud::Point& X = scene.pointcloud.points[p];
 		IIndex bestView(NO_ID);
 		float bestScore(-1.f);
 		Point2f bestProjection;
+		bool bPole(false);
 		for (const IIndex idxView: scene.pointcloud.pointViews[p]) {
 			const Image& image = refineImages[idxView];
 			const Point3f viewDir = normalized(image.camera.C - Cast<REAL>(X));
 			const auto [projection, depth] = image.GetModelCamera().ProjectPointP(X);
-			if (projection.y < patchRadius || projection.y > image.height - (patchRadius+1))
+			if (projection.y < patchRadius+1 || projection.y > image.height - (patchRadius+2))
+				bPole = true;
+			if (depth <= 0 || projection.y < patchRadius || projection.y > image.height - (patchRadius+1))
 				continue;
 			const float angle = ACOS(ComputeAngleN(coarse[p].ptr(), viewDir.ptr()));
 			const float score = EXP(SQUARE(angle) * sigmaAngleInv) / image.camera.GetFootprintImage(depth);
@@ -1648,20 +1652,19 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 				bestProjection = projection;
 			}
 		}
-		// skip a target patch across a pole
-		if (bestView == NO_ID || bestProjection.y < patchRadius+1 || bestProjection.y > refineImages[bestView].height - (patchRadius+2))
+		if (bPole) {
+			++numPole;
 			continue;
+		}
+		ASSERT(bestView != NO_ID);
 		const Image& target = refineImages[bestView];
 		const Point3f& normal = scene.pointcloud.normals[p];
 		const EVec3 C(target.camera.C);
 		const SynthHit hit(SynthTrace(C, EVec3(Cast<REAL>(X)) - C));
 		const double err(ACOS(MINF(ABS(EVec3(Cast<REAL>(normal)).dot(hit.normal)), 1.0)));
 		if (bestProjection.x < seamBand - 0.5f || bestProjection.x > target.width - seamBand - 0.5f) {
-			if (scene.pointcloud.pointViews[p].size() > 2) {
-				++numSeamPosed;
-				if (normal == coarse[p])
-					++numSeamSkipped;
-			}
+			if (normal == coarse[p])
+				++numSeamSkipped;
 			errSeam += err;
 			++numSeam;
 		} else {
@@ -1669,22 +1672,22 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 			++numRest;
 		}
 	}
-	if (numSeamPosed == 0 || numRest == 0) {
-		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: %u points on the seam (%u of three views or more) and %u elsewhere!", numSeam, numSeamPosed, numRest);
+	if (numSeam == 0 || numRest == 0) {
+		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: %u points on the seam and %u elsewhere!", numSeam, numRest);
 		return false;
 	}
 	errSeam = R2D(errSeam / numSeam);
 	errRest = R2D(errRest / numRest);
 	if (numSeamSkipped > 0) {
-		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: %u of the %u points of three views or more whose target view projects on the seam are not refined!", numSeamSkipped, numSeamPosed);
+		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: %u of the %u points whose target view projects on the seam are not refined!", numSeamSkipped, numSeam);
 		return false;
 	}
 	if (errSeam > 1.5 * errRest) {
 		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: mean normal error %.2f deg on the seam, %.2f deg elsewhere!", errSeam, errRest);
 		return false;
 	}
-	VERBOSE("EstimatePointCloudNormalsSphericalTest passed: %u points on the seam (%u of three views or more, all refined), %u elsewhere: mean normal error %.2f deg there, %.2f deg elsewhere (%s)",
-		numSeam, numSeamPosed, numRest, errSeam, errRest, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("EstimatePointCloudNormalsSphericalTest passed: %u points on the seam (all refined), %u elsewhere, %u next to a pole left out: mean normal error %.2f deg on the seam, %.2f deg elsewhere (%s)",
+		numSeam, numRest, numPole, errSeam, errRest, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

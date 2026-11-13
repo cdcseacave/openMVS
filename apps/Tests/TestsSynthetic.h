@@ -212,9 +212,9 @@ bool BrownUndistortOnLoadTest();
 bool NeighborViewsPointCloudRigTest();
 
 // Scene::EstimatePointCloudNormals on three panoramas of the synthetic scene prepared at half resolution: the
-// scene images keep their resolution, camera and pixels; every point of three views or more whose target view
-// projects within 4 columns of the seam is refined, and the mean normal error of the points projecting there
-// is within 1.5x that of the other points
+// scene images keep their resolution, camera and pixels; of the points no view sees next to a pole, every one
+// whose target view projects within 4 columns of the seam is refined, and their mean normal error is within
+// 1.5x that of the other points
 bool EstimatePointCloudNormalsSphericalTest();
 
 // Tests.exe tool modes producing the validation numbers of the design docs (argv[0] is the mode;
