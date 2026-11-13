@@ -14016,6 +14016,84 @@ bool TriangulationFailureTest()
 	return true;
 }
 
+// TriangulateSkewLLS on spherical cameras whose rays lie across the optical axis. A point seen by three
+// 4096x2048 panoramas side by side (one metre apart, identity rotation) 10 m away in the plane of their
+// centres has a bearing with dz = 0 in every one of them: the first two rows of [d]x R, the two the
+// system once kept, are then parallel and give a single equation per view that fixes only the depth
+// along the optical axis, so the point is not determined across it. The three rows determine it.
+// Exact keypoints at dz = 0 must triangulate to the point (the two rows return the minimum-norm
+// solution, metres away, which the reprojection test then rejects); with 1 pixel of noise the median
+// position error at dz = 0 and 0.05 must stay under 0.2 m (the two rows: about 10 m and 0.4 m, the
+// three: about 0.09 m)
+bool SphericalTriangulationTest()
+{
+	TD_TIMER_START();
+	constexpr int width = 4096, height = 2048, numViews = 3, numPoints = 200;
+	Scene scene;
+	scene.cameras.emplace_back(new SphericalCamera(cv::Size(width, height)));
+	for (unsigned i = 0; i < numViews; ++i) {
+		Pose3D pose;
+		pose.C = Point3(i, 0, 0);
+		pose.R = Matrix3x3::IDENTITY;
+		scene.images.emplace_back(static_cast<IIndex>(i), String(), pose, 0, scene.cameras[0]);
+	}
+	std::mt19937 rng(4096);
+	std::uniform_real_distribution<REAL> azimuthDist(REAL(0.5), REAL(M_PI) - REAL(0.5));
+	std::normal_distribution<float> noiseDist(0.f, 1.f);
+	bool passed = true;
+	for (const REAL dz : {REAL(0), REAL(0.05)}) {
+		for (const bool noisy : {false, true}) {
+			if (!noisy && dz != REAL(0))
+				continue;
+			CLISTDEF0(double) errors;
+			for (int p = 0; p < numPoints; ++p) {
+				// a bearing from the first view with the given dz, on either side of the baseline
+				const REAL azimuth = azimuthDist(rng) * ((p & 1) ? REAL(1) : REAL(-1));
+				const REAL radial = SQRT(REAL(1) - dz*dz);
+				const Point3 X = Point3(radial * COS(azimuth), radial * SIN(azimuth), dz) * REAL(10);
+				for (Image& img : scene.images)
+					img.keypoints.clear();
+				Track track(Point3(0, 0, 0));
+				for (Image& img : scene.images) {
+					const auto [proj, valid] = img.ProjectPoint(X);
+					if (!valid || !Image8U::isInside(proj, img.GetSize())) {
+						VERBOSE("SphericalTriangulationTest FAILED: the point does not project inside view %u", img.ID);
+						return false;
+					}
+					cv::Point2f pt = Cast<float>(proj);
+					if (noisy) {
+						pt.x += noiseDist(rng);
+						pt.y += noiseDist(rng);
+					}
+					img.keypoints.emplace_back(pt, 0.f, 0.f, 10.f);
+					track.observations.emplace_back(img.ID, 0);
+				}
+				const unsigned returned = TriangulateSkewLLS(track, scene.images, 8.f, 0.f);
+				if (!noisy && (returned != numViews || norm(track.position - X) > 5e-3)) {
+					VERBOSE("SphericalTriangulationTest FAILED: exact keypoints at dz = %g: %u inliers, position %g m off, expected %d and under 0.005",
+						(double)dz, returned, norm(track.position - X), numViews);
+					passed = false;
+					break;
+				}
+				errors.push_back(norm(track.position - X));
+			}
+			if (!noisy || errors.empty())
+				continue;
+			const double median = errors.GetMedian();
+			if (!(median < 0.2)) {
+				VERBOSE("SphericalTriangulationTest FAILED: with 1 pixel of noise at dz = %g the median position error is %.3f m, expected under 0.2",
+					(double)dz, median);
+				passed = false;
+			}
+			VERBOSE("SphericalTriangulationTest: dz = %g, 1 px noise: median position error %.3f m", (double)dz, median);
+		}
+	}
+	if (!passed)
+		return false;
+	VERBOSE("SphericalTriangulationTest PASSED: a point across the optical axis of three panoramas triangulates (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 namespace {
 
 // A verified pair as the image filter reads one: on top of what the resection needs (the ground

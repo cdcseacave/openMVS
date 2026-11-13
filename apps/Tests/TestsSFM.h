@@ -552,6 +552,9 @@ bool FilterTracksUntriangulatedTrackTest();
 // track with no inliers: IsInlier() is what the adjustments that follow read, and the caller counts the track
 // as failed.
 bool TriangulationFailureTest();
+// TriangulateSkewLLS on spherical cameras determines a point whose bearing lies across the optical axis (dz near 0),
+// which the two rows of [d]x R it once kept did not.
+bool SphericalTriangulationTest();
 
 // The image filter tells the images it removed for contradicting the model (their verified pairs to
 // the kept images disagree with the pose the model gives them, by more inlier weight than agrees)

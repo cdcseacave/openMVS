@@ -522,6 +522,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::TriangulationFailureTest())
 				return false;
+			if (!SFM::SphericalTriangulationTest())
+				return false;
 			if (!SFM::ContradictingImagesTest())
 				return false;
 			if (!SFM::PairDirectionToleranceTest())

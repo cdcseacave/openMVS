@@ -76,8 +76,12 @@ the predicate (identical keypoints and descriptors for any band value; `Spherica
 ### Triangulation — `libs/SFM/Triangulation.cpp`
 
 `TriangulateTracks` calls `TriangulateSkewLLS` unconditionally for every track regardless of
-camera type — it operates on bearing vectors and is singularity-free, so no per-camera branch is
-needed. `TriangulateDLT` mixes a 2D pinhole-normalized coordinate with the 3×4 projection matrix
+camera type — it operates on unit bearing vectors, so no per-camera branch is needed. Per observation it
+takes all three rows of `[d]x R` (the cross-product matrix of the bearing `d` times the rotation), a rank-2
+block for every unit `d`; the squared residual is `|d x (R Pw + t)|^2`, the same weight in every direction of
+the ray. Two of the three rows would not do: the pair `(0, -dz, dy)`, `(dz, 0, -dx)` becomes parallel as `dz`
+goes to 0 (a ray 90 degrees off the camera's forward axis, as common for a panorama as any other ray), where
+the observation would fix the point only along the optical axis. `TriangulateDLT` mixes a 2D pinhole-normalized coordinate with the 3×4 projection matrix
 and is guarded by `ASSERT(img.pCamera->GetType() == CameraType::PINHOLE)`; it is not called from
 anywhere in the codebase (production or tests) today.
 
