@@ -452,9 +452,9 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 // solve -- a reconstruction runs fifty or more of them, so it settles.
 //
 // Measured rather than configured because k is a property of the CAPTURE, not of the dense matcher:
-// across different captures the dense sigma barely moved (1.14-1.79 px, the warp's sampling
-// scale) while the described sigma moved 3.6x, from 0.32 px where the texture is rich to 1.15 px
-// where it is not, taking k from 1.55 to 4.02. No constant is right in both places.
+// across captures the dense sigma barely moves (it is the warp's sampling scale) while the described
+// sigma varies several-fold, from small where the texture is rich to large where it is not. No
+// constant is right in both places.
 //
 // Clamped to [MIN_DENSE_OBSERVATION_WEIGHT, 1]: a dense correspondence is never a MORE precise
 // measurement than a described one, and never worth nothing -- on a capture where the descriptor
@@ -1481,13 +1481,14 @@ bool BundleAdjustment::Adjust()
 			DEBUG("Fixed view %u (reference, no GPS)", bestImgID);
 			// The reference pose leaves the scale free (the reprojections and the pair terms are all blind to it),
 			// and the iterations of a solve drift it; once the per-image cap leaves tracks out of the solve, their points
-			// stay at the old scale and their observations land pixels off: on Truck the capped solves shrank the
-			// model to 8-42% of its size, a reduced camera system singular along the scale failing its dense Cholesky
-			// factorization, and stranded 74% of the observations the cap left out. Hold it the way COLMAP does:
+			// stay at the old scale and their observations land pixels off: on a large capture the capped solves
+			// shrank the model to a fraction of its size, a reduced camera system singular along the scale failing
+			// its dense Cholesky factorization, and stranded most of the observations the cap left out. Hold it
+			// the way COLMAP does:
 			// one centre coordinate of a second camera kept where it is, the coordinate of that camera's largest
 			// offset from the reference, the camera the one with the most residuals among those at least the median
 			// distance from the reference, so that the coordinate held is a long lever and the camera a well-measured
-			// one; held, a capped solve changes the scale by 0.01% and strands 2%
+			// one; held, a capped solve leaves the scale where it was
 			if (config.refinePosesRotation && config.refinePosesPosition) {
 				const Point3 refCenter(scene.images[bestImgID].C);
 				const auto inSolve = [&](IIndex i) {

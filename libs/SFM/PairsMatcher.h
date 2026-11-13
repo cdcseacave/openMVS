@@ -61,7 +61,7 @@ struct SFM_API MatchConfig
 		KNOWN_POSES = 3, // Select pairs from already-known camera poses
 		RETRIEVAL = 4    // Use retrieval over the DINOv3+GeM global descriptors instead: no
 		                 // vocabulary tree is ever built, and an image missing its descriptor
-		                 // is an error, not a fallback (design decision 10). Appended rather
+		                 // is an error, not a fallback. Appended rather
 		                 // than inserted so existing serialized/CLI mode values stay unchanged.
 	};
 
@@ -102,7 +102,7 @@ struct SFM_API MatchConfig
 	bool lensFitEnabled = true;            // fit the lens of every camera that has none
 	// constant: pairs a camera's fit reads at most, heaviest first
 	static constexpr unsigned lensFitMaxPairs = 150;
-	// constant: eligible pairs a camera needs to be fitted: drawn from the prototype's pairs, fits stop failing at 8-10, 20 leaves a margin
+	// constant: eligible pairs a camera needs to be fitted: fits stop failing at 8-10 pairs, 20 leaves a margin
 	static constexpr unsigned lensFitMinPairs = 20;
 	// constant: verified sparse matches each pair contributes, and the least an eligible pair holds
 	static constexpr unsigned lensFitMatchesPerPair = 200;
@@ -257,7 +257,7 @@ public:
 	// already stored on every Image, however they were produced (CPU pooling or the v2 ONNX
 	// graph; this call does not know or care which).
 	// A scene missing a descriptor on any image is a hard error naming that image (logged by
-	// GlobalDescriptors::Build), matching design decision 10: a requested-but-unavailable
+	// GlobalDescriptors::Build): a requested-but-unavailable
 	// backend never silently degrades into a different one.
 	// Returns false if the index could not be built.
 	bool EnsureGlobalDescriptorsIndex();

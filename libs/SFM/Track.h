@@ -150,7 +150,7 @@ struct SFM_API TrackConflictConfig {
  * Uses disjoint-set (union-find) data structure for efficient track building.
  * Stores results in scene.tracks (each Track contains its observations).
  *
- * @param minPairWeight minimum weight for a pair to be used in creating tracks (-1 = disabled)
+ * @param minPairWeight the weight a pair must exceed to be used in creating tracks (0 drops only the pairs without weight, a negative bar drops none)
  * @param conflict how a component holding one image twice is settled (TrackConflictConfig)
  */
 SFM_API void BuildTracks(Scene& scene, float minPairWeight = 0, const TrackConflictConfig& conflict = TrackConflictConfig());

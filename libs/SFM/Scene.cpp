@@ -590,7 +590,7 @@ bool Scene::ExtractFeatures(const FeatureExtractionConfig& config)
 bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, const ViewGraphCalibratorConfig& vgConfig)
 {
 	// In-process dense matcher (RoMa2 or FlexGlue): one loaded model serves the retrieval descriptors and the dense
-	// matching; it lives for this call only (design decision 7). Declared before
+	// matching; it lives for this call only. Declared before
 	// pairsMatcher: anything holding a DenseMatcher* or a MakeCode() tensor (pairsMatcher.SetROMA2
 	// below) must be destroyed before the model, so the model must outlive it and therefore be
 	// declared first (destructors run in reverse declaration order).
@@ -615,7 +615,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 
 	const String modelPath(roma2Cfg.ResolveModelPath());
 	if (roma2Cfg.enabled && (needsDescriptors || needsWarps) && modelPath.empty()) {
-		// design decision 10: a requested-but-unavailable model is a named error here, not the
+		// a requested-but-unavailable model is a named error here, not the
 		// generic "failed to load the roma2 model ''" that Load() below would report if this
 		// fell through to it unchecked
 		if (roma2Cfg.matcher == "flexglue")

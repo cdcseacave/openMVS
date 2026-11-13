@@ -174,8 +174,7 @@ SFM_API size_t TrackKeypointsByWarp(
 //
 // The T/E factor is what makes the draw uniform under partial overlap, and it is the whole point of
 // the design. A pair never overlaps completely, so with a fixed sqrt(maxSamples) grid most buckets
-// hold no eligible cell at all, and topping the budget up by descending confidence -- which an
-// earlier version of this function did -- could only draw those extra points from inside the
+// hold no eligible cell at all, and topping the budget up by descending confidence could only draw those extra points from inside the
 // overlap, since that is the only place eligible cells exist. At 40% overlap that turned a
 // nominally stratified draw into ~1226 of 2000 points crammed into the same 40% of the frame, and a
 // sample crammed into a sub-area is locally smooth, which one geometry then fits almost exactly.

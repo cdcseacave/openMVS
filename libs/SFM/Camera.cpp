@@ -265,7 +265,7 @@ Point3 SphericalCamera::Unproject(const Point2& x) const
 	// For the BACK hemisphere (cos(theta) < 0) we return (-tan(theta),
 	// -tan(phi)/cos(theta), -1); the (x, y) sign flip combined with z = -1
 	// produces a 3D vector that points along the true back-facing bearing
-	// (not the aliased front-hemisphere direction the old 2D form gave).
+	// (not the aliased front-hemisphere direction a 2D form would give).
 	//
 	// Singular at the equator sides (cos(theta) = 0, pixel x = W/4 or 3W/4
 	// on the vertical midline) and the poles (cos(phi) = 0, pixel y = 0 or H),

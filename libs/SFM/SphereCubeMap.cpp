@@ -17,14 +17,13 @@ using namespace SFM::SphereCubeMap;
 namespace {
 
 // ------------------------------------------------------------------
-// 6-face cube rotation table — bit-exact with the pre-generalization
-// implementation so MVS-export outputs are unchanged.
+// 6-face cube rotation table, the face set the MVS export is defined by.
 //
 // Face order: +Z forward, -Z back, +X right, -X left, +Y, -Y.
 // All rotations are pure SO(3) elements (det=+1) that map the body
 // frame to a face frame whose +Z points along the named body axis.
 //
-// SphericalCamera now uses the Y-DOWN imaging convention (the same as
+// SphericalCamera uses the Y-DOWN imaging convention (the same as
 // MVS's pinhole formula and the OpenCV image frame), so the rendered
 // face images are vertically upright (sky at top for face 0). MVS's
 // K*cam.R*(X-C) chain produces pixel coordinates that match where each
@@ -159,9 +158,8 @@ std::vector<Matrix3x3> BuildFaceRotations20()
 }
 
 // ------------------------------------------------------------------
-// Per-face render kernel — file-local. Equivalent of the old RenderFace
-// but parameterised on the shared (f, cx, cy) instead of re-deriving
-// them from the 90°-FOV cube convention.
+// Per-face render kernel — file-local, parameterised on the shared (f, cx, cy)
+// instead of re-deriving them from the 90°-FOV cube convention.
 // ------------------------------------------------------------------
 template <typename TYPE>
 void RenderFaceKernel(

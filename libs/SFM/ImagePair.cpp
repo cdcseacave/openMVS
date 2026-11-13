@@ -316,8 +316,8 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	// GetNumFilteredInliers(), which is short of matches.size() on any pair carrying a partition (a
 	// dense supplement, or the rejects of an earlier strict-filter pass). In-tree every caller
 	// arrives after a ResetInlierMatches()/ResetMatches(), i.e. with numFilteredInliers == -1 and
-	// the default already spanning `matches`, so this is the contract stated explicitly rather than
-	// a live bug fix -- but the method is SFM_API and the next caller need not arrive that way.
+	// the default already spanning `matches`, so this states the contract explicitly rather than
+	// fixing a bug; the method is SFM_API and a caller need not arrive that way.
 	const auto [pts1, pts2] = GetMatchedPoints(img1, img2, true);
 	// The dense (ROMAv2 warp) supplement votes on meanRayAngle, like every other track-forming
 	// match: a ray angle is a GEOMETRIC quantity, and the coarseness that keeps a dense position out
@@ -390,9 +390,8 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	// The stable_partition below re-derives the dense segment from `mask`'s surviving inliers by
 	// re-evaluating HasDenseEnd, which is the one documented false negative of this re-derivation
 	// (docs/design/ROMA2InProcess.md): a supplement match whose BOTH endpoints collapsed onto
-	// coincident described keypoints now reads as sparse. Measuring the size of that disclosed gap
-	// was an explicit condition of accepting the re-derivation, so count it here -- before
-	// PartitionMatchesByMask reorders `matches` and the old dense range
+	// coincident described keypoints now reads as sparse. The size of that gap is reported, so count
+	// it here -- before PartitionMatchesByMask reorders `matches` and the recorded dense range
 	// [numFilteredInliers, numFilteredInliers+numDenseInliers) stops describing anything.
 	unsigned numSupplementReclassifiedSparse = 0;
 	if (bHasDenseKeypoints && numFilteredInliers >= 0 && numDenseInliers > 0) {

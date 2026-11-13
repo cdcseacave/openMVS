@@ -630,7 +630,7 @@ namespace {
 constexpr unsigned minScaleComponent = 10;  // pairs a component of the pair-scale graph needs to be solved
 constexpr unsigned numL1Rounds = 40;        // reweighting rounds of the centres
 constexpr REAL l1Floor = REAL(1e-3);        // the L1 weight's error floor, in median pair lengths
-constexpr float maxScaleResidual = 1.05f;   // the Geman-McClure scale of the pair scales (the merge graph's former scale bar)
+constexpr float maxScaleResidual = 1.05f;   // the Geman-McClure scale of the pair scales (the same bar as the merge graph's)
 
 // one solved component of the cut: the images it places and their camera centres
 struct CentresSolve { std::vector<bool> placed; std::vector<Point3> centres; };
@@ -962,7 +962,7 @@ unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotati
 		pair.numDenseInliers = (int)dense.size();
 		pair.matches = std::move(sparse);
 		pair.matches.insert(pair.matches.end(), dense.begin(), dense.end());
-		pair.weightedInliers = -1.f; // it describes matches that no longer exist
+		pair.weightedInliers = -1.f; // it describes matches the pair has dropped
 		pair.returnedByRepair = true;
 		pair.relativePose = repair.pose;
 		pair.E = ImagePair::ComposeEssentialMatrix(repair.pose);

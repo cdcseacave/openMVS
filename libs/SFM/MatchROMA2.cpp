@@ -79,7 +79,7 @@ PairInput MakePairInput(const Image& imgA, const Image& imgB)
 
 // Pool task: load (if not already resident) and preprocess one image into the planar RGB
 // buffer the descriptor graph expects. Uses the working-orientation pixels (Image::LoadPixels
-// rotates portrait to landscape -- design decision 12), the same pixels the keypoints were
+// rotates portrait to landscape), the same pixels the keypoints were
 // extracted from. Each image is touched by exactly one pool task, and by the calling thread
 // only after that task's future has resolved (PrefetchRing::Take, below), so no locking is
 // needed on Image.
@@ -175,8 +175,7 @@ private:
 };
 
 // Restores a pass's OpenCV thread count, log-console pause, and progress bar on scope exit,
-// including through an exception (they used to be plain statements reachable only on the
-// non-throwing path). Finish() runs the restoration immediately and is what the normal path
+// including through an exception. Finish() runs the restoration immediately and is what the normal path
 // calls, right before the summary DEBUG line, so that line isn't swallowed by the paused
 // console; the destructor calls it too (idempotent) as the safety net for any exceptional exit.
 // Shared by the describe and the dense-matching passes, which differ only in the progress
@@ -407,7 +406,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const Pai
 			ASSERT(nextSubmit > nextLoad);
 			const PlanarImage* const planar = ring.Take();
 			slotImage[load.slot] = NO_ID;
-			// value_facets stays on the device: the warp pass never reads it back (design decision 4)
+			// value_facets stays on the device: the warp pass never reads it back
 			if (planar && roma2.DescribeImage(planar->data(), slotLayers[load.slot], discardedRetrieval)) {
 				slotImage[load.slot] = load.image;
 			} else {
@@ -629,7 +628,7 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2)
 		ring.Submit(i);
 
 	unsigned numDescribed = 0;
-	OrtTensor layers(roma2.MakeCode()); // reused across every image (design decision 7: the describe pass keeps only the pooled vector, not the layers)
+	OrtTensor layers(roma2.MakeCode()); // reused across every image: the describe pass keeps only the pooled vector, not the layers
 	if (!layers.IsValid()) {
 		VERBOSE("error: could not allocate the ROMA2 layers tensor");
 		return 0;
@@ -640,7 +639,7 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2)
 		const PlanarImage* const planar = ring.Take();
 		Image& img = scene.images[i];
 		// the graph's own on-device retrieval pooling (RoMa2Onnx::Describe), read straight into
-		// descriptor -- the CPU pooling this pass used to fall back to is gone, one path remains
+		// descriptor
 		if (planar && roma2.DescribeImage(planar->data(), layers, descriptor)) {
 			ASSERT(descriptor.size() == roma2.RetrievalSize());
 			img.globalDescriptor = cv::Mat(1, (int)descriptor.size(), CV_32F, descriptor.data()).clone();
@@ -1278,7 +1277,7 @@ void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 	} else {
 		// overlapRatio/overlapArea stay at their reset value (0): a created pair is weighted exactly
 		// like any other pair, ComputePairsWeights computing its own overlap proxy for it. Stamping
-		// a full 1/1 overlap here (what the old NPZ import did) would survive PairsMatcher::Match --
+		// a full 1/1 overlap here would survive PairsMatcher::Match --
 		// nothing else writes overlapRatio -- and hand every dense pair a best-possible overlap
 		// score it was never measured to have
 		idxPair = (IIndex)scene.pairs.size();

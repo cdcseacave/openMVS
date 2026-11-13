@@ -58,11 +58,11 @@ struct SFM_API ImportConfig {
 };
 
 /**
- * @brief Lightweight reconstruction configuration
+ * @brief Reconstruction configuration
  *
- * This struct avoids depending on other SFM headers to prevent
- * circular includes. The values are later converted to the
- * internal typed configurations inside Scene::Reconstruct().
+ * Holds the configuration of every stage of Scene::Reconstruct() (import, features, matching,
+ * view graph, tracks, clustering, initialization, resection, alignment, bundle adjustment) and the
+ * options that cut across them; each stage reads its own member.
  */
 struct SFM_API ReconstructionConfig {
 	// Import configuration
@@ -101,7 +101,7 @@ struct SFM_API ReconstructionConfig {
 	ViewGraphCalibratorConfig viewgraphCfg;
 
 	// Tracks parameters
-	float minPairWeight{1.22f}; // minimum composite weight for a pair to form tracks and to enter the contradiction cut's averaging (0 = disabled); 0.9, the value of the other two bars, is the more aggressive setting: it lets more pairs in, equal on the normal-camera captures and ~100 images wrong on the panorama capture Outdoor_004 (docs/design/PairWeight.md)
+	float minPairWeight{1.22f}; // minimum composite weight for a pair to form tracks and to enter the contradiction cut's averaging (a pair must exceed it: 0 drops only the pairs without weight); 0.9, the value of the other two bars, is the more aggressive setting: it lets more pairs in, equal on perspective captures but with many images wrong on a panorama capture (docs/design/PairWeight.md)
 	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled
 	float maxReprojError{4.f}; // Reprojection error for coarse triangulation and filtering
 	float maxFineReprojError{2.f}; // Reprojection error for fine triangulation and filtering
