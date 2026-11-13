@@ -130,14 +130,19 @@ public:
 		x = Point2f((float)ir.x, (float)ir.y);
 		return true;
 	}
+	// pixel ir of an image of the given size, its column wrapped for a spherical camera (ir.x within one
+	// width of the image); false if outside the image
+	inline bool WrapPixel(ImageRef& ir, const cv::Size& size) const {
+		if (bSpherical)
+			ir.x = WrapColumn(ir.x, size.width);
+		return Image8U::isInside(ir, size);
+	}
 	// the pixel of an image of the given size closest to x, its column wrapped for a spherical camera;
 	// false if outside the image
 	template <typename TYPE>
 	inline bool GetPixel(const TPoint2<TYPE>& x, const cv::Size& size, ImageRef& ir) const {
 		ir = ROUND2INT(x);
-		if (bSpherical)
-			ir.x = WrapColumn(ir.x, size.width);
-		return Image8U::isInside(ir, size);
+		return WrapPixel(ir, size);
 	}
 	// the column offset a-b, the shortest one around the panorama for a spherical camera
 	template <typename TYPE>
