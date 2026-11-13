@@ -333,6 +333,10 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!MVS::GapInterpolationNormalsTest())
 				return false;
+			if (!MVS::WrapPixelTest())
+				return false;
+			if (!MVS::ConfidenceSeamTest())
+				return false;
 			if (!MVS::NeighborViewsPointCloudRigTest())
 				return false;
 			if (!MVS::EstimatePointCloudNormalsSphericalTest())

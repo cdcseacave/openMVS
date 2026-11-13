@@ -760,23 +760,21 @@ void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 			continue;
 		// skip point if the there is a very near by point closer
 		for (int i=-CHalfSize; i<=CHalfSize; ++i) {
-			const int rw(ir.y+i);
 			for (int j=-CHalfSize; j<=CHalfSize; ++j) {
-				const int cw(ir.x+j);
-				if (!depthMap.isInside(ImageRef(cw,rw)))
+				ImageRef nx(ir.x+j, ir.y+i);
+				if (!modelCamera.WrapPixel(nx, depthMap.size()))
 					continue;
-				if (depthMap(rw,cw) < Xz)			
+				if (depthMap(nx) < Xz)
 					goto NEXT_POINT;
 			}
 		}
 		// skip the point if there is a near by point much closer
 		for (int i=-FHalfSize; i<=FHalfSize; ++i) {
-			const int rw(ir.y+i);
 			for (int j=-FHalfSize; j<=FHalfSize; ++j) {
-				const int cw(ir.x+j);
-				if (!depthMap.isInside(ImageRef(cw,rw)))
+				ImageRef nx(ir.x+j, ir.y+i);
+				if (!modelCamera.WrapPixel(nx, depthMap.size()))
 					continue;
-				const Depth depth(depthMap(rw,cw));
+				const Depth depth(depthMap(nx));
 				if (depth < Xz && !IsDepthSimilar(depth, Xz, thCloseDepth))
 					goto NEXT_POINT;
 			}
@@ -789,14 +787,15 @@ void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 
 	// add all points viewed by this camera
 	const int HalfSize(1);
+	const int ColHalfSize(imageData.IsSpherical() ? 0 : HalfSize);
 	const int RowsEnd(pointMap.rows-HalfSize);
-	const int ColsEnd(pointMap.cols-HalfSize);
+	const int ColsEnd(pointMap.cols-ColHalfSize);
 	unsigned nNumPoints(0);
 	#ifdef _USE_OPENMP
 	#pragma omp critical
 	#endif
 	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
+		for (int c=ColHalfSize; c<ColsEnd; ++c) {
 			const uint32_t idx(pointMap(r,c));
 			if (idx == NO_ID)
 				continue;

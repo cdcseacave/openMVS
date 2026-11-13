@@ -2485,6 +2485,71 @@ bool GapInterpolationNormalsTest()
 }
 /*----------------------------------------------------------------*/
 
+// ModelCamera::WrapPixel wraps the columns of a spherical camera, never its rows, and wraps nothing
+// of a pinhole one
+bool WrapPixelTest()
+{
+	const Camera camera;
+	const cv::Size size(64, 32);
+	const ModelCamera spherical(camera, CameraModelType::SPHERICAL), pinhole(camera, CameraModelType::PINHOLE);
+	const auto Check = [&](const ModelCamera& model, ImageRef ir, bool bInside, int col) {
+		const bool bResult(model.WrapPixel(ir, size));
+		if (bResult != bInside || (bInside && ir.x != col)) {
+			VERBOSE("ERROR: WrapPixelTest: the %s camera maps the pixel to column %d, inside %d, expected column %d, inside %d",
+				model.bSpherical ? "spherical" : "pinhole", ir.x, (int)bResult, col, (int)bInside);
+			return false;
+		}
+		return true;
+	};
+	if (!Check(spherical, ImageRef(-1, 5), true, size.width-1) || !Check(spherical, ImageRef(size.width, 5), true, 0) ||
+		!Check(spherical, ImageRef(-size.width, 5), true, 0) || !Check(spherical, ImageRef(7, 5), true, 7) ||
+		!Check(spherical, ImageRef(3, -1), false, 0) || !Check(spherical, ImageRef(3, size.height), false, 0) ||
+		!Check(pinhole, ImageRef(-1, 5), false, 0) || !Check(pinhole, ImageRef(size.width, 5), false, 0) ||
+		!Check(pinhole, ImageRef(7, 5), true, 7) || !Check(pinhole, ImageRef(3, -1), false, 0))
+		return false;
+	VERBOSE("WrapPixelTest passed");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// the standalone confidence estimators read their window across the column seam of a spherical
+// depth-map: of constant range with radial camera-facing normals it is the same in every column
+bool ConfidenceSeamTest()
+{
+	constexpr int width(64), height(32), winHalfSize(2);
+	const Spherical<REAL> sphere(Spherical<REAL>::FromSize(width, height));
+	Scene scene;
+	Image& image = scene.images.emplace_back();
+	image.model = CameraModelType::SPHERICAL;
+	DepthData depthData;
+	depthData.images.emplace_back().pImageData = &image;
+	depthData.dMin = 1;
+	depthData.dMax = 10;
+	depthData.depthMap.create(height, width);
+	depthData.depthMap.setTo(Depth(5));
+	depthData.normalMap.create(height, width);
+	for (int r=0; r<height; ++r)
+		for (int c=0; c<width; ++c) {
+			const Eigen::Vector3d ray(sphere.Ray(Eigen::Vector2d(c, r)));
+			depthData.normalMap(r, c) = Normal(-float(ray.x()), -float(ray.y()), -float(ray.z()));
+		}
+	ConfidenceMap confDepth, confNormal;
+	EstimateConfidenceFromDepth(depthData, confDepth, winHalfSize, 20);
+	EstimateConfidenceFromNormal(depthData, confNormal, winHalfSize);
+	for (int r=0; r<height; ++r)
+		for (int c: {0, width-1}) {
+			if (!ISEQUAL(confDepth(r, c), confDepth(r, width/2), 1e-4f) ||
+				!ISEQUAL(confNormal(r, c), confNormal(r, width/2), 1e-4f)) {
+				VERBOSE("ERROR: ConfidenceSeamTest: row %d column %d: confidence from depth %g, from normal %g; at the middle %g, %g",
+					r, c, confDepth(r, c), confNormal(r, c), confDepth(r, width/2), confNormal(r, width/2));
+				return false;
+			}
+		}
+	VERBOSE("ConfidenceSeamTest passed");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // Exercise ROI integration with the first point outside the ROI; this used to leave
 // default entries in the spatial-sort index and could reconstruct the wrong points.
 static bool ROIMeshReconstructionTest(Scene& scene)

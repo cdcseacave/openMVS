@@ -2213,6 +2213,7 @@ void MVS::EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap&
 	const DepthMap& depthMap = depthData.depthMap;
 	confMap.create(depthMap.size());
 	confMap.memset(0);
+	const ModelCamera camera(depthData.GetView().GetModelCamera());
 	#ifdef DEPTHMAP_USE_OPENMP
 	#pragma omp parallel for
 	#endif
@@ -2225,15 +2226,17 @@ void MVS::EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap&
 			FloatArr depthDiffValues(0, (IDX)(SQUARE(2*winHalfSize+1)-1)); // reserve the whole window, one allocation
 			unsigned numDiffDepths(0), numSimilarDepths(0);
 			for (int k = -winHalfSize; k<=winHalfSize; k++)
-				for (int l = -winHalfSize; l<=winHalfSize; l++)
-					if (r+k >= 0 && r+k < depthMap.rows && c+l >= 0 && c+l < depthMap.cols && !(k == 0 && l == 0)) {
-						const Depth depthN = depthMap(r+k, c+l);
-						if (depthN > 0 && IsDepthSimilar(depth, depthN, 0.03f))
-							++numSimilarDepths;
-						else
-							++numDiffDepths;
-						depthDiffValues.push_back(ABS(depth-depthN));
-					}
+				for (int l = -winHalfSize; l<=winHalfSize; l++) {
+					ImageRef x(c+l, r+k);
+					if (!camera.WrapPixel(x, depthMap.size()) || (k == 0 && l == 0))
+						continue;
+					const Depth depthN = depthMap(x);
+					if (depthN > 0 && IsDepthSimilar(depth, depthN, 0.03f))
+						++numSimilarDepths;
+					else
+						++numDiffDepths;
+					depthDiffValues.push_back(ABS(depth-depthN));
+				}
 			depthDiffValues.Sort();
 			const int s = MINF(n, (int)depthDiffValues.size());
 			float confidenceDiff = 0;
@@ -2253,34 +2256,37 @@ void MVS::EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap&
 // estimate confidence map from normal variance in a window
 void MVS::EstimateConfidenceFromNormal(const DepthData& depthData, ConfidenceMap& confMap, int winHalfSize) {
 	const NormalMap& normalMap = depthData.normalMap;
+	const DepthMap& depthMap = depthData.depthMap;
 	confMap.create(normalMap.size());
 	confMap.memset(0);
+	const ModelCamera camera(depthData.GetView().GetModelCamera());
 	#ifdef DEPTHMAP_USE_OPENMP
 	#pragma omp parallel for
 	#endif
 	for (int r = 0; r < normalMap.rows; r++) {
 		for (int c = 0; c< normalMap.cols; c++) {
-			if (depthData.depthMap(r, c) <= 0)
+			if (depthMap(r, c) <= 0)
 				continue;
-			Point3f mean(0, 0, 0);
-			int count = 0;
+			// the normals of the valid-depth pixels of the window, the center included
+			Mesh::NormalArr normals(0, (IDX)SQUARE(2*winHalfSize+1));
+			Point3f sum(0, 0, 0);
 			for (int k = -winHalfSize; k<=winHalfSize; k++) {
 				for (int l = -winHalfSize; l<=winHalfSize; l++) {
-					if (r+k >= 0 && r+k < normalMap.rows && c+l>=0 && c+l < normalMap.cols && depthData.depthMap(r+k, c+l) > 0) {
-						mean += normalMap(r+k, c+l);
-						count++;
-					}
+					ImageRef x(c+l, r+k);
+					if (!camera.WrapPixel(x, normalMap.size()) || depthMap(x) <= 0)
+						continue;
+					normals.push_back(normalMap(x));
+					sum += normalMap(x);
 				}
 			}
-			mean /= count;
+			ASSERT(norm(sum) > 0); // camera-facing normals along nearly one ray
+			const Normal mean(normalized(sum));
 			float theta = 0;
-			for (int k = -winHalfSize; k<=winHalfSize; k++)
-				for (int l = -winHalfSize; l<=winHalfSize; l++)
-					if (r+k >= 0 && r+k < normalMap.rows && c+l >= 0 && c+l < normalMap.cols && depthData.depthMap(r+k, c+l) > 0)
-						theta += SQUARE(ACOS(mean.dot(normalMap(r+k, c+l))));
+			for (const Normal& n: normals)
+				theta += SQUARE(ACOS(ComputeAngleN(mean.ptr(), n.ptr())));
 			// the squared angles can sum past the normalizer where the normals disagree
 			// wildly, so floor the score before squaring it and keep the result in [0,1]
-			confMap(r, c) = SQUARE(MAXF(1.f-theta/(count*float(M_PI)), 0.f));
+			confMap(r, c) = SQUARE(MAXF(1.f-theta/(normals.size()*float(M_PI)), 0.f));
 		}
 	}
 } // EstimateConfidenceFromNormal

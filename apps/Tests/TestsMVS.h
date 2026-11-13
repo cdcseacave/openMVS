@@ -114,6 +114,12 @@ bool SphericalImageSizeTest();
 // DepthMapsData::GapInterpolation fills a gap between two normals with unit normals within the angle between
 // them, for pinhole and spherical views, also across the seam of a spherical row
 bool GapInterpolationNormalsTest();
+
+// ModelCamera::WrapPixel wraps the columns of a spherical camera only, never rows
+bool WrapPixelTest();
+
+// EstimateConfidenceFromDepth/Normal read across the column seam of a spherical depth-map
+bool ConfidenceSeamTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
