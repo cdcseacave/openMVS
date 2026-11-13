@@ -1295,6 +1295,22 @@ void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 
 // T H E   O N E   P A S S ////////////////////////////////////////////
 
+#ifdef _USE_ONNXRUNTIME
+// The summary line of the one pass, in the one field list the measurement tools parse; a pass that stopped
+// before the warp pass and the store ran has every field they would have filled at 0
+static void LogOnePassSummary(size_t numCandidates, unsigned numJudged, unsigned numAdmitted, unsigned numStored,
+	unsigned numDenseOnly, unsigned numSlots, unsigned numLoads, unsigned numReloads, unsigned numAlreadyStored,
+	unsigned numUnprepared, unsigned numFailedLoads, unsigned numFailedMatches, unsigned numDenseMatches, const String& elapsed)
+{
+	DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
+		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
+		(unsigned)numCandidates, numJudged, numAdmitted, numStored, numDenseOnly,
+		numSlots, numLoads, numReloads,
+		numAlreadyStored, numUnprepared, numFailedLoads, numFailedMatches, numDenseMatches,
+		elapsed.c_str());
+}
+#endif
+
 bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const PairIdxArr& candidatePairs,
 	const ROMA2Config& config, unsigned& numStored)
 {
@@ -1348,14 +1364,8 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 		pairs.push_back(p);
 	}
 	if (pairs.empty()) {
-		// same field list as the summary line below (the measurement tools parse both the same way):
 		// nothing past this point ran, so every field the warp pass and the store would have filled is 0
-		DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
-			"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
-			candidatePairs.size(), 0u, 0u, 0u, 0u,
-			0u, 0u, 0u,
-			numAlreadyStored, numUnprepared, 0u, 0u, 0u,
-			TD_TIMER_GET_FMT().c_str());
+		LogOnePassSummary(candidatePairs.size(), 0, 0, 0, 0, 0, 0, 0, numAlreadyStored, numUnprepared, 0, 0, 0, TD_TIMER_GET_FMT());
 		return true; // no candidate left to judge is an empty pass, not a failed one
 	}
 
@@ -1439,12 +1449,9 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 	}
 	if (config.minCovisibility > 0.f && numGated.load() + numJudged.load() > 0)
 		DEBUG("ROMA2 covisibility gate: %u of %u warped pairs below %g", numGated.load(), numGated.load() + numJudged.load(), config.minCovisibility);
-	DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
-		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
-		candidatePairs.size(), numJudged.load(), numAdmitted.load(), numStored, numDenseOnly,
+	LogOnePassSummary(candidatePairs.size(), numJudged.load(), numAdmitted.load(), numStored, numDenseOnly,
 		stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads,
-		numAlreadyStored, numUnprepared, stats.numFailedLoads, stats.numFailedMatches, (unsigned)numDenseMatches,
-		TD_TIMER_GET_FMT().c_str());
+		numAlreadyStored, numUnprepared, stats.numFailedLoads, stats.numFailedMatches, (unsigned)numDenseMatches, TD_TIMER_GET_FMT());
 	return true;
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never
