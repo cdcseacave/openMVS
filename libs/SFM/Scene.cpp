@@ -1046,10 +1046,6 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 		return false;
 	}
 
-	// CompareScenes(*this, MAKE_PATH("rscene_init.mvs"));
-	// ImportCOLMAP(MAKE_PATH("colmap/scene_rotations.glmp"), *this);
-	// CompareScenes(*this, MAKE_PATH("rscene_init.mvs"));
-
 	// Build tracks
 	BuildTracks(*this, config.minPairWeight, config.trackConflictCfg);
 
@@ -1587,120 +1583,6 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 	}
 	return true;
 }
-
-// Precompute neighbor views based on shared track observations
-void Scene::PrecomputeTrackBasedNeighbors(std::vector<ViewScoreArr>& neighbors) const
-{
-	neighbors.clear();
-	neighbors.resize(images.size());
-	if (images.empty() || tracks.empty())
-		return;
-
-	TD_TIMER_STARTD();
-
-	// Helper struct to accumulate neighbor statistics
-	struct TrackNeighborStats {
-		float angleSum = 0.f;       // sum of angles between viewing rays
-		uint32_t angleCount = 0;    // count of valid angle computations
-		CLISTDEF0(uint32_t) sharedTrackIDs; // IDs of shared tracks
-	};
-
-	// Process each reference image
-	FOREACH(refID, images) {
-		const Image& refImage = images[refID];
-		if (!refImage.IsValid())
-			continue;
-
-		// Statistics per potential neighbor image
-		std::vector<TrackNeighborStats> stats(images.size());
-
-		// Iterate over all tracks and find shared observations
-		FOREACH(trackID, tracks) {
-			const Track& track = tracks[trackID];
-			if (!track.IsInlier())
-				continue;
-
-			// Check if reference image observes this track
-			bool refObserves = false;
-			for (const Observation& obs : track) {
-				if (obs.imageID == refID) {
-					refObserves = true;
-					break;
-				}
-			}
-			if (!refObserves)
-				continue;
-
-			// Compute depth and viewing direction for reference image
-			const auto [trackInRefImg, validRef] = refImage.ProjectPoint(track.position);
-			if (!validRef)
-				continue;
-			Point3 V1 = refImage.C - track.position;
-
-			// Count shared observations and compute angles
-			for (const Observation& obs : track) {
-				if (obs.imageID == refID)
-					continue;
-				const Image& otherImage = images[obs.imageID];
-				ASSERT(otherImage.IsValid());
-				const auto [trackInOtherImg, validOther] = otherImage.ProjectPoint(track.position);
-				if (!validOther)
-					continue;
-				TrackNeighborStats& stat = stats[obs.imageID];
-				stat.sharedTrackIDs.emplace_back(trackID);
-				const Point3 V2 = otherImage.C - track.position;
-				const float cosAngle = static_cast<float>(CLAMP(V1.dot(V2) / (norm(V1) * norm(V2)), -1.0, 1.0));
-				stat.angleSum += ACOS(cosAngle);
-				++stat.angleCount;
-			}
-		}
-
-		// Build ViewScoreArr for this reference image
-		ViewScoreArr& refNeighbors = neighbors[refID];
-		CLISTDEF0(Point2f) projs(0, 256);
-
-		// Get reference image size for area computation
-		const Point2f boundsA(refImage.GetSize());
-		FOREACH(viewID, images) {
-			const TrackNeighborStats& stat = stats[viewID];
-			if (stat.sharedTrackIDs.empty())
-				continue;
-
-			const Image& otherImage = images[viewID];
-			ASSERT(otherImage.IsValid());
-
-			// Compute overlap area by projecting shared tracks
-			const Point2f boundsB(otherImage.GetSize());
-			projs.Empty();
-			for (const uint32_t trackID : stat.sharedTrackIDs) {
-				const Track& track = tracks[trackID];
-				const auto [ptB, validB] = otherImage.ProjectPoint(track.position);
-				if (!validB || ptB.x < 0 || ptB.x >= boundsB.x || ptB.y < 0 || ptB.y >= boundsB.y)
-					continue;
-				const auto [ptA, validA] = refImage.ProjectPoint(track.position);
-				if (!validA || ptA.x < 0 || ptA.x >= boundsA.x || ptA.y < 0 || ptA.y >= boundsA.y)
-					continue;
-				projs.emplace_back(Cast<float>(ptA));
-			}
-
-			// Add neighbor entry
-			ViewScore& neighbor = refNeighbors.AddEmpty();
-			neighbor.ID = static_cast<uint32_t>(viewID);
-			neighbor.points = stat.sharedTrackIDs.size();
-			neighbor.angle = stat.angleCount > 0 ? stat.angleSum / stat.angleCount : 0.f;
-			neighbor.area = projs.empty() ? 0.f : ComputeCoveredArea<float,2,16,false>(reinterpret_cast<const float*>(projs.data()), projs.size(), &boundsA.x);
-		}
-
-		// Sort neighbors by number of shared tracks (descending)
-		refNeighbors.Sort([](const ViewScore& a, const ViewScore& b) {
-			return a.points > b.points;
-		});
-	}
-
-	DEBUG_EXTRA("Track-based neighbors precomputed: %u images (%s)", images.size(), TD_TIMER_GET_FMT().c_str());
-}
-/*----------------------------------------------------------------*/
-
 
 // Export tracks and optionally image positions to PLY format
 bool Scene::ExportPLY(const String& fileName, bool bExportImages, bool bInliersOnly, bool bBinary) const

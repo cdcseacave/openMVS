@@ -84,12 +84,6 @@ unsigned ImagePair::RecoverPose(
 	return numBest;
 }
 
-Point3 ImagePair::EpipoleFromEssentialMatrix(const Matrix3x3& E, bool leftImage) {
-	Eigen::Matrix3d eE(leftImage ? E : Matrix3x3(E.t()));
-	Eigen::JacobiSVD<Eigen::Matrix3d> svd(eE, Eigen::ComputeFullU | Eigen::ComputeFullV);
-	return svd.matrixV().block<3, 1>(0, 2).eval();
-}
-
 Matrix3x3 ImagePair::ComposeFundamentalMatrix(const Matrix3x3& E, const Matrix3x3& K1, const Matrix3x3& K2, bool normalize)
 {
 	// Compose fundamental matrix from essential matrix and camera intrinsics
@@ -116,29 +110,6 @@ float ImagePair::ComputeAngleBaselineWeight(float meanAngleDegrees)
 		            // is only defensible while "no angle" means "not measurable" -- with a relative
 		            // pose the angle IS measurable over every track-forming match (FilterMatches,
 		            // ImagePair::ComputeMeanRayAngle), and a pair that has one must carry it
-
-	#if 0
-	// Multiplicative Factor:
-	//   - Small θ_avg (< 2°): Poor baseline - noisy depth estimation
-	//   - Medium θ_avg (5-30°): Good baseline - reliable triangulation
-	//   - Large θ_avg (> 60°): Wide baseline - harder matching but potentially better if matches exist
-	// use a Gaussian-like weighting centered at an optimal angle (e.g., 15°) to favor medium baselines
-	constexpr float OPTIMAL_ANGLE = 15.f;
-	constexpr float ANGLE_WIDTH = 25.f;
-	constexpr float SMALL_ANGLE = 4.f;
-    constexpr float STEEPNESS = 0.8f;
-	constexpr float COMMON = 6.68099f;
-
-	// Avoid too small angles
-	if (meanAngleDegrees < COMMON) {
-		// Sigmoid that transition fast to 0 below SMALL_ANGLE
-		return 1.f / (1.f + EXP(-STEEPNESS * (meanAngleDegrees - SMALL_ANGLE)));
-	}
-
-	// Gaussian-like weighting centered at OPTIMAL_ANGLE
-	return EXP(-SQUARE((meanAngleDegrees - OPTIMAL_ANGLE) / ANGLE_WIDTH));
-
-	#else
 
 	// Angle Baseline Weighting:
 	// Penalize very small angles (weak baseline) and very large angles (harder matching)
@@ -167,7 +138,6 @@ float ImagePair::ComputeAngleBaselineWeight(float meanAngleDegrees)
 	// Rapid exponential decay beyond threshold (C1-continuous with the quadratic penalty)
 	const float excessDeviation = deviation - slowThreshold;
 	return (1.f - maxSlowPenalty) * EXP(-excessDeviation / 10.5f);
-	#endif
 }
 
 

@@ -352,16 +352,6 @@ PairsMatcher::GeometryBranch PairsMatcher::SelectGeometryBranch(const MatchConfi
 	return GeometryBranch::FUNDAMENTAL;
 }
 
-LPCTSTR PairsMatcher::GeometryBranchName(GeometryBranch branch)
-{
-	switch (branch) {
-	case GeometryBranch::SHARED_FOCAL: return _T("shared-focal");
-	case GeometryBranch::ESSENTIAL:    return _T("essential");
-	case GeometryBranch::FUNDAMENTAL:  return _T("fundamental");
-	}
-	return _T("unknown");
-}
-
 
 bool PairsMatcher::GeometricFilter(
 	const Image& img1,

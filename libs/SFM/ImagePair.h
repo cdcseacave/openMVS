@@ -359,8 +359,6 @@ public:
 	// static functions for composing the essential matrix from relative pose and vice-versa
 	static Matrix3x3 ComposeEssentialMatrix(const Pose3D& pose);
 	static Pose3D DecomposeEssentialMatrix(const Matrix3x3& E);
-	// static function to compute epipole from essential matrix (in homogeneous coordinates)
-	static Point3 EpipoleFromEssentialMatrix(const Matrix3x3& E, bool leftImage);
 
 	// static functions for composing the fundamental matrix from essential + camera matrices and vice-versa
 	static Matrix3x3 ComposeFundamentalMatrix(const Matrix3x3& E, const Matrix3x3& K1, const Matrix3x3& K2, bool normalize = false);

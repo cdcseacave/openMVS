@@ -77,17 +77,6 @@ cv::Size View::RevertRotation(Matrix3x3::Base* pK, Matrix3x3::Base* pR) const
 /*----------------------------------------------------------------*/
 
 
-Matrix4x4 View::GetP4() const {
-	const PMatrix P = GetP();
-	Matrix4x4 P4;
-	for (int i = 0; i < 3; ++i)
-		for (int j = 0; j < 4; ++j)
-			P4(i, j) = P(i, j);
-	P4(3, 0) = P4(3, 1) = P4(3, 2) = 0;
-	P4(3, 3) = 1;
-	return P4;
-} // GetP
-
 PMatrix View::GetP() const
 {
 	// Get the projection matrix P = K*R*[I|-C]

@@ -147,11 +147,6 @@ struct SFM_API BAConfig
 		refinePrincipalPoint = true;
 		refineTangentialDistortion = true;
 	}
-	void RefineAllIntrinsics() {
-		RefineExtendedIntrinsics();
-		refineFocalLengthAspectRatio = true;
-		refineRadialDistortion456 = true;
-	}
 
 	// check if any intrinsic refinement is enabled
 	bool IsRefiningIntrinsics() const {
@@ -377,11 +372,6 @@ SFM_API double EstimateDenseObservationWeight(const Scene& scene, const BAConfig
 // params[7] = { qw, qx, qy, qz, Cx, Cy, Cz }
 SFM_API void Pose3DToQuaternionAndCenter(const Pose3D& pose, double* params);
 SFM_API void QuaternionAndCenterToPose3D(const double* params, Pose3D& pose);
-
-// Convert OpenMVS pose to/from Ceres angle-axis parameterization
-// params[6] = { ax, ay, az, Cx, Cy, Cz }
-SFM_API void Pose3DToAngleAxisAndCenter(const Pose3D& pose, double* params);
-SFM_API void AngleAxisAndCenterToPose3D(const double* params, Pose3D& pose);
 /*----------------------------------------------------------------*/
 
 

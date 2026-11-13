@@ -29,12 +29,7 @@ enum class CameraType : uint8_t {
 	PINHOLE = 1,
 	SPHERICAL = 2
 };
-// Convert between CameraType and string
-inline CameraType CameraTypeFromString(const String& str) {
-	if (str == "Pinhole") return CameraType::PINHOLE;
-	if (str == "Spherical") return CameraType::SPHERICAL;
-	return CameraType::UNDEFINED;
-} // FromString
+// Name of a CameraType
 inline String CameraTypeToString(const CameraType type) {
 	switch (type) {
 	case CameraType::PINHOLE: return "Pinhole";
@@ -96,10 +91,6 @@ public:
 	virtual REAL GetFocalLength() const {
 		KMatrix K = GetK();
 		return (K(0, 0) + K(1, 1)) * REAL(0.5);
-	}
-	virtual Point2 GetPrincipalPoint() const {
-		KMatrix K = GetK();
-		return Point2(K(0, 2), K(1, 2));
 	}
 
 	// Trust intrinsics validity

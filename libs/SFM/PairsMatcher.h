@@ -198,7 +198,6 @@ public:
 		FUNDAMENTAL  = 2, // 7-DoF F: anything else, including forceFundamental over trusted intrinsics
 	};
 	static GeometryBranch SelectGeometryBranch(const MatchConfig& cfg, const Image& img1, const Image& img2);
-	static LPCTSTR GeometryBranchName(GeometryBranch branch);
 
 	// Geometric verification with RANSAC
 	// If both cameras trust intrinsics, estimates calibrated relative pose

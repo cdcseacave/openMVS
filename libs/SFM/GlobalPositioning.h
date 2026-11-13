@@ -80,8 +80,6 @@ public:
 	// Returns true if the optimization was successfull
 	bool Solve(Scene& scene);
 
-	GlobalPositionerOptions& GetOptions() { return options; }
-
 protected:
 	// Creates camera to camera constraints from relative translations
 	unsigned AddCameraToCameraConstraints(Scene& scene);

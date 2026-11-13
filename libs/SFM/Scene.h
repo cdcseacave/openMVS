@@ -453,22 +453,6 @@ public:
 		std::unordered_map<const Camera*, KMatrix>* undistortedIntrinsics = NULL) const;
 
 	/**
-	 * @brief Precompute neighbor views based on shared tracks
-	 *
-	 * For each image, identifies all other images that share track observations
-	 * and computes connectivity metrics:
-	 * - Number of shared tracks (points visible in both images)
-	 * - Average angle between viewing rays for shared tracks
-	 * - Overlap area (fraction of reference image covered by shared points)
-	 *
-	 * Results are sorted by number of shared tracks (descending).
-	 *
-	 * @param neighbors Output array of neighbor scores per image (indexed by image ID)
-	 *                  Must be pre-allocated with size == images.size()
-	 */
-	void PrecomputeTrackBasedNeighbors(std::vector<ViewScoreArr>& neighbors) const;
-
-	/**
 	 * @brief Export tracks and optionally image positions to PLY format
 	 *
 	 * Exports the reconstructed 3D positions of tracks to a PLY file.

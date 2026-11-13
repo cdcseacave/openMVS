@@ -25,18 +25,6 @@ namespace SFM {
 class SFM_API Scene;
 
 
-// Depth-map undistortion using depth-aware interpolation
-SFM_API bool UndistortDMAP(const String& depthMapFile,
-	const cv::Mat& map1, const cv::Mat& map2, const KMatrix& imageUndistortedK);
-
-// Batch undistort depth-maps at their native resolution, matching image undistortion.
-// alpha should match the alpha used for image undistortion.
-SFM_API bool UndistortDepthMaps(const Scene& scene,
-	const CLISTDEF2(String)& depthMapFiles,
-	float alpha=0.6f,
-	std::unordered_map<const Camera*, KMatrix>* undistortedIntrinsics=NULL);
-
-
 // Depth-map import from MVS format (similar to MVS::ImportDepthDataRaw).
 // The DMAP header carries the recalibrated-confidence flag (CONF_ADJUSTED in
 // MVS/Interface.h): anything that rewrites a depth-map has to carry it over, or the

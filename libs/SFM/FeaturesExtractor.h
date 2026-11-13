@@ -50,10 +50,6 @@ enum class FeatureType : uint8_t {
 };
 
 
-inline bool IsBinaryDescriptor(FeatureType type) {
-	return (type == FeatureType::AKAZE || type == FeatureType::ORB);
-}
-
 inline String FeatureTypeToString(FeatureType type) {
 	switch (type) {
 		case FeatureType::AKAZE: return "AKAZE";
