@@ -30,7 +30,7 @@
  */
 
 #include "../../libs/SFM.h"
-#include "../../libs/SFM/RoMa2Matcher.h" // RoMa2Onnx::IsAvailable()
+#include "../../libs/SFM/DenseMatcher.h" // DenseMatcher::IsAvailable()
 #include <boost/program_options.hpp>
 
 using namespace SFM;
@@ -353,7 +353,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --dense-min-covisibility is a covisibility score, it must be in [0,1] (got %g)", OPT::fDenseMinCovisibility);
 		return false;
 	}
-	if (OPT::bROMA2 && !RoMa2Onnx::IsAvailable()) {
+	if (OPT::bROMA2 && !DenseMatcher::IsAvailable()) {
 		LOG("error: --roma2 needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
 		return false;
 	}

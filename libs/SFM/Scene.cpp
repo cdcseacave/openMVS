@@ -23,8 +23,7 @@
 #include "SimilarityTransform.h"
 #include "InterfaceMVS.h"
 #include "ImportCOLMAP.h"
-#include "RoMa2Matcher.h"
-#include "FlexGlueMatcher.h"
+#include "DenseMatcher.h"
 #include "LensFit.h"
 
 #include <TinyEXIF.h>
@@ -602,20 +601,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	// again by the selected one. Only known where the selected matcher's descriptor size is (FlexGlue's is fixed, RoMa2's is its manifest's)
 	if (roma2Cfg.enabled && config.mode == MatchConfig::RETRIEVAL && status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS) &&
 		!status.nState.isSet(Status::STATE::MATCHED) && !images.empty()) {
-		unsigned expectedDim = 0;
-		if (roma2Cfg.matcher == "flexglue") {
-			#ifdef _USE_ONNXRUNTIME
-			expectedDim = FlexGlueMatcher::RETRIEVAL_SIZE;
-			#endif
-		} else {
-			RoMa2Manifest manifest;
-			String manifestPath(roma2Cfg.ResolveModelPath());
-			if (!manifestPath.empty()) {
-				Util::ensureFolderSlash(manifestPath);
-				if (manifest.Load(manifestPath + "roma_" + roma2Cfg.setting + ".json"))
-					expectedDim = manifest.facetsDim;
-			}
-		}
+		const unsigned expectedDim = DenseMatcher::ExpectedRetrievalSize(roma2Cfg);
 		if (expectedDim != 0 && (unsigned)images[0].globalDescriptor.cols != expectedDim) {
 			VERBOSE("warning: the scene's global descriptors are %d-D, the %s matcher's are %u-D: describing the images again",
 				images[0].globalDescriptor.cols, roma2Cfg.matcher.c_str(), expectedDim);
@@ -640,17 +626,11 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	}
 	const bool useROMA2 = roma2Cfg.enabled && (needsDescriptors || needsWarps) && !status.nState.isSet(Status::STATE::MATCHED);
 	if (useROMA2) {
-		if (!RoMa2Onnx::IsAvailable()) {
+		if (!DenseMatcher::IsAvailable()) {
 			VERBOSE("error: ROMA2 model '%s' requested, but this build has no ONNX Runtime support", modelPath.c_str());
 			return false;
 		}
-		ASSERT(roma2Cfg.matcher == "roma2" || roma2Cfg.matcher == "flexglue");
-		#ifdef _USE_ONNXRUNTIME
-		if (roma2Cfg.matcher == "flexglue")
-			roma2.reset(new FlexGlueMatcher);
-		else
-		#endif
-			roma2.reset(new RoMa2Onnx);
+		roma2 = DenseMatcher::Create(roma2Cfg);
 		if (!roma2->Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
 			VERBOSE("error: failed to load the %s model '%s'", roma2Cfg.matcher.c_str(), modelPath.c_str());
 			return false;
