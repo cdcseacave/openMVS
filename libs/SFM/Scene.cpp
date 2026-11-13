@@ -1331,9 +1331,8 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 	for (int_t _i = 0; _i < (int_t)images.size(); ++_i) {
 		const IIndex i = static_cast<IIndex>(_i);
 		const Image& img = images[i];
-		if (!img.IsValid())
-			continue;
-		// only the images of the distorted pinhole cameras are undistorted
+		// only the images of the distorted pinhole cameras are undistorted, posed or not, as they all
+		// share the undistorted camera of the export
 		const auto itMaps = undistortMaps.find(img.pCamera);
 		if (itMaps == undistortMaps.end())
 			continue;

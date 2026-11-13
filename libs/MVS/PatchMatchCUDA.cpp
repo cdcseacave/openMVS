@@ -277,8 +277,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			params.sphericalViews |= uint64_t(1) << i;
 	params.fSinSqWarpMaxElevation = SQUARE(SIN(D2R(DepthEstimatorBase::fSphericalWarpMaxElevation)));
 	params.fCosMinViewAngle = COS(D2R(OPTDENSE::fMinAngle));
-	// the confidence recalibration is pinhole only (switched off for scenes with spherical images)
-	ASSERT(!pConfRequest || params.sphericalViews == 0);
+	ASSERT(!pConfRequest || pConfRequest->spherical == ((params.sphericalViews & 1u) != 0));
 	params.nNumViews = (int)numImages-1;
 	params.nInitTopK = MINF(Params().nInitTopK, params.nNumViews); // from the default each time: the object is reused
 	params.fDepthMin = depthData.dMin;
@@ -294,6 +293,10 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		textureDepths.resize(params.nNumViews);
 	}
 	const int maxPixelViews(MINF(params.nNumViews, 4));
+	// the ignore mask of the reference (with the validity mask of an image undistorted on read), at the
+	// resolution of the estimate: applied to it at the end, and before the fused confidence recalibration
+	BitMatrix mask;
+	const bool bMasked(DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, depthData.images.front().image.size(), OPTDENSE::nIgnoreMaskLabel, mask));
 	for (unsigned scaleNumber = totalScaleNumber+1; scaleNumber-- > 0; ) {
 		// initialize
 		const float scale = 1.f / POWI(2, scaleNumber);
@@ -506,23 +509,26 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		if (pConfRequest && scaleNumber == 0 && params.bGeomConsistency &&
 			!depthData.confMap.empty() && depthData.confMap.isContinuous() &&
 			depthData.confMap.size() == depthData.depthMap.size()) {
+			// the ignore mask applied below discards its depths: the recalibration reads them as missing
+			ASSERT(!bMasked || mask.size() == depthData.depthMap.size());
 			// neighbor-depth texture reuse: the geometric-consistency pass already holds every
 			// neighbor's raw previous-iteration depth in cudaDepthArrays/textureDepths, so point
 			// the launcher at the resident texture instead of re-uploading the same map -- but only
 			// when the upload above did NOT resize it (view.depthMap.size() == image.size()),
 			// otherwise the texture holds an INTER_LINEAR-resized copy while the host pointer (and
-			// the CPU path) sample the native map; mismatched neighbors keep the linear upload.
+			// the CPU path) sample the native map; mismatched neighbors keep the linear upload, as do
+			// spherical ones, whose texture takes normalized coordinates.
 			for (ConfNeighborHost& n : pConfRequest->neighbors) {
 				n.texDepth = 0;
-				if (n.srcImage >= 1 && (size_t)n.srcImage < depthData.images.size() &&
+				if (!n.spherical && n.srcImage >= 1 && (size_t)n.srcImage < depthData.images.size() &&
 					(size_t)(n.srcImage-1) < textureDepths.size() && textureDepths[n.srcImage-1] != 0 &&
 					depthData.images[n.srcImage].depthMap.size() == images[n.srcImage].size() &&
 					n.width == images[n.srcImage].cols && n.height == images[n.srcImage].rows)
 					n.texDepth = (unsigned long long)textureDepths[n.srcImage-1];
 			}
 			bFusedConfDone = RunConfidenceFusedCUDA(size.width, size.height,
-				cudaDepthNormalEstimates, cudaDepthNormalCosts,
-				pConfRequest->fx, pConfRequest->fy, pConfRequest->cx, pConfRequest->cy,
+				cudaDepthNormalEstimates, cudaDepthNormalCosts, bMasked ? reinterpret_cast<const uint32_t*>(mask.data) : NULL,
+				pConfRequest->fx, pConfRequest->fy, pConfRequest->cx, pConfRequest->cy, pConfRequest->spherical,
 				pConfRequest->neighbors.data(), (int)pConfRequest->neighbors.size(),
 				pConfRequest->params,
 				(void*)cudaStream, depthData.confMap.ptr<float>());
@@ -577,12 +583,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	}
 
 	// apply ignore mask
-	{
-		const DepthData::ViewData& view = depthData.GetView();
-		BitMatrix mask;
-		if (DepthEstimator::ImportIgnoreMask(*view.pImageData, depthData.depthMap.size(), OPTDENSE::nIgnoreMaskLabel, mask))
-			depthData.ApplyIgnoreMask(mask);
-	}
+	if (bMasked)
+		depthData.ApplyIgnoreMask(mask);
 
 	DEBUG_EXTRA("Depth-map for image %3u %s: %dx%d (%s)", depthData.images.front().GetID(),
 		depthData.images.GetSize() > 2 ?

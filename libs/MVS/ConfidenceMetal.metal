@@ -33,9 +33,13 @@
 // reference pixel, a hand mirror of ConfidenceCUDA.cu (MSL can not include the shared headers):
 //   ConfidencePrior -- the intra-map geometric prior (DepthMapsData::ComputeIntraMapPrior)
 //   ConfidenceSweep -- the one-hop multi-view confirmation and the posterior (AdjustConfidenceSweep)
-// Compiled into the same library as PatchMatchMetal.metal. The reference is read as planes (normal
-// xyz, depth w), the layout of the PatchMatch estimates, and its photometric confidence either as
-// such or as the estimation's ZNCC cost (the fused launch reads the estimates where they are).
+// Compiled into the same library as PatchMatchMetal.metal, after it: its mirror of the camera models
+// (FastAtan2, SphericalModel, SphericalProjectFast, SphericalRayFrame, NormalFromDepthGradient) serves
+// here too. The reference is read as planes (normal xyz, depth w), the layout of the PatchMatch
+// estimates, and its photometric confidence either as such or as the estimation's ZNCC cost (the fused
+// launch reads the estimates where they are). The reference and each neighbor are pinhole or
+// equirectangular (the columns of a spherical map wrap), the fused transforms of a pair defined as for
+// the CPU NeighborProj (SceneDensify.cpp).
 
 #include <metal_stdlib>
 using namespace metal;
@@ -45,11 +49,12 @@ using namespace metal;
 #define CONF_NO_MAP 0xFFFFFFFFu // a neighbor map that is absent
 
 struct ConfParams {
-	float fx, fy, cx, cy;      // reference camera intrinsics (pinhole, skew-free)
+	float fx, fy, cx, cy;      // reference camera intrinsics (skew-free): its pinhole or spherical model
 	int width, height;         // reference size
 	int numNeighbors;
 	int hasNormal;             // the reference planes carry valid normals
 	int confFromCost;          // refConf holds the ZNCC cost (conf = cost>=1 ? 0 : 1-cost)
+	int spherical;             // the reference is equirectangular
 	// ConfRefine::Params, in its order
 	float s, tau, kPrior, w0, confFloor;
 	float minConfidence, thDepth;
@@ -61,7 +66,9 @@ struct ConfParams {
 // packed neighbor buffers (depth and confidence one float per pixel, normal three)
 struct ConfNeighbor {
 	float A[9], b[3], Rrel[9], cn[3];
+	float K[4];                // fx, fy, cx, cy of a spherical neighbor (folded into A, b for a pinhole one)
 	int width, height;
+	int spherical;             // A*u+b is the neighbor's camera-frame point, its columns wrap
 	uint depthOffset, confOffset, normalOffset;
 };
 
@@ -103,6 +110,10 @@ static inline float SoftConfW(float cN, float minConfidence, float epsConf) {
 static inline bool IsDepthSimilar(float d0, float d1, float threshold) {
 	return abs(d0 - d1) / d0 < threshold;
 }
+// the column of an equirectangular map of the given width holding column c, for c within one width of it
+static inline int WrapColumn(int c, int width) {
+	return c < 0 ? c + width : (c >= width ? c - width : c);
+}
 
 // the reference: planes (normal xyz, depth w) and the photometric confidence or cost
 struct RefMaps {
@@ -117,8 +128,9 @@ struct RefMaps {
 	}
 };
 
-// FitDepthGradient: the depth plane at (c,r) over its 3x3 neighbors within 3% of its depth
-static bool FitDepthGradient(thread const RefMaps& ref, int c, int r, thread float& depth, thread float2& gradient) {
+// FitDepthGradient: the depth plane at (c,r) over its 3x3 neighbors within 3% of its depth, the
+// columns wrapping for an equirectangular map
+static bool FitDepthGradient(thread const RefMaps& ref, int c, int r, bool wrapCols, thread float& depth, thread float2& gradient) {
 	depth = ref.Depth(r, c);
 	if (depth <= 0.f)
 		return false;
@@ -129,7 +141,7 @@ static bool FitDepthGradient(thread const RefMaps& ref, int c, int r, thread flo
 		if (rr < 0 || rr >= ref.height)
 			continue;
 		for (int i = -1; i <= 1; ++i) {
-			const int cc = c + i;
+			const int cc = wrapCols ? WrapColumn(c + i, ref.width) : c + i;
 			if ((i == 0 && j == 0) || cc < 0 || cc >= ref.width)
 				continue;
 			const float d = ref.Depth(rr, cc);
@@ -147,8 +159,19 @@ static bool FitDepthGradient(thread const RefMaps& ref, int c, int r, thread flo
 	return true;
 }
 
-// NormalFromDepthGradient, the pinhole closed form
-static inline float3 NormalFromDepthGradient(constant ConfParams& p, int c, int r, float depth, float2 gradient) {
+// the sines and cosines of the longitude and of the elevation of pixel (c,r) of the spherical reference
+static inline float4 RefTrig(constant ConfParams& p, int c, int r) {
+	float cosLon, cosEl;
+	const float sinLon = precise::sincos((float(c) - p.cx)/p.fx, cosLon);
+	const float sinEl = precise::sincos((p.cy - float(r))/p.fy, cosEl);
+	return float4(sinLon, cosLon, sinEl, cosEl);
+}
+// NormalFromDepthGradient of the reference: the pinhole closed form, or through the spherical ray frame
+static inline float3 RefNormalFromDepthGradient(constant ConfParams& p, int c, int r, float depth, float2 gradient) {
+	if (p.spherical) {
+		const float4 t = RefTrig(p, c, r);
+		return NormalFromDepthGradient(SphericalRayFrame(SphericalModel{p.fx, p.fy, p.cx, p.cy}, t.x, t.y, t.z, t.w), depth, gradient);
+	}
 	return normalize(float3(
 		p.fx*gradient.x,
 		p.fy*gradient.y,
@@ -172,7 +195,7 @@ kernel void ConfidencePrior(
 	const RefMaps ref{planes, refConf, p.width, p.height, p.confFromCost != 0};
 	priorOut[idx] = 0.f;
 	float w; float2 grad;
-	if (!FitDepthGradient(ref, c, r, w, grad))
+	if (!FitDepthGradient(ref, c, r, p.spherical != 0, w, grad))
 		return;
 	const float band = p.thDepth * 3.f;
 	const float invKmin = 1.f/4.f;
@@ -182,7 +205,7 @@ kernel void ConfidencePrior(
 		if (rr < 0 || rr >= p.height) continue;
 		for (int x = -1; x <= 1; ++x) {
 			if (x == 0 && y == 0) continue;
-			const int cc = c + x;
+			const int cc = p.spherical ? WrapColumn(c + x, p.width) : c + x;
 			if (cc < 0 || cc >= p.width) continue;
 			const float dN = ref.Depth(rr, cc);
 			if (dN <= 0.f) continue;
@@ -197,7 +220,7 @@ kernel void ConfidencePrior(
 	const float gate = 1.f - precise::exp(-float(nInl) * invKmin);
 	float Pnorm = 1.f;
 	if (p.hasNormal)
-		Pnorm = max(0.f, dot(NormalFromDepthGradient(p, c, r, w, grad), planes[idx].xyz));
+		Pnorm = max(0.f, dot(RefNormalFromDepthGradient(p, c, r, w, grad), planes[idx].xyz));
 	priorOut[idx] = Clamp01(Pplane * Pnorm * gate);
 }
 
@@ -205,13 +228,20 @@ kernel void ConfidencePrior(
 static inline float NeighborDepth(device const float* depths, constant ConfNeighbor& nb, int x, int y) {
 	return depths[nb.depthOffset + uint(y*nb.width + x)];
 }
-// SceneDensify.cpp SampleDepthBilinear (edge-aware; false -> the caller takes the nearest depth)
+// SceneDensify.cpp SampleDepthBilinear (edge-aware; false -> the caller takes the nearest depth; the
+// columns of a spherical neighbor wrap)
 static bool SampleDepthBilinear(device const float* depths, constant ConfNeighbor& nb, float px, float py, float thDepth, thread float& d) {
 	const int x0 = int(floor(px)), y0 = int(floor(py));
-	if (x0 < 0 || y0 < 0 || x0 + 1 >= nb.width || y0 + 1 >= nb.height)
+	if (y0 < 0 || y0 + 1 >= nb.height)
 		return false;
-	const float d00 = NeighborDepth(depths, nb, x0, y0), d01 = NeighborDepth(depths, nb, x0+1, y0);
-	const float d10 = NeighborDepth(depths, nb, x0, y0+1), d11 = NeighborDepth(depths, nb, x0+1, y0+1);
+	int c0 = x0, c1 = x0 + 1;
+	if (nb.spherical) {
+		c0 = WrapColumn(c0, nb.width);
+		c1 = WrapColumn(c1, nb.width);
+	} else if (c0 < 0 || c1 >= nb.width)
+		return false;
+	const float d00 = NeighborDepth(depths, nb, c0, y0), d01 = NeighborDepth(depths, nb, c1, y0);
+	const float d10 = NeighborDepth(depths, nb, c0, y0+1), d11 = NeighborDepth(depths, nb, c1, y0+1);
 	if (d00 <= 0.f || d01 <= 0.f || d10 <= 0.f || d11 <= 0.f)
 		return false;
 	const float dmin = min(min(d00, d01), min(d10, d11));
@@ -247,17 +277,40 @@ kernel void ConfidenceSweep(
 
 	float K = 0.f, Pconf = 0.f;
 	int V = 0;
-	const float ud = float(c) * depthRef, vd = float(r) * depthRef;
-	// the point in the reference camera frame (triangulation angle, GATE 2)
-	const float3 Xr(((float)c - p.cx) / p.fx * depthRef, ((float)r - p.cy) / p.fy * depthRef, depthRef);
+	// the point in the reference camera frame (triangulation angle, GATE 2), and u the reference pixel
+	// in the form the fused transforms take: (c*d,r*d,d) for a pinhole reference, the point itself for
+	// a spherical one
+	float3 Xr, u;
+	if (p.spherical) {
+		const float4 t = RefTrig(p, c, r);
+		Xr = SphericalRay(t.x, t.y, t.z, t.w) * depthRef;
+		u = Xr;
+	} else {
+		Xr = float3(((float)c - p.cx) / p.fx * depthRef, ((float)r - p.cy) / p.fy * depthRef, depthRef);
+		u = float3(float(c) * depthRef, float(r) * depthRef, depthRef);
+	}
 	for (int k = 0; k < p.numNeighbors; ++k) {
 		constant ConfNeighbor& nb = neighbors[k];
-		const float qz = nb.A[6]*ud + nb.A[7]*vd + nb.A[8]*depthRef + nb.b[2];
-		if (qz <= 0.f) continue;
-		const float qx = nb.A[0]*ud + nb.A[1]*vd + nb.A[2]*depthRef + nb.b[0];
-		const float qy = nb.A[3]*ud + nb.A[4]*vd + nb.A[5]*depthRef + nb.b[1];
-		const float px = qx/qz, py = qy/qz;
-		const int xN = int(floor(px + 0.5f)), yN = int(floor(py + 0.5f)); // SEACAVE::Round2Int
+		float qz = nb.A[6]*u.x + nb.A[7]*u.y + nb.A[8]*u.z + nb.b[2];
+		if (!nb.spherical && qz <= 0.f) continue;
+		const float qx = nb.A[0]*u.x + nb.A[1]*u.y + nb.A[2]*u.z + nb.b[0];
+		const float qy = nb.A[3]*u.x + nb.A[4]*u.y + nb.A[5]*u.z + nb.b[1];
+		float px, py;
+		if (nb.spherical) {
+			// q is the neighbor's camera-frame point, its depth the range
+			const float3 q(qx, qy, qz);
+			qz = length(q);
+			if (qz <= 0.f) continue;
+			float2 x;
+			SphericalProjectFast(SphericalModel{nb.K[0], nb.K[1], nb.K[2], nb.K[3]}, q, x);
+			px = x.x; py = x.y;
+		} else {
+			px = qx/qz; py = qy/qz;
+		}
+		int xN = int(floor(px + 0.5f)); // SEACAVE::Round2Int
+		const int yN = int(floor(py + 0.5f));
+		if (nb.spherical)
+			xN = WrapColumn(xN, nb.width);
 		if (xN < 0 || xN >= nb.width || yN < 0 || yN >= nb.height) continue;
 		const float dNn = NeighborDepth(nbDepths, nb, xN, yN);
 		if (dNn <= 0.f) continue;

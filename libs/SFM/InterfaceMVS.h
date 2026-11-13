@@ -32,8 +32,9 @@ SFM_API bool UndistortDMAP(const String& depthMapFile,
 
 // Batch undistort depth-maps at their native resolution, matching image undistortion:
 // each depth-map lands in the frame of the undistorted camera UndistortedK(K, distortion, size, alpha)
-// of its image (stored in the depth-map), scaled to the depth-map resolution; alpha is the one used for
-// the undistorted image files, or UNDISTORT_ALPHA for a native export, which the MVS loader undistorts.
+// of its image, in the orientation of the image file (stored in the depth-map), scaled to the depth-map
+// resolution; alpha is the one used for the undistorted image files, or UNDISTORT_ALPHA for a native
+// export, which the MVS loader undistorts.
 // undistortedIntrinsics receives that undistorted camera per distorted camera.
 SFM_API bool UndistortDepthMaps(const Scene& scene,
 	const CLISTDEF2(String)& depthMapFiles,

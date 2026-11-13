@@ -1446,22 +1446,64 @@ const ConfidenceMap& DepthMapsData::GetIntraMapPrior(DepthData& depthData, bool 
 static DMapCache* g_pAdjustDMapCache(NULL);
 
 // AdjustConfidence's multi-view confirmation loop projects every reference pixel into every selected
-// neighbor depth-map (and back) using a FIXED pair of cameras (ref, neighbor) -- only the per-pixel
-// depth changes. Precomputing the composed single-precision linear maps below ONCE PER NEIGHBOR (not
-// per pixel) turns each gate into a single 3x3 float matrix-vector product, replacing the double-
-// precision TransformPointI2W/TransformPointW2C/ProjectPointP round trips previously repeated for
-// every (pixel, neighbor) pair. Derivation (K's third row is always (0,0,1), see Camera.h):
-//  camX = Rn*(Xworld-Cn), Xworld = Rr^T*Kr^-1*(u*d,v*d,d)+Cr  =>  Kn*camX = A*(u*d,v*d,d) + b
-//  (fwd-bwd) Xn = Rn^T*Kn^-1*(un*dn,vn*dn,dn)+Cn, ref-projected = Kr*Rr*(Xn-Cr) = Ai*(...) + bi
-// reused verbatim by later confirmation-loop rewrites (fusion, inlier labeling).
+// neighbor depth-map using a FIXED pair of cameras (ref, neighbor) -- only the per-pixel depth
+// changes. Precomputing the composed single-precision linear map below ONCE PER NEIGHBOR (not per
+// pixel) turns each projection into a single 3x3 float matrix-vector product. With u the reference
+// pixel (c,r) at depth d in the reference's own form -- (c*d,r*d,d) for a pinhole reference, its
+// camera-frame point Ray(c,r)*d for a spherical one -- and Kn (Kr) the neighbor (reference) K of a
+// pinhole camera or the identity for a spherical one (K's third row is always (0,0,1)):
+//  camX = Rn*(Xworld-Cn), Xworld = Rr^T*Kr^-1*u+Cr  =>  q = Kn*camX = A*u + b
+// q is the neighbor's homogeneous pixel (q.z its depth) for a pinhole neighbor and its camera-frame
+// point (projected by its spherical model, |q| its depth) for a spherical one.
 struct NeighborProj {
-	Matrix3x3f A;    // Kn*Rn*Rr^T*Kr^-1 : ref (u*d,v*d,d) h-coords -> nbr h-coords (q.z = nbr cam depth)
+	Matrix3x3f A;    // Kn*Rn*Rr^T*Kr^-1 : ref u -> nbr q
 	Point3f    b;    // Kn*Rn*(Cr-Cn)
 	Matrix3x3f Rrel; // Rn*Rr^T : rotates a ref-camera-space normal directly into the nbr camera space
 	Point3f    cn;   // Rr*(Cn-Cr) : nbr centre in the ref camera frame (triangulation angle, GATE 2)
+	bool bSpherical; // the neighbor is equirectangular (its columns wrap)
+	Spherical<float> sphere; // its model at the resolution of its maps, if spherical
 	const DepthMap* depthMap = NULL;
 	const ConfidenceMap* confMap = NULL;
 	const NormalMap* normalMap = NULL;
+
+	// compose the transforms of the pair in double precision; cameraN is the neighbor's camera at the
+	// resolution of its maps
+	void Init(const Camera& cameraRef, bool bSphericalRef, const Camera& cameraN, bool bSphericalN) {
+		const Matrix3x3 Rrel_(cameraN.R*cameraRef.R.t()); // ref-cam -> nbr-cam rotation
+		const Matrix3x3 Kn(bSphericalN ? Matrix3x3::IDENTITY : cameraN.K);
+		const Matrix3x3 invKr(bSphericalRef ? Matrix3x3::IDENTITY : cameraRef.GetInvK());
+		A = Matrix3x3f(Kn*Rrel_*invKr);
+		b = Point3f(Kn*cameraN.R*(cameraRef.C-cameraN.C));
+		Rrel = Matrix3x3f(Rrel_);
+		cn = Point3f(cameraRef.R*(cameraN.C-cameraRef.C));
+		bSpherical = bSphericalN;
+		sphere = bSphericalN ? MakeCameraModel<Spherical<float>>(cameraN) : Spherical<float>{};
+	}
+	// the neighbor pixel and depth of q (A*u + b); false if q is behind a pinhole neighbor
+	bool Project(const Point3f& q, float& px, float& py, float& depth) const {
+		if (!bSpherical) {
+			if (q.z <= 0)
+				return false;
+			px = q.x/q.z; py = q.y/q.z;
+			depth = q.z;
+			return true;
+		}
+		depth = norm(q);
+		if (depth <= 0)
+			return false;
+		Eigen::Vector2f x;
+		sphere.ProjectFast(Eigen::Vector3f(q.x, q.y, q.z), x);
+		px = x.x(); py = x.y();
+		return true;
+	}
+	// the neighbor-map pixel nearest to (px,py), the columns of a spherical neighbor wrapping;
+	// false if outside the map
+	bool NearestPixel(float px, float py, ImageRef& x) const {
+		x = ImageRef(ROUND2INT(px), ROUND2INT(py));
+		if (bSpherical)
+			x.x = WrapColumn(x.x, depthMap->cols);
+		return depthMap->isInside(x);
+	}
 };
 
 // forward decl -- shared tail of both AdjustConfidence overloads below, defined after them
@@ -1469,16 +1511,21 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	CLISTDEF0(NeighborProj)& neighborProjs, size_t nRequestedNeighbors, bool bDeferSwap);
 
 // validity-aware bilinear neighbor-depth sample used by AdjustConfidenceSweep's soft gates in
-// place of a nearest-neighbor ROUND2INT lookup.
+// place of a nearest-neighbor ROUND2INT lookup; the columns of an equirectangular map wrap (bWrapCols).
 // Returns false (caller falls back to the nearest sample) when any of the 4 taps is
 // outside the map / invalid, OR when the 4 taps are not mutually depth-similar -- i.e. NEVER
 // interpolates across a depth discontinuity (a foreground/background edge), which would otherwise
 // synthesize a fictitious in-between depth at exactly the pixels where soft gating matters most.
 static inline bool SampleDepthBilinear(const DepthMap& dm, float px, float py,
-                                       float thDepthDiff, Depth& d) {
+                                       float thDepthDiff, Depth& d, bool bWrapCols=false) {
 	const int x0=FLOOR2INT(px), y0=FLOOR2INT(py);
-	if (x0 < 0 || y0 < 0 || x0+1 >= dm.width() || y0+1 >= dm.height()) return false;
-	const Depth d00=dm(y0,x0), d01=dm(y0,x0+1), d10=dm(y0+1,x0), d11=dm(y0+1,x0+1);
+	if (y0 < 0 || y0+1 >= dm.height()) return false;
+	int c0(x0), c1(x0+1);
+	if (bWrapCols) {
+		c0 = WrapColumn(c0, dm.width());
+		c1 = WrapColumn(c1, dm.width());
+	} else if (c0 < 0 || c1 >= dm.width()) return false;
+	const Depth d00=dm(y0,c0), d01=dm(y0,c1), d10=dm(y0+1,c0), d11=dm(y0+1,c1);
 	if (d00<=0 || d01<=0 || d10<=0 || d11<=0) return false;   // caller falls back to nearest
 	const Depth dmin(MINF(MINF(d00,d01),MINF(d10,d11))), dmax(MAXF(MAXF(d00,d01),MAXF(d10,d11)));
 	if (!IsDepthSimilar(dmin, dmax, thDepthDiff)) return false; // never interpolate across an edge
@@ -1498,33 +1545,25 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 		VERBOSE("warning: view %u confidence is already recalibrated (dmap CONF_ADJUSTED flag), skipping the standalone adjust", depthDataRef.GetView().GetID());
 		return false;
 	}
-	const Camera& cameraRef = depthDataRef.GetView().camera;
+	const DepthData::ViewData& viewRef = depthDataRef.GetView();
 
-	// precompute the fused single-precision ref->neighbor (and back) projection for every valid
+	// precompute the fused single-precision ref->neighbor projection for every valid
 	// neighbor once per reference map (see NeighborProj); the double-precision composition (K/R/C)
 	// happens here only, O(neighbors), not O(pixels x neighbors); neighbor data comes from the
 	// shared arrDepthData[] (this is the standalone --postprocess-dmaps 8 phase's phase-lifetime
 	// DMapCache -- see AdjustConfidenceSweep below for why that forces the deferred confMapAdjusted
 	// swap instead of writing confMap directly)
 	CLISTDEF0(NeighborProj) neighborProjs(0, idxNeighbors.size());
-	{
-		const Matrix3x3 invKr(cameraRef.GetInvK());
-		for (IIndex idxN: idxNeighbors) {
-			const DepthData& depthDataN = arrDepthData[idxN];
-			if (depthDataN.IsEmpty())
-				continue;
-			const Camera& cameraN = depthDataN.GetView().camera;
-			const Matrix3x3 invKn(cameraN.GetInvK());
-			const Matrix3x3 Rrel(cameraN.R*cameraRef.R.t()); // ref-cam -> nbr-cam rotation
-			NeighborProj& np = neighborProjs.AddEmpty();
-			np.A = Matrix3x3f(cameraN.K*Rrel*invKr);
-			np.b = Point3f(cameraN.K*cameraN.R*(cameraRef.C-cameraN.C));
-			np.Rrel = Matrix3x3f(Rrel);
-			np.cn = Point3f(cameraRef.R*(cameraN.C-cameraRef.C));
-			np.depthMap = &depthDataN.depthMap;
-			np.confMap = &depthDataN.confMap;
-			np.normalMap = &depthDataN.normalMap;
-		}
+	for (IIndex idxN: idxNeighbors) {
+		const DepthData& depthDataN = arrDepthData[idxN];
+		if (depthDataN.IsEmpty())
+			continue;
+		const DepthData::ViewData& viewN = depthDataN.GetView();
+		NeighborProj& np = neighborProjs.AddEmpty();
+		np.Init(viewRef.camera, viewRef.IsSpherical(), viewN.camera, viewN.IsSpherical());
+		np.depthMap = &depthDataN.depthMap;
+		np.confMap = &depthDataN.confMap;
+		np.normalMap = &depthDataN.normalMap;
 	}
 	return AdjustConfidenceSweep(*this, depthDataRef, neighborProjs, idxNeighbors.size(), /*bDeferSwap=*/true);
 } // AdjustConfidence
@@ -1548,27 +1587,18 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef)
 {
 	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty());
-	const Camera& cameraRef = depthDataRef.GetView().camera;
+	const DepthData::ViewData& viewRef = depthDataRef.GetView();
 
 	CLISTDEF0(NeighborProj) neighborProjs(0, depthDataRef.images.empty() ? 0 : depthDataRef.images.size()-1);
-	{
-		const Matrix3x3 invKr(cameraRef.GetInvK());
-		for (IIndex i=1; i<depthDataRef.images.size(); ++i) {
-			const DepthData::ViewData& viewN = depthDataRef.images[i];
-			if (viewN.depthMap.empty())
-				continue; // this neighbor's depth failed to load this iteration (see InitViews)
-			const Camera& cameraN = viewN.cameraDepthMap;
-			const Matrix3x3 invKn(cameraN.GetInvK());
-			const Matrix3x3 Rrel(cameraN.R*cameraRef.R.t()); // ref-cam -> nbr-cam rotation
-			NeighborProj& np = neighborProjs.AddEmpty();
-			np.A = Matrix3x3f(cameraN.K*Rrel*invKr);
-			np.b = Point3f(cameraN.K*cameraN.R*(cameraRef.C-cameraN.C));
-			np.Rrel = Matrix3x3f(Rrel);
-			np.cn = Point3f(cameraRef.R*(cameraN.C-cameraRef.C));
-			np.depthMap = &viewN.depthMap;
-			np.confMap = &viewN.confMap;
-			np.normalMap = &viewN.normalMap;
-		}
+	for (IIndex i=1; i<depthDataRef.images.size(); ++i) {
+		const DepthData::ViewData& viewN = depthDataRef.images[i];
+		if (viewN.depthMap.empty())
+			continue; // this neighbor's depth failed to load this iteration (see InitViews)
+		NeighborProj& np = neighborProjs.AddEmpty();
+		np.Init(viewRef.camera, viewRef.IsSpherical(), viewN.cameraDepthMap, viewN.IsSpherical());
+		np.depthMap = &viewN.depthMap;
+		np.confMap = &viewN.confMap;
+		np.normalMap = &viewN.normalMap;
 	}
 	// bDeferSwap=false: neighbor data above is a private, disk-snapshotted copy loaded just for
 	// this reference's own iteration -- never the shared, live arrDepthData[] state another
@@ -1585,8 +1615,7 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef)
 // flat row-major buffers); neighbors whose depth failed to load are skipped, matching the CPU.
 static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<ConfNeighborHost>& hn)
 {
-	const Camera& cameraRef = depthDataRef.GetView().camera;
-	const Matrix3x3 invKr(cameraRef.GetInvK());
+	const DepthData::ViewData& viewRef = depthDataRef.GetView();
 	hn.clear();
 	hn.reserve(depthDataRef.images.empty() ? 0 : depthDataRef.images.size()-1);
 	for (IIndex i=1; i<depthDataRef.images.size(); ++i) {
@@ -1597,17 +1626,16 @@ static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<Co
 			(!viewN.confMap.empty() && !viewN.confMap.isContinuous()) ||
 			(!viewN.normalMap.empty() && !viewN.normalMap.isContinuous()))
 			return false;
-		const Camera& cameraN = viewN.cameraDepthMap;
-		const Matrix3x3 invKn(cameraN.GetInvK());
-		const Matrix3x3 Rrel(cameraN.R*cameraRef.R.t()); // ref-cam -> nbr-cam rotation
-		const Matrix3x3f A(cameraN.K*Rrel*invKr);
-		const Point3f b(cameraN.K*cameraN.R*(cameraRef.C-cameraN.C));
-		const Matrix3x3f Rrelf(Rrel);
+		NeighborProj np;
+		np.Init(viewRef.camera, viewRef.IsSpherical(), viewN.cameraDepthMap, viewN.IsSpherical());
 		ConfNeighborHost d;
-		for (int r=0;r<3;++r) for (int c=0;c<3;++c) { d.A[r*3+c]=A(r,c); d.Rrel[r*3+c]=Rrelf(r,c); }
-		d.b[0]=b.x; d.b[1]=b.y; d.b[2]=b.z;
-		const Point3f cn(cameraRef.R*(cameraN.C-cameraRef.C));
-		d.cn[0]=cn.x; d.cn[1]=cn.y; d.cn[2]=cn.z;
+		for (int r=0;r<3;++r) for (int c=0;c<3;++c) { d.A[r*3+c]=np.A(r,c); d.Rrel[r*3+c]=np.Rrel(r,c); }
+		d.b[0]=np.b.x; d.b[1]=np.b.y; d.b[2]=np.b.z;
+		d.cn[0]=np.cn.x; d.cn[1]=np.cn.y; d.cn[2]=np.cn.z;
+		d.K[0]=np.sphere.fx; d.K[1]=np.sphere.fy; d.K[2]=np.sphere.cx; d.K[3]=np.sphere.cy;
+		d.spherical = np.bSpherical ? 1 : 0;
+		// the kernels project into a spherical neighbor through K, the angular camera of its map
+		ASSERT(!np.bSpherical || (ISEQUAL(viewN.cameraDepthMap.K(0,0)*REAL(TWO_PI), REAL(viewN.depthMap.cols)) && ISEQUAL(viewN.cameraDepthMap.K(1,1)*REAL(PI), REAL(viewN.depthMap.rows))));
 		d.depth = viewN.depthMap.ptr<float>();
 		d.conf = viewN.confMap.empty() ? NULL : viewN.confMap.ptr<float>();
 		d.normal = viewN.normalMap.empty() ? NULL : viewN.normalMap.ptr<float>();
@@ -1625,9 +1653,11 @@ static bool MakeConfAdjustRequest(const DepthData& depthDataRef, ConfAdjustReque
 {
 	if (!BuildConfNeighborHosts(depthDataRef, request.neighbors))
 		return false;
-	const Matrix3x3f Kf(depthDataRef.GetView().camera.K);
+	const DepthData::ViewData& viewRef = depthDataRef.GetView();
+	const Matrix3x3f Kf(viewRef.camera.K);
 	request.fx = Kf(0,0); request.fy = Kf(1,1);
 	request.cx = Kf(0,2); request.cy = Kf(1,2);
+	request.spherical = viewRef.IsSpherical();
 	request.params = MakeConfRefineParams();
 	return true;
 }
@@ -1667,7 +1697,7 @@ bool DepthMapsData::AdjustConfidenceGPU(DepthData& depthDataRef)
 		ConfidenceMap newConfMap(depthMapRef.size());
 		if (!MVS::CUDA::RunConfidenceCUDA(W, H,
 				depthMapRef.ptr<float>(), normalMapRef.empty() ? NULL : normalMapRef.ptr<float>(), confMapRef.ptr<float>(),
-				request.fx, request.fy, request.cx, request.cy,
+				request.fx, request.fy, request.cx, request.cy, request.spherical,
 				request.neighbors.data(), (int)request.neighbors.size(), request.params,
 				newConfMap.ptr<float>()))
 			return false;
@@ -1718,10 +1748,36 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	const ConfRefine::Params crp(MakeConfRefineParams());
 	const float minConfidence(crp.minConfidence), epsConf(crp.epsConf), violMargin(crp.violMargin);
 	const Depth thDepth(crp.thDepth);
-	// the recalibration is pinhole only: ComputeDepthMaps switches it off for scenes with spherical images
-	ASSERT(!imageRef.IsSpherical());
+	// the reference camera model: a pinhole reference feeds the fused transforms its pixels in the
+	// homogeneous form (c*d,r*d,d), a spherical one its camera-frame points Ray(c,r)*d, the rays built
+	// from the sines and cosines of the longitude of every column and of the elevation of every row
+	const bool bSphericalRef(imageRef.IsSpherical());
 	const Matrix3x3f Kref(imageRef.camera.K);
 	const float invFx(1.f/Kref(0,0)), invFy(1.f/Kref(1,1)), cx(Kref(0,2)), cy(Kref(1,2));
+	std::vector<Eigen::Vector2f> refTrig;
+	if (bSphericalRef) {
+		// the angular K of the reference on the grid of its depth-map (fx=W/2pi, fy=H/pi)
+		ASSERT(ISEQUAL(imageRef.camera.K(0,0)*REAL(TWO_PI), REAL(depthMapRef.cols)) && ISEQUAL(imageRef.camera.K(1,1)*REAL(PI), REAL(depthMapRef.rows)));
+		const Spherical<double> sphereRef(MakeCameraModel<Spherical<double>>(imageRef.camera));
+		refTrig.resize(depthMapRef.cols + depthMapRef.rows);
+		for (int c=0; c<depthMapRef.cols; ++c) {
+			const double lon(sphereRef.Angles(Eigen::Vector2d(c, 0)).x());
+			refTrig[c] = Eigen::Vector2f((float)std::sin(lon), (float)std::cos(lon));
+		}
+		for (int r=0; r<depthMapRef.rows; ++r) {
+			const double el(sphereRef.Angles(Eigen::Vector2d(0, r)).y());
+			refTrig[depthMapRef.cols + r] = Eigen::Vector2f((float)std::sin(el), (float)std::cos(el));
+		}
+	}
+	// the reference camera-frame point of pixel (c,r) at the given depth
+	const auto RefPoint = [&](int c, int r, Depth depth) -> Point3f {
+		if (!bSphericalRef)
+			return Point3f(((float)c-cx)*invFx*depth, ((float)r-cy)*invFy*depth, depth);
+		const Eigen::Vector2f& lon(refTrig[c]);
+		const Eigen::Vector2f& el(refTrig[depthMapRef.cols + r]);
+		const Eigen::Vector3f ray(Spherical<float>::Ray(lon.x(), lon.y(), el.x(), el.y()));
+		return Point3f(ray.x()*depth, ray.y()*depth, ray.z()*depth);
+	};
 
 	// intra-map geometric prior (once per map); bParallel=false -- this call runs inside one of
 	// nMaxThreads already-parallel pool-worker threads (see GetIntraMapPrior's declaration comment)
@@ -1761,7 +1817,74 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 		const float A10(np.A(1,0)), A11(np.A(1,1)), A12(np.A(1,2));
 		const float A20(np.A(2,0)), A21(np.A(2,1)), A22(np.A(2,2));
 		const float b0(np.b.x), b1(np.b.y), b2(np.b.z);
-		// the sweep is bound by the projection stage (transform+divide+round+bounds, executed for
+		// the gates of reference pixel (r,c) projected into this neighbor: x its nearest neighbor-map
+		// pixel, qz its depth there and (px,py) its continuous neighbor pixel.
+		// The confirmation gates G1/G2/G3 are continuous weights wD/wR/wN in [0,1] (wR: the vote's
+		// triangulation-angle independence); their product w
+		// contributes a FRACTIONAL confirmation (K += w) and a w-weighted confidence (Pconf += w*cN).
+		// Free-space-violation bookkeeping stays HARD and is evaluated on the nearest sample: V counts
+		// discrete violating views, so softening it would blur the occluded/violating distinction.
+		const auto Confirm = [&](int r, int c, const ImageRef& x, float qz, float px, float py) {
+			ASSERT(qz > 0 && depthMapN.isInside(x));
+			const Depth dNNearest(depthMapN(x));
+			if (dNNearest <= 0)
+				return;
+			// free-space-violation test, on the nearest sample: the neighbor's own measured depth
+			// lies on the SAME ray as our point, so dN well BEHIND our depth (past the margin) means
+			// its ray passes THROUGH us to a real surface further away -- negative evidence. dN much
+			// CLOSER only means we are occluded in that view, which is neutral.
+			const bool gDepthNearest(IsDepthSimilar(dNNearest, (Depth)qz, thDepth));
+			if (!gDepthNearest && dNNearest > qz*(1.f + violMargin*thDepth))
+				++violMap(r,c);
+			// bilinear (edge-aware) neighbor-depth sample at the continuous projected location
+			Depth dN;
+			if (!SampleDepthBilinear(depthMapN, px, py, thDepth, dN, np.bSpherical))
+				dN = dNNearest; // straddles a depth edge, or out of bounds: fall back to nearest
+			// GATE 1: Gaussian depth agreement, same relative-depth convention as IsDepthSimilar;
+			// every other weight is <= 1, so a negligible wD already decides the vote
+			const float wD(ConfRefine::SoftDepthW(qz, (float)dN, thDepth));
+			if (wD <= 0.05f)
+				return;
+			// GATE 2: independence of the confirmation, from the triangulation angle at the point
+			const Point3f X(RefPoint(c, r, depthMapRef(r,c)));
+			const float wR(ConfRefine::AngleW(X.x, X.y, X.z, np.cn.x, np.cn.y, np.cn.z));
+			// GATE 3: normal agreement cosine; neutral (1) when no normal maps are available
+			float wN(1.f);
+			if (bNormalGate) {
+				const Point3f nRefN(np.Rrel*normalMapRef(r,c));
+				wN = MAXF(0.f, nRefN.dot((*np.normalMap)(x)));
+			}
+			// GATE 4: smoothstep(cN; minConfidence-epsConf, minConfidence+epsConf). Folding wC into w
+			// makes a low-confidence neighbor down-weight BOTH K and Pconf, so a geometrically-strong
+			// but low-confidence neighbor cannot push K>=1 and trip the anti-cascade floor, which is
+			// reserved for genuinely min-confidence-passing pixels. cN==1 when no conf map => wC==1.
+			const float cN(bHasConf ? (*np.confMap)(x) : 1.f);
+			const float w(wD*wR*wN*ConfRefine::SoftConfW(cN, minConfidence, epsConf));
+			if (w <= 0.05f)
+				return; // negligible joint agreement: does not contribute
+			countMap(r,c) += w;
+			pconfMap(r,c) += w*cN;
+		};
+		if (bSphericalRef || np.bSpherical) {
+			// a spherical camera in the pair: each pixel projected through the camera models
+			for (int r=0; r<depthMapRef.rows; ++r) {
+				const Depth* const rowD(depthMapRef.ptr<const Depth>(r));
+				for (int c=0; c<depthMapRef.cols; ++c) {
+					const Depth depthRef(rowD[c]);
+					if (depthRef <= 0)
+						continue;
+					const Point3f u(bSphericalRef ? RefPoint(c, r, depthRef) : Point3f((float)c*depthRef, (float)r*depthRef, depthRef));
+					Point3f q(np.A*u);
+					q += np.b;
+					float px, py, qz;
+					ImageRef x;
+					if (np.Project(q, px, py, qz) && np.NearestPixel(px, py, x))
+						Confirm(r, c, x, qz, px, py);
+				}
+			}
+			continue;
+		}
+		// two pinhole cameras: the sweep is bound by the projection stage (transform+divide+round+bounds, executed for
 		// EVERY pixel x neighbor candidate, hits and misses alike -- measured at ~80% of the sweep):
 		// stage A projects a WHOLE ROW into flat buffers, 4 columns per iteration with SSE where
 		// available (the ops are IEEE-identical per lane and in the same order as the scalar code,
@@ -1858,60 +1981,16 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 			for (; c<cols; ++c)
 				Project(c);
 			// ---- stage B: gates ----
-			// The confirmation gates G1/G2/G3 are continuous weights wD/wR/wN in [0,1] (wR: the vote's
-			// triangulation-angle independence); their product w
-			// contributes a FRACTIONAL confirmation (K += w) and a w-weighted confidence (Pconf += w*cN).
-			// Free-space-violation bookkeeping stays HARD and is evaluated on the nearest sample: V counts
-			// discrete violating views, so softening it would blur the occluded/violating distinction.
 			for (int c=0; c<cols; ++c) {
 				const float qz(zRow[c]);
 				if (qz <= 0)
 					continue; // invalid ref depth / behind camera / outside neighbor map
-				const ImageRef x(xRow[c], yRow[c]);
-				const Depth dNNearest(depthMapN(x));
-				if (dNNearest <= 0)
-					continue;
-				// free-space-violation test, on the nearest sample: the neighbor's own measured depth
-				// lies on the SAME ray as our point, so dN well BEHIND our depth (past the margin) means
-				// its ray passes THROUGH us to a real surface further away -- negative evidence. dN much
-				// CLOSER only means we are occluded in that view, which is neutral.
-				const bool gDepthNearest(IsDepthSimilar(dNNearest, (Depth)qz, thDepth));
-				if (!gDepthNearest && dNNearest > qz*(1.f + violMargin*thDepth))
-					++violMap(r,c);
-				// bilinear (edge-aware) neighbor-depth sample at the continuous projected location;
 				// recompute the continuous (px,py) here -- stage A only kept the rounded xRow/yRow
 				const Depth depthRef(rowD[c]);
 				const float ud((float)c*depthRef), vd(rd*depthRef);
 				const float qx(A00*ud + A01*vd + A02*depthRef + b0);
 				const float qy(A10*ud + A11*vd + A12*depthRef + b1);
-				const float px(qx/qz), py(qy/qz);
-				Depth dN;
-				if (!SampleDepthBilinear(depthMapN, px, py, thDepth, dN))
-					dN = dNNearest; // straddles a depth edge, or out of bounds: fall back to nearest
-				// GATE 1: Gaussian depth agreement, same relative-depth convention as IsDepthSimilar;
-				// every other weight is <= 1, so a negligible wD already decides the vote
-				const float wD(ConfRefine::SoftDepthW(qz, (float)dN, thDepth));
-				if (wD <= 0.05f)
-					continue;
-				// GATE 2: independence of the confirmation, from the triangulation angle at the point
-				const float wR(ConfRefine::AngleW(((float)c-cx)*invFx*depthRef, (rd-cy)*invFy*depthRef, depthRef,
-					np.cn.x, np.cn.y, np.cn.z));
-				// GATE 3: normal agreement cosine; neutral (1) when no normal maps are available
-				float wN(1.f);
-				if (bNormalGate) {
-					const Point3f nRefN(np.Rrel*normalMapRef(r,c));
-					wN = MAXF(0.f, nRefN.dot((*np.normalMap)(x)));
-				}
-				// GATE 4: smoothstep(cN; minConfidence-epsConf, minConfidence+epsConf). Folding wC into w
-				// makes a low-confidence neighbor down-weight BOTH K and Pconf, so a geometrically-strong
-				// but low-confidence neighbor cannot push K>=1 and trip the anti-cascade floor, which is
-				// reserved for genuinely min-confidence-passing pixels. cN==1 when no conf map => wC==1.
-				const float cN(bHasConf ? (*np.confMap)(x) : 1.f);
-				const float w(wD*wR*wN*ConfRefine::SoftConfW(cN, minConfidence, epsConf));
-				if (w <= 0.05f)
-					continue; // negligible joint agreement: does not contribute
-				countMap(r,c) += w;
-				pconfMap(r,c) += w*cN;
+				Confirm(r, c, ImageRef(xRow[c], yRow[c]), qz, qx/qz, qy/qz);
 			}
 		}
 	}
@@ -3353,10 +3432,6 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			OPTDENSE::nOptimize |= OPTDENSE::ADJUST_CONFIDENCE;
 		DEBUG("Adaptive confidence %s (auto: %s depth-map estimation)",
 			bCheapConfidence ? "enabled" : "disabled", bCheapConfidence ? "GPU" : "CPU");
-	}
-	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) && HasSphericalImages()) {
-		VERBOSE("warning: the confidence recalibration does not support spherical images; disabled");
-		OPTDENSE::nOptimize &= ~OPTDENSE::ADJUST_CONFIDENCE;
 	}
 
 	// initialize the queue of images to be processed

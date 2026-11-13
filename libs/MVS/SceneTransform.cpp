@@ -114,66 +114,103 @@ bool Scene::Scale(const REAL* pScale)
 	return true;
 } // Scale
 
-// scale image resolutions with the given scale or max-resolution;
-// if folderName is specified, the scaled images are stored there, and the observations of the points,
-// at the resolution of the image files, move with them
+// store the image files scaled with the given scale or max-resolution in folderName, the images then
+// referencing them (their scale 1): the files keep their pixels, so a Brown camera keeps its lens,
+// scaled with them, and so its undistortion, validity and segmentation masks; every image of a Brown
+// camera is stored, posed or not, as they share the resolution of its lens (an unposed one whose file
+// can not be read is left as it is: unused); a segmentation mask keeps its file; the observations of
+// the points, at the resolution of the image files, move with them
 bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folderName)
 {
-	ASSERT(nMaxResolution > 0 || scale > 0);
+	ASSERT((nMaxResolution > 0 || scale > 0) && !folderName.empty());
 	Util::ensureFolder(folderName);
+	const auto IsBrown([this](const Image& image) {
+		return image.platformID != NO_ID && image.cameraID != NO_ID &&
+			platforms[image.platformID].cameras[image.cameraID].model == CameraModelType::BROWN;
+	});
 	// per image, the map of its pixels at the file resolution onto the stored ones: x' = a*x + b
 	struct PixelMap { Point2f a, b; };
 	CLISTDEF0IDX(PixelMap,IIndex) pixelMaps(images.size());
+	// per image, the camera matrix of its file (the one its observations are on)
+	CLISTDEF0IDX(KMatrix,IIndex) fileKs(images.size());
+	// per Brown camera, the resolution of its stored files
+	std::unordered_map<PairIdx,cv::Size> brownSizes;
 	FOREACH(idx, images) {
 		Image& image = images[idx];
-		if (!image.IsValid())
+		const bool bBrown(IsBrown(image));
+		if (!image.IsValid() && !bBrown)
 			continue;
+		// the pixels of the file as they are
+		if (Image::ReadImage(image.name, image.image) == NULL) {
+			if (image.IsValid())
+				return false;
+			continue;
+		}
+		const cv::Size fileSize(image.image.size());
+		ASSERT(!bBrown || fileSize == platforms[image.platformID].cameras[image.cameraID].lens.size);
+		image.width = (uint32_t)fileSize.width;
+		image.height = (uint32_t)fileSize.height;
+		if (image.IsValid())
+			fileKs[idx] = image.GetCamera(platforms, fileSize).K;
 		unsigned nResolutionLevel(0);
-		unsigned nResolution(image.RecomputeMaxResolution(nResolutionLevel, 0));
+		unsigned nResolution(Image8U3::computeMaxResolution(image.width, image.height, nResolutionLevel, 0));
 		if (scale > 0)
 			nResolution = ROUND2INT(nResolution*scale);
 		if (nMaxResolution > 0 && nResolution > nMaxResolution)
 			nResolution = nMaxResolution;
-		// the pixels as the camera sees them at the file resolution, then scaled
-		if (!image.ReloadImage(0, !folderName.empty()))
+		image.ResizeImage(nResolution);
+		image.scale = 1;
+		if (bBrown) {
+			// the images of a camera share its lens resolution, so they are stored at the same one
+			const auto it(brownSizes.emplace(PairIdx(image.platformID, image.cameraID), image.GetSize()).first);
+			ASSERT(it->second == image.GetSize());
+		}
+		// a segmentation mask at its default location stays with the original file
+		if (image.maskName.empty() && File::access(image.GetMaskFileName()))
+			image.maskName = image.GetMaskFileName();
+		if (image.ID == NO_ID)
+			image.ID = idx;
+		image.name = folderName + String::FormatString("%05u%s", image.ID, Util::getFileExt(image.name).c_str());
+		if (!image.image.Save(image.name))
 			return false;
-		const cv::Size fileSize(image.GetSize());
-		image.scale = image.ResizeImage(nResolution);
-		image.UpdateCamera(platforms);
-		if (!folderName.empty()) {
-			const KMatrix fileK(image.GetCamera(platforms, fileSize).K), K(image.camera.K);
-			ASSERT(ISZERO(fileK(0,1)) && ISZERO(K(0,1)));
-			PixelMap& pixelMap = pixelMaps[idx];
-			pixelMap.a = Point2f(float(K(0,0)/fileK(0,0)), float(K(1,1)/fileK(1,1)));
-			pixelMap.b = Point2f(float(K(0,2)-fileK(0,2)*K(0,0)/fileK(0,0)), float(K(1,2)-fileK(1,2)*K(1,1)/fileK(1,1)));
-			if (image.ID == NO_ID)
-				image.ID = idx;
-			image.name = folderName + String::FormatString("%05u%s", image.ID, Util::getFileExt(image.name).c_str());
-			image.image.Save(image.name);
-			image.ReleaseImage();
-		}
+		image.ReleaseImage();
 	}
-	if (!folderName.empty()) {
-		// the observations are undistorted already (PointCloud::pointObservations): they only scale
-		FOREACH(idxPoint, pointcloud.pointObservations) {
-			const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
-			PointCloud::ObservationArr& observations = pointcloud.pointObservations[idxPoint];
-			ASSERT(observations.size() == views.size());
-			FOREACH(v, observations) {
-				ASSERT(images[views[v]].IsValid());
-				const PixelMap& pixelMap = pixelMaps[views[v]];
-				Point2f& x = observations[v];
-				x = Point2f(pixelMap.a.x*x.x + pixelMap.b.x, pixelMap.a.y*x.y + pixelMap.b.y);
+	// the lens of a Brown camera at the resolution of its stored files
+	for (const auto& [key, size]: brownSizes) {
+		Platform::Camera& camera = platforms[key.i].cameras[key.j];
+		const CameraLens lens(camera.lens);
+		camera.SetBrownLens(ScaleK(lens.K, REAL(MAXF(size.width, size.height))/MAXF(lens.size.width, lens.size.height)), lens.distortion, size);
+	}
+	FOREACH(idx, images) {
+		Image& image = images[idx];
+		if (!image.IsValid()) {
+			// an unposed image of a Brown camera: its lens follows the camera (UpdateCamera needs a pose)
+			if (IsBrown(image)) {
+				const Platform::Camera& camera = platforms[image.platformID].cameras[image.cameraID];
+				image.model = camera.model;
+				image.lens = camera.lens;
 			}
+			continue;
 		}
-		// the stored images are the ones the cameras see: a Brown camera is now the pinhole camera K' of its files
-		for (Platform& platform: platforms)
-			for (Platform::Camera& camera: platform.cameras)
-				if (camera.model == CameraModelType::BROWN)
-					camera.model = CameraModelType::PINHOLE;
-		for (Image& image: images)
-			if (image.IsValid())
-				image.UpdateCamera(platforms);
+		image.UpdateCamera(platforms);
+		const KMatrix& fileK(fileKs[idx]), &K(image.camera.K);
+		ASSERT(ISZERO(fileK(0,1)) && ISZERO(K(0,1)));
+		PixelMap& pixelMap = pixelMaps[idx];
+		pixelMap.a = Point2f(float(K(0,0)/fileK(0,0)), float(K(1,1)/fileK(1,1)));
+		pixelMap.b = Point2f(float(K(0,2)-fileK(0,2)*K(0,0)/fileK(0,0)), float(K(1,2)-fileK(1,2)*K(1,1)/fileK(1,1)));
+	}
+	// the observations are on the cameras of the files (PointCloud::pointObservations): a pinhole map
+	// carries them onto the cameras of the stored files
+	FOREACH(idxPoint, pointcloud.pointObservations) {
+		const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+		PointCloud::ObservationArr& observations = pointcloud.pointObservations[idxPoint];
+		ASSERT(observations.size() == views.size());
+		FOREACH(v, observations) {
+			ASSERT(images[views[v]].IsValid());
+			const PixelMap& pixelMap = pixelMaps[views[v]];
+			Point2f& x = observations[v];
+			x = Point2f(pixelMap.a.x*x.x + pixelMap.b.x, pixelMap.a.y*x.y + pixelMap.b.y);
+		}
 	}
 	return true;
 } // ScaleImages

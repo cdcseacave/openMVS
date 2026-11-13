@@ -64,6 +64,30 @@ def load_depth_exr(exr_path):
     return None
 
 
+NO_ID = 0xFFFFFFFF
+
+
+def get_image_pose(scene, image):
+  """
+  World pose of an image: the camera pose relative to its platform composed with the platform pose
+  (Interface::Platform::GetPose).
+  Args:
+    scene (dict): The MVS scene data.
+    image (dict): The scene image.
+  Returns:
+    tuple: (R, C), the rotation and the position of the image camera, or None if the image has no pose.
+  """
+  if image["platform_id"] == NO_ID or image["camera_id"] == NO_ID or image["pose_id"] == NO_ID:
+    return None
+  platform = scene["platforms"][image["platform_id"]]
+  camera = platform["cameras"][image["camera_id"]]
+  pose = platform["poses"][image["pose_id"]]
+  pose_R = np.array(pose["R"])
+  R = np.array(camera["R"]) @ pose_R
+  C = pose_R.T @ np.array(camera["C"]) + np.array(pose["C"])
+  return R, C
+
+
 def scale_depth_map(scene, image_idx, depth_map, verbose=False):
   """
   Estimate the scale and shift of the depth map based on the scene sparse point cloud,
@@ -84,8 +108,8 @@ def scale_depth_map(scene, image_idx, depth_map, verbose=False):
   image_width  = scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["width"]
   image_height = scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["height"]
   K = np.array(scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["K"])
-  R = np.array(scene["platforms"][image["platform_id"]]["poses"][image["pose_id"]]["R"])
-  C = np.array(scene["platforms"][image["platform_id"]]["poses"][image["pose_id"]]["C"])
+  assert get_image_pose(scene, image) is not None, "the image must have a pose"
+  R, C = get_image_pose(scene, image)
   K = scale_K(K, depth_map.shape[1] / image_width, depth_map.shape[0] / image_height)
   spherical = scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]].get("model") == CAMERA_MODEL_SPHERICAL
   depths_sfm = []
@@ -216,6 +240,10 @@ def import_dmaps(scene_file, input_dir, ext, output_file, rescale=True, verbose=
   for idx, image in tqdm(enumerate(scene["images"]), desc="Importing depth-maps", total=len(scene["images"])):
     image_name_ext = os.path.basename(image["name"])
     image_name = os.path.splitext(image_name_ext)[0]
+    pose = get_image_pose(scene, image)
+    if pose is None:
+      print(f"Warning: Image {image_name} has no pose, skipped")
+      continue
     depth_file_path = os.path.join(input_dir, image_name + ext)
     if not os.path.exists(depth_file_path):
       print(f"Warning: Depth file not found for {depth_file_path}")
@@ -248,8 +276,8 @@ def import_dmaps(scene_file, input_dir, ext, output_file, rescale=True, verbose=
       "reference_view_id": image["id"],
       "neighbor_view_ids": [],
       "K": scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["K"],
-      "R": scene["platforms"][image["platform_id"]]["poses"][image["pose_id"]]["R"],
-      "C": scene["platforms"][image["platform_id"]]["poses"][image["pose_id"]]["C"],
+      "R": pose[0],
+      "C": pose[1],
       "depth_map": depth_map,
       "spherical": scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]].get("model") == CAMERA_MODEL_SPHERICAL,
     }

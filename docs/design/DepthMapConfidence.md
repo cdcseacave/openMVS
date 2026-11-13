@@ -61,6 +61,19 @@ if Kf ≥ 1: conf = max(conf, CONF_FLOOR · confPhoto)        // anti-cascade fl
   passes through where the point claims to be — direct negative evidence, diluting the posterior's
   denominator.
 
+**Camera models.** The reference and every neighbour are pinhole or equirectangular (spherical), in
+any combination; depth is the distance along the model's ray (`z` for pinhole, range for spherical,
+`SphericalPatchMatch.md`). Per neighbour, `NeighborProj` (`SceneDensify.cpp`, mirrored by
+`ConfNeighborHost`) composes one single-precision map `q = A·u + b`: `u` is the reference pixel at its
+depth `d` as `(c·d, r·d, d)` for a pinhole reference and as its camera-frame point `Ray(c,r)·d` for a
+spherical one; `q` is the neighbour's homogeneous pixel (`q.z` its depth) for a pinhole neighbour and
+its camera-frame point for a spherical one, projected by `Spherical::ProjectFast` with depth `|q|`. The
+columns of a spherical map wrap: the prior's 3x3 window, the neighbour's nearest pixel and the
+bilinear taps (`SampleDepthBilinear`), and the prior's normal comes from the spherical ray frame. Two
+pinhole cameras keep the row-vectorized projection (stage A of `AdjustConfidenceSweep`); a pair with a
+spherical camera projects pixel by pixel through the models. The gates and the posterior are the same
+for every model.
+
 `ConfRefine::Params` (`ConfidenceRefine.h`, built once by `MakeConfRefineParams` for both the CPU
 sweep and the CUDA kernel) carries the shape constants, the calibrated confirmation tolerance
 (`thDepth = CONFIRM_DEPTH`, also the unit of the free-space margin and of the prior's plane-fit band)
@@ -135,7 +148,12 @@ When `ADJUST_CONFIDENCE` is set (auto-resolved or forced), three paths exist, tr
    defers to the epilogue whenever they are enabled. Reads the reference depth/normal/cost straight
    from the PatchMatch instance's resident device buffers (`cudaDepthNormalEstimates`,
    `cudaDepthNormalCosts`); only the neighbours' raw previous-iteration maps are uploaded (or read
-   from a resident depth texture when its resolution matches). On success `confMap` is written
+   from a resident depth texture when its resolution matches and the neighbour is pinhole: a
+   spherical view's texture takes normalized coordinates). The reference's ignore mask (with the
+   validity mask of an image undistorted on read), which the estimation applies right after, is
+   applied first: CUDA uploads it as bits and reads the masked depths as missing, Metal zeroes them in
+   its shared estimates buffer — so the fused result equals the epilogue's and the CPU's, whose
+   estimation never produces those depths. On success `confMap` is written
    directly, skipping the cost→confidence conversion the caller would otherwise apply.
 2. **Epilogue GPU re-upload** (`DepthMapsData::AdjustConfidenceGPU`, called from the
    `EVT_SAVEDEPTHMAP` handler): runs when the fused launch did not run or failed (`bConfAdjusted`
@@ -203,8 +221,11 @@ floor.
 - The CPU and CUDA paths share the exact same per-pixel math and parameter snapshot
   (`ConfidenceRefine.h` and `Common/DepthGeometry.h`, compiled under both the host compiler and
   `nvcc`); the GPU path differs only in using single-precision `expf`. MSL can not include those
-  headers: `ConfidenceMetal.metal` mirrors them function by function (`precise::exp`, the pinhole
-  `FitDepthGradient` / `NormalFromDepthGradient`), and `GPUConfidenceTest` holds it to the CPU sweep.
+  headers: `ConfidenceMetal.metal` mirrors them function by function (`precise::exp`,
+  `FitDepthGradient`, the pinhole `NormalFromDepthGradient`) and takes the spherical model from the
+  camera-model mirror of `PatchMatchMetal.metal`, compiled into the same library before it;
+  `GPUConfidenceTest` holds CUDA or Metal to the CPU sweep for a pinhole and a spherical reference,
+  each against pinhole and spherical neighbours.
 - The Metal kernels read the reference as planes (normal, depth), the PatchMatch estimates' layout,
   and its photometric confidence or, in the fused launch, the ZNCC cost it converts as the readback
   does; the neighbour maps are packed one after the other into three buffers.

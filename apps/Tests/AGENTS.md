@@ -126,12 +126,12 @@ Tests (MVS suite 2), each bound being the measured accuracy less a margin:
 
 | Test | Checks |
 |------|--------|
-| `BrownUndistortOnLoadTest()` | Brown views read through `MVS::Image` match the pinhole render at `K'`; ignore mask = undistortion mask; observations on their `K'` projections, also after `Scene::ScaleImages`; the MeshLab raster of a Brown image holds its undistorted pixels and the camera at `K'` |
+| `BrownUndistortOnLoadTest()` | Brown views read through `MVS::Image` match the pinhole render at `K'`; ignore mask = undistortion mask; observations on their `K'` projections, also after `Scene::ScaleImages` (files stored distorted, lens scaled); the MeshLab raster of a Brown image holds its undistorted pixels and the camera at `K'` |
 | `SyntheticDepthBaselineTest()` | GT consistency across the models, then CPU PatchMatch on the 18 128x128 faces of 3 panoramas |
 | `SyntheticSphericalTest()` | CPU PatchMatch on 3 512x256 panoramas, overall and per band (seam held to its antipodal band) |
 | `MetalModelMathTest()` | Apple only: the Metal mirror of `CameraModels.h` / `DepthGeometry.h` against the C++ models |
 | `SyntheticSphericalGPUTest()` | the same panoramas on CUDA or Metal, moved 1e6 m from the origin (as accurate as there: the estimator only relates the views); skipped without a GPU or with `forceCPU` |
-| `GPUConfidenceTest()` | the confidence recalibration on CUDA or Metal against the CPU sweep, on noisy GT depth-maps of the cube faces; skipped without a GPU or with `forceCPU` |
+| `GPUConfidenceTest()` | the confidence recalibration on CUDA or Metal against the CPU sweep, on noisy GT depth-maps, for a cube face then a panorama against the faces and panoramas of two others (every pair of camera models); both separate the outliers; skipped without a GPU or with `forceCPU` |
 | `SyntheticSphericalFusionTest()` | CPU PatchMatch + dense fusion of the panoramas, cloud precision/recall per band |
 
 ## Camera models (`TestsMVS.cpp`)

@@ -231,7 +231,7 @@ public:
 
 	// Check if distortion is valid
 	virtual bool HasDistortion() const override {
-		return k1 != 0 || k2 != 0 || k3 != 0 || p1 != 0 || p2 != 0;
+		return k1 != 0 || k2 != 0 || k3 != 0 || p1 != 0 || p2 != 0 || HasAdditionalDistortion();
 	}
 	inline bool HasAdditionalDistortion() const {
 		return useAdditionalDistortion && (k4 != 0 || k5 != 0 || k6 != 0);

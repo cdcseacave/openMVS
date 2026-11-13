@@ -41,7 +41,7 @@ using MVS::ConfAdjustRequest;
 bool RunConfidenceCUDA(
 	int W, int H,
 	const float* refDepth, const float* refNormal /*3*W*H or null*/, const float* refConf,
-	float fx, float fy, float cx, float cy,
+	float fx, float fy, float cx, float cy, bool spherical /*the reference model: pinhole or equirectangular*/,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const ConfRefine::Params& params,
 	float* confOut);
@@ -52,12 +52,16 @@ bool RunConfidenceCUDA(
 // host unpack loop applies). Launches on the caller's stream (pass the instance's cudaStream_t as
 // void* to keep this header CUDA-free) so it is ordered after the estimation kernels, and
 // synchronizes that stream before returning. Only the prior/output buffers and the neighbor maps
-// are allocated/uploaded here. Returns false on any CUDA error (caller falls back to the epilogue
-// re-upload path or the CPU sweep).
+// are allocated/uploaded here. hostKeepMask is the ignore mask of the reference (with the validity
+// mask of an image undistorted on read), one bit per pixel r*W+c set where the depth is kept, as the
+// little-endian words of a BitMatrix, or null: the masked depths are the ones the estimation discards
+// right after, so the recalibration treats them as missing, as the CPU estimation never produces
+// them. Returns false on any CUDA error (caller falls back to the epilogue re-upload path or the CPU
+// sweep).
 bool RunConfidenceFusedCUDA(
 	int W, int H,
-	const void* devDepthNormals, const float* devCosts,
-	float fx, float fy, float cx, float cy,
+	const void* devDepthNormals, const float* devCosts, const uint32_t* hostKeepMask,
+	float fx, float fy, float cx, float cy, bool spherical /*the reference model: pinhole or equirectangular*/,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const ConfRefine::Params& params,
 	void* stream,

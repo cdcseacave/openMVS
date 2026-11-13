@@ -694,11 +694,12 @@ struct DepthEstimatorT : DepthEstimatorBase {
 		return normal;
 	}
 
-	// adjust normal such that it makes at most 90 degrees with the viewing angle
+	// adjust normal such that it makes more than 90 degrees with the viewing direction, as the
+	// patch scoring needs (a plane seen edge-on has no patch)
 	inline void CorrectNormal(Normal& normal) const {
 		const Normal viewDir(Cast<float>(X0));
 		const float cosAngLen(normal.dot(viewDir));
-		if (cosAngLen > 0) {
+		if (cosAngLen >= 0) {
 			// rotation axis = unit(normal x viewDir); RMatrixBaseF requires |axis|==1;
 			// if normal is parallel to viewDir, the cross product is zero and no
 			// rotation axis exists, so flip the (camera-facing, invalid) normal instead
@@ -710,6 +711,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 				normal = -normal;
 		}
 		ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
+		ASSERT(normal.dot(viewDir) < 0);
 	}
 
 	const float smoothBonusDepth, smoothBonusNormal;

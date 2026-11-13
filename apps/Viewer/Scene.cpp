@@ -539,7 +539,8 @@ void Scene::ClearLayers()
 	ASSERT(!HasPendingImageLoads());
 	layers.clear();
 	activeLayerIndex = -1;
-	nextLayerID = 1;
+	// nextLayerID keeps counting: a layer ID names one layer for the whole session, so the state kept
+	// per layer ID elsewhere (renderer buffers, observation image cache) never meets a later scene's layer
 	workflowLayerID = NO_ID;
 }
 

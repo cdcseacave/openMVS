@@ -130,7 +130,7 @@ public:
 	// Transform scene
 	bool Center(const Point3* pCenter=NULL);
 	bool Scale(const REAL* pScale=NULL);
-	bool ScaleImages(unsigned nMaxResolution=0, REAL scale=0, const String& folderName={});
+	bool ScaleImages(unsigned nMaxResolution, REAL scale, const String& folderName);
 	Matrix4x4 ComputeNormalizationTransform(bool bScale = false) const;
 	void Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale);
 	void Transform(const Matrix3x4& transform);

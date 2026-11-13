@@ -14,7 +14,11 @@ Scope: depth-maps (CPU with `--gpu-device -2`, CUDA, Metal), the photometric con
 the depth-maps into the dense cloud (CPU). Not supported for a scene with spherical images, with a clear
 error or a warning:
 - SGM (`--fusion-mode` < 0) and the neighbor views selected from a mesh: error;
-- confidence recalibration and tower mode (`Scene::InitTowerScene`): switched off, with a warning.
+- tower mode (`Scene::InitTowerScene`): switched off, with a warning.
+
+The confidence recalibration runs on spherical references and neighbours as on pinhole ones, fused
+into the last geometric-consistency iteration on CUDA and Metal (`DepthMapConfidence.md`, camera
+models).
 
 The stages past the dense cloud project through the pinhole camera only and call
 `Scene::CheckPinholeOnly(stage)`, an error that names the stage and `--spherical-export cubemap`:
@@ -342,8 +346,8 @@ per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness
   hand-over (a `dmb`, where x86 orders the stores for free).
 - CUDA clamps the rows at the poles where the CPU rejects the view. Mixed pinhole/spherical scenes run the
   `MODEL_PINHOLE_REF` kernels (CUDA, Metal), untested.
-- The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`, `ConfidenceMetal.metal`) is
-  pinhole only (`AdjustConfidenceSweep` ASSERTs a pinhole reference).
+- The shape constants of the confidence recalibration were calibrated on pinhole ground truth; a
+  spherical calibration (Holo360D) is untested.
 - The view gate still ranks hypotheses that leave a pixel different views; a soft weight by the
   triangulation angle is untested.
 - The corner waits cover up to 64 concurrent estimators; with more threads the corner anti-diagonals between

@@ -16,12 +16,15 @@
 namespace MVS {
 
 // one confirming neighbor view: the fused single-precision projection transforms (row-major 3x3
-// A/Rrel, 3-vectors b/cn, built exactly as the CPU NeighborProj) plus HOST pointers to that
-// neighbor's depth/conf/normal maps (row-major, contiguous). conf/normal may be null (treated as
-// "no confidence" / "no normal gate", matching the CPU).
+// A/Rrel, 3-vectors b/cn, built exactly as the CPU NeighborProj, whose comment defines them for each
+// pair of camera models) plus HOST pointers to that neighbor's depth/conf/normal maps (row-major,
+// contiguous). conf/normal may be null (treated as "no confidence" / "no normal gate", matching the CPU).
 struct ConfNeighborHost {
 	float A[9], b[3], Rrel[9];
 	float cn[3];           // neighbor centre in the reference camera frame (triangulation angle)
+	float K[4];            // neighbor fx, fy, cx, cy at the resolution of its maps: its spherical model
+	                       // (a pinhole neighbor's are folded into A and b)
+	int spherical;         // the neighbor is equirectangular: A*u+b is its camera-frame point, its columns wrap
 	const float* depth;    // width*height
 	const float* conf;     // width*height, or null
 	const float* normal;   // 3*width*height (interleaved x,y,z), or null
@@ -45,7 +48,8 @@ struct ConfNeighborHost {
 struct ConfAdjustRequest {
 	std::vector<ConfNeighborHost> neighbors;
 	ConfRefine::Params params;             // single-precision OPTDENSE snapshot
-	float fx, fy, cx, cy;                  // reference camera intrinsics (skew-free)
+	float fx, fy, cx, cy;                  // reference camera intrinsics (skew-free): its pinhole or spherical model
+	bool spherical;                        // the reference is equirectangular
 	// outputs
 	bool done = false;                     // fused kernels ran and confMap holds the adjusted conf
 };

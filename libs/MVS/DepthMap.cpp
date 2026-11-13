@@ -1288,7 +1288,7 @@ void DepthEstimatorT<MODEL>::EstimatePixel(Depth& depth, Normal& normal, float& 
 		#endif
 	}
 	const Normal viewDir(Cast<float>(X0));
-	ASSERT(depth > 0 && normal.dot(viewDir) <= 0);
+	ASSERT(depth > 0 && normal.dot(viewDir) < 0);
 	#if DENSE_REFINE == DENSE_REFINE_ITER
 	// check if any of the neighbor estimates are better then the current estimate
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
@@ -1306,7 +1306,7 @@ void DepthEstimatorT<MODEL>::EstimatePixel(Depth& depth, Normal& normal, float& 
 		#endif
 		neighbor.depth = InterpolatePixel(nx, neighbor.depth, neighbor.normal);
 		CorrectNormal(neighbor.normal);
-		ASSERT(neighbor.depth > 0 && neighbor.normal.dot(viewDir) <= 0);
+		ASSERT(neighbor.depth > 0 && neighbor.normal.dot(viewDir) < 0);
 		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 		InitPlane(neighbor.depth, neighbor.normal);
 		#endif
@@ -1398,8 +1398,7 @@ void DepthEstimatorT<MODEL>::EstimatePixel(Depth& depth, Normal& normal, float& 
 		if (neighbor.normal.dot(viewDir) >= 0)
 			continue;
 		prevEstimate.depth = InterpolatePixel(nx, neighbor.depth, neighbor.normal);
-		prevEstimate.normal = neighbor.normal;
-		CorrectNormal(prevEstimate.normal);
+		prevEstimate.normal = neighbor.normal; // facing the camera, checked above
 		prevCost = nconf;
 	}
 	if (prevCost == FLT_MAX)

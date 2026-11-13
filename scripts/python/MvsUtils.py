@@ -571,12 +571,14 @@ def saveMVSInterface(data: dict, archive_path: str):
         camera_name = camera['name'].encode()
         mvs.write(np.array([len(camera_name)], dtype=np.uint64))
         mvs.write(camera_name)
-        if 'band_name' in camera:
-          band_name = camera['band_name'].encode()
+        # every field the stream version holds is written, from the Interface defaults when the
+        # dictionary lacks it (empty band name, no resolution)
+        if version > 3:
+          band_name = camera.get('band_name', '').encode()
           mvs.write(np.array([len(band_name)], dtype=np.uint64))
           mvs.write(band_name)
-        if 'width' in camera and 'height' in camera:
-          mvs.write(np.array([camera['width'], camera['height']], dtype=np.uint32))
+        if version > 0:
+          mvs.write(np.array([camera.get('width', 0), camera.get('height', 0)], dtype=np.uint32))
         mvs.write(np.array(camera['K'], dtype=np.float64).tobytes())
         mvs.write(np.array(camera['R'], dtype=np.float64).tobytes())
         mvs.write(np.array(camera['C'], dtype=np.float64).tobytes())
@@ -602,18 +604,19 @@ def saveMVSInterface(data: dict, archive_path: str):
       name = image['name'].encode()
       mvs.write(np.array([len(name)], dtype=np.uint64))
       mvs.write(name)
-      if 'mask_name' in image:
-        mask_name = image['mask_name'].encode()
+      if version > 4:
+        mask_name = image.get('mask_name', '').encode()
         mvs.write(np.array([len(mask_name)], dtype=np.uint64))
         mvs.write(mask_name)
       mvs.write(np.array([image['platform_id'], image['camera_id'], image['pose_id']], dtype=np.uint32))
-      if 'id' in image:
-        mvs.write(np.array([image['id']], dtype=np.uint32))
-      if 'min_depth' in image and 'avg_depth' in image and 'max_depth' in image:
-        mvs.write(np.array([image['min_depth'], image['avg_depth'], image['max_depth']], dtype=np.float32))
-        view_scores_size = len(image['view_scores'])
-        mvs.write(np.array([view_scores_size], dtype=np.uint64))
-        for view_score in image['view_scores']:
+      if version > 2:
+        # default: NO_ID (the image has no ID outside this scene)
+        mvs.write(np.array([image.get('id', 0xFFFFFFFF)], dtype=np.uint32))
+      if version > 6:
+        mvs.write(np.array([image.get('min_depth', 0), image.get('avg_depth', 0), image.get('max_depth', 0)], dtype=np.float32))
+        view_scores = image.get('view_scores', [])
+        mvs.write(np.array([len(view_scores)], dtype=np.uint64))
+        for view_score in view_scores:
           mvs.write(np.array([view_score['id'], view_score['points']], dtype=np.uint32))
           mvs.write(np.array([view_score['scale'], view_score['angle'], view_score['area'], view_score['score']], dtype=np.float32))
 

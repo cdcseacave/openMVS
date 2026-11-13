@@ -1257,10 +1257,11 @@ bool MVS::SyntheticSphericalGPUTest(bool forceCPU)
 	return true;
 }
 
-// the confidence recalibration on the GPU against the CPU sweep, on the same inputs: a cube face of
-// the synthetic scene and the faces of the two neighboring panoramas, their GT depths with noise and
-// outliers, random photometric confidences and the GT normals (the inputs of the last
+// the confidence recalibration on the GPU against the CPU sweep, on the same inputs: GT depths with
+// noise and outliers, random photometric confidences and the GT normals (the inputs of the last
 // geometric-consistency iteration: DepthMapsData::AdjustConfidence(DepthData&) and AdjustConfidenceGPU)
+// of the synthetic scene, for every pair of camera models: a cube face of the middle panorama against
+// the faces and the panoramas of the two others, then that panorama against the same views
 bool MVS::GPUConfidenceTest(bool forceCPU)
 {
 	#if defined(_USE_CUDA) || defined(_USE_METAL)
@@ -1272,40 +1273,36 @@ bool MVS::GPUConfidenceTest(bool forceCPU)
 	SynthConfig config;
 	config.panoWidth = 1024;
 	config.numRenderPanos = 3;
-	config.spherical = false;
 	config.numBrown = 0;
 	config.supersample = 1;
 	SynthViewArr views;
 	SynthGenerate(config, views);
-	// the reference: the first face of the middle panorama; its neighbors: every face of the others
-	IIndex idxRef(NO_ID);
-	IIndexArr viewIDs;
+	// the neighbors: every face and panorama of the other panoramas
+	IIndex idxFace(NO_ID), idxPano(NO_ID);
+	IIndexArr neighborIDs;
 	FOREACH(i, views) {
-		if (views[i].pano == 1 && views[i].face == 0)
-			idxRef = i;
-		else if (views[i].pano != 1)
-			viewIDs.push_back(i);
+		if (views[i].pano != 1)
+			neighborIDs.push_back(i);
+		else if (views[i].face == 0)
+			idxFace = i;
+		else if (views[i].face < 0)
+			idxPano = i;
 	}
-	ASSERT(idxRef != NO_ID && viewIDs.size() == 12);
-	viewIDs.InsertAt(0, idxRef);
-	const ScopedTempDir tmpDir(_T("GPUConfidence"));
-	if (!tmpDir.IsValid())
-		return false;
-	Scene scene;
-	if (!SynthBuildScene(views, viewIDs, tmpDir.Path() + "/", scene))
-		return false;
+	ASSERT(idxFace != NO_ID && idxPano != NO_ID && neighborIDs.size() == 14);
 	OPTDENSE::init();
 	OPTDENSE::update();
+	#ifdef _USE_CUDA
+	const auto allocatePool([](DepthMapsData& depthMaps) { return depthMaps.AllocateCudaPool(1); });
+	#else
+	const auto allocatePool([](DepthMapsData& depthMaps) { return depthMaps.AllocateMetalPool(1); });
+	#endif
 	// the noisy estimates of a view: depth within 0.2% of the GT, 5% outliers within 20%, the
 	// confidence uniform in [0.2,1]
 	std::mt19937 rnd(7);
 	std::normal_distribution<float> noise(0.f, 0.002f);
 	std::uniform_real_distribution<float> uniform(0.f, 1.f);
 	struct Estimates { DepthMap depthMap; NormalMap normalMap; ConfidenceMap confMap; BitMatrix outliers; };
-	std::vector<Estimates> estimates(viewIDs.size());
-	FOREACH(i, viewIDs) {
-		const SynthView& view = views[viewIDs[i]];
-		Estimates& e = estimates[i];
+	const auto makeEstimates([&](const SynthView& view, Estimates& e) {
 		e.depthMap.create(view.depthMap.size());
 		e.confMap.create(view.depthMap.size());
 		e.normalMap = view.normalMap.clone();
@@ -1320,71 +1317,83 @@ bool MVS::GPUConfidenceTest(bool forceCPU)
 					e.outliers.set(r, c);
 			}
 		}
-	}
-	// the reference's DepthData, the neighbors' maps as InitViews loads them on the last iteration
-	const auto makeDepthData([&]() {
-		DepthData depthData;
-		depthData.images.resize(viewIDs.size());
-		FOREACH(i, viewIDs) {
-			DepthData::ViewData& view = depthData.images[i];
-			view.pImageData = &scene.images[i];
-			view.camera = view.cameraDepthMap = scene.images[i].camera;
-			view.scale = 1;
-			if (i > 0) {
-				view.depthMap = estimates[i].depthMap.clone();
-				view.normalMap = estimates[i].normalMap.clone();
-				view.confMap = estimates[i].confMap.clone();
-			}
-		}
-		depthData.depthMap = estimates[0].depthMap.clone();
-		depthData.normalMap = estimates[0].normalMap.clone();
-		depthData.confMap = estimates[0].confMap.clone();
-		return depthData;
 	});
-	DepthMapsData depthMaps(scene);
-	#ifdef _USE_CUDA
-	const bool bPool(depthMaps.AllocateCudaPool(1));
-	#else
-	const bool bPool(depthMaps.AllocateMetalPool(1));
-	#endif
-	if (!bPool || !depthMaps.HasGPUConfidence()) {
-		VERBOSE("ERROR: GPUConfidenceTest: the %s PatchMatch can not be created!", SYNTH_GPU_BACKEND);
-		return false;
-	}
-	DepthData depthDataCPU(makeDepthData()), depthDataGPU(makeDepthData());
-	if (!depthMaps.AdjustConfidence(depthDataCPU) || !depthMaps.AdjustConfidenceGPU(depthDataGPU)) {
-		VERBOSE("ERROR: GPUConfidenceTest: the confidence recalibration did not run!");
-		return false;
-	}
-	// per pixel: the GPU differs from the CPU in rounding only (single-precision exp, fused
-	// multiply-adds), but for the rare pixel a rounding moves across a gate threshold
-	const ConfidenceMap& confCPU = depthDataCPU.confMap;
-	const ConfidenceMap& confGPU = depthDataGPU.confMap;
-	const Estimates& ref = estimates[0];
-	size_t numPixels(0), numDiffering(0), numInliers(0), numOutliers(0);
-	double maxDiff(0), sumDiff(0), sumInliers(0), sumOutliers(0);
-	for (int r = 0; r < confCPU.rows; ++r) {
-		for (int c = 0; c < confCPU.cols; ++c) {
-			const double diff(ABS((double)confCPU(r,c) - (double)confGPU(r,c)));
-			maxDiff = MAXF(maxDiff, diff);
-			sumDiff += diff;
-			numDiffering += diff > 1e-4;
-			++numPixels;
-			if (ref.outliers.isSet(r, c)) {
-				sumOutliers += confGPU(r,c); ++numOutliers;
-			} else {
-				sumInliers += confGPU(r,c); ++numInliers;
+	for (const IIndex idxRef: {idxFace, idxPano}) {
+		IIndexArr viewIDs(neighborIDs);
+		viewIDs.InsertAt(0, idxRef);
+		const ScopedTempDir tmpDir(_T("GPUConfidence"));
+		if (!tmpDir.IsValid())
+			return false;
+		Scene scene;
+		if (!SynthBuildScene(views, viewIDs, tmpDir.Path() + "/", scene))
+			return false;
+		std::vector<Estimates> estimates(viewIDs.size());
+		FOREACH(i, viewIDs)
+			makeEstimates(views[viewIDs[i]], estimates[i]);
+		// the reference's DepthData, the neighbors' maps as InitViews loads them on the last iteration
+		const auto makeDepthData([&]() {
+			DepthData depthData;
+			depthData.images.resize(viewIDs.size());
+			FOREACH(i, viewIDs) {
+				DepthData::ViewData& view = depthData.images[i];
+				view.pImageData = &scene.images[i];
+				view.camera = view.cameraDepthMap = scene.images[i].camera;
+				view.scale = 1;
+				if (i > 0) {
+					view.depthMap = estimates[i].depthMap.clone();
+					view.normalMap = estimates[i].normalMap.clone();
+					view.confMap = estimates[i].confMap.clone();
+				}
+			}
+			depthData.depthMap = estimates[0].depthMap.clone();
+			depthData.normalMap = estimates[0].normalMap.clone();
+			depthData.confMap = estimates[0].confMap.clone();
+			return depthData;
+		});
+		const char* const refName(views[idxRef].face < 0 ? "panorama" : "face");
+		DepthMapsData depthMaps(scene);
+		if (!allocatePool(depthMaps) || !depthMaps.HasGPUConfidence()) {
+			VERBOSE("ERROR: GPUConfidenceTest: the %s PatchMatch can not be created!", SYNTH_GPU_BACKEND);
+			return false;
+		}
+		DepthData depthDataCPU(makeDepthData()), depthDataGPU(makeDepthData());
+		if (!depthMaps.AdjustConfidence(depthDataCPU) || !depthMaps.AdjustConfidenceGPU(depthDataGPU)) {
+			VERBOSE("ERROR: GPUConfidenceTest: the confidence recalibration of the %s did not run!", refName);
+			return false;
+		}
+		// per pixel: the GPU differs from the CPU in rounding only (single-precision exp, fused
+		// multiply-adds, the trigonometry of a spherical reference), but for the rare pixel a rounding
+		// moves across a gate threshold
+		const ConfidenceMap& confCPU = depthDataCPU.confMap;
+		const ConfidenceMap& confGPU = depthDataGPU.confMap;
+		const Estimates& ref = estimates[0];
+		size_t numPixels(0), numDiffering(0), numInliers(0), numOutliers(0);
+		double maxDiff(0), sumDiff(0), sumInliers(0), sumOutliers(0), sumInliersCPU(0), sumOutliersCPU(0);
+		for (int r = 0; r < confCPU.rows; ++r) {
+			for (int c = 0; c < confCPU.cols; ++c) {
+				const double diff(ABS((double)confCPU(r,c) - (double)confGPU(r,c)));
+				maxDiff = MAXF(maxDiff, diff);
+				sumDiff += diff;
+				numDiffering += diff > 1e-4;
+				++numPixels;
+				if (ref.outliers.isSet(r, c)) {
+					sumOutliers += confGPU(r,c); sumOutliersCPU += confCPU(r,c); ++numOutliers;
+				} else {
+					sumInliers += confGPU(r,c); sumInliersCPU += confCPU(r,c); ++numInliers;
+				}
 			}
 		}
-	}
-	const double meanInliers(sumInliers/numInliers), meanOutliers(sumOutliers/numOutliers);
-	VERBOSE("GPUConfidenceTest: %s against CPU over %zu px: mean |diff| %.2e, max %.2e, %zu px (%.3f%%) above 1e-4; "
-		"mean %s confidence of the inliers %.3f, of the outliers %.3f",
-		SYNTH_GPU_BACKEND, numPixels, sumDiff/numPixels, maxDiff, numDiffering, 100.0*numDiffering/numPixels,
-		SYNTH_GPU_BACKEND, meanInliers, meanOutliers);
-	if (!(sumDiff/numPixels < 1e-5) || !(numDiffering < numPixels/1000) || !(meanOutliers < 0.5*meanInliers)) {
-		VERBOSE("ERROR: GPUConfidenceTest: the %s confidence differs from the CPU one!", SYNTH_GPU_BACKEND);
-		return false;
+		const double meanInliers(sumInliers/numInliers), meanOutliers(sumOutliers/numOutliers);
+		const double meanInliersCPU(sumInliersCPU/numInliers), meanOutliersCPU(sumOutliersCPU/numOutliers);
+		VERBOSE("GPUConfidenceTest: %s reference, %s against CPU over %zu px: mean |diff| %.2e, max %.2e, %zu px (%.3f%%) above 1e-4; "
+			"mean confidence of the inliers %.3f (CPU %.3f), of the outliers %.3f (CPU %.3f)",
+			refName, SYNTH_GPU_BACKEND, numPixels, sumDiff/numPixels, maxDiff, numDiffering, 100.0*numDiffering/numPixels,
+			meanInliers, meanInliersCPU, meanOutliers, meanOutliersCPU);
+		if (!(sumDiff/numPixels < 1e-5) || !(numDiffering < numPixels/1000) ||
+			!(meanOutliers < 0.5*meanInliers) || !(meanOutliersCPU < 0.5*meanInliersCPU)) {
+			VERBOSE("ERROR: GPUConfidenceTest: the %s confidence of the %s differs from the CPU one, or does not separate the outliers!", SYNTH_GPU_BACKEND, refName);
+			return false;
+		}
 	}
 	VERBOSE("GPUConfidenceTest passed on %s (%s)", SYNTH_GPU_BACKEND, TD_TIMER_GET_FMT().c_str());
 	return true;
@@ -1699,8 +1708,8 @@ bool MVS::BrownUndistortOnLoadTest()
 			return false;
 		}
 	}
-	// the images stored at half the resolution (Scene::ScaleImages): the cameras become the pinhole K' of
-	// the stored files and the observations move with them
+	// the images stored at half the resolution (Scene::ScaleImages): the files keep their distorted pixels,
+	// the cameras their lens at the new resolution, and the observations move with the undistorted cameras
 	if (!scene.ScaleImages((unsigned)lens.width/2, 0, tmpDir("scaled/"))) {
 		VERBOSE("ERROR: BrownUndistortOnLoadTest: the images can not be scaled");
 		return false;
@@ -1711,9 +1720,14 @@ bool MVS::BrownUndistortOnLoadTest()
 		const PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations[(uint32_t)j];
 		FOREACH(k, pointViews) {
 			const Image& imageData = scene.images[pointViews[k]];
-			ASSERT(!imageData.IsUndistortedOnRead() && imageData.width == (uint32_t)lens.width/2);
+			ASSERT(imageData.IsUndistortedOnRead() && imageData.width == (uint32_t)lens.width/2 && imageData.lens.size == imageData.GetSize());
 			maxScaledObsErr = MAXF(maxScaledObsErr, norm(imageData.camera.TransformPointW2I(points[j].first) - Cast<REAL>(observations[k])));
 		}
+	}
+	Image8U3 scaledPixels;
+	if (scene.images[0].ReadPixels(scaledPixels) == NULL || scaledPixels.size() != scene.images[0].GetSize()) {
+		VERBOSE("ERROR: BrownUndistortOnLoadTest: the scaled images can not be read through their lens");
+		return false;
 	}
 	if (!(maxScaledObsErr < 1e-3)) {
 		VERBOSE("ERROR: BrownUndistortOnLoadTest: the observations of the scaled images are %.2e px off", maxScaledObsErr);

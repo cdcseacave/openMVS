@@ -189,9 +189,11 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 						Point3::EVec X3D;
 						if (!ray.Intersects(plane, false, NULL, &X3D))
 							continue;
-						// Project 3D point to reference image
-						const Point2f refPos(refImage.GetModelCamera().TransformPointW2I(Point3(X3D)));
-						if (refImage.image.isInsideWithBorder<float,1>(refPos)) {
+						// Project 3D point to reference image (a plane grazing the target ray can place it
+						// behind a pinhole reference, which does not see it)
+						const auto [refPosD, refDepth] = refImage.GetModelCamera().ProjectPointP(Point3(X3D));
+						const Point2f refPos(refPosD);
+						if (refDepth > 0 && refImage.image.isInsideWithBorder<float,1>(refPos)) {
 							const Pixel32F pixelValue = refImage.image.sample<Sampler,Pixel32F>(data.sampler, refPos);
 							const float intensity = pixelValue.r * 0.299f + pixelValue.g * 0.587f + pixelValue.b * 0.114f;
 							refPatch[validTexels++] = intensity;

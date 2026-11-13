@@ -127,13 +127,26 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 					const cv::Size imageSize((int)meta.header.imageWidth, (int)meta.header.imageHeight);
 					const cv::Size depthSize((int)meta.header.depthWidth, (int)meta.header.depthHeight);
 					// the undistorted camera of the images (the one the MVS scene uses), scaled
-					// to the depth-map resolution, so the depth-map lands on its pixel grid
-					ASSERT(imageSize == pc->GetSize());
-					pData->second = UndistortedK(pc->GetK(), pc->GetDistortion(), imageSize, alpha);
-					const KMatrix Kdepth = ScaleK(pc->GetK(), imageSize, depthSize);
-					pData->first.Init(Kdepth, pc->GetDistortion(), depthSize, ScaleK(pData->second, imageSize, depthSize));
+					// to the depth-map resolution, so the depth-map lands on its pixel grid;
+					// the depth-map is in the orientation of the image file, so the camera and
+					// its undistorted camera are rotated back as ExportMVS does
+					KMatrix K(pc->GetK());
+					BrownDistortion<REAL> distortion(pc->GetDistortion());
+					KMatrix Ku(UndistortedK(K, distortion, pc->GetSize(), alpha));
 					if (undistortedIntrinsics)
-						undistortedIntrinsics->emplace(pc, pData->second);
+						undistortedIntrinsics->emplace(pc, Ku);
+					if (img.IsRotated()) {
+						img.RevertRotation(&K);
+						img.RevertRotation(&Ku);
+						// the original normalized coordinates are (y,-x) of the working ones: the radial terms
+						// are invariant, the tangential ones become p1'=-p2, p2'=p1
+						const REAL p1 = distortion.p1;
+						distortion.p1 = -distortion.p2;
+						distortion.p2 = p1;
+					}
+					ASSERT(imageSize == img.GetOriginalSize());
+					pData->second = Ku;
+					pData->first.Init(ScaleK(K, imageSize, depthSize), distortion, depthSize, ScaleK(Ku, imageSize, depthSize));
 				}
 			}
 			return *pData;
@@ -508,10 +521,11 @@ bool RenderAndSaveSphericalFaces(
 	return true;
 }
 
-// Phase 4: project 3D world point X through each face of one spherical
-// image's rig pose; push a Vertex::View entry for every face that sees it;
-// pFeatureRay, if given, is the ray of the feature (panorama frame), mapped
-// to each face as the view observation.
+// Phase 4: push a Vertex::View entry for every face of one spherical image's
+// rig pose that sees the observation: the faces are decided by the direction
+// (panorama frame) of pFeatureRay, the ray of the feature, if given, mapped to
+// each face as the view observation (so it lies inside the face image),
+// otherwise by the direction of the 3D world point X.
 void ProjectTrackOntoSphericalFaces(
 	const Point3& X,
 	const Pose3D& sphericalPose,
@@ -526,23 +540,21 @@ void ProjectTrackOntoSphericalFaces(
 	const REAL cy = geometry.K(1,2);
 	const REAL zEps = REAL(1e-9);
 	const Point3 X_body = sphericalPose.R * (X - sphericalPose.C);
+	const Point3& dirBody = pFeatureRay ? *pFeatureRay : X_body;
 
 	for (int k = 0; k < geometry.numFaces; ++k) {
-		const Point3 X_face = geometry.rotations[k] * X_body;
-		if (X_face.z < zEps)
+		const Point3 dirFace = geometry.rotations[k] * dirBody;
+		if (dirFace.z < zEps)
 			continue;
-		const REAL u = f * X_face.x / X_face.z + cx;
-		const REAL v = f * X_face.y / X_face.z + cy;
+		const REAL u = f * dirFace.x / dirFace.z + cx;
+		const REAL v = f * dirFace.y / dirFace.z + cy;
 		if (u < REAL(0) || u >= REAL(geometry.faceSize)) continue;
 		if (v < REAL(0) || v >= REAL(geometry.faceSize)) continue;
 		MVS::Interface::Vertex::View view;
 		view.imageID    = faceImageIDs[k];
 		view.confidence = 0.f;
-		if (pFeatureRay) {
-			const Point3 ray = geometry.rotations[k] * (*pFeatureRay);
-			ASSERT(ray.z > 0);
-			view.x = MVS::Interface::Pos2f(float(f * ray.x / ray.z + cx), float(f * ray.y / ray.z + cy));
-		}
+		if (pFeatureRay)
+			view.x = MVS::Interface::Pos2f(float(u), float(v));
 		vertex.views.push_back(view);
 	}
 }
@@ -724,14 +736,19 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 			img.RevertRotation(NULL, &pose.R); // revert any image rotation
 		}
 		// Build Interface::Image record
-		// Use the undistorted image path for the undistorted cameras, otherwise the original
+		// the images of an undistorted camera reference their undistorted files (UndistortImages),
+		// the others their original file
 		MVS::Interface::Image outImg;
-		const bool undistorted(undistortK.count(cam) != 0);
-		outImg.name = undistorted ? undistortedPaths[i] : img.fileName;
-		if (undistorted && outImg.name.empty() && img.IsValid()) {
-			// the image file could not be read for undistortion
-			VERBOSE("error: no undistorted image of '%s'", img.fileName.c_str());
-			return false;
+		outImg.name = img.fileName;
+		if (undistortK.count(cam) != 0) {
+			if (!undistortedPaths[i].empty()) {
+				outImg.name = undistortedPaths[i];
+			} else if (img.IsValid()) {
+				// the image file could not be read for undistortion
+				VERBOSE("error: no undistorted image of '%s'", img.fileName.c_str());
+				return false;
+			}
+			// else an unposed image whose file can not be read: unused, it keeps its path
 		}
 		outImg.name = MAKE_PATH_REL(basePath, outImg.name);
 		outImg.platformID = platformID;

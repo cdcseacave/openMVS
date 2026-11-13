@@ -983,9 +983,19 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 				}
 			}
 			if (!colDepthMap.data_.empty()) {
+				if (!image.IsValid()) {
+					VERBOSE("warning: skipping the depth-map of the unposed image '%s'", image.name.c_str());
+					continue;
+				}
+				const Interface::Platform& platform = scene.platforms[image.platformID];
+				// COLMAP estimates the depth-maps on the undistorted images, described by the PINHOLE
+				// cameras of the dense workspace's model
+				if (platform.cameras[image.cameraID].model == Interface::Platform::Camera::BROWN) {
+					VERBOSE("error: the depth-map of image '%s' has a distorted camera: import the model of the undistorted dense workspace", image.name.c_str());
+					return false;
+				}
 				IIndexArr IDs {image.ID};
 				IDs.Join(imagesNeighbors[(IIndex)idx]);
-				const Interface::Platform& platform = scene.platforms[image.platformID];
 				const Interface::Platform::Pose pose(platform.GetPose(image.cameraID, image.poseID));
 				const Interface::Mat33d K(platform.GetFullK(image.cameraID, (uint32_t)colDepthMap.width_, (uint32_t)colDepthMap.height_));
 				MVS::DepthMap depthMap((int)colDepthMap.height_, (int)colDepthMap.width_);

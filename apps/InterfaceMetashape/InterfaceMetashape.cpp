@@ -397,14 +397,14 @@ bool ParseImageListXML(tinyxml2::XMLDocument& doc, Scene& scene, size_t& nCamera
 		if (0 != _tcsicmp(camera->Value(), _T("camera")) || camera->QueryUnsignedAttribute(_T("id"), &ID) != tinyxml2::XML_SUCCESS)
 			goto InvalidDocument;
 		{
-		// add new image
-		mapImageID.emplace(ID, scene.images.size());
-		Image& imageData = scene.images.AddEmpty();
 		LPCTSTR name;
 		if ((name=camera->Attribute(_T("type"))) != NULL && _tcsicmp(name, _T("frame")) != 0) {
 			DEBUG_EXTRA("warning: unsupported camera calibration '%s'", name);
 			continue;
 		}
+		// add new image
+		mapImageID.emplace(ID, scene.images.size());
+		Image& imageData = scene.images.AddEmpty();
 		if ((name=camera->Attribute(_T("label"))) != NULL)
 			imageData.name = name;
 		Util::ensureUnifySlash(imageData.name);
@@ -600,30 +600,30 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, size_t& nC
 			imageData.width = resolution.width;
 			imageData.height = resolution.height;
 			imageData.scale = 1;
-			// set camera pose
+			// set camera pose; a photo without a full pose (rotation and center) stays unposed
 			const tinyxml2::XMLElement* photoPose = photo->FirstChildElement("Pose");
-			if (photoPose == NULL)
-				continue;
-			if ((elem=photoPose->FirstChildElement("Rotation")) == NULL)
+			const tinyxml2::XMLElement* poseRotation;
+			const tinyxml2::XMLElement* poseCenter;
+			if (photoPose == NULL ||
+				(poseRotation=photoPose->FirstChildElement("Rotation")) == NULL ||
+				(poseCenter=photoPose->FirstChildElement("Center")) == NULL)
 				continue;
 			imageData.poseID = platform.poses.size();
 			Platform::Pose& pose = platform.poses.AddEmpty();
 			pose.R = Matrix3x3(
-				elem->FirstChildElement("M_00")->DoubleText(),
-				elem->FirstChildElement("M_01")->DoubleText(),
-				elem->FirstChildElement("M_02")->DoubleText(),
-				elem->FirstChildElement("M_10")->DoubleText(),
-				elem->FirstChildElement("M_11")->DoubleText(),
-				elem->FirstChildElement("M_12")->DoubleText(),
-				elem->FirstChildElement("M_20")->DoubleText(),
-				elem->FirstChildElement("M_21")->DoubleText(),
-				elem->FirstChildElement("M_22")->DoubleText());
-			if ((elem=photoPose->FirstChildElement("Center")) == NULL)
-				continue;
+				poseRotation->FirstChildElement("M_00")->DoubleText(),
+				poseRotation->FirstChildElement("M_01")->DoubleText(),
+				poseRotation->FirstChildElement("M_02")->DoubleText(),
+				poseRotation->FirstChildElement("M_10")->DoubleText(),
+				poseRotation->FirstChildElement("M_11")->DoubleText(),
+				poseRotation->FirstChildElement("M_12")->DoubleText(),
+				poseRotation->FirstChildElement("M_20")->DoubleText(),
+				poseRotation->FirstChildElement("M_21")->DoubleText(),
+				poseRotation->FirstChildElement("M_22")->DoubleText());
 			pose.C = Point3(
-				elem->FirstChildElement("x")->DoubleText(),
-				elem->FirstChildElement("y")->DoubleText(),
-				elem->FirstChildElement("z")->DoubleText());
+				poseCenter->FirstChildElement("x")->DoubleText(),
+				poseCenter->FirstChildElement("y")->DoubleText(),
+				poseCenter->FirstChildElement("z")->DoubleText());
 			imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
 			// set depth stats
 			if ((elem=photo->FirstChildElement("MedianDepth")) != NULL)
@@ -642,10 +642,12 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, size_t& nC
 	const bool bLocalCoords(document->FirstChildElement("SRSId") == NULL ||
 		((elem=blocksExchange->FirstChildElement("SpatialReferenceSystems")) != NULL && (elem=elem->FirstChildElement("SRS")) != NULL && (elem=elem->FirstChildElement("Name")) != NULL && _tcsncmp(elem->GetText(), "Local Coordinates", 17) == 0));
 	Point3 center = Point3::ZERO;
-	if (!bLocalCoords) {
-		for (const Image& imageData : scene.images)
-			center += imageData.camera.C;
-		center /= scene.images.size();
+	if (!bLocalCoords && nPoses > 0) {
+		// the mean of the camera centers of the posed photos (one pose each)
+		for (const Platform& platform : scene.platforms)
+			for (const Platform::Pose& pose : platform.poses)
+				center += pose.C;
+		center /= (REAL)nPoses;
 		for (Platform& platform : scene.platforms)
 			for (Platform::Pose& pose : platform.poses)
 				pose.C -= center;
