@@ -52,18 +52,15 @@ std::unique_ptr<DenseMatcher> DenseMatcher::Create(const ROMA2Config& config)
 unsigned DenseMatcher::ExpectedRetrievalSize(const ROMA2Config& config)
 {
 	ASSERT(config.matcher == "roma2" || config.matcher == "flexglue");
+	String modelDir(config.ResolveModelPath());
+	if (modelDir.empty())
+		return 0;
+	Util::ensureFolderSlash(modelDir);
 	if (config.matcher == "flexglue") {
-		#ifdef _USE_ONNXRUNTIME
-		return FlexGlueMatcher::RETRIEVAL_SIZE;
-		#else
-		return 0;
-		#endif
+		FlexGlueManifest manifest;
+		return manifest.Load(modelDir + "flexglue_" + config.setting + ".json") ? manifest.retrievalDim : 0;
 	}
-	String manifestPath(config.ResolveModelPath());
-	if (manifestPath.empty())
-		return 0;
-	Util::ensureFolderSlash(manifestPath);
 	RoMa2Manifest manifest;
-	return manifest.Load(manifestPath + "roma_" + config.setting + ".json") ? (unsigned)manifest.facetsDim : 0;
+	return manifest.Load(modelDir + "roma_" + config.setting + ".json") ? (unsigned)manifest.facetsDim : 0;
 }
 /*----------------------------------------------------------------*/

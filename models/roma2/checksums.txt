@@ -1,5 +1,5 @@
 # SHA256 checksums for the published RoMa v2 ONNX model, verified by
-# scripts/fetch_roma2_model.py --setting <setting> --precision <precision> --dest <dir>.
+# scripts/fetch_model.py --model roma2 --setting <setting> --precision <precision> --dest <dir>.
 #
 # Format: one entry per line, "<sha256>  <relative/path>" (two spaces, sha256sum-compatible).
 # '#' starts a comment; blank lines are ignored. Paths are the *published* paths -- on the
@@ -14,7 +14,7 @@
 #   <digest>  base-fp32/roma_base_match_coarse_fp32.onnx.data
 #   <digest>  base-fp32/roma_base_match_coarse_fp32.export.json
 #
-# scripts/fetch_roma2_model.py writes these files flat into --dest (no "<setting>-<precision>/"
+# scripts/fetch_model.py writes these files flat into --dest (no "<setting>-<precision>/"
 # segment on disk -- see its _local_path()); --dest *is* the model directory RoMa2Onnx::Load reads
 # directly. Neither a fetched --dest nor the flat export directory a bundle is built from carries
 # the prefix -- it is a publishing convention only, so add it by hand when regenerating from

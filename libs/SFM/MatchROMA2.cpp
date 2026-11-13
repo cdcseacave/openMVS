@@ -57,23 +57,12 @@ typedef std::vector<float> PlanarImage;
 
 #ifdef _USE_ONNXRUNTIME
 
-// What a dense matcher is told about the pair (A, B): the pixel sizes and, for a pinhole camera, the intrinsics
-// the pipeline holds now (the matching stage runs before the lens fit and the focal refinement)
+// What a dense matcher is told about the pair (A, B): the pixel sizes
 PairInput MakePairInput(const Image& imgA, const Image& imgB)
 {
 	PairInput input;
 	input.sizeA = imgA.GetSize();
 	input.sizeB = imgB.GetSize();
-	PinholeIntrinsics* intr[2] = {&input.intrA, &input.intrB};
-	const Image* images[2] = {&imgA, &imgB};
-	for (int i = 0; i < 2; ++i) {
-		*intr[i] = PinholeIntrinsics{0.f, 0.f, 0.f, 0.f};
-		if (images[i]->GetCameraType() == CameraType::PINHOLE) {
-			const KMatrix K = images[i]->GetK();
-			// OpenMVS pixel centres are at integer coordinates (the default principal point is (w-1)/2, Image.cpp), PinholeIntrinsics' origin is the corner
-			*intr[i] = PinholeIntrinsics{(float)K(0,0), (float)K(1,1), (float)K(0,2) + 0.5f, (float)K(1,2) + 0.5f};
-		}
-	}
 	return input;
 }
 
@@ -1320,11 +1309,6 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 		return true;
 	TD_TIMER_STARTD();
 	Scene& scene = pairsMatcher.GetScene();
-	if (roma2.NeedsIntrinsics() && std::any_of(scene.images.begin(), scene.images.end(),
-		[](const Image& img) { return !img.HasCamera() || img.GetCameraType() != CameraType::PINHOLE; })) {
-		VERBOSE("error: the dense matcher's pose head needs a pinhole camera for every image (FlexGlue does not run on spherical images)");
-		return false;
-	}
 	// every candidate pair indexes scene.images directly (slot planning, loads, the pair keys), so
 	// image IDs must be their own indices - the convention the whole matcher assumes
 	ASSERT(std::all_of(scene.images.begin(), scene.images.end(),

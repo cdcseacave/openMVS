@@ -414,6 +414,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::RoMa2ManifestVersionTest())
 				return false;
+			if (!SFM::FlexGlueManifestTest())
+				return false;
 			if (!SFM::ResolveModelPathTest())
 				return false;
 			if (!SFM::RoMa2OnnxParityTest())

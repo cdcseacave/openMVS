@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/fetch_roma2_model.py.
+"""Unit tests for scripts/fetch_model.py.
 
 Runs with plain `python3 -m unittest` and touches no network: the suite blocks the import of
 huggingface_hub (a None entry in sys.modules raises ImportError whether or not the package is
@@ -16,12 +16,12 @@ import types
 import unittest
 from pathlib import Path
 
-# fetch_roma2_model.py lives at scripts/fetch_roma2_model.py; this test file sits three levels
+# fetch_model.py lives at scripts/fetch_model.py; this test file sits three levels
 # below (scripts/python/tests/), so add scripts/ to sys.path rather than relying on cwd.
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
-import fetch_roma2_model as fm  # noqa: E402
+import fetch_model as fm  # noqa: E402
 
 
 def _sha256(data: bytes) -> str:
@@ -91,6 +91,7 @@ class FetchTests(unittest.TestCase):
 
     def _fetch(self, **overrides):
         params = dict(
+            model="roma2",
             setting=self.setting,
             precision=self.precision,
             mirror=self.mirror_url,
@@ -419,7 +420,7 @@ class DestWritabilityTests(unittest.TestCase):
         self.dest = readonly_parent / "roma2"
 
     def _fetch(self, **overrides):
-        params = dict(setting=self.setting, precision=self.precision, mirror=self.mirror_url,
+        params = dict(model="roma2", setting=self.setting, precision=self.precision, mirror=self.mirror_url,
                       checksums_path=self.checksums_path)
         params.update(overrides)
         return fm.fetch(self.dest, **params)
@@ -461,7 +462,7 @@ class ResolveDestTests(unittest.TestCase):
         had_env = "OPENMVS_ROMA2_MODEL_PATH" in os.environ
         env_backup = os.environ.pop("OPENMVS_ROMA2_MODEL_PATH", None)
         try:
-            dest = fm.resolve_dest(None)
+            dest = fm.resolve_dest(None, "roma2")
         finally:
             if had_env:
                 os.environ["OPENMVS_ROMA2_MODEL_PATH"] = env_backup
@@ -469,6 +470,69 @@ class ResolveDestTests(unittest.TestCase):
         self.assertEqual(dest, Path("~/.cache/openMVS/roma2").expanduser())
         self.assertNotEqual(dest, Path("./roma2-model"))
         self.assertNotIn(Path.cwd(), dest.parents)
+
+
+class ModelTableTests(unittest.TestCase):
+    """One script and one checksums scheme for both bundles: --model picks the model's own defaults (preset, precision,
+    Hub repo, mirror release, checksums file, environment variable), everything else is shared."""
+
+    def setUp(self):
+        sys.modules["huggingface_hub"] = None
+        self.addCleanup(sys.modules.pop, "huggingface_hub", None)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_each_model_names_its_own_publishing_targets(self):
+        self.assertEqual(fm.MODELS["roma2"].hf_repo, "cDcSeacave/openmvs-roma2-onnx")
+        self.assertEqual(fm.MODELS["flexglue"].hf_repo, "cDcSeacave/openmvs-flexglue-onnx")
+        self.assertEqual(fm.MODELS["roma2"].mirror_url, "https://github.com/cdcseacave/openMVS/releases/download/roma2-model")
+        self.assertEqual(fm.MODELS["flexglue"].mirror_url, "https://github.com/cdcseacave/openMVS/releases/download/flexglue-model")
+        self.assertEqual(fm.checksums_path_of("flexglue"), _SCRIPTS_DIR.parent / "models" / "flexglue" / "checksums.txt")
+
+    def test_repository_checksums_cover_each_default_preset_and_its_manifest(self):
+        """the checksums files the repository carries: entries under each model's default <setting>-<precision>/, its manifest among them"""
+        for model, manifest in (("roma2", "roma_base.json"), ("flexglue", "flexglue_base.json")):
+            spec = fm.MODELS[model]
+            entries = fm._entries_for(fm.read_checksums(fm.checksums_path_of(model)), spec.setting, spec.precision, fm.checksums_path_of(model))
+            self.assertIn(f"{spec.setting}-{spec.precision}/{manifest}", entries, model)
+            for relpath, digest in entries.items():
+                self.assertRegex(digest, r"^[0-9a-f]{64}$", relpath)
+
+    def test_flexglue_defaults_fetch_its_preset_flat_from_a_directory_mirror(self):
+        content = b'{"model": "flexglue", "fixture": true}'
+        mirror = self.root / "mirror"
+        _write(mirror / "flexglue_base.json", content)
+        checksums = self.root / "checksums.txt"
+        checksums.write_text(f"{_sha256(content)}  base-fp16/flexglue_base.json\n{_sha256(b'x')}  base-fp32/other.json\n")
+        dest = self.root / "dest"
+        result = fm.fetch(dest, "flexglue", mirror=mirror.resolve().as_uri(), checksums_path=checksums)
+        self.assertEqual(result.downloaded, ["base-fp16/flexglue_base.json"])   # the fp16 default only, not the fp32 entry
+        self.assertEqual((dest / "flexglue_base.json").read_bytes(), content)
+
+    def test_unknown_model_is_refused_by_name(self):
+        with self.assertRaises(fm.ModelFetchError) as ctx:
+            fm.fetch(self.root / "dest", "lightglue")
+        self.assertIn("lightglue", str(ctx.exception))
+
+    def test_the_command_line_needs_the_model(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            fm.main(["--dest", str(self.root / "dest")])
+
+    def test_default_destination_and_variable_are_the_models_own(self):
+        backup = {k: os.environ.pop(k, None) for k in ("OPENMVS_ROMA2_MODEL_PATH", "OPENMVS_FLEXGLUE_MODEL_PATH")}
+        try:
+            self.assertEqual(fm.resolve_dest(None, "flexglue"), Path("~/.cache/openMVS/flexglue").expanduser())
+            os.environ["OPENMVS_ROMA2_MODEL_PATH"] = str(self.root / "roma2")
+            self.assertEqual(fm.resolve_dest(None, "flexglue"), Path("~/.cache/openMVS/flexglue").expanduser())
+            os.environ["OPENMVS_FLEXGLUE_MODEL_PATH"] = str(self.root / "flexglue")
+            self.assertEqual(fm.resolve_dest(None, "flexglue"), self.root / "flexglue")
+            self.assertEqual(fm.resolve_dest(None, "roma2"), self.root / "roma2")
+        finally:
+            for k, v in backup.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
 
 
 if __name__ == "__main__":

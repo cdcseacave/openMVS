@@ -18,7 +18,7 @@ Two models implement the interface `DenseMatcher` (`libs/SFM/DenseMatcher.h`): R
 `MatchFeaturesGuided`, `AssemblePairROMA2`, `StorePairROMA2`, the planar twin switch, the lens fit, the dense
 pseudo-count in the pair weight, `PairWeight.md`) never asks which model produced the warp.
 
-Out of scope: building and provisioning ONNX Runtime and the model files (`../RoMa2Model.md`); the bundle
+Out of scope: building and provisioning ONNX Runtime and the model bundles (`../DenseMatcherModels.md`); the bundle
 adjustment's weight of a dense observation (`BundleAdjustment.md`: it measures the precision of the dense keypoints
 per solve, independently of the view graph's fixed dense pseudo-count described here under the options).
 
@@ -38,12 +38,12 @@ ordinary SIFT/AKAZE/ORB flow; `--roma2-match` composes with any match mode.
 | option | `ROMA2Config` field | default | effect |
 |---|---|---|---|
 | `--roma2 B` | `enabled` | false | load the in-process model |
-| `--roma2-model DIR` | `modelPath` | `$OPENMVS_ROMA2_MODEL_PATH`, else the install prefix copy if present | folder of the RoMa2 graphs and manifest |
+| `--roma2-model DIR` | `modelPath` | `$OPENMVS_ROMA2_MODEL_PATH`, else `<prefix>/share/openMVS/roma2` if present | folder of the RoMa2 bundle (manifest and graphs) |
 | `--roma2-setting turbo\|fast\|base` | `setting` | `base` | preset: the image side is 320, 512 or 640 px and the warp grid is a quarter of it (160 cells at `base`) |
 | `--roma2-provider auto\|cuda\|coreml\|dml\|cpu` | `provider` | `auto` | ONNX Runtime execution provider (see Providers) |
 | `--roma2-match B` | `useMatching` | false | one-pass pair matching |
 | `--dense-matcher roma2\|flexglue` | `matcher` | `roma2` | the model behind `--roma2 true`, for both services |
-| `--flexglue-model DIR` | `flexglueModelPath` | `$OPENMVS_FLEXGLUE_MODEL_PATH` | folder with the three FlexGlue graphs |
+| `--flexglue-model DIR` | `flexglueModelPath` | `$OPENMVS_FLEXGLUE_MODEL_PATH`, else `<prefix>/share/openMVS/flexglue` if present | folder of the FlexGlue bundle (manifest and graphs) |
 | `--dense-min-covisibility F` | `minCovisibility` | 0.2 | covisibility gate before the verdict, in [0,1]; 0 = off; a matcher that gives no score (RoMa2) is never gated |
 | `--roma2-slots N` | `slotBudget` | 64 | image descriptor tensors resident on the device during pair matching; at least 2 |
 | `--roma2-min-confidence F` | `minConfidence` | 0.1 | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the fill |
@@ -82,12 +82,16 @@ destroyed after it) and drives it from one thread; the pool only runs the consum
 | `GridSize()` | cells per side of the warp |
 | `RetrievalSize()`, `MakeCode()`, `DescribeImage(planar, code, retrieval)` | one image's descriptor tensor (on the device when the provider keeps tensors there) and its unit global retrieval descriptor, stored in `Image::globalDescriptor` |
 | `MatchPair(codeA, codeB, PairInput, PairOutput)` | both warps of the pair plus the optional outputs below |
-| `NeedsIntrinsics()` | whether `MatchPair` reads the cameras, so that every image must have a pinhole camera |
 
-`PairInput` holds the pixel sizes of the two images and their pinhole intrinsics as the pipeline holds them at the
-matching stage (`MakePairInput`, with the principal point moved by half a pixel to the corner-origin convention of
-`PinholeIntrinsics`): the focal that import, `--focal-length` or the EXIF gave, before the lens fit and the focal
-check (`TwoViewVerificationAndLens.md`).
+`PairInput` holds the pixel sizes of the two images (`MakePairInput`); no model reads a camera (RoMa2 has no camera input,
+FlexGlue's pose head H1 reads none), so a dense matcher runs on any camera model.
+
+`ROMA2Config::ResolveModelPath` finds the selected matcher's bundle the same way for both: its explicit path
+(`modelPath`, `flexglueModelPath`), else its environment variable (`OPENMVS_ROMA2_MODEL_PATH`, `OPENMVS_FLEXGLUE_MODEL_PATH`),
+else the install prefix's copy `OPENMVS_MODEL_INSTALL_DIR/<matcher>` (what the `roma2-model` / `flexglue-model` targets
+fetch, used only when `File::isFolder` finds it), else nothing; a matcher never resolves to the other one's path or
+variable. `DenseMatcher::ExpectedRetrievalSize` reads the descriptor size from the resolved bundle's manifest
+(`facetsDim` of `roma_<setting>.json`, `retrieval_recipes.features.dim` of `flexglue_<setting>.json`).
 
 `PairOutput` is the `PairWarps` plus two optional outputs, absent where a model gives none (RoMa2 gives neither):
 
@@ -135,30 +139,35 @@ cached across the describe pass and the pair pass: the pair pass describes again
 
 ### FlexGlue
 
-FlexGlue (a DINOv3 ConvNeXt-B backbone, a stride-8 feature head and a 9-layer transformer matching two feature maps)
-runs from three graphs written by the export script `export_flexglue.py`:
+FlexGlue (a DINOv3 ConvNeXt-B backbone, a stride-8 feature head, a 9-layer transformer matching two feature maps, and
+the intrinsics-free relative-pose head H1) runs from a bundle in RoMa2's layout: a manifest `flexglue_<setting>.json`
+(`format_version` 1; `FlexGlueManifest::Load` rejects another version or model, a missing or ill-typed key, and a pose
+head other than H1; `FlexGlueMatcher::Load` then rejects sizes other than the ones it reads, and `OnnxModel` rejects
+graph I/O that differs) and the two static-shape, batch-1 graphs it names:
 
 | graph | inputs | outputs |
 |---|---|---|
-| `flexglue_descriptor.onnx` | `image` [1,3,512,512] RGB in [0,1] (squashed bilinear, no antialiasing) | `features` [1,256,64,64], `retrieval` [1,256] |
-| `flexglue_dense.onnx` | `features0/1`, `image_size0/1` | `warp0/1` [1,128,128,2], `confidence0/1` [1,128,128], `covisibility` [1], `pooled0/1` [1,512,16,16] |
-| `flexglue_pose_h0.onnx` | `pooled0/1`, `intrinsics0/1` [1,4] (fx, fy, cx, cy in the 512 frame) | `R10` [1,3,3], `t10` [1,3] |
+| descriptor (`flexglue_<setting>_descriptor_fp32.onnx`) | `image` [1,3,512,512] RGB in [0,1] (squashed bilinear, half-pixel centres, no antialiasing; mean/std in graph) | `features` [1,256,64,64], `retrieval` [1,256] |
+| match (`flexglue_<setting>_match_fp16.onnx`; float16 transformer layers, float32 readout and heads) | `features0/1`, `image_size0/1` [1,2] | `warp0/1` [1,128,128,2], `confidence0/1` [1,128,128], `covisibility` [1], `R10` [1,3,3], `t10` [1,3] |
 
 - **Warps**: FlexGlue's dense mode at coarse stride 4, both directions on a 128 x 128 grid, targets in normalized
   [-1,1] coordinates of the original frame (RoMa2's convention). A cell's confidence is 0 where it fails FlexGlue's own
   checks (confidence under 0.1, forward-backward cycle error over 3 descriptor pixels), so `minConfidence` (0.1)
   keeps exactly the cells FlexGlue keeps.
-- **Covisibility**: read from the same transformer pass as the warps, no extra call.
-- **Pose head**: FlexGluePose's H0 head on the final pair-conditioned features, average-pooled to 16 x 16 inside the
-  dense graph, with the two cameras' rays; one small extra graph call per pair. It needs a pinhole camera for every
-  image (a spherical scene is refused by name at the start of the pass). Its output follows `x1 = R10 x0 + s t10`.
+- **Covisibility**: the covisibility head after the last layer, read from the same Run as the warps.
+- **Pose head**: H1 on the pair's layer-9 features average-pooled to 32 x 32, inside the match graph (0.5 ms of the
+  45 ms a pair costs on an A100; one Run gives everything). It reads no camera: its output is in the cameras of the two
+  images as given, `x1 = R10 x0 + s t10`, `s > 0` unknown.
 - **Retrieval descriptor**: the `features` map GeM-pooled (p = 3, clamped at 1e-6) and L2-normalized inside the
-  descriptor graph, 256 floats, stored where RoMa2's 2048 go. No RoMa2 model is loaded in a FlexGlue run.
-- **Descriptor tensors** (256 x 64 x 64 floats per image) live on the device and are bound into the dense graph.
+  descriptor graph, 256 floats, stored where RoMa2's 2048 go.
+- **Descriptor tensors** (256 x 64 x 64 floats per image) live on the device and are bound into the match graph.
+- **One model**: with `--dense-matcher flexglue` the describe pass, the retrieval and the matching load this bundle
+  alone; no RoMa2 file is resolved, opened or required.
 
-Licences: the code of FlexGlue and FlexGluePose is MIT. The weights file contains the DINOv3 ConvNeXt-B backbone,
-distributed under the DINOv3 License (Meta; use-restricting, not MIT), which the descriptor graph and the dense graph's
-input features carry. The model files are read from a folder the user names and are never built in.
+Licences: FlexGlue's code and its weights other than the backbone are MIT, and so is the H1 head (its repository's
+licence); the descriptor graph carries the DINOv3 ConvNeXt-B backbone under the DINOv3 License (Meta; use-restricting,
+not MIT). The bundle is read from a folder the user names or the fetch target installs, never built in
+(`../DenseMatcherModels.md`).
 
 ### Providers
 
@@ -298,7 +307,6 @@ that ends at its twin takes the twin's pose, E and F and re-classifies its candi
   path. `CreateStructure` checks what it can before feature extraction runs; `Scene::MatchPairs` checks the rest,
   because only it knows whether the scene already carries descriptors.
 - A pair the gate drops, like one the verdict rejects, is not stored; a later round that proposes it warps it again.
-- A matcher with `NeedsIntrinsics()` runs only on pinhole cameras.
 - Verdicts, guided matches and assemblies run in parallel but are stored serially in `(ID1, ID2)` order; RANSAC is
   seeded, so a pair's verdict and guided match set are a pure function of its inputs (the warp itself comes from the
   model's arithmetic on the chosen provider).
@@ -324,8 +332,12 @@ reference; F1 = the pose score; describe and matching passes in seconds; GPU pea
 | Palace | RoMa2 | 496 / 1 | .8116 | 46 | 755 | 9962 |
 | Palace | FlexGlue + gate 0.2 | 492 / 1 | .7954 | 7 | 815 | 4296 |
 
-The FlexGlue export matches PyTorch to 2.6e-5 in descriptor features and 0.9999999 in retrieval cosine; the pose graph
-differs from FlexGluePose's own head by 0.20 deg in rotation and 0.43 deg in direction. The retrieval descriptor
+The FlexGlue bundle matches PyTorch on 12 real pairs of four captures (ONNX Runtime 1.23.2, CPU provider): descriptor
+features to 3.3e-5, retrieval cosine 1.0000000; the H1 head inside the match graph agrees with the source's
+`H1PoseHead` on the same features to 3e-5 deg; the whole chain (image to pose) differs from the PyTorch reference
+(float16 autocast on CUDA) by at most 0.063 deg in rotation and 0.125 deg in direction, the float16 arithmetic of the
+transformer layers (the reference itself moves by 0.069 / 0.078 deg between float16 and float32). The match graph costs
+45.4 ms per pair on an A100 (45.0 without the pose head; float32 layers 99 ms). The retrieval descriptor
 choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against RoMa2's 0.171 (mean over 4e5c6f6d,
 1c65aab4, 5ada248e and Palace).
 
@@ -347,15 +359,23 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
   chaining of dense matches into tracks.
 - The RoMa2 refiner stages and FlexGlue's 512 x 512 refiner: not exported.
 - FlexGlue's sparse matcher graph for the covisibility alone: the dense graph returns the score with the warps.
-- A pose prior as a filter or corrector of the pair's pose, and a covisibility filter after the contradiction cut: not
-  done; the gate before the verdict is the only use of the score.
+- The pose head as a separate graph: a second Run and 2 x 8 MB of layer-9 maps on the device for 0.5 ms of work.
+- Float32 transformer layers in the match graph: twice the time for a pose difference below the reference's own
+  float16 / float32 spread.
+- The H0 head with the cameras' rays (the first export): H1 is more accurate on every reference capture (median
+  rotation / direction error 3.6 / 5.3 deg against 4.4 / 6.3 on 26,000 verified pairs of six captures) and needs no camera.
+- The pose prior to choose, seed, constrain or correct the pair's two-view pose: the verified pose is about seven times
+  more accurate in every parallax and rotation bin (median 0.5 / 0.9 deg), low parallax and pure rotation included.
+- A covisibility filter after the contradiction cut: the gate before the verdict is the only use of the score.
 - Pooling the backbone's last stage for the FlexGlue retrieval descriptor: lower recall than the feature map.
 
 ## Open items
 
-- The pose prior (`ImagePair::posePrior`, FlexGlue only) is stored and exported to the pairs CSV but read by nothing.
-- The pose head was trained on 32 x 32 token maps and is fed the 64 x 64 maps average-pooled to 16 x 16; the input
-  resolution is not re-confirmed.
+- The pose prior (`ImagePair::posePrior`, FlexGlue only) is stored and exported to the pairs CSV but read by nothing;
+  its disagreement with the verified pose flags most look-alike pairs (60% of the wrong verified poses at 10 / 30 deg,
+  13.7% of the right ones), measured as soft evidence for the contradiction cut and the pair weight, not used.
+- The covisibility gate's value (0.2) against the look-alike pairs it lets through (offline, on six captures: 0.5 removes 1026 of
+  1231 look-alike verified pairs at 149 of 25,966 true ones).
 - The verdict does not tell apart two images of different instances of a repeated structure (both give a consistent
   correspondence set); the triplet scores and the contradiction cut downstream do (`TripletScores.md`,
   `ContradictionCut.md`).
@@ -365,3 +385,5 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
 - FlexGlue's coarser warp grid (128 cells against 160) is the candidate cause of its lower F1 on Palace.
 - `--roma2` help text names DINOv3/GeM retrieval; with `--dense-matcher flexglue` the retrieval is FlexGlue's pooled
   256-D descriptor.
+- The validation table's FlexGlue rows come from the first export (the H0 head); the bundle's own rows replace them as
+  its runs finish (4e5c6f6d from images, no RoMa2 model reachable: F1 .9701, describe 6 s, matching 596 s, GPU peak 4136 MiB).
