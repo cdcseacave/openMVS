@@ -84,7 +84,7 @@ faces. `apps/ExtractKeyframes` exposes `--camera-type 0|1` and `--cubemap-faces`
 4. `ProjectTrackOntoSphericalFaces`: each 3D track point is projected into every face's pinhole model and adds a view per
    face that sees it in front.
 
-`UndistortDepthMaps` skips non-pinhole cameras. No command-line option of `CreateStructure` or another app sets the export's
+No command-line option of `CreateStructure` or another app sets the export's
 face count or size; only the Python bindings and a hand-built `ExportMVSConfig` can.
 
 ## 5. Bearing-vector pose estimation
@@ -180,8 +180,7 @@ whose F1 difference (0.0018) is below the 0.008 noise of comparing different mat
 
 ## 10. Open items
 
-- `View::Ray()` and `View::UnprojectPoint()` use the 2D `Unproject()` form (singular at the equator sides and the poles);
-  `View::RayNormalized()` is the bearing sibling. Whether a live caller invokes the 2D form on a spherical image is not
+- `View::Ray()` and `View::UnprojectPoint()` use the 2D `Unproject()` form (singular at the equator sides and the poles). Whether a live caller invokes the 2D form on a spherical image is not
   audited.
 - `TriangulateDLT` is production-unused and pinhole-only; it is kept as public API with test coverage.
 - Dense reconstruction works only on the rendered faces, so seams and the fixed face count and size are inherent to the

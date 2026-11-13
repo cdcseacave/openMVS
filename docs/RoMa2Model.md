@@ -2,7 +2,7 @@
 
 ## Overview
 
-`--roma2` (RETRIEVAL pair selection and one-pass dense matching — `docs/design/ROMA2InProcess.md`)
+`--roma2` (RETRIEVAL pair selection and one-pass dense matching — `docs/design/DenseMatching.md`)
 needs the exported RoMa v2 ONNX graphs on disk: a DINOv3 descriptor graph, a bidirectional
 coarse-match graph, and the `roma_<setting>.json` manifest tying them together. OpenMVS does not
 carry a byte of that model in its own repository — it is fetched on demand from a published bundle

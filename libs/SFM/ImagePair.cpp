@@ -389,7 +389,7 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(CLAMP(cosAngles.GetMedian(), -1.f, 1.f));
 	// The stable_partition below re-derives the dense segment from `mask`'s surviving inliers by
 	// re-evaluating HasDenseEnd, which is the one documented false negative of this re-derivation
-	// (docs/design/ROMA2InProcess.md): a supplement match whose BOTH endpoints collapsed onto
+	// (docs/design/DenseMatching.md): a supplement match whose BOTH endpoints collapsed onto
 	// coincident described keypoints now reads as sparse. The size of that gap is reported, so count
 	// it here -- before PartitionMatchesByMask reorders `matches` and the recorded dense range
 	// [numFilteredInliers, numFilteredInliers+numDenseInliers) stops describing anything.

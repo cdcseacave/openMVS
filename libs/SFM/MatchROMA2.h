@@ -54,7 +54,7 @@ struct SFM_API ROMA2Config {
 	bool useMatching = false;      // one-pass dense pair matching (verdict, guided, fill, store)
 	float minConfidence = 0.1f;    // a warp cell takes part (verdict, tracking, fill) at this confidence or above
 	float minOverlap = 0.10f;      // verdict: min(inlier area A, inlier area B) >= minOverlap
-	// The dense matcher behind the retrieval descriptors and the warps: "roma2" or "flexglue" (docs/design/DenseMatcher.md).
+	// The dense matcher behind the retrieval descriptors and the warps: "roma2" or "flexglue" (docs/design/DenseMatching.md).
 	// Everything above and below (the verdict, the guided matching, the fill, the lens fit) reads the same warps whichever it is.
 	String matcher = "roma2";
 	String flexglueModelPath;      // folder of FlexGlue's graphs (empty = $OPENMVS_FLEXGLUE_MODEL_PATH), for matcher == "flexglue"

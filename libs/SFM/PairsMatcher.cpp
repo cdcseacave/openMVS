@@ -1866,7 +1866,7 @@ void PairsMatcher::FilterRedundantKeypoints()
 		// sparse count. Debug-only, one-directional -- see the declaration.
 		// Checked only while the strict matches filter is on. With it off nothing re-partitions a
 		// re-verified pair, so dense matches legitimately sit inside numFilteredInliers and count as
-		// descriptor evidence -- the disclosed gap documented in docs/design/ROMA2InProcess.md, whose
+		// descriptor evidence -- the disclosed gap documented in docs/design/DenseMatching.md, whose
 		// size is a measurement question, not a broken invariant. An assertion that fires on a
 		// configuration the design declines to protect stops meaning "a bug happened".
 		if (config.IsMatchesFilterOn())

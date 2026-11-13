@@ -7005,7 +7005,7 @@ static double RotationAngleDeg(const Matrix3x3f& R)
 }
 #endif
 
-// FlexGlue as the dense matcher, on the bundled 4-image scene through Scene::MatchPairs (docs/design/DenseMatcher.md): the 256-D retrieval
+// FlexGlue as the dense matcher, on the bundled 4-image scene through Scene::MatchPairs (docs/design/DenseMatching.md): the 256-D retrieval
 // descriptors its backbone pools (unit, distinct per image), every pair stored with its covisibility score and its coarse relative pose
 // (a rotation, a unit baseline direction, close to the pose the pair's own matches give: the check of the pose head's convention),
 // the pairs CSV carrying both, the covisibility gate dropping exactly the pairs below it, and ReconstructTest's

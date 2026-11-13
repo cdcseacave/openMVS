@@ -67,7 +67,7 @@ link that arrived first stands.
 
 ## Triangulation
 
-`TriangulateTracks(scene, outliersOnly, reprojThreshold, minAngleThreshold, denseReprojErrorFactor)`
+`TriangulateTracks(scene, outliersOnly, reprojThreshold, minAngleThreshold)`
 is the method the reconstruction uses; it triangulates each track with `TriangulateSkewLLS` in
 parallel.
 
@@ -78,9 +78,8 @@ parallel.
   (`Camera::UnprojectNormalized`, so it is the same for pinhole and spherical cameras) and solves
   `[d]_x (R P + t) = 0` for the point `P`: two rows per observation, the first two rows of the
   skew-symmetric product, an overdetermined linear least squares solved by SVD. It then keeps the
-  observations that project in front of the camera within `reprojThreshold` pixels of their keypoint
-  (a dense, warp-sampled observation within `reprojThreshold * denseReprojErrorFactor`; the factor
-  is 1 in every call the reconstruction makes), solves again over those inliers alone, and moves them
+  observations that project in front of the camera within `reprojThreshold` pixels of their keypoint,
+  solves again over those inliers alone, and moves them
   to the front of `observations`.
 - It fails, returning 0 and leaving the track with no inliers, when fewer than `minInliers` (2)
   observations are inliers or when the widest angle between two inlier rays
@@ -100,16 +99,14 @@ reads the position as a flag: `numInliers` says whether a track is triangulated.
 
 ## The track filter
 
-`FilterTracks(scene, maxReprojErrorPixels, minAngleDegrees, multDepthNear, multDepthFar,
-denseReprojErrorFactor)` re-judges every track against the current poses and cameras and sets
+`FilterTracks(scene, maxReprojErrorPixels, minAngleDegrees, multDepthNear, multDepthFar)` re-judges every track against the current poses and cameras and sets
 `numInliers`; it returns the mean reprojection error in pixels and degrees of the inliers.
 
 - A track with fewer than two posed observations is not judged and ends with no inliers.
 - Each observation of a posed image is an inlier when its ray makes an angle with the ray to the
   track's position that is within the pixel bar converted to an angle per camera
   (`Camera::PixelErrorToAngular`), so the same check works for pinhole and spherical cameras; a
-  position behind the camera fails it. A dense observation answers to
-  `maxReprojErrorPixels * denseReprojErrorFactor`.
+  position behind the camera fails it. Described and dense observations answer to the same bar.
 - A track needs at least two inlier observations and a widest ray angle of at least
   `minAngleDegrees` between its inlier cameras, else it ends with no inliers.
 - When more than 1000 tracks remain, a track whose mean distance to its inlier cameras is below
@@ -128,7 +125,6 @@ denseReprojErrorFactor)` re-judges every track against the current poses and cam
 | `ResectionConfig::maxReprojError`, `minAngleThreshold` | 4 px, 1.0 degrees | the resection's own triangulations and filters, and the rebuild of a block's tracks |
 | `StarInitConfig::maxReprojError`, `minAngleThreshold` | 6 px, 1.0 degrees | the star initializer's first triangulation; its later passes tighten to `max(maxReprojError - 1, 1)` and `max(maxReprojError - 2, 1)` px, and raise the angle by 0.5 and 1.0 degrees, capped at 3 |
 | `multDepthNear`, `multDepthFar` | 0.05, 20 | one value for the reconstruction and the resection |
-| `denseReprojErrorFactor` | 1 | no call of the reconstruction raises it |
 
 The reconstruction's own passes: the final model is filtered and its outlier tracks triangulated at
 `maxReprojError`, adjusted, and filtered at `maxFineReprojError`; the merged scene is filtered and
@@ -169,6 +165,8 @@ under the two policies (median 2, 90th percentile 8, 99th percentile 31 to 33, m
   composite weight.
 - No merge of close keypoints: the merge within 3 px halves the conflicts that end with neither
   keypoint kept.
+- A looser reprojection bar for dense observations: a factor on the bar that nothing ever set; one
+  bar serves described and dense observations.
 
 ## Open items
 
