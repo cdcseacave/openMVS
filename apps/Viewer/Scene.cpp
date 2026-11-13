@@ -76,15 +76,14 @@ public:
 			return finish(false);
 		Image& image = layer->images[idx];
 		ASSERT(image.idx != NO_ID);
-		MVS::Image& imageData = layer->scene.images[image.idx];
+		// decode into a copy: the pixels are for display, the scene image keeps its resolution and camera
+		MVS::Image imageData(layer->scene.images[image.idx]);
 		ASSERT(imageData.IsValid());
 		if (imageData.image.empty() && !imageData.ReloadImage(nMaxResolution)) {
 			image.CancelImageLoading();
 			return finish(false);
 		}
-		imageData.UpdateCamera(layer->scene.platforms);
 		image.AssignImage(imageData.image);
-		imageData.ReleaseImage();
 		glfwPostEmptyEvent();
 		return finish(true);
 	}
