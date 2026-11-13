@@ -265,6 +265,10 @@ bool FlexGlueReconstructTest();
 // columns are compared in the manifold's tangent space, the only place the solver sees them
 bool BAPinholeReprojectionJacobianTest();
 
+// EstimateSimilarityTransform recovers a known similarity from six exact correspondences: the scale to 1e-2 and
+// the mapped source points to 1e-6
+bool TestSimilarityTransform();
+
 // ComputeObservationSigmas recovers the displacement the BULK of a synthetic scene's described and
 // dense observations carry, with a tenth of each population thrown far out and a tenth left almost
 // on the point so that only a median answers it, and reports zero dense observations on a scene that
