@@ -362,8 +362,8 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
 - The pose head as a separate graph: a second Run and 2 x 8 MB of layer-9 maps on the device for 0.5 ms of work.
 - Float32 transformer layers in the match graph: twice the time for a pose difference below the reference's own
   float16 / float32 spread.
-- The H0 head with the cameras' rays (the first export): H1 is more accurate on every reference capture (median
-  rotation / direction error 3.6 / 5.3 deg against 4.4 / 6.3 on 26,000 verified pairs of six captures) and needs no camera.
+- The H0 head with the cameras' rays: H1 is more accurate on every reference capture (median rotation / direction
+  error 3.6 / 5.3 deg against 4.4 / 6.3 on 26,000 verified pairs of six captures) and needs no camera.
 - The pose prior to choose, seed, constrain or correct the pair's two-view pose: the verified pose is about seven times
   more accurate in every parallax and rotation bin (median 0.5 / 0.9 deg), low parallax and pure rotation included.
 - A covisibility filter after the contradiction cut: the gate before the verdict is the only use of the score.

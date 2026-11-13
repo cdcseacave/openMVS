@@ -48,7 +48,7 @@ struct SFM_API PairWarps;
 // Configuration of the in-process ROMAv2 (ONNX Runtime) retrieval and dense matching
 struct SFM_API ROMA2Config {
 	bool enabled = false;          // enable the in-process ROMAv2 model (explicit opt-in)
-	String modelPath;              // folder of the exported graphs (empty = $OPENMVS_ROMA2_MODEL_PATH)
+	String modelPath;              // folder of the exported graphs (empty = $OPENMVS_ROMA2_MODEL_PATH, else the installed share/openMVS/roma2)
 	String setting = "base";       // preset: turbo|fast|base
 	String provider = "auto";      // execution provider: auto|cuda|coreml|dml|cpu
 	bool useMatching = false;      // one-pass dense pair matching (verdict, guided, fill, store)
@@ -57,7 +57,7 @@ struct SFM_API ROMA2Config {
 	// The dense matcher behind the retrieval descriptors and the warps: "roma2" or "flexglue" (docs/design/DenseMatching.md).
 	// Everything above and below (the verdict, the guided matching, the fill, the lens fit) reads the same warps whichever it is.
 	String matcher = "roma2";
-	String flexglueModelPath;      // folder of FlexGlue's graphs (empty = $OPENMVS_FLEXGLUE_MODEL_PATH), for matcher == "flexglue"
+	String flexglueModelPath;      // folder of FlexGlue's graphs (empty = $OPENMVS_FLEXGLUE_MODEL_PATH, else the installed share/openMVS/flexglue), for matcher == "flexglue"
 	// Gate before the verdict: a pair whose matcher gives a covisibility score ("do the two images show the same place", 0..1)
 	// below this is dropped without a verdict. 0 = off. A matcher that gives no score (RoMa2) is not gated.
 	float minCovisibility = 0.2f;

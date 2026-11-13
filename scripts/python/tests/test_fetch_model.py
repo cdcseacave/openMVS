@@ -203,6 +203,24 @@ class FetchTests(unittest.TestCase):
         # user can tell "the Hub was not available" from "the Hub said no"
         self.assertIn("simulated network failure", stderr.getvalue())
 
+    def test_huggingface_step_that_leaves_a_file_out_is_completed_from_the_mirror(self):
+        """A Hub download that returns without error but does not deliver a pending file must not end in a
+        "<missing>" digest failure while the mirror has the file: the mirror supplies what is absent."""
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            pass  # succeeds, delivers nothing
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = self._fetch()
+
+        target = self._local_target()
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.read_bytes(), self.content)
+        self.assertEqual(result.downloaded, [self.published_relpath])
+        self.assertIn("mirror", stderr.getvalue())
+
     def test_huggingface_and_mirror_both_failing_names_both_reasons(self):
         def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
             raise ConnectionError("simulated network failure")
@@ -509,6 +527,18 @@ class ModelTableTests(unittest.TestCase):
         result = fm.fetch(dest, "flexglue", mirror=mirror.resolve().as_uri(), checksums_path=checksums)
         self.assertEqual(result.downloaded, ["base-fp16/flexglue_base.json"])   # the fp16 default only, not the fp32 entry
         self.assertEqual((dest / "flexglue_base.json").read_bytes(), content)
+
+    def test_flexglue_file_with_a_wrong_digest_fails_and_is_removed(self):
+        content = b'{"model": "flexglue", "fixture": true}'
+        mirror = self.root / "mirror"
+        _write(mirror / "flexglue_base.json", b"not the published bytes")
+        checksums = self.root / "checksums.txt"
+        checksums.write_text(f"{_sha256(content)}  base-fp16/flexglue_base.json\n")
+        dest = self.root / "dest"
+        with self.assertRaises(fm.ModelFetchError) as ctx:
+            fm.fetch(dest, "flexglue", mirror=mirror.resolve().as_uri(), checksums_path=checksums)
+        self.assertIn("base-fp16/flexglue_base.json", str(ctx.exception))
+        self.assertFalse((dest / "flexglue_base.json").exists())
 
     def test_unknown_model_is_refused_by_name(self):
         with self.assertRaises(fm.ModelFetchError) as ctx:

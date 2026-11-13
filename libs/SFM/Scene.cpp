@@ -598,7 +598,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	PairsMatcher pairsMatcher(*this, config);
 
 	// Global descriptors a scene carries from another matcher are not this matcher's (RoMa2 2048-D, FlexGlue 256-D): the images are described
-	// again by the selected one. Only known where the selected matcher's descriptor size is (FlexGlue's is fixed, RoMa2's is its manifest's)
+	// again by the selected one. Only known where the selected matcher's descriptor size is (it comes from the model bundle's manifest; 0, unknown, when no bundle is reachable: the stored descriptors are then kept)
 	if (roma2Cfg.enabled && config.mode == MatchConfig::RETRIEVAL && status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS) &&
 		!status.nState.isSet(Status::STATE::MATCHED) && !images.empty()) {
 		const unsigned expectedDim = DenseMatcher::ExpectedRetrievalSize(roma2Cfg);
@@ -619,9 +619,9 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 		// generic "failed to load the roma2 model ''" that Load() below would report if this
 		// fell through to it unchecked
 		if (roma2Cfg.matcher == "flexglue")
-			VERBOSE("error: the FlexGlue dense matcher requested but no model path given (set --flexglue-model or OPENMVS_FLEXGLUE_MODEL_PATH)");
+			VERBOSE("error: the FlexGlue dense matcher requested but no model path given (set --flexglue-model or OPENMVS_FLEXGLUE_MODEL_PATH, or install the model into the install prefix)");
 		else
-			VERBOSE("error: ROMA2 requested but no model path given (set --roma2-model or OPENMVS_ROMA2_MODEL_PATH)");
+			VERBOSE("error: ROMA2 requested but no model path given (set --roma2-model or OPENMVS_ROMA2_MODEL_PATH, or install the model into the install prefix)");
 		return false;
 	}
 	const bool useROMA2 = roma2Cfg.enabled && (needsDescriptors || needsWarps) && !status.nState.isSet(Status::STATE::MATCHED);

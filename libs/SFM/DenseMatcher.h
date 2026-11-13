@@ -69,7 +69,7 @@ public:
 	// A new, not yet loaded matcher of the kind config.matcher names ("roma2" or "flexglue"); needs IsAvailable()
 	static std::unique_ptr<DenseMatcher> Create(const ROMA2Config& config);
 	// The size of the global retrieval descriptors the matcher config names will produce, known before it is loaded
-	// (FlexGlue's is fixed, RoMa2's is its manifest's); 0 where it cannot be told (no model folder or no manifest in it)
+	// (both matchers' come from the model bundle's manifest); 0 where it cannot be told (no model folder reachable or no manifest in it)
 	static unsigned ExpectedRetrievalSize(const ROMA2Config& config);
 
 	// Load the model from its folder ("setting" is the model's preset where it has several) on the provider

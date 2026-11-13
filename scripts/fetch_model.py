@@ -24,7 +24,7 @@ same name, so such a pair will need a distinct manifest name of its own before i
 Two sources, the Hub tried first:
 
   * Canonical: the Hugging Face model repo (`--repo`), via `huggingface_hub.snapshot_download`
-    when that package is importable -- resumable, deduplicating, revision-pinned. It fetches the
+    when that package is importable -- resumable, deduplicating, at the model's revision (roma2: the commit that published the bundle; flexglue: the branch `main`). It fetches the
     Hub's own `<setting>-<precision>/` layout into a staging directory nested under `--dest`
     itself (not a temporary one thrown away on every call, which would discard the resume state
     an interrupted multi-gigabyte download depends on), then this script moves the needed files up
@@ -64,8 +64,8 @@ from typing import Dict, Optional
 # --- Publishing targets: the only place these are named -------------------------------------
 # Per model: the canonical host (the Hugging Face model repo carrying the exported graphs), the mirror (a release of the
 # OpenMVS repo itself, holding the same files as flat release assets: GitHub does not let a release asset carry a
-# subdirectory), the Hub commit that published the bundle models/<model>/checksums.txt pins (a re-export moves both
-# together), the preset fetched by default, the environment variable the C++ side reads, and the licence notice.
+# subdirectory), the Hub revision (roma2: the commit that published the bundle models/roma2/checksums.txt pins, a re-export moves both
+# together; flexglue: the branch `main`), the preset fetched by default, the environment variable the C++ side reads, and the licence notice.
 GITHUB_MIRROR_REPO = "cdcseacave/openMVS"
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
@@ -106,7 +106,7 @@ MODELS: Dict[str, ModelSpec] = {
         notice=_dinov3_notice("The RoMa v2 descriptor graph embeds DINOv3 (Meta) weights, RoMa v2's own code\n"
                               "is MIT (Johan Edstedt); the DINOv3 weights are", "cDcSeacave/openmvs-roma2-onnx")),
     "flexglue": ModelSpec(
-        # "main" until the bundle is uploaded: then the commit the upload prints replaces it (docs/DenseMatcherModels.md)
+        # the branch "main", not a commit
         hf_repo="cDcSeacave/openmvs-flexglue-onnx", mirror_tag="flexglue-model",
         revision="main", setting="base", precision="fp16",
         env="OPENMVS_FLEXGLUE_MODEL_PATH",
@@ -432,6 +432,12 @@ def fetch(
                     f"Hugging Face fetch failed ({hub_error}); mirror fetch also failed: {mirror_error}"
                 ) from mirror_error
             raise
+    else:
+        # the Hub step returned without error but left files out: the mirror supplies those
+        absent = {p: d for p, d in pending.items() if not _local_path(dest, p).is_file()}
+        if absent:
+            print(f"warning: Hugging Face did not supply {', '.join(absent)}; using the GitHub mirror for them", file=sys.stderr)
+            _fetch_via_mirror(dest, mirror, absent)
 
     for published_relpath, digest in pending.items():
         local_path = _local_path(dest, published_relpath)
@@ -481,8 +487,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
                              "(default: $OPENMVS_<MODEL>_MODEL_PATH, else ~/.cache/openMVS/<model>)")
     parser.add_argument("--repo", default=None, help="Hugging Face model repo id (default: the model's own)")
     parser.add_argument("--revision", default=None,
-                        help="Hugging Face revision/commit to fetch (default: the commit that published "
-                             "the bundle models/<model>/checksums.txt pins)")
+                        help="Hugging Face revision/commit/branch to fetch (default: roma2 the commit that published "
+                             "the bundle, flexglue the branch main)")
     parser.add_argument("--mirror", default=None,
                         help="mirror base URL, used when huggingface_hub is not importable or "
                              "the Hugging Face fetch fails (default: the model's GitHub release)")
