@@ -46,12 +46,13 @@ struct SFM_API ResectionConfig
 	                                    // and at least one link (a verified pair with a relative pose to a registered
 	                                    // image, ForEachLink) is a candidate, tried in the order of the composite weight
 	                                    // of its links
-	unsigned minInliers{12};            // Minimum inliers to accept a pose
+	unsigned minInliers{12};            // Minimum weight of a pose's inliers to accept it: the described ones plus the
+	                                    // dense ones at PairsWeightingConfig::DenseScale(), as a pair weighs its matches
 	float minInlierRatio{0.25f};        // Minimum share of the 2D-3D correspondences that must be inliers for a pose to
 	                                    // be accepted; a smaller consensus can agree on a pose that is nowhere near the
 	                                    // image's true one (0 = disabled)
-	unsigned minInliersAbsolute{100};   // Inlier count from which the ratio above is waived: that many correspondences
-	                                    // agreeing on a pose vouch for it whatever share of the total they are
+	unsigned minInliersAbsolute{100};   // Inlier weight (as minInliers counts it) from which the ratio above is waived:
+	                                    // inliers weighing that much vouch for the pose whatever share of the total they are
 	float maxRelativeRotationError{15.f}; // Maximum angle (degrees) between the estimated rotation and the one the
 	                                    // quorum of the verified pairs to already registered images composes -- the
 	                                    // largest group of those pairs agreeing on a rotation within this same angle,

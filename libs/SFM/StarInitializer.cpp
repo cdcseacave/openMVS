@@ -290,12 +290,12 @@ bool StarInitializer::EstimateGlobalScale(
 	}
 
 	// 3. Solve system using shared global scale averaging
-	// Fix one pair scale to 1.0: the pair connected to Ref with most matches, a near-duplicate only when Ref has no other
+	// Fix one pair scale to 1.0: the pair connected to Ref with the most weighted inliers, a near-duplicate only when Ref has no other
 	Yardstick gauge;
 	for (const uint32_t pairIdx : constrainedPairs) {
 		const ImagePair& pair = scene.pairs[pairIdx];
 		if (pair.ID1 == refViewID || pair.ID2 == refViewID)
-			gauge.Add(pair.GetNumInliers(), weighting.IsNearDuplicate(pair), pairIdx);
+			gauge.Add(pair.GetNumWeightedInliers(), weighting.IsNearDuplicate(pair), pairIdx);
 	}
 	const uint32_t fixedPairIdx = gauge.Pair();
 

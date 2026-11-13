@@ -47,8 +47,9 @@ initial views") before the floor is applied; one that keeps fewer goes on with t
 however few. A near-duplicate pair (`ImagePair::IsNearDuplicate`: its 10x10 overlap above
 `PairsWeightingConfig::maxDuplicateOverlap`, 0.75, and its measured ray angle under
 `maxDuplicateRayAngle`, 1.5 degrees; `StarInitConfig::pairsWeighting`, set by the scene) sets neither the
-floor, nor the reference view, nor the pair the star's scale is fixed on (the reference's strongest pair
-otherwise). Tuned against the reference poses of 33 captures (a pair fixes no distance when the true
+floor, nor the reference view, nor the pair the star's scale is fixed on (otherwise the reference's pair
+with the most weighted inliers, the described ones plus the dense ones at `PairsWeightingConfig::DenseScale`).
+Tuned against the reference poses of 33 captures (a pair fixes no distance when the true
 parallax of its shared points is under 1.5 degrees): 85% of
 the pairs the rule flags fix no distance, and the yardstick moves off a pair that fixes no distance for
 2045 images and off one that does for 296. The overlap condition keeps out the frames turned on the spot
@@ -131,9 +132,11 @@ every registration (154 over 514 images, against 10 at 8 px, the poses coming ou
 minority of them could vote in a pose degrees off. The adjustments that follow are robust to the outliers
 the wider bar admits and the track filter removes them, so the filter's own bar stays at 4 px; 6 px is
 the bar to try once the dense matching gets more precise. A pose is accepted only when credible:
-`minInliers` (12) inliers at least, and `minInlierRatio` (0.25) of the correspondences, unless the inlier
-count alone reaches `minInliersAbsolute` (100) -- a small consensus inside a large set can agree on a
-pose the image never had. Every pose, however well supported, is cross-checked against the rotation its
+inliers weighing `minInliers` (12) at least, and `minInlierRatio` (0.25) of the correspondences, unless the
+inliers weigh `minInliersAbsolute` (100) -- a small consensus inside a large set can agree on a pose the image
+never had. The inliers are weighed as a pair weighs its matches (`PairsWeightingConfig::DenseScale`, 1/40 for a
+dense one against 1 for a described one), the same count the direction check below gives the pose's own vote:
+twenty dense correspondences agreeing on a pose weigh half a described one. Every pose, however well supported, is cross-checked against the rotation its
 verified pairs to registered images predict -- not the single strongest pair, misleading if that
 neighbour is misplaced, but the quorum: the largest group,
 among the strongest few links, agreeing within `maxRelativeRotationError` (15 degrees) of one another

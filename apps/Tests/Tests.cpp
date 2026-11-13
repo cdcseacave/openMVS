@@ -480,6 +480,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::StarEvidenceTest())
 				return false;
+			if (!SFM::StarScaleGaugeTest())
+				return false;
 			if (!SFM::NearDuplicateYardstickTest())
 				return false;
 			if (!SFM::ResectionAcceptanceTest())
@@ -507,6 +509,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::ResectionInlierBarTest())
 				return false;
 			if (!SFM::ResectionDenseFitWeightTest())
+				return false;
+			if (!SFM::ResectionWeightedInlierBarTest())
 				return false;
 			if (!SFM::LinkWalksTest())
 				return false;

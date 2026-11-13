@@ -11737,6 +11737,84 @@ bool StarEvidenceTest()
 // whose pairs are all near-duplicates: they keep today's yardstick, so its factor is the same with the rule on and off. The
 // stored overlap follows the pair's current matches (a pair cut to half the frame reads half at the next weighting pass).
 // Last, the predicate itself: the overlap and the angle must both say so.
+// The star fixes its scale on the pair of the reference view with the most weighted inliers, the count every other
+// reader of a pair's evidence uses. Reference 0 at the origin, views 1, 2, 3 at 1, 2, 3 units along x, every pair
+// (0, j) carrying a unit baseline: (0, 1) holds every match of its two views but only 20 track-forming ones (the rest
+// past the strict filter, raw matches its weighted inliers do not count), (0, 2) every other match, (0, 3) every third.
+// The scale fixed on (0, 2), the heaviest by weighted inliers, puts view 2 at distance 1 and view 1 at 0.5; fixed on
+// (0, 1), the most matches, it would put view 1 at 1.
+bool StarScaleGaugeTest()
+{
+	TD_TIMER_START();
+	Scene scene;
+	PinholeCamera* pCamera = new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240));
+	pCamera->trustIntrinsics = true;
+	scene.cameras.emplace_back(pCamera);
+	for (IIndex i = 0; i < 4; ++i) {
+		Pose3D pose;
+		pose.R = Matrix3x3::IDENTITY;
+		pose.C = Point3(REAL(i), REAL(0.1) * (i % 2), 0);
+		scene.images.emplace_back(i, "", pose, 0, scene.cameras[0]);
+	}
+	std::mt19937 rng(20261113);
+	std::uniform_int_distribution<int> pixelX(40, 600), pixelY(40, 440);
+	std::uniform_real_distribution<REAL> depth(6, 12);
+	for (unsigned p = 0; p < 600 && scene.tracks.size() < 300; ++p) {
+		const Point3 X = scene.images[0].UnprojectPoint(Point2(pixelX(rng), pixelY(rng)), depth(rng));
+		std::vector<Point2> projections;
+		for (const Image& img : scene.images) {
+			const auto [proj, valid] = img.ProjectPoint(X);
+			if (valid && Image8U::isInside(proj, img.GetSize()))
+				projections.push_back(proj);
+		}
+		if (projections.size() != scene.images.size())
+			continue;
+		Track track(X);
+		FOREACH(i, scene.images) {
+			scene.images[i].keypoints.emplace_back(projections[i], 0.f, 0.f, 10.f);
+			track.observations.emplace_back(IIndex(i), (uint32_t)scene.images[i].keypoints.size() - 1);
+		}
+		scene.tracks.emplace_back(std::move(track));
+	}
+	const auto addPair = [&](IIndex b, unsigned stride, int numFiltered) {
+		ImagePair& pair = scene.pairs.emplace_back(IIndex(0), b);
+		FOREACH(t, scene.tracks)
+			if (t % stride == 0)
+				pair.matches.emplace_back(scene.tracks[t].observations[0].featureID, scene.tracks[t].observations[b].featureID);
+		pair.numFilteredInliers = numFiltered < 0 ? (int)pair.matches.size() : numFiltered;
+		pair.relativePose = scene.images[b] / scene.images[0];
+		pair.relativePose->C /= norm(pair.relativePose->C);
+		pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
+		pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[0].GetK(), scene.images[b].GetK());
+		pair.meanRayAngle = pair.ComputeMeanRayAngle(scene.images[0], scene.images[b]);
+	};
+	addPair(1, 1, 20);
+	addPair(2, 2, -1);
+	addPair(3, 3, -1);
+	ComputePairsWeights(scene);
+	const ImagePair& p01 = *scene.FindPair(0, 1);
+	const ImagePair& p02 = *scene.FindPair(0, 2);
+	if (!(p01.GetNumInliers() > p02.GetNumInliers() && p01.GetNumWeightedInliers() < p02.GetNumWeightedInliers() &&
+		IsPoseLinkPair(p01) && IsPoseLinkPair(p02) && IsPoseLinkPair(*scene.FindPair(0, 3)))) {
+		VERBOSE("StarScaleGaugeTest FAILED: premise, pair (0,1) %u matches / %u weighted inliers, pair (0,2) %u / %u",
+			p01.GetNumInliers(), p01.GetNumWeightedInliers(), p02.GetNumInliers(), p02.GetNumWeightedInliers());
+		return false;
+	}
+	if (!StarInitializer::EstimateGlobalScale(scene, 0, IIndexArr{1, 2, 3}, PairsWeightingConfig())) {
+		VERBOSE("StarScaleGaugeTest FAILED: the scale estimation failed");
+		return false;
+	}
+	const REAL d1 = norm(scene.images[1].C), d2 = norm(scene.images[2].C);
+	if (ABS(d2 - 1) > 0.01 || ABS(d1 - 0.5) > 0.02) {
+		VERBOSE("StarScaleGaugeTest FAILED: view 1 at %.3f and view 2 at %.3f from the reference (0.5 and 1 expected: the scale "
+			"fixed on (0,2), the pair with the most weighted inliers)", d1, d2);
+		return false;
+	}
+	VERBOSE("StarScaleGaugeTest PASSED: the scale is fixed on the pair with the most weighted inliers, view 2 at %.3f and "
+		"view 1 at %.3f, not on the one with the most matches (%s)", d2, d1, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool NearDuplicateYardstickTest()
 {
 	TD_TIMER_START();
@@ -13393,6 +13471,60 @@ bool ResectionDenseFitWeightTest()
 	return true;
 }
 
+
+// The resection's inlier bars read what a pose's inliers weigh, as a pair weighs its matches: a described inlier counts
+// one, a dense one PairsWeightingConfig::DenseScale() (1/40). Image 4 observes tracks at their exact projections:
+// - 20 described correspondences weigh 20 and pass the bar of 12;
+// - 2 described and 300 dense weigh 9.5: 302 inliers, every correspondence of the image, and the pose is refused;
+// - 20 described and 100 dense among 380 further correspondences that agree on nothing (displaced 60-120 px) weigh 22.5:
+//   a share under the 25% minimum that 120 inliers would waive by their count, and their weight under 100 does not.
+bool ResectionWeightedInlierBarTest()
+{
+	TD_TIMER_START();
+	const auto registerImage = [](unsigned numDescribed, unsigned numDense, unsigned numStray, unsigned& numInliers) {
+		std::mt19937 rng(20261113);
+		Scene scene;
+		BuildResectionArc(scene, 5);
+		const unsigned numTracks = numDescribed + numDense + numStray;
+		AddResectionTracks(scene, {0, 1, 2, 3}, numTracks, rng);
+		Image& img = scene.images[4];
+		std::uniform_real_distribution<REAL> direction(0, 2 * PI), magnitude(60, 120);
+		for (unsigned i = 0; i < numTracks; ++i) {
+			if (i == numDescribed)
+				img.CloseDescribedKeypoints();
+			Track& track = scene.tracks[i];
+			const auto [proj, valid] = img.ProjectPoint(track.position);
+			ASSERT(valid && Image8U::isInside(proj, img.GetSize()));
+			Point2 pt(proj);
+			if (i >= numDescribed + numDense) {
+				const REAL angle = direction(rng), offset = magnitude(rng);
+				pt = Point2(proj.x + offset * COS(angle), proj.y + offset * SIN(angle));
+			}
+			track.observations.emplace_back(IIndex(4), (uint32_t)img.keypoints.size());
+			img.keypoints.emplace_back(cv::Point2f((float)pt.x, (float)pt.y), 1.f);
+		}
+		img.InvalidatePose();
+		scene.status.nCalibratedImages = 4;
+		TriangulateTracks(scene, false, 4.f, 1.f);
+		Resection resection(scene, ResectionConfig());
+		numInliers = std::get<0>(resection.RegisterImage(IIndex(4)));
+		return img.HasPose();
+	};
+	unsigned inliersDescribed, inliersDense, inliersShare;
+	const bool acceptedDescribed = registerImage(20, 0, 0, inliersDescribed);
+	const bool acceptedDense = registerImage(2, 300, 0, inliersDense);
+	const bool acceptedShare = registerImage(20, 100, 380, inliersShare);
+	if (!acceptedDescribed || acceptedDense || acceptedShare) {
+		VERBOSE("ResectionWeightedInlierBarTest FAILED: 20 described inliers %s (accepted expected), 2 described and 300 dense "
+			"%s (refused expected: weight 9.5 under the bar of 12), 20 described and 100 dense at a share under 25%% %s (refused "
+			"expected: weight 22.5 under the 100 that waives the share)", acceptedDescribed ? "accepted" : "refused",
+			acceptedDense ? "accepted" : "refused", acceptedShare ? "accepted" : "refused");
+		return false;
+	}
+	VERBOSE("ResectionWeightedInlierBarTest PASSED: 20 described inliers pass the bar, 2 described and 300 dense weigh 9.5 and "
+		"do not, 120 inliers weighing 22.5 do not waive the share (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 
 // The shared walks of the 2D-3D linking (Link2D3D.h) and of an image's links (PoseLink.h), on the arc:
 // images 0-2 registered with 20 triangulated tracks, image 3 unregistered and observing the first 10

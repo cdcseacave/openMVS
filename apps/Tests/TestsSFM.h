@@ -442,6 +442,7 @@ bool StarReferenceViewTest();
 // whatever its inlier count, and its unit baseline guesses a distance no match backs. The reference
 // stays chosen by inlier count.
 bool StarEvidenceTest();
+bool StarScaleGaugeTest();
 bool NearDuplicateYardstickTest();
 
 // A resected pose enters the model only when its support is credible: enough of its 2D-3D
@@ -520,6 +521,7 @@ bool ResectionInlierBarTest();
 // systematic error and outnumber the described ones pull the pose of the robust fit over all of
 // them, and the weighted polish brings it back to the described ones.
 bool ResectionDenseFitWeightTest();
+bool ResectionWeightedInlierBarTest();
 
 // The shared walks: an image's 2D-3D correspondences to a model's inlier tracks (its first keypoint on
 // each, in track order), its observation counts, and the links of a model (its registered pairs carrying

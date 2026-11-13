@@ -152,15 +152,23 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 		correspondences.bearings, correspondences.points, opt, &camPose, &inliers);
 
 	const unsigned numInliers = (unsigned)stats.num_inliers;
-	if (numInliers < config.minInliers)
+	// what the pose's inliers weigh, as a pair weighs its matches: the described ones plus the dense
+	// ones at the pairs' dense scale (PairsWeightingConfig::DenseScale); the count every bar below reads
+	unsigned numDescribedInliers = 0, numDenseInliers = 0;
+	FOREACH(k, inliers)
+		if (inliers[k])
+			++(correspondences.dense[k] ? numDenseInliers : numDescribedInliers);
+	ASSERT(numDescribedInliers + numDenseInliers == numInliers);
+	const unsigned poseWeight = ROUND2INT<unsigned>(numDescribedInliers + numDenseInliers * config.pairsWeighting.DenseScale());
+	if (poseWeight < config.minInliers)
 		return {0, n, numDescribed};
 
 	// A pose is accepted only when its support is credible. A small consensus inside a large set of
 	// correspondences can agree on a pose the image never had, so the inliers must be a large enough
-	// share of the correspondences, unless there are so many of them that the count vouches for the
-	// pose whatever the share.
+	// share of the correspondences, unless they weigh so much that they vouch for the pose whatever
+	// the share.
 	const float inlierRatio = numInliers / (float)n;
-	if (config.minInlierRatio > 0.f && inlierRatio < config.minInlierRatio && numInliers < config.minInliersAbsolute) {
+	if (config.minInlierRatio > 0.f && inlierRatio < config.minInlierRatio && poseWeight < config.minInliersAbsolute) {
 		DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) below the %.1f%% minimum share",
 			imageID, numInliers, n, inlierRatio * 100.f, config.minInlierRatio * 100.f);
 		return {0, n, numDescribed};
@@ -242,14 +250,8 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 					const REAL tolerance = PairDisagreement::DirectionTolerance(config.maxLinkDirectionError, MAXF(parallax, link.rayAngle));
 					(d.direction <= tolerance ? agreeing : disagreeing) += link.numInliers;
 				}
-				// the pose's own inliers vote for it, weighed as a pair weighs its matches (the described
-				// ones plus the dense ones at the pairs' dense scale), so a pose its own evidence carries
+				// the pose's own inliers vote for it at their weight, so a pose its own evidence carries
 				// is not refused by a few weak links that contradict it
-				unsigned numDescribedInliers = 0, numDenseInliers = 0;
-				FOREACH(k, inliers)
-					if (inliers[k])
-						++(correspondences.dense[k] ? numDenseInliers : numDescribedInliers);
-				const unsigned poseWeight = ROUND2INT<unsigned>(numDescribedInliers + numDenseInliers * config.pairsWeighting.DenseScale());
 				if (disagreeing > agreeing + poseWeight) {
 					DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and its centre lies in a direction "
 						"the pairs carrying %u of the %u weighted inliers of the voting quorum links contradict, "

@@ -123,7 +123,7 @@ residual above, a local re-implementation kept separate from the F path).
 | angular inlier threshold | `PixelErrorToAngular(px * noise scale)` | radians; relative pose averages the two cameras' |
 | `GetFeatureNoiseScale()` | pinhole 1, spherical 2 | multiplier on pixel thresholds before the angular conversion |
 | `check_cheirality` | true | resolves the four decompositions; valid for back-hemisphere features |
-| `ResectionConfig::minInliers`, `minCorrespondences` | 12, 15 | PnP acceptance |
+| `ResectionConfig::minInliers`, `minCorrespondences` | 12, 15 | PnP acceptance (the inliers weighed with a dense one at `PairsWeightingConfig::DenseScale`, 1/40) |
 | `MatchConfig::minMatches` | 50 AKAZE/ORB, 15 SIFT/SIFTGPU | pair acceptance |
 
 For pinhole cameras the bearing estimators equal the pixel-space ones to first order; they differ at third order in the
