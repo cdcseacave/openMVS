@@ -146,7 +146,10 @@ reject a file whose flag disagrees with the view's model.
   reference, spherical views), `MODEL_SPHERICAL_REF`. `RunCUDA` picks it from `Params::sphericalViews`.
 - `RefPixel` holds the reference model and its `RayFrame`; `__constant__ g_views` holds the per-view pose and
   texture scale. An equirectangular reference builds the frame and every ray (Method A texels,
-  propagation, surface normal) from the per-column/row tables `Params::refTrig`, as the CPU does.
+  propagation, surface normal) from the per-column/row tables `Params::refTrig`, as the CPU does; the
+  table (`ComputeSphericalTrig`, `DepthMap.h`, double-precision angles stored in float) is the one of the CPU
+  estimator, of the Metal estimator and of every confidence recalibration, and the fused CUDA
+  recalibration reads the estimation's own copy before it is freed.
 - `ScorePlaneModel`: the CPU warps (B with the 4-corner check, A above `fSphericalWarpMaxElevation`, pinhole
   target `K·H·F`); a plane not facing the reference camera scores the bad cost. The texel walk and ZNCC are
   the pinhole ones (`SampleWarpedPatch`, `ScoreNCC`).

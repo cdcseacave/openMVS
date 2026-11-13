@@ -94,7 +94,7 @@ struct PatchMatch::Impl {
 	id<MTLBuffer> dummyTrig = nil;     // stands in for the trig tables of a pinhole reference
 	bool valid = false;
 
-	bool RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLBuffer> conf,
+	bool RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLBuffer> conf, id<MTLBuffer> trig,
 		bool hasNormal, bool confFromCost, const ConfAdjustRequest& request, float* confOut) const;
 };
 
@@ -197,12 +197,14 @@ static MtlCamera ConvertCamera(const Camera& cam, const Eigen::Vector3d& centerR
 // the confidence recalibration of a WxH reference (ConfidenceMetal.metal): the intra-map
 // prior and the multi-view confirmation sweep, from the reference planes (normal, depth) and its
 // photometric confidence, or the estimation's ZNCC cost (confFromCost), against the request's
-// neighbors; writes the recalibrated confidence to confOut (W*H) only once the kernels completed,
-// false if they did not
-bool PatchMatch::Impl::RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLBuffer> conf,
+// neighbors, and the sine/cosine table of a spherical reference (trig, ComputeSphericalTrig; a dummy
+// for a pinhole one); writes the recalibrated confidence to confOut (W*H) only once the kernels
+// completed, false if they did not
+bool PatchMatch::Impl::RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLBuffer> conf, id<MTLBuffer> trig,
 	bool hasNormal, bool confFromCost, const ConfAdjustRequest& request, float* confOut) const
 {
 	ASSERT(W > 0 && H > 0 && planes.length >= sizeof(simd_float4)*W*H && conf.length >= sizeof(float)*W*H);
+	ASSERT(!request.spherical || trig.length >= sizeof(simd_float2)*(W + H));
 	ASSERT(request.neighbors.size() < METAL_MAX_VIEWS);
 	id<MTLDevice> dev = device;
 	// the neighbors, their maps packed one after the other
@@ -255,6 +257,7 @@ bool PatchMatch::Impl::RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLB
 		[enc setBuffer:conf offset:0 atIndex:1];
 		[enc setBytes:&params length:sizeof(params) atIndex:2];
 		[enc setBuffer:bPrior offset:0 atIndex:3];
+		[enc setBuffer:trig offset:0 atIndex:9];
 		[enc dispatchThreads:grid threadsPerThreadgroup:tg];
 		[enc endEncoding];
 	}
@@ -270,6 +273,7 @@ bool PatchMatch::Impl::RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLB
 		[enc setBuffer:bConfs offset:0 atIndex:6];
 		[enc setBuffer:bNormals offset:0 atIndex:7];
 		[enc setBuffer:bOut offset:0 atIndex:8];
+		[enc setBuffer:trig offset:0 atIndex:9];
 		[enc dispatchThreads:grid threadsPerThreadgroup:tg];
 		[enc endEncoding];
 	}
@@ -442,17 +446,9 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confR
 			// the seam-wrapped propagation keeps the red/black parity of a pixel and its wrapped
 			// neighbors only for an even width
 			ASSERT(W % 2 == 0);
-			const Spherical<double> camera(MakeCameraModel<Spherical<double>>(dd.images.front().camera));
 			bTrig = [dev newBufferWithLength:sizeof(simd_float2)*(W + Hh) options:MTLResourceStorageModeShared];
 			simd_float2* trig = (simd_float2*)bTrig.contents;
-			for (int c = 0; c < W; ++c) {
-				const double lon(camera.Angles(Eigen::Vector2d(c, 0)).x());
-				trig[c] = simd_make_float2((float)std::sin(lon), (float)std::cos(lon));
-			}
-			for (int r = 0; r < Hh; ++r) {
-				const double el(camera.Angles(Eigen::Vector2d(0, r)).y());
-				trig[W + r] = simd_make_float2((float)std::sin(el), (float)std::cos(el));
-			}
+			ComputeSphericalTrig(MakeCameraModel<Spherical<double>>(dd.images.front().camera), size, trig, trig + W);
 		}
 
 		// geometric-consistency: upload each neighbor's depth-map as a texture; a dummy
@@ -552,7 +548,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confR
 						if (!mask.isSet(r, c))
 							planes[r*W + c].w = 0;
 			}
-			bConfAdjusted = impl->RunConfidence(W, Hh, bPlanes, bCosts, true, true, *confRequest, dd.confMap.ptr<float>());
+			bConfAdjusted = impl->RunConfidence(W, Hh, bPlanes, bCosts, bTrig, true, true, *confRequest, dd.confMap.ptr<float>());
 			confRequest->done = bConfAdjusted;
 		}
 
@@ -626,7 +622,12 @@ bool PatchMatch::AdjustConfidence(DepthData& depthData, const ConfAdjustRequest&
 				planes[r*W+c] = simd_make_float4(n.x, n.y, n.z, depthMap(r,c));
 			}
 		id<MTLBuffer> bConf = [impl->device newBufferWithBytes:confMap.ptr<float>() length:sizeof(float)*W*H options:MTLResourceStorageModeShared];
-		return impl->RunConfidence(W, H, bPlanes, bConf, !normalMap.empty(), false, request, confMap.ptr<float>());
+		// the sine/cosine table of a spherical reference
+		ASSERT(request.refTrig.size() == (request.spherical ? size_t(W + H) : size_t(0)));
+		id<MTLBuffer> bTrig = request.spherical ?
+			[impl->device newBufferWithBytes:request.refTrig.data() length:sizeof(request.refTrig[0])*request.refTrig.size() options:MTLResourceStorageModeShared] :
+			impl->dummyTrig;
+		return impl->RunConfidence(W, H, bPlanes, bConf, bTrig, !normalMap.empty(), false, request, confMap.ptr<float>());
 	}
 }
 

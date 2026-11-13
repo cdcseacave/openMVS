@@ -41,7 +41,7 @@ using MVS::ConfAdjustRequest;
 bool RunConfidenceCUDA(
 	int W, int H,
 	const float* refDepth, const float* refNormal /*3*W*H or null*/, const float* refConf,
-	float fx, float fy, float cx, float cy, bool spherical /*the reference model: pinhole or equirectangular*/,
+	float fx, float fy, float cx, float cy, const float* refTrig /*a spherical reference: (sin,cos) of its W columns then H rows (ComputeSphericalTrig), host; null for pinhole*/,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const ConfRefine::Params& params,
 	float* confOut);
@@ -61,7 +61,7 @@ bool RunConfidenceCUDA(
 bool RunConfidenceFusedCUDA(
 	int W, int H,
 	const void* devDepthNormals, const float* devCosts, const uint32_t* hostKeepMask,
-	float fx, float fy, float cx, float cy, bool spherical /*the reference model: pinhole or equirectangular*/,
+	float fx, float fy, float cx, float cy, const float* devRefTrig /*the same table, on the device (the estimation's)*/,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const ConfRefine::Params& params,
 	void* stream,

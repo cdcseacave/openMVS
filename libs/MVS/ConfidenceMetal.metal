@@ -159,17 +159,15 @@ static bool FitDepthGradient(thread const RefMaps& ref, int c, int r, bool wrapC
 	return true;
 }
 
-// the sines and cosines of the longitude and of the elevation of pixel (c,r) of the spherical reference
-static inline float4 RefTrig(constant ConfParams& p, int c, int r) {
-	float cosLon, cosEl;
-	const float sinLon = precise::sincos((float(c) - p.cx)/p.fx, cosLon);
-	const float sinEl = precise::sincos((p.cy - float(r))/p.fy, cosEl);
-	return float4(sinLon, cosLon, sinEl, cosEl);
+// the sines and cosines of the longitude and of the elevation of pixel (c,r) of the spherical reference,
+// from its table (ComputeSphericalTrig: the W columns then the H rows)
+static inline float4 RefTrig(device const float2* trig, constant ConfParams& p, int c, int r) {
+	return float4(trig[c], trig[p.width + r]);
 }
 // NormalFromDepthGradient of the reference: the pinhole closed form, or through the spherical ray frame
-static inline float3 RefNormalFromDepthGradient(constant ConfParams& p, int c, int r, float depth, float2 gradient) {
+static inline float3 RefNormalFromDepthGradient(device const float2* trig, constant ConfParams& p, int c, int r, float depth, float2 gradient) {
 	if (p.spherical) {
-		const float4 t = RefTrig(p, c, r);
+		const float4 t = RefTrig(trig, p, c, r);
 		return NormalFromDepthGradient(SphericalRayFrame(SphericalModel{p.fx, p.fy, p.cx, p.cy}, t.x, t.y, t.z, t.w), depth, gradient);
 	}
 	return normalize(float3(
@@ -186,6 +184,7 @@ kernel void ConfidencePrior(
 	device const float* refConf [[buffer(1)]],
 	constant ConfParams& p [[buffer(2)]],
 	device float* priorOut [[buffer(3)]],
+	device const float2* trig [[buffer(9)]],
 	uint2 gid [[thread_position_in_grid]])
 {
 	const int c = int(gid.x), r = int(gid.y);
@@ -220,7 +219,7 @@ kernel void ConfidencePrior(
 	const float gate = 1.f - precise::exp(-float(nInl) * invKmin);
 	float Pnorm = 1.f;
 	if (p.hasNormal)
-		Pnorm = max(0.f, dot(RefNormalFromDepthGradient(p, c, r, w, grad), planes[idx].xyz));
+		Pnorm = max(0.f, dot(RefNormalFromDepthGradient(trig, p, c, r, w, grad), planes[idx].xyz));
 	priorOut[idx] = Clamp01(Pplane * Pnorm * gate);
 }
 
@@ -264,6 +263,7 @@ kernel void ConfidenceSweep(
 	device const float* nbConfs [[buffer(6)]],
 	device const float* nbNormals [[buffer(7)]],
 	device float* confOut [[buffer(8)]],
+	device const float2* trig [[buffer(9)]],
 	uint2 gid [[thread_position_in_grid]])
 {
 	const int c = int(gid.x), r = int(gid.y);
@@ -282,7 +282,7 @@ kernel void ConfidenceSweep(
 	// a spherical one
 	float3 Xr, u;
 	if (p.spherical) {
-		const float4 t = RefTrig(p, c, r);
+		const float4 t = RefTrig(trig, p, c, r);
 		Xr = SphericalRay(t.x, t.y, t.z, t.w) * depthRef;
 		u = Xr;
 	} else {

@@ -390,6 +390,25 @@ inline MODEL MakeCameraModel(const Camera& camera) {
 	return MODEL{T(camera.K(0,0)), T(camera.K(1,1)), T(camera.K(0,2)), T(camera.K(1,2))};
 }
 
+// the sines and cosines of the longitude of every column and of the elevation of every row of an
+// equirectangular image of the given size, computed in double precision and stored in single
+// precision as (sin, cos) pairs of any two-float type (SINCOS): the rays and ray frames of its pixels
+// are built from them (Spherical::Ray, Spherical::RayFrame); the one table of the CPU and GPU estimators
+// and confidence recalibrations
+template<typename SINCOS>
+inline void ComputeSphericalTrig(const Spherical<double>& camera, const cv::Size& size, SINCOS* lonSinCos, SINCOS* elSinCos) {
+	static_assert(sizeof(SINCOS) == 2*sizeof(float), "SINCOS holds two floats: sin, cos");
+	ASSERT(ISEQUAL(camera.fx*TWO_PI, (double)size.width) && ISEQUAL(camera.fy*PI, (double)size.height));
+	const auto Store = [](double angle, SINCOS& sinCos) {
+		const float sc[2] = {(float)std::sin(angle), (float)std::cos(angle)};
+		memcpy(&sinCos, sc, sizeof(sc));
+	};
+	for (int c=0; c<size.width; ++c)
+		Store(camera.Angles(Eigen::Vector2d(c, 0)).x(), lonSinCos[c]);
+	for (int r=0; r<size.height; ++r)
+		Store(camera.Angles(Eigen::Vector2d(0, r)).y(), elSinCos[r]);
+}
+
 // the part of the PatchMatch estimator independent of the camera model: patch layout, pixel order
 // and the shared types
 struct MVS_API DepthEstimatorBase {

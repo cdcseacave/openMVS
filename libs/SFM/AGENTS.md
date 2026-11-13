@@ -252,7 +252,9 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
 - **MVS export** (`InterfaceMVS.h`): Conversion to MVS binary format (Interface v8). Distorted
   pinhole cameras are written as `BROWN` cameras of the original images (MVS undistorts on load)
   unless `undistortImageDir` asks for undistorted files; spherical cameras are written natively
-  unless `sphericalExport` is `CUBEMAP`; observations only with `includeObservations`. The design
+  unless `sphericalExport` is `CUBEMAP`; observations only with `includeObservations`. One platform per
+  camera and file orientation: the portrait files rotated on load share the camera with the landscape
+  ones and get its rotated-back copy. The design
   is in `docs/design/SphericalCameraSupport.md`. The SFM image ID is written
   into `Interface::Image::ID` (the external/global-ID field) so per-image data keyed by SFM ID —
   e.g. the pose-quality CSV — correlates after import; `Vertex::View::imageID` stays the

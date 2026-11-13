@@ -77,6 +77,31 @@ bool SFM::UndistortDMAP(const String& depthMapFile,
 	return true;
 }
 
+// the camera matrix and the Brown distortion of the camera of an image, in the orientation of its file
+// (View::RevertRotation): the original normalized coordinates of an image rotated on load are (y,-x)
+// of the working ones, so the radial terms are invariant and the tangential ones become p1'=-p2,
+// p2'=p1; returns the size of the file
+static cv::Size RevertRotation(const Image& img, KMatrix& K, BrownDistortion<REAL>& distortion)
+{
+	ASSERT(img.pCamera != NULL && img.pCamera->GetType() == CameraType::PINHOLE);
+	ASSERT(ISZERO(K(0,1)) && K(2,0) == 0 && K(2,1) == 0 && K(2,2) == 1);
+	if (img.IsRotated()) {
+		const REAL p1(distortion.p1);
+		distortion.p1 = -distortion.p2;
+		distortion.p2 = p1;
+	}
+	return img.RevertRotation(&K);
+}
+
+// the orientation of the file of an image, indexing the per-orientation exports of its camera: 1 for
+// a portrait file the SfM rotated on load, 0 otherwise; the export of an equirectangular camera is
+// never rotated
+static int FileOrientation(const Image& img)
+{
+	ASSERT(img.pCamera != NULL);
+	return img.pCamera->GetType() == CameraType::PINHOLE && img.IsRotated() ? 1 : 0;
+}
+
 bool SFM::UndistortDepthMaps(const Scene& scene,
 	const CLISTDEF2(String)& depthMapFiles,
 	double alpha,
@@ -84,9 +109,10 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 {
 	ASSERT(!depthMapFiles.empty());
 	TD_TIMER_STARTD();
-	// per camera: the maps at the depth-map resolution and the undistorted K at the image resolution
-	std::unordered_map<const Camera*, std::pair<UndistortMaps,KMatrix>> undistortMaps;
-	undistortMaps.reserve(scene.cameras.size());
+	// per camera and orientation of the image files (rotated on load or not, View::IsRotated): the maps
+	// at the depth-map resolution and the undistorted K at the image resolution
+	std::unordered_map<const Camera*, std::pair<UndistortMaps,KMatrix>> undistortMaps[2];
+	undistortMaps[0].reserve(scene.cameras.size());
 
 	// For each image/depth-map, compute maps at the depth resolution using K scaled to that resolution
 	#ifdef INTERFACEMVS_USE_OPENMP
@@ -113,7 +139,7 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 			#pragma omp critical
 			#endif
 			{
-				pData = &undistortMaps[pc];
+				pData = &undistortMaps[FileOrientation(img)][pc];
 				if (pData->first.map1.empty()) {
 					// read only the header to obtain the image size and depth-map resolution;
 					// flags=0 requests the meta-data alone, leaving the map arguments untouched
@@ -135,16 +161,9 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 					KMatrix Ku(UndistortedK(K, distortion, pc->GetSize(), alpha));
 					if (undistortedIntrinsics)
 						undistortedIntrinsics->emplace(pc, Ku);
-					if (img.IsRotated()) {
-						img.RevertRotation(&K);
-						img.RevertRotation(&Ku);
-						// the original normalized coordinates are (y,-x) of the working ones: the radial terms
-						// are invariant, the tangential ones become p1'=-p2, p2'=p1
-						const REAL p1 = distortion.p1;
-						distortion.p1 = -distortion.p2;
-						distortion.p2 = p1;
-					}
-					ASSERT(imageSize == img.GetOriginalSize());
+					img.RevertRotation(&Ku);
+					const cv::Size fileSize(RevertRotation(img, K, distortion));
+					ASSERT(imageSize == fileSize);
 					pData->second = Ku;
 					pData->first.Init(ScaleK(K, imageSize, depthSize), distortion, depthSize, ScaleK(Ku, imageSize, depthSize));
 				}
@@ -612,9 +631,19 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 	if (cubeMap)
 		cubeMapOutputDir = config.undistortImageDir.empty() ? mvsFileDir : config.undistortImageDir;
 
-	// Map each SFM camera pointer to its (possibly multi-camera) platform.
-	std::unordered_map<const Camera*, uint32_t> camToPlatform;
-	camToPlatform.reserve(scene.cameras.size());
+	// Map each SFM camera pointer to its (possibly multi-camera) platform, per orientation of the image
+	// files: the images rotated on load (View::IsRotated) are portrait files sharing the landscape
+	// camera, so they get a platform of their own, the camera in the orientation of their files.
+	std::unordered_map<const Camera*, uint32_t> camToPlatform[2];
+	camToPlatform[0].reserve(scene.cameras.size());
+	// per camera, an image of each orientation of its files, the camera of the platform rotated as it
+	std::unordered_map<const Camera*, std::array<const Image*,2>> camImages;
+	for (const Image& img : scene.images) {
+		std::array<const Image*,2>& images = camImages.emplace(img.pCamera, std::array<const Image*,2>{NULL, NULL}).first->second;
+		const Image*& image = images[FileOrientation(img)];
+		if (image == NULL)
+			image = &img;
+	}
 
 	const bool undistort = !config.undistortImageDir.empty();
 	std::unordered_map<const Camera*, KMatrix> undistortK;
@@ -624,74 +653,73 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		config.undistortAlpha, &undistortedPaths, &undistortK);
 
 	// ----- Phase 1: platforms + cameras -----
-	// Pinhole and native spherical: one platform with a single camera per SFM camera.
+	// Pinhole and native spherical: one platform with a single camera per SFM camera and orientation
+	// of its image files (FileOrientation).
 	// Cube-map spherical: one platform with N face cameras via EmitSphericalPlatforms.
-	unsigned numBrownCams = 0;
+	unsigned numBrownCams = 0; // SFM cameras exported as BROWN
 	for (CameraPtr const cam : scene.cameras) {
-		ASSERT(camToPlatform.count(cam) == 0);
 		if (cam->GetType() == CameraType::SPHERICAL && cubeMap)
 			continue; // deferred to EmitSphericalPlatforms below
-		const uint32_t platformID = (uint32_t)iface.platforms.size();
-		camToPlatform[cam] = platformID;
-		MVSPlatform& platform = iface.platforms.emplace_back();
-		platform.name = cam->metadata.name;
-		MVSCamera& outCam = platform.cameras.emplace_back();
-		outCam.width = (uint32_t)cam->GetWidth();
-		outCam.height = (uint32_t)cam->GetHeight();
-		// Camera extrinsics relative to platform: identity (platform pose holds absolute)
-		outCam.R = Mat33d::eye();
-		outCam.C = Pos3d(0, 0, 0);
-		if (cam->GetType() == CameraType::SPHERICAL) {
-			// the angular camera matrix of the equirectangular images
-			const Spherical<REAL> sphere(Spherical<REAL>::FromSize(cam->GetWidth(), cam->GetHeight()));
-			outCam.model = MVSCamera::SPHERICAL;
-			outCam.K = Mat33d::eye();
-			outCam.K(0,0) = sphere.fx; outCam.K(1,1) = sphere.fy;
-			outCam.K(0,2) = sphere.cx; outCam.K(1,2) = sphere.cy;
-			continue;
-		}
-		ASSERT(cam->GetType() == CameraType::PINHOLE);
-
-		// Build intrinsic matrix
-		outCam.K = cam->GetK();
-		BrownDistortion<REAL> distortion{};
-		if (cam->HasDistortion()) {
-			// the cameras undistorted on export have their undistorted images (UndistortImages
-			// skips the invalid cameras); the others are exported with their distortion
-			const auto itK = undistortK.find(cam);
-			if (itK != undistortK.end()) {
-				outCam.K = itK->second;
-			} else {
-				distortion = static_cast<const PinholeCamera*>(cam)->GetDistortion();
-				outCam.model = MVSCamera::BROWN;
-				++numBrownCams;
-			}
-		}
-		// Find first image using this camera to deduce image rotation
-		for (const Image& img : scene.images) {
-			if (img.pCamera != cam)
+		const auto itImages = camImages.find(cam);
+		for (int rotated = 0; rotated < 2; ++rotated) {
+			// a camera without images keeps the orientation of its images as loaded
+			const Image* const pImage(itImages == camImages.end() ? NULL : itImages->second[rotated]);
+			if (pImage == NULL && (rotated || itImages != camImages.end()))
 				continue;
-			if (!img.IsRotated())
-				break;
-			// Image was rotated at load; adjust intrinsic to match the original orientation
-			const cv::Size size = img.RevertRotation(&outCam.K);
-			outCam.width = (uint32_t)size.width;
-			outCam.height = (uint32_t)size.height;
-			// the original normalized coordinates are (y,-x) of the working ones: the radial terms
-			// are invariant, the tangential ones become p1'=-p2, p2'=p1
-			const REAL p1 = distortion.p1;
-			distortion.p1 = -distortion.p2;
-			distortion.p2 = p1;
-			break;
-		}
-		if (outCam.model == MVSCamera::BROWN) {
-			outCam.params = {distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3};
-			if (distortion.k4 != 0 || distortion.k5 != 0 || distortion.k6 != 0)
-				outCam.params.insert(outCam.params.end(), {distortion.k4, distortion.k5, distortion.k6});
+			ASSERT(camToPlatform[rotated].count(cam) == 0);
+			const uint32_t platformID = (uint32_t)iface.platforms.size();
+			camToPlatform[rotated][cam] = platformID;
+			MVSPlatform& platform = iface.platforms.emplace_back();
+			platform.name = cam->metadata.name;
+			MVSCamera& outCam = platform.cameras.emplace_back();
+			outCam.width = (uint32_t)cam->GetWidth();
+			outCam.height = (uint32_t)cam->GetHeight();
+			// Camera extrinsics relative to platform: identity (platform pose holds absolute)
+			outCam.R = Mat33d::eye();
+			outCam.C = Pos3d(0, 0, 0);
+			if (cam->GetType() == CameraType::SPHERICAL) {
+				// the angular camera matrix of the equirectangular images, never rotated (FileOrientation)
+				ASSERT(!rotated);
+				const Spherical<REAL> sphere(Spherical<REAL>::FromSize(cam->GetWidth(), cam->GetHeight()));
+				outCam.model = MVSCamera::SPHERICAL;
+				outCam.K = Mat33d::eye();
+				outCam.K(0,0) = sphere.fx; outCam.K(1,1) = sphere.fy;
+				outCam.K(0,2) = sphere.cx; outCam.K(1,2) = sphere.cy;
+				continue;
+			}
+			ASSERT(cam->GetType() == CameraType::PINHOLE);
+			// Build intrinsic matrix
+			KMatrix K(cam->GetK());
+			BrownDistortion<REAL> distortion{};
+			if (cam->HasDistortion()) {
+				// the cameras undistorted on export have their undistorted images (UndistortImages
+				// skips the invalid cameras); the others are exported with their distortion
+				const auto itK = undistortK.find(cam);
+				if (itK != undistortK.end()) {
+					K = itK->second;
+				} else {
+					distortion = static_cast<const PinholeCamera*>(cam)->GetDistortion();
+					outCam.model = MVSCamera::BROWN;
+					if (camToPlatform[1-rotated].count(cam) == 0)
+						++numBrownCams; // counted once per SFM camera
+				}
+			}
+			if (rotated) {
+				// the portrait files of the images rotated on load
+				const cv::Size size(RevertRotation(*pImage, K, distortion));
+				outCam.width = (uint32_t)size.width;
+				outCam.height = (uint32_t)size.height;
+			}
+			outCam.K = K;
+			if (outCam.model == MVSCamera::BROWN) {
+				outCam.params = {distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3};
+				if (distortion.k4 != 0 || distortion.k5 != 0 || distortion.k6 != 0)
+					outCam.params.insert(outCam.params.end(), {distortion.k4, distortion.k5, distortion.k6});
+			}
 		}
 	}
 	if (cubeMap)
-		EmitSphericalPlatforms(scene, sphericalGeom, iface, camToPlatform);
+		EmitSphericalPlatforms(scene, sphericalGeom, iface, camToPlatform[0]);
 
 	// ----- Phase 2: images + poses -----
 	// sfmToMvsImage[i] holds the images-array positions produced for SFM image i
@@ -722,11 +750,11 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		if (cam->GetType() == CameraType::SPHERICAL && cubeMap) {
 			AppendSphericalFaceImages(
 				img, sphericalGeom, faceBaseSlash, config.extension,
-				camToPlatform[cam], iface, sfmToMvsImage[i], nextSyntheticID);
+				camToPlatform[0][cam], iface, sfmToMvsImage[i], nextSyntheticID);
 			continue;
 		}
 
-		const uint32_t platformID = camToPlatform[cam];
+		const uint32_t platformID = camToPlatform[FileOrientation(img)].at(cam);
 		MVSPlatform& platform = iface.platforms[platformID];
 		uint32_t poseID = MVS::NO_ID;
 		if (img.IsValid()) {

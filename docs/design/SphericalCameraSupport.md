@@ -79,12 +79,15 @@ exposes `--camera-type 0|1` and `--cubemap-faces` (feature-extraction face count
 ### MVS export — `libs/SFM/InterfaceMVS.cpp`
 
 `SFM::ExportMVS` writes an Interface v8 project (`libs/IO/Interface.h`, `docs/wiki/Interface.md`), one
-platform with one camera per SFM camera:
+platform with one camera per SFM camera and orientation of its image files: the SfM rotates a portrait
+file to landscape on load (`View::IsRotated`), so the portrait and landscape images of a camera share it,
+and the export gives the portrait ones a platform of their own whose camera is rotated back to their
+on-disk orientation (`View::RevertRotation` for `K`; `p1' = -p2`, `p2' = p1`; the depth-map undistortion of
+`UndistortDepthMaps` keys its maps the same way):
 
 - Pinhole without distortion: `PINHOLE`, the original images.
 - Pinhole with distortion: `BROWN` (`k1,k2,p1,p2,k3`, plus `k4,k5,k6` for the rational model) and the original
-  image paths; no image is written. Images of a camera the SfM rotated to landscape get the camera of their
-  on-disk orientation (`View::RevertRotation` for `K`; `p1' = -p2`, `p2' = p1`). `libs/MVS` undistorts on
+  image paths; no image is written. `libs/MVS` undistorts on
   load (`CameraModels.md`). Only with `ExportMVSConfig::undistortImageDir` (`CreateStructure
   --undistort-extension <ext>`) are images undistorted on export by `Scene::UndistortImages` and written as
   `PINHOLE` cameras of `UndistortedK(K, distortion, size, undistortAlpha)`.

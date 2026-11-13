@@ -278,6 +278,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	params.fSinSqWarpMaxElevation = SQUARE(SIN(D2R(DepthEstimatorBase::fSphericalWarpMaxElevation)));
 	params.fCosMinViewAngle = COS(D2R(OPTDENSE::fMinAngle));
 	ASSERT(!pConfRequest || pConfRequest->spherical == ((params.sphericalViews & 1u) != 0));
+	ASSERT(params.refTrig == NULL);
 	params.nNumViews = (int)numImages-1;
 	params.nInitTopK = MINF(Params().nInitTopK, params.nNumViews); // from the default each time: the object is reused
 	params.fDepthMin = depthData.dMin;
@@ -446,16 +447,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		// equirectangular reference, its rays and ray frames being built from them
 		cList<float2, const float2&, 0> refTrig;
 		if (params.sphericalViews & 1u) {
-			const Spherical<double> camera(MakeCameraModel<Spherical<double>>(depthData.images.front().camera));
 			refTrig.resize(size.width + size.height);
-			for (int c = 0; c < size.width; ++c) {
-				const double lon(camera.Angles(Eigen::Vector2d(c, 0)).x());
-				refTrig[c] = make_float2((float)std::sin(lon), (float)std::cos(lon));
-			}
-			for (int r = 0; r < size.height; ++r) {
-				const double el(camera.Angles(Eigen::Vector2d(0, r)).y());
-				refTrig[size.width + r] = make_float2((float)std::sin(el), (float)std::cos(el));
-			}
+			ComputeSphericalTrig(MakeCameraModel<Spherical<double>>(depthData.images.front().camera), size, refTrig.data(), refTrig.data() + size.width);
 			CUDA_CHECK(cudaMallocAsync((void**)&params.refTrig, sizeof(float2) * refTrig.size(), cudaStream));
 			CUDA_CHECK(cudaMemcpyAsync((void*)params.refTrig, refTrig.data(), sizeof(float2) * refTrig.size(), cudaMemcpyHostToDevice, cudaStream));
 		}
@@ -487,10 +480,6 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		CUDA_CHECK(cudaGetLastError());
 		if (params.bLowResProcessed)
 			CUDA_CHECK(cudaFreeAsync(cudaLowDepths, cudaStream));
-		if (params.refTrig) {
-			CUDA_CHECK(cudaFreeAsync((void*)params.refTrig, cudaStream));
-			params.refTrig = NULL;
-		}
 
 		// resident-buffer reuse: recalibrate the confidence as a true extension of the last
 		// geometric-consistency iteration, reading the final reference depth+normal
@@ -528,11 +517,16 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			}
 			bFusedConfDone = RunConfidenceFusedCUDA(size.width, size.height,
 				cudaDepthNormalEstimates, cudaDepthNormalCosts, bMasked ? reinterpret_cast<const uint32_t*>(mask.data) : NULL,
-				pConfRequest->fx, pConfRequest->fy, pConfRequest->cx, pConfRequest->cy, pConfRequest->spherical,
+				pConfRequest->fx, pConfRequest->fy, pConfRequest->cx, pConfRequest->cy, reinterpret_cast<const float*>(params.refTrig),
 				pConfRequest->neighbors.data(), (int)pConfRequest->neighbors.size(),
 				pConfRequest->params,
 				(void*)cudaStream, depthData.confMap.ptr<float>());
 			pConfRequest->done = bFusedConfDone;
+		}
+		// the sine/cosine table of a spherical reference, read by the estimation and the recalibration
+		if (params.refTrig) {
+			CUDA_CHECK(cudaFreeAsync((void*)params.refTrig, cudaStream));
+			params.refTrig = NULL;
 		}
 
 		// load depth-map, normal-map and confidence-map from CUDA memory

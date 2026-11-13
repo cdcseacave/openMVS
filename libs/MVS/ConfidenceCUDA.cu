@@ -123,9 +123,21 @@ __device__ __forceinline__ bool SampleDepthBilinearDev(const DevNeighbor& np,
 	return true;
 }
 
+// the ray frame of pixel (c,r) of a spherical reference from its sine/cosine table (ComputeSphericalTrig:
+// the W columns then the H rows), and its ray
+__device__ __forceinline__ Matrix3 RefRayFrame(const LinearCameraModel& camera, const float2* refTrig, int cols, int c, int r) {
+	const float2 lon = refTrig[c], el = refTrig[cols + r];
+	return camera.AsSpherical().RayFrame(lon.x, lon.y, el.x, el.y);
+}
+__device__ __forceinline__ Point3 RefRay(const float2* refTrig, int cols, int c, int r) {
+	const float2 lon = refTrig[c], el = refTrig[cols + r];
+	return SEACAVE::Spherical<float>::Ray(lon.x, lon.y, el.x, el.y);
+}
+
 // ---- intra-map geometric prior (mirrors DepthMapsData::ComputeIntraMapPrior) ----
+// refTrig: the sine/cosine table of a spherical reference, null for a pinhole one
 template <typename RefAcc>
-__global__ void PriorKernel(RefAcc ref, LinearCameraModel camera, int sphericalRef,
+__global__ void PriorKernel(RefAcc ref, LinearCameraModel camera, const float2* refTrig,
                             float band, float invKmin,
                             float* priorOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
@@ -135,14 +147,14 @@ __global__ void PriorKernel(RefAcc ref, LinearCameraModel camera, int sphericalR
 	priorOut[idx] = 0.f;
 	const Point2i pos(c, r);
 	float w; Point2 grad;
-	if (!SEACAVE::FitDepthGradient(ref, pos, w, grad, sphericalRef != 0))
+	if (!SEACAVE::FitDepthGradient(ref, pos, w, grad, refTrig != nullptr))
 		return;
 	int nInl = 0; float sumE2 = 0.f;
 	for (int y = -1; y <= 1; ++y) {
 		const int rr = r + y; if (rr < 0 || rr >= ref.rows) continue;
 		for (int x = -1; x <= 1; ++x) {
 			if (x == 0 && y == 0) continue;
-			const int cc = sphericalRef ? SEACAVE::WrapColumn(c + x, ref.cols) : c + x;
+			const int cc = refTrig ? SEACAVE::WrapColumn(c + x, ref.cols) : c + x;
 			if (cc < 0 || cc >= ref.cols) continue;
 			const float dN = ref(rr, cc);
 			if (dN <= 0.f) continue;
@@ -156,8 +168,8 @@ __global__ void PriorKernel(RefAcc ref, LinearCameraModel camera, int sphericalR
 	const float gate = 1.f - ConfRefine::CRexp(-(float)nInl * invKmin);
 	float Pnorm = 1.f;
 	if (ref.HasNormal()) {
-		const Point3 nGrad(sphericalRef ?
-			SEACAVE::NormalFromDepthGradient(camera.AsSpherical(), pos, w, grad) :
+		const Point3 nGrad(refTrig ?
+			SEACAVE::NormalFromDepthGradient(RefRayFrame(camera, refTrig, ref.cols, c, r), w, grad) :
 			SEACAVE::NormalFromDepthGradient(camera.AsPinhole(), pos, w, grad));
 		Pnorm = fmaxf(0.f, nGrad.dot(ref.Normal(idx)));
 	}
@@ -167,7 +179,7 @@ __global__ void PriorKernel(RefAcc ref, LinearCameraModel camera, int sphericalR
 
 // ---- one-hop multi-view confirmation (mirrors AdjustConfidenceSweep) ----
 template <typename RefAcc>
-__global__ void SweepKernel(RefAcc ref, const float* priorMap, LinearCameraModel camera, int sphericalRef,
+__global__ void SweepKernel(RefAcc ref, const float* priorMap, LinearCameraModel camera, const float2* refTrig,
                             const DevNeighbor* neigh, int nNeigh, Params p,
                             float* confOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
@@ -185,8 +197,8 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, LinearCameraModel
 	// in the form the fused transforms take: (c*d,r*d,d) for a pinhole reference, the point itself
 	// for a spherical one
 	Point3 Xr, u;
-	if (sphericalRef) {
-		Xr = camera.AsSpherical().Ray(Point2((float)c, (float)r)) * depthRef;
+	if (refTrig) {
+		Xr = RefRay(refTrig, ref.cols, c, r) * depthRef;
 		u = Xr;
 	} else {
 		Xr = Point3(((float)c - camera.p.x()) / camera.f.x() * depthRef, ((float)r - camera.p.y()) / camera.f.y() * depthRef, depthRef);
@@ -258,7 +270,7 @@ namespace { struct DevBag { std::vector<void*> v; ~DevBag(){ for (void* p : v) c
 template <typename RefAcc>
 static bool LaunchConfidenceKernels(
 	int W, int H, const RefAcc& ref,
-	float fx, float fy, float cx, float cy, bool spherical,
+	float fx, float fy, float cx, float cy, const float2* refTrig,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const Params& params,
 	cudaStream_t stream, DevBag& bag, float* confOut)
@@ -318,8 +330,8 @@ static bool LaunchConfidenceKernels(
 	const float invKmin = 1.f/4.f;
 
 	const LinearCameraModel camera(fx, fy, cx, cy);
-	PriorKernel<RefAcc><<<grid, block, 0, stream>>>(ref, camera, spherical ? 1 : 0, band, invKmin, dPrior);
-	SweepKernel<RefAcc><<<grid, block, 0, stream>>>(ref, dPrior, camera, spherical ? 1 : 0, dNeigh, nNeighbors, params, dConf);
+	PriorKernel<RefAcc><<<grid, block, 0, stream>>>(ref, camera, refTrig, band, invKmin, dPrior);
+	SweepKernel<RefAcc><<<grid, block, 0, stream>>>(ref, dPrior, camera, refTrig, dNeigh, nNeighbors, params, dConf);
 	// reject a failed kernel launch BEFORE queueing the download
 	if (cudaGetLastError() != cudaSuccess) return false;
 
@@ -337,7 +349,7 @@ static bool LaunchConfidenceKernels(
 bool RunConfidenceCUDA(
 	int W, int H,
 	const float* refDepth, const float* refNormal, const float* refConf,
-	float fx, float fy, float cx, float cy, bool spherical,
+	float fx, float fy, float cx, float cy, const float* refTrig,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const Params& params,
 	float* confOut)
@@ -369,16 +381,22 @@ bool RunConfidenceCUDA(
 	if (!up(dRefDepth, refDepth, nPix*sizeof(float))) return false;
 	if (!up(dRefConf, refConf, nPix*sizeof(float))) return false;
 	if (refNormal && !up(dRefNormal, refNormal, nPix*3*sizeof(float))) return false;
+	float2* dRefTrig = nullptr;
+	if (refTrig) {
+		const size_t bytes = ((size_t)W + (size_t)H) * sizeof(float2);
+		dRefTrig = (float2*)dmalloc(bytes); if (dRefTrig==(void*)-1) return false;
+		if (!up(dRefTrig, refTrig, bytes)) return false;
+	}
 
 	const RefLinearAcc ref{dRefDepth, dRefNormal, dRefConf, W, H};
-	return LaunchConfidenceKernels(W, H, ref, fx, fy, cx, cy, spherical,
+	return LaunchConfidenceKernels(W, H, ref, fx, fy, cx, cy, dRefTrig,
 		neighbors, nNeighbors, params, stream, bag, confOut);
 }
 
 bool RunConfidenceFusedCUDA(
 	int W, int H,
 	const void* devDepthNormals, const float* devCosts, const uint32_t* hostKeepMask,
-	float fx, float fy, float cx, float cy, bool spherical,
+	float fx, float fy, float cx, float cy, const float* devRefTrig,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const Params& params,
 	void* stream, float* confOut)
@@ -395,7 +413,7 @@ bool RunConfidenceFusedCUDA(
 	}
 	// Point4 is 4 contiguous floats (x,y,z = normal, w = depth), 16-byte aligned by cudaMalloc
 	const RefPackedAcc ref{reinterpret_cast<const float4*>(devDepthNormals), devCosts, dKeep, W, H};
-	return LaunchConfidenceKernels(W, H, ref, fx, fy, cx, cy, spherical,
+	return LaunchConfidenceKernels(W, H, ref, fx, fy, cx, cy, reinterpret_cast<const float2*>(devRefTrig),
 		neighbors, nNeighbors, params,
 		(cudaStream_t)stream, bag, confOut);
 }

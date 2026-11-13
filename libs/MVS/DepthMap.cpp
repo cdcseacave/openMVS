@@ -519,15 +519,8 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 	ASSERT(bSphericalRef == image0.IsSpherical());
 	if constexpr (bSphericalRef) {
 		lonSinCos0.resize(size.width);
-		FOREACH(c, lonSinCos0) {
-			const float lon(camera0f.Angles(Eigen::Vector2f((float)c, 0.f)).x());
-			lonSinCos0[c] = SinCos{SIN(lon), COS(lon)};
-		}
 		elSinCos0.resize(size.height);
-		FOREACH(r, elSinCos0) {
-			const float el(camera0f.Angles(Eigen::Vector2f(0.f, (float)r)).y());
-			elSinCos0[r] = SinCos{SIN(el), COS(el)};
-		}
+		ComputeSphericalTrig(camera0, size, lonSinCos0.data(), elSinCos0.data());
 	}
 	if (bModelWarp) {
 		viewRayFrames0.resize(images.size());

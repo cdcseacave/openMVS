@@ -11,6 +11,7 @@
 
 #include "ConfidenceRefine.h"
 
+#include <array>
 #include <vector>
 
 namespace MVS {
@@ -50,6 +51,9 @@ struct ConfAdjustRequest {
 	ConfRefine::Params params;             // single-precision OPTDENSE snapshot
 	float fx, fy, cx, cy;                  // reference camera intrinsics (skew-free): its pinhole or spherical model
 	bool spherical;                        // the reference is equirectangular
+	// a spherical reference in the epilogue launch: the (sin,cos) of its W columns then H rows
+	// (ComputeSphericalTrig); the fused launch reads the estimation's own table
+	std::vector<std::array<float,2>> refTrig;
 	// outputs
 	bool done = false;                     // fused kernels ran and confMap holds the adjusted conf
 };
