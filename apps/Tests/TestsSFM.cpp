@@ -11737,6 +11737,84 @@ bool StarEvidenceTest()
 // whose pairs are all near-duplicates: they keep today's yardstick, so its factor is the same with the rule on and off. The
 // stored overlap follows the pair's current matches (a pair cut to half the frame reads half at the next weighting pass).
 // Last, the predicate itself: the overlap and the angle must both say so.
+// The star fixes its scale on the pair of the reference view with the most weighted inliers, the count every other
+// reader of a pair's evidence uses. Reference 0 at the origin, views 1, 2, 3 at 1, 2, 3 units along x, every pair
+// (0, j) carrying a unit baseline: (0, 1) holds every match of its two views but only 20 track-forming ones (the rest
+// past the strict filter, raw matches its weighted inliers do not count), (0, 2) every other match, (0, 3) every third.
+// The scale fixed on (0, 2), the heaviest by weighted inliers, puts view 2 at distance 1 and view 1 at 0.5; fixed on
+// (0, 1), the most matches, it would put view 1 at 1.
+bool StarScaleGaugeTest()
+{
+	TD_TIMER_START();
+	Scene scene;
+	PinholeCamera* pCamera = new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240));
+	pCamera->trustIntrinsics = true;
+	scene.cameras.emplace_back(pCamera);
+	for (IIndex i = 0; i < 4; ++i) {
+		Pose3D pose;
+		pose.R = Matrix3x3::IDENTITY;
+		pose.C = Point3(REAL(i), REAL(0.1) * (i % 2), 0);
+		scene.images.emplace_back(i, "", pose, 0, scene.cameras[0]);
+	}
+	std::mt19937 rng(20261113);
+	std::uniform_int_distribution<int> pixelX(40, 600), pixelY(40, 440);
+	std::uniform_real_distribution<REAL> depth(6, 12);
+	for (unsigned p = 0; p < 600 && scene.tracks.size() < 300; ++p) {
+		const Point3 X = scene.images[0].UnprojectPoint(Point2(pixelX(rng), pixelY(rng)), depth(rng));
+		std::vector<Point2> projections;
+		for (const Image& img : scene.images) {
+			const auto [proj, valid] = img.ProjectPoint(X);
+			if (valid && Image8U::isInside(proj, img.GetSize()))
+				projections.push_back(proj);
+		}
+		if (projections.size() != scene.images.size())
+			continue;
+		Track track(X);
+		FOREACH(i, scene.images) {
+			scene.images[i].keypoints.emplace_back(projections[i], 0.f, 0.f, 10.f);
+			track.observations.emplace_back(IIndex(i), (uint32_t)scene.images[i].keypoints.size() - 1);
+		}
+		scene.tracks.emplace_back(std::move(track));
+	}
+	const auto addPair = [&](IIndex b, unsigned stride, int numFiltered) {
+		ImagePair& pair = scene.pairs.emplace_back(IIndex(0), b);
+		FOREACH(t, scene.tracks)
+			if (t % stride == 0)
+				pair.matches.emplace_back(scene.tracks[t].observations[0].featureID, scene.tracks[t].observations[b].featureID);
+		pair.numFilteredInliers = numFiltered < 0 ? (int)pair.matches.size() : numFiltered;
+		pair.relativePose = scene.images[b] / scene.images[0];
+		pair.relativePose->C /= norm(pair.relativePose->C);
+		pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
+		pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[0].GetK(), scene.images[b].GetK());
+		pair.meanRayAngle = pair.ComputeMeanRayAngle(scene.images[0], scene.images[b]);
+	};
+	addPair(1, 1, 20);
+	addPair(2, 2, -1);
+	addPair(3, 3, -1);
+	ComputePairsWeights(scene);
+	const ImagePair& p01 = *scene.FindPair(0, 1);
+	const ImagePair& p02 = *scene.FindPair(0, 2);
+	if (!(p01.GetNumInliers() > p02.GetNumInliers() && p01.GetNumWeightedInliers() < p02.GetNumWeightedInliers() &&
+		IsPoseLinkPair(p01) && IsPoseLinkPair(p02) && IsPoseLinkPair(*scene.FindPair(0, 3)))) {
+		VERBOSE("StarScaleGaugeTest FAILED: premise, pair (0,1) %u matches / %u weighted inliers, pair (0,2) %u / %u",
+			p01.GetNumInliers(), p01.GetNumWeightedInliers(), p02.GetNumInliers(), p02.GetNumWeightedInliers());
+		return false;
+	}
+	if (!StarInitializer::EstimateGlobalScale(scene, 0, IIndexArr{1, 2, 3}, PairsWeightingConfig())) {
+		VERBOSE("StarScaleGaugeTest FAILED: the scale estimation failed");
+		return false;
+	}
+	const REAL d1 = norm(scene.images[1].C), d2 = norm(scene.images[2].C);
+	if (ABS(d2 - 1) > 0.01 || ABS(d1 - 0.5) > 0.02) {
+		VERBOSE("StarScaleGaugeTest FAILED: view 1 at %.3f and view 2 at %.3f from the reference (0.5 and 1 expected: the scale "
+			"fixed on (0,2), the pair with the most weighted inliers)", d1, d2);
+		return false;
+	}
+	VERBOSE("StarScaleGaugeTest PASSED: the scale is fixed on the pair with the most weighted inliers, view 2 at %.3f and "
+		"view 1 at %.3f, not on the one with the most matches (%s)", d2, d1, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool NearDuplicateYardstickTest()
 {
 	TD_TIMER_START();
@@ -13393,6 +13471,60 @@ bool ResectionDenseFitWeightTest()
 	return true;
 }
 
+
+// The resection's inlier bars read what a pose's inliers weigh, as a pair weighs its matches: a described inlier counts
+// one, a dense one PairsWeightingConfig::DenseScale() (1/40). Image 4 observes tracks at their exact projections:
+// - 20 described correspondences weigh 20 and pass the bar of 12;
+// - 2 described and 300 dense weigh 9.5: 302 inliers, every correspondence of the image, and the pose is refused;
+// - 20 described and 100 dense among 380 further correspondences that agree on nothing (displaced 60-120 px) weigh 22.5:
+//   a share under the 25% minimum that 120 inliers would waive by their count, and their weight under 100 does not.
+bool ResectionWeightedInlierBarTest()
+{
+	TD_TIMER_START();
+	const auto registerImage = [](unsigned numDescribed, unsigned numDense, unsigned numStray, unsigned& numInliers) {
+		std::mt19937 rng(20261113);
+		Scene scene;
+		BuildResectionArc(scene, 5);
+		const unsigned numTracks = numDescribed + numDense + numStray;
+		AddResectionTracks(scene, {0, 1, 2, 3}, numTracks, rng);
+		Image& img = scene.images[4];
+		std::uniform_real_distribution<REAL> direction(0, 2 * PI), magnitude(60, 120);
+		for (unsigned i = 0; i < numTracks; ++i) {
+			if (i == numDescribed)
+				img.CloseDescribedKeypoints();
+			Track& track = scene.tracks[i];
+			const auto [proj, valid] = img.ProjectPoint(track.position);
+			ASSERT(valid && Image8U::isInside(proj, img.GetSize()));
+			Point2 pt(proj);
+			if (i >= numDescribed + numDense) {
+				const REAL angle = direction(rng), offset = magnitude(rng);
+				pt = Point2(proj.x + offset * COS(angle), proj.y + offset * SIN(angle));
+			}
+			track.observations.emplace_back(IIndex(4), (uint32_t)img.keypoints.size());
+			img.keypoints.emplace_back(cv::Point2f((float)pt.x, (float)pt.y), 1.f);
+		}
+		img.InvalidatePose();
+		scene.status.nCalibratedImages = 4;
+		TriangulateTracks(scene, false, 4.f, 1.f);
+		Resection resection(scene, ResectionConfig());
+		numInliers = std::get<0>(resection.RegisterImage(IIndex(4)));
+		return img.HasPose();
+	};
+	unsigned inliersDescribed, inliersDense, inliersShare;
+	const bool acceptedDescribed = registerImage(20, 0, 0, inliersDescribed);
+	const bool acceptedDense = registerImage(2, 300, 0, inliersDense);
+	const bool acceptedShare = registerImage(20, 100, 380, inliersShare);
+	if (!acceptedDescribed || acceptedDense || acceptedShare) {
+		VERBOSE("ResectionWeightedInlierBarTest FAILED: 20 described inliers %s (accepted expected), 2 described and 300 dense "
+			"%s (refused expected: weight 9.5 under the bar of 12), 20 described and 100 dense at a share under 25%% %s (refused "
+			"expected: weight 22.5 under the 100 that waives the share)", acceptedDescribed ? "accepted" : "refused",
+			acceptedDense ? "accepted" : "refused", acceptedShare ? "accepted" : "refused");
+		return false;
+	}
+	VERBOSE("ResectionWeightedInlierBarTest PASSED: 20 described inliers pass the bar, 2 described and 300 dense weigh 9.5 and "
+		"do not, 120 inliers weighing 22.5 do not waive the share (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 
 // The shared walks of the 2D-3D linking (Link2D3D.h) and of an image's links (PoseLink.h), on the arc:
 // images 0-2 registered with 20 triangulated tracks, image 3 unregistered and observing the first 10
@@ -18932,15 +19064,13 @@ bool RobustAveragingTranslationTest()
 	return true;
 }
 
-// Twelve blocks joined in a ring with chords, two wrong readings planted among them and pairs joined
-// to nothing else: the selection must keep every true reading, cut the wrong ones, keep the lone
-// bridge that stands on its own witnesses, keep of a disputed bridge the reading its verified pairs
-// reproduce, judge readings that observe no scale on their rotation alone, and place each component
-// in its own frame
+// Twelve blocks joined in a ring with chords, two wrong readings planted among them and two pairs
+// joined to nothing else: the selection must keep every true reading, cut the wrong ones, keep the
+// lone pairs, and place each component in its own frame
 bool SeamGraphConsensusTest()
 {
 	TD_TIMER_START();
-	constexpr uint32_t numRingBlocks = 12, numBlocks = 23;
+	constexpr uint32_t numRingBlocks = 12, numBlocks = 16;
 	std::mt19937 rng(9137);
 	std::vector<Transform> G(numBlocks);
 	for (Transform& T : G)
@@ -18981,32 +19111,10 @@ bool SeamGraphConsensusTest()
 	// a second and weaker hypothesis on a pair a true seam already covers: a rival the cycles judge
 	const size_t idxWrongRival = candidates.size();
 	candidates.push_back(MakeSeam(5, 6, 20, 6.f));
-	// two readings of 20 and 15 cameras on a pair joined to nothing else, 15 degrees apart, and the
-	// verified image pairs across it, which reproduce the true one and hold against the other
-	const size_t idxDisputedPair = candidates.size();
+	// two pairs joined to nothing else, each holding one reading
+	const size_t idxLonePair = candidates.size();
 	candidates.push_back(MakeSeam(12, 13, 0, 20.f));
-	candidates.push_back(MakeSeam(12, 13, 15, 15.f));
-	for (size_t i = idxDisputedPair; i < idxDisputedPair + 2; ++i) {
-		SeamCandidate& c = candidates[i];
-		c.pairs.numPairs = 6;
-		(i == idxDisputedPair ? c.pairs.agree : c.pairs.disagree) = 400.f;
-		c.weight = (float)c.score.Weight() * c.pairs.Share(); // 20 and 0, as the merge weighs them
-	}
-	// a pair joined to nothing else holding one hypothesis
 	candidates.push_back(MakeSeam(14, 15, 0, 20.f));
-	// three blocks whose rigs are too shallow to observe a scale: only their rotations are averaged
-	for (uint32_t i = 0; i < 3; ++i) {
-		SeamCandidate c(MakeSeam(16 + i, 16 + (i + 1) % 3, 0, 6.f));
-		c.scaleObservable = false;
-		candidates.push_back(std::move(c));
-	}
-	// a chain whose middle seam observes no scale: the two ends share a rotation but no scale and no
-	// position, so only the side the averaging is gauged at can be placed
-	candidates.push_back(MakeSeam(19, 20, 0, 7.f));
-	SeamCandidate rotationOnlyLink(MakeSeam(20, 21, 0, 6.f));
-	rotationOnlyLink.scaleObservable = false;
-	candidates.push_back(std::move(rotationOnlyLink));
-	candidates.push_back(MakeSeam(21, 22, 0, 6.f));
 
 	Scene scene;
 	GlobalAlignmentConfig alignCfg;
@@ -19037,15 +19145,13 @@ bool SeamGraphConsensusTest()
 		VERBOSE("SeamGraphConsensusTest FAILED: the wrong rival on (5, 6) carries its edge");
 		return false;
 	}
-	// the disputed bridge keeps the reading its pairs reproduce
-	if (!IsOn(idxDisputedPair) || IsOn(idxDisputedPair + 1)) {
-		VERBOSE("SeamGraphConsensusTest FAILED: of the disputed bridge, the reading its pairs reproduce is %s and the one they hold against %s",
-			IsOn(idxDisputedPair) ? "on" : "off", IsOn(idxDisputedPair + 1) ? "on" : "off");
+	// the lone pairs stand on their readings
+	if (!IsOn(idxLonePair) || !IsOn(idxLonePair + 1)) {
+		VERBOSE("SeamGraphConsensusTest FAILED: the lone pairs' readings are %s and %s",
+			IsOn(idxLonePair) ? "on" : "off", IsOn(idxLonePair + 1) ? "on" : "off");
 		return false;
 	}
-	// the ring, the two bridges and the side of the split chain the averaging is gauged at are
-	// models of several blocks; no scale of their own, or no metric tie to the gauge leave a block a
-	// model of its own
+	// the ring and the two lone pairs are three models of several blocks
 	std::map<uint32_t, unsigned> blocksOfModel;
 	for (const BlockPose& pose : poses)
 		++blocksOfModel[pose.model];
@@ -19053,7 +19159,7 @@ bool SeamGraphConsensusTest()
 		return poses[block].state == BlockPose::ADMITTED && blocksOfModel[poses[block].model] > 1 ? poses[block].model : (uint32_t)NO_ID;
 	};
 	const auto ExpectedPlaced = [](uint32_t block) {
-		return block < numRingBlocks || (block >= 12 && block <= 15) || block == 19 || block == 20;
+		return block < numBlocks;
 	};
 	for (uint32_t i = 0; i < numBlocks; ++i) {
 		if ((ModelOf(i) != NO_ID) != ExpectedPlaced(i)) {
@@ -19066,10 +19172,9 @@ bool SeamGraphConsensusTest()
 			VERBOSE("SeamGraphConsensusTest FAILED: ring block %u is in model %u, block 0 in %u", i, ModelOf(i), ModelOf(0));
 			return false;
 		}
-	if (ModelOf(12) != ModelOf(13) || ModelOf(14) != ModelOf(15) || ModelOf(19) != ModelOf(20) ||
-		ModelOf(12) == ModelOf(0) || ModelOf(14) == ModelOf(0) || ModelOf(19) == ModelOf(0) ||
-		ModelOf(12) == ModelOf(14) || ModelOf(12) == ModelOf(19) || ModelOf(14) == ModelOf(19)) {
-		VERBOSE("SeamGraphConsensusTest FAILED: the two bridges and the split chain are not models of their own");
+	if (ModelOf(12) != ModelOf(13) || ModelOf(14) != ModelOf(15) ||
+		ModelOf(12) == ModelOf(0) || ModelOf(14) == ModelOf(0) || ModelOf(12) == ModelOf(14)) {
+		VERBOSE("SeamGraphConsensusTest FAILED: the two lone pairs are not models of their own");
 		return false;
 	}
 	for (const auto& [a, b] : {std::make_pair(12u, 13u), std::make_pair(14u, 15u)}) {
@@ -19077,7 +19182,7 @@ bool SeamGraphConsensusTest()
 		const Transform truth = G[b].Invert() * G[a];
 		const REAL angle = R2D(ACOS(ComputeAngle(Matrix3x3(estimated.R), Matrix3x3(truth.R))));
 		if (angle > REAL(1)) {
-			VERBOSE("SeamGraphConsensusTest FAILED: the bridge (%u, %u) placed %.2f deg off", a, b, angle);
+			VERBOSE("SeamGraphConsensusTest FAILED: the lone pair (%u, %u) placed %.2f deg off", a, b, angle);
 			return false;
 		}
 	}
@@ -19136,15 +19241,26 @@ struct PlantedSeamGraph
 		c.sceneB = b;
 		c.T = G[b].Invert() * G[a] * planted;
 		c.score.support[0] = c.score.support[1] = cameras;
-		c.weight = (float)cameras;
+		c.weight = GlobalAlignment::ReadingWeight(c.score, c.pairs);
 		candidates.push_back(std::move(c));
 		return candidates.size() - 1;
 	}
+	// the planted readings that pass the entry test (each observes a scale) into the block graph, as
+	// EstimateSeamPair lets them in; edgeSeams is mapped back to indices into `candidates`
 	void Select() {
 		Scene scene;
 		const GlobalAlignmentConfig alignCfg;
 		GlobalAlignment alignment(scene, alignCfg);
-		alignment.SelectSeamGraph(footprints, candidates, poses, edgeSeams);
+		std::vector<SeamCandidate> entered;
+		std::vector<size_t> indexOf;
+		FOREACH(i, candidates)
+			if (GlobalAlignment::RefusedReading(candidates[i].score, true, candidates[i].pairs, alignCfg) == NULL) {
+				entered.push_back(candidates[i]);
+				indexOf.push_back(i);
+			}
+		alignment.SelectSeamGraph(footprints, entered, poses, edgeSeams);
+		for (uint32_t& e : edgeSeams)
+			e = (uint32_t)indexOf[e];
 	}
 	bool IsOn(size_t i) const { return std::find(edgeSeams.begin(), edgeSeams.end(), (uint32_t)i) != edgeSeams.end(); }
 	// whether block `b` sits in the same model as block `a`, where the truth puts it against it
@@ -19164,6 +19280,40 @@ struct PlantedSeamGraph
 		return num;
 	}
 };
+
+// Block 3, tied to a triangle by two readings of (2, 3) within the graph bars of each other: the true
+// one carried by 20 supporting cameras on its weaker side and one 3 degrees and 0.1 of the footprint
+// off carried by 2. A reading weighs its cameras times its pairs' share, so the averaging puts block 3
+// within a quarter of the offset from the truth; weighed by the share alone the two readings weigh
+// alike and block 3 lands halfway between them.
+bool ReadingWeightCamerasTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned TRIANGLE_CAMERAS = 5, STRONG = 20, WEAK = 2;
+	constexpr REAL OFF_DEG = 3, OFF_SHIFT = 0.1;
+	PlantedSeamGraph graph(4, 3301);
+	graph.Add(0, 1, TRIANGLE_CAMERAS);
+	graph.Add(1, 2, TRIANGLE_CAMERAS);
+	graph.Add(0, 2, TRIANGLE_CAMERAS);
+	const size_t strong = graph.Add(2, 3, STRONG);
+	const size_t weak = graph.Add(2, 3, WEAK, OFF_DEG, OFF_SHIFT);
+	graph.Select();
+	if (!graph.IsOn(strong) || !graph.IsOn(weak) || graph.ModelSize(0) != 4) {
+		VERBOSE("ReadingWeightCamerasTest FAILED: premise, the strong reading is %s, the weak one %s, the model holds %u blocks",
+			graph.IsOn(strong) ? "on" : "off", graph.IsOn(weak) ? "on" : "off", graph.ModelSize(0));
+		return false;
+	}
+	const SEACAVE::Transform estimated(graph.poses[3].T.Invert() * graph.poses[2].T), truth(graph.G[3].Invert() * graph.G[2]);
+	const REAL angle = R2D(ACOS(ComputeAngle(Matrix3x3(estimated.R), Matrix3x3(truth.R))));
+	if (angle > OFF_DEG / 4) {
+		VERBOSE("ReadingWeightCamerasTest FAILED: block 3 sits %.2f deg from the truth (under %.2f expected: the reading of %u cameras "
+			"outweighs the one of %u, %.0f deg off)", angle, OFF_DEG / 4, STRONG, WEAK, OFF_DEG);
+		return false;
+	}
+	VERBOSE("ReadingWeightCamerasTest PASSED: block 3 %.2f deg from the truth, the %u-camera reading outweighing the %u-camera one "
+		"%.0f deg off (%s)", angle, STRONG, WEAK, OFF_DEG, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 
 // A chord that is wrong by 30 degrees and heavier than every true seam, across two cycles of true
 // seams: a short one of two seams and a long one of five. The two seams the chord would put off the
@@ -19278,10 +19428,11 @@ bool SymmetricBridgePairsTest()
 	return true;
 }
 
-// The true bridge (2, 3) to a triangle, its weaker side held by one camera and then by two: one
-// camera is what a frame misplaced inside its own block carrying a whole seam looks like, and a
-// bridge no cycle corroborates stands only with minSeamWeight cameras on its weaker side
-bool OneCameraBridgeTest()
+// The true reading of (2, 3), a block pair no cycle tests, its weaker side held by one camera and then by
+// two: one camera is what a frame misplaced inside its own block carrying a whole seam looks like, so a
+// reading enters the block graph only with minSeamWeight cameras on its weaker side; held by one, block 3
+// is not placed, by two it is
+bool OneCameraReadingTest()
 {
 	TD_TIMER_START();
 	constexpr unsigned TRIANGLE_CAMERAS = 5, STRONG_SIDE = 6;
@@ -19297,12 +19448,12 @@ bool OneCameraBridgeTest()
 		graph.Select();
 		const bool expected = weakSide >= GlobalAlignmentConfig().minSeamWeight;
 		if (graph.IsOn(bridge) != expected || graph.PlacedRight(0, 3) != expected) {
-			VERBOSE("OneCameraBridgeTest FAILED: the bridge whose weaker side holds %u camera(s) is %s and block 3 %s",
+			VERBOSE("OneCameraReadingTest FAILED: the bridge whose weaker side holds %u camera(s) is %s and block 3 %s",
 				weakSide, graph.IsOn(bridge) ? "on" : "off", graph.PlacedRight(0, 3) ? "placed" : "not placed");
 			return false;
 		}
 	}
-	VERBOSE("OneCameraBridgeTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("OneCameraReadingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -19331,52 +19482,6 @@ bool ReweightingStartTest()
 	return true;
 }
 
-// A triangle of true seams carrying two more readings that observe no scale: one of (0, 2) whose
-// translation is 60% of the footprint off, judged on its rotation alone and kept -- the same reading
-// observing a scale is judged on its translation too, and cut -- and one of (0, 1) turned by ten
-// degrees, cut on its rotation. Block 3, reached through (2, 3) by a reading without scale alone,
-// has nothing tying it to the triangle in scale or position: it gets no pose, its reading cannot be
-// judged and goes off, and the block is a model of its own, its reason naming the scale it lacks.
-bool RotationOnlyReadingTest()
-{
-	TD_TIMER_START();
-	constexpr unsigned TRIANGLE_CAMERAS = 5, READING_CAMERAS = 4;
-	constexpr REAL SHIFT = 0.6, TURN_DEG = 10;
-	for (const bool observesScale : {false, true}) {
-		PlantedSeamGraph graph(4, 1187);
-		graph.Add(0, 1, TRIANGLE_CAMERAS);
-		graph.Add(1, 2, TRIANGLE_CAMERAS);
-		graph.Add(0, 2, TRIANGLE_CAMERAS);
-		const size_t shifted = graph.Add(0, 2, READING_CAMERAS, 0, SHIFT);
-		graph.candidates[shifted].scaleObservable = observesScale;
-		const size_t turned = graph.Add(0, 1, READING_CAMERAS, TURN_DEG);
-		graph.candidates[turned].scaleObservable = false;
-		const size_t link = graph.Add(2, 3, READING_CAMERAS);
-		graph.candidates[link].scaleObservable = false;
-		graph.Select();
-		if (graph.IsOn(shifted) == observesScale) {
-			VERBOSE("RotationOnlyReadingTest FAILED: the reading %s a scale whose translation is %.0f%% off is %s",
-				observesScale ? "observing" : "without", SHIFT * 100, graph.IsOn(shifted) ? "on" : "off");
-			return false;
-		}
-		if (graph.IsOn(turned)) {
-			VERBOSE("RotationOnlyReadingTest FAILED: the reading without scale turned by %.0f deg is on", TURN_DEG);
-			return false;
-		}
-		if (!graph.PlacedRight(0, 1) || !graph.PlacedRight(0, 2) || graph.ModelSize(0) != 3) {
-			VERBOSE("RotationOnlyReadingTest FAILED: the triangle is not one model of three blocks on the truth");
-			return false;
-		}
-		if (graph.IsOn(link) || graph.ModelSize(3) != 1 || graph.poses[3].reason != "no scale: none of its 1 readings observes one") {
-			VERBOSE("RotationOnlyReadingTest FAILED: block 3, reached by a reading without scale alone, sits in a model of %u blocks "
-				"(its reading %s, its reason '%s')", graph.ModelSize(3), graph.IsOn(link) ? "on" : "off", graph.poses[3].reason.c_str());
-			return false;
-		}
-	}
-	VERBOSE("RotationOnlyReadingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
 // A bridge (2, 3) to a triangle holding four readings along one line of block 2's frame, at 0, 0.10,
 // 0.25 and 0.50 of the footprint and weighing 1, 2, 1, 2 cameras, its witnesses holding: the first
 // averaging settles on the reading at 0.25 and cuts the two 0.25 away from it; without them the next
@@ -19395,7 +19500,7 @@ bool BarsReEntryTest()
 	for (int i = 0; i < 4; ++i) {
 		readings[i] = graph.Add(2, 3, weights[i], 0, shifts[i]);
 		SeamCandidate& c = graph.candidates[readings[i]];
-		c.score.support[0] = c.score.support[1] = WITNESSES; // the bridge rule holds: only the bars decide
+		c.score.support[0] = c.score.support[1] = WITNESSES; // every reading passes the entry test: only the bars decide
 	}
 	graph.Select();
 	if (!graph.IsOn(readings[0]) || !graph.IsOn(readings[1]) || !graph.IsOn(readings[2]) || graph.IsOn(readings[3])) {
@@ -19405,40 +19510,6 @@ bool BarsReEntryTest()
 		return false;
 	}
 	VERBOSE("BarsReEntryTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// Three blocks whose heaviest, block 0 -- the gauge -- reaches blocks 1 and 2 by two doors that
-// observe no scale and, to block 1, by a reading that does but weighs 0 (every verified pair across
-// it against it); blocks 1 and 2 share a light reading that observes a scale. The reading of weight
-// 0 gives the scale and translation solves nothing: they are gauged at block 1 or 2 and place the
-// two, block 0 left with no metric tie. Handed to them, it would make block 0 the scales' gauge
-// while none of their readings of weight reaches it, and no block would get a pose.
-bool WeightlessScaleReadingTest()
-{
-	TD_TIMER_START();
-	PlantedSeamGraph graph(3, 7759);
-	for (const uint32_t door : {1u, 2u}) {
-		const size_t i = graph.Add(0, door, 1);
-		graph.candidates[i].scaleObservable = false;
-	}
-	const size_t weightless = graph.Add(0, 1, 4);
-	{
-		SeamCandidate& c = graph.candidates[weightless];
-		c.pairs.numPairs = 4;
-		c.pairs.disagree = 400.f;
-		c.weight = (float)c.score.Weight() * c.pairs.Share();
-	}
-	const size_t link = graph.Add(1, 2, 4);
-	graph.candidates[link].weight = 0.5f; // blocks 1 and 2 weigh 1.5 each, block 0 2: block 0 is the gauge
-	ASSERT(graph.candidates[weightless].weight == 0.f);
-	graph.Select();
-	if (!graph.IsOn(link) || !graph.PlacedRight(1, 2) || graph.ModelSize(1) != 2) {
-		VERBOSE("WeightlessScaleReadingTest FAILED: the reading (1, 2) is %s and blocks 1 and 2 are %s in a model of %u blocks",
-			graph.IsOn(link) ? "on" : "off", graph.PlacedRight(1, 2) ? "placed" : "not placed", graph.ModelSize(1));
-		return false;
-	}
-	VERBOSE("WeightlessScaleReadingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -20372,13 +20443,13 @@ bool RingPlacementTest()
 // block placed 0.5 too deep along its own camera's ray (well under a pixel in every view); the false
 // one joins two different near points 0.5 apart across the ray (50 px). The same for a one-sided root,
 // a block-0 track matched to a keypoint of block 1 no track holds, once at its true projection and once
-// 50 px off. The merge joins every one of them on the duplicate-image and length guards alone (no
-// reprojection guard); the merged model's adjustment (AdjustMergedScene: the loose-bar filter, the
-// triangulation, the filter again) decides each observation: the right matches end as inliers of one
-// track, the false ones never do. And the closure's join priority: a far point whose seam match (i, j) and a
+// 50 px off. With the join guard off the merge joins every one of them on the duplicate-image and length
+// guards alone; at a guard under 50 px the false ones are refused. The merged model's adjustment
+// (AdjustMergedScene: the loose-bar filter, the triangulation, the filter again) decides each observation:
+// the right matches end as inliers of one track, the false ones never do. And the closure's join priority: a far point whose seam match (i, j) and a
 // competing match of a pair (a0, j) visited before it in the connecting pairs' order both put a keypoint of j on
 // its track: the seam match joins first, the competing one is refused for holding image j twice.
-bool CrossBlockJoinTest()
+static bool CrossBlockJoinCase(const char* name, float maxJoinReprojError)
 {
 	TD_TIMER_START();
 	RingSceneConfig cfg{2, 20};
@@ -20394,7 +20465,7 @@ bool CrossBlockJoinTest()
 	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
 	ImagePair* crossPair = scene.FindPair(i, j);
 	if (crossPair == NULL) {
-		VERBOSE("CrossBlockJoinTest FAILED: no pair across the seam between images %u and %u", i, j);
+		VERBOSE("%s FAILED: no pair across the seam between images %u and %u", name, i, j);
 		return false;
 	}
 	const auto LocalOf = [&](uint32_t b, IIndex g) -> IIndex {
@@ -20450,7 +20521,7 @@ bool CrossBlockJoinTest()
 		!AddTrack(0, a0, i, near2, near2, fOneFalseI) || !AddKeypoint(1, j, near2 + across * d, fOneFalseJ) ||
 		!AddTrack(0, a0, i, far3, far3, fFirstI, &fFirstA0) || !AddTrack(1, j, b1, far3, far3, fFirstJ) ||
 		!AddKeypoint(1, j, far3 + across * REAL(4), fFirstBadJ)) {
-		VERBOSE("CrossBlockJoinTest FAILED: a test point does not project into the seam's four images");
+		VERBOSE("%s FAILED: a test point does not project into the seam's four images", name);
 		return false;
 	}
 	crossPair->matches.emplace_back(fRightI, fRightJ);
@@ -20472,11 +20543,12 @@ bool CrossBlockJoinTest()
 	}
 
 	GlobalAlignmentConfig alignCfg;
+	alignCfg.maxJoinReprojError = maxJoinReprojError;
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
 	if (rep.numPlaced != 2) {
-		VERBOSE("CrossBlockJoinTest FAILED: %u of 2 blocks placed", rep.numPlaced);
+		VERBOSE("%s FAILED: %u of 2 blocks placed", name, rep.numPlaced);
 		return false;
 	}
 	// joined: one merged track holds both ends of the match (as inliers, when asked)
@@ -20498,29 +20570,42 @@ bool CrossBlockJoinTest()
 	// the seam-consistent match took the far point's track; the competing one, visited first, was refused
 	const bool firstRight = Joined(fFirstI, fFirstJ, false), firstWrong = Joined(fFirstI, fFirstBadJ, false);
 	if (!firstRight || firstWrong) {
-		VERBOSE("CrossBlockJoinTest FAILED: the seam match of the far point %s and the competing match of the pair visited "
+		VERBOSE("%s FAILED: the seam match of the far point %s and the competing match of the pair visited "
 			"before it %s (the seam match expected to join first, the other refused for holding image %u twice)",
-			firstRight ? "joined" : "did not join", firstWrong ? "joined" : "did not join", j);
+			name, firstRight ? "joined" : "did not join", firstWrong ? "joined" : "did not join", j);
 		return false;
 	}
 	const bool joined[4] = {Joined(fRightI, fRightJ, false), Joined(fFalseI, fFalseJ, false),
 		Joined(fOneRightI, fOneRightJ, false), Joined(fOneFalseI, fOneFalseJ, false)};
-	if (!joined[0] || !joined[1] || !joined[2] || !joined[3]) {
-		VERBOSE("CrossBlockJoinTest FAILED: the merge joined right %d, false %d, one-sided right %d, one-sided 50 px off %d "
-			"(every match expected joined, on the duplicate-image and length guards alone)", joined[0], joined[1], joined[2], joined[3]);
+	// with the guard off every match joins; at 48 px the false ones (50 px off) are refused
+	const bool guarded = maxJoinReprojError > 0.f;
+	if (!joined[0] || joined[1] == guarded || !joined[2] || joined[3] == guarded) {
+		VERBOSE("%s FAILED: the merge joined right %d, false %d, one-sided right %d, one-sided 50 px off %d "
+			"(the right ones expected joined, the false ones %s at a join guard of %g px)", name, joined[0], joined[1], joined[2], joined[3],
+			guarded ? "refused" : "joined", maxJoinReprojError);
 		return false;
 	}
 	AdjustMergedScene(scene, ReconstructionConfig());
 	const bool right = Joined(fRightI, fRightJ, true), wrong = Joined(fFalseI, fFalseJ, true);
 	const bool oneRight = Joined(fOneRightI, fOneRightJ, true), oneWrong = Joined(fOneFalseI, fOneFalseJ, true);
 	if (!right || wrong || !oneRight || oneWrong) {
-		VERBOSE("CrossBlockJoinTest FAILED: after the merged model's adjustment, two positioned roots d=%g apart: right match %s (expected inliers of one track), false match %s (expected not); one positioned root: right %s (expected inliers), 50 px off %s (expected not)",
-			d, right ? "inliers" : "not", wrong ? "inliers" : "not", oneRight ? "inliers" : "not", oneWrong ? "inliers" : "not");
+		VERBOSE("%s FAILED: after the merged model's adjustment, two positioned roots d=%g apart: right match %s (expected inliers of one track), false match %s (expected not); one positioned root: right %s (expected inliers), 50 px off %s (expected not)",
+			name, d, right ? "inliers" : "not", wrong ? "inliers" : "not", oneRight ? "inliers" : "not", oneWrong ? "inliers" : "not");
 		return false;
 	}
-	VERBOSE("CrossBlockJoinTest PASSED: the seam match joined before a competing one, every match joined, and after the merged model's adjustment the right ones are inliers of one track, the false ones (%g apart, 50 px) not (%s)",
-		d, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("%s PASSED: the seam match joined before a competing one, the right matches joined and the false ones %s at a join guard of %g px, and after the merged model's adjustment the right ones are inliers of one track, the false ones (%g apart, 50 px) not (%s)",
+		name, guarded ? "refused" : "joined", maxJoinReprojError, d, TD_TIMER_GET_FMT().c_str());
 	return true;
+}
+bool CrossBlockJoinTest()
+{
+	return CrossBlockJoinCase("CrossBlockJoinTest", 0.f);
+}
+// The guard of the cross-block join at its default, 48 px: the same seam, the right matches joined, the two false ones
+// (50 px off) refused
+bool MergeJoinReprojectionTest()
+{
+	return CrossBlockJoinCase("MergeJoinReprojectionTest", GlobalAlignmentConfig().maxJoinReprojError);
 }
 /*----------------------------------------------------------------*/
 
@@ -20884,10 +20969,9 @@ bool UnobservableScaleTest()
 /*----------------------------------------------------------------*/
 
 // Two blocks of two cameras a millimetre apart, side by side on the ring: neither direction of the
-// seam between them sees any parallax, so that seam observes no scale at all and must say so --
-// a direction borrowing the other's number would carry into the scale averaging a size nothing
-// measured. The two blocks take their size from the seams that reach the rest of the ring instead,
-// and the merge has to come out at the ring's own scale all the same
+// seam between them sees any parallax, so its readings observe no scale and do not enter the block
+// graph. The two blocks take their place and size from the seams that reach the rest of the ring
+// instead, and the merge has to come out at the ring's own scale all the same
 bool UnobservableScalePairTest()
 {
 	TD_TIMER_START();
@@ -20908,24 +20992,13 @@ bool UnobservableScalePairTest()
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
-	// the seam between the two shallow rigs, whichever direction it was measured in
-	unsigned numShallowSeams = 0;
-	for (const SeamCandidate& c : rep.candidates) {
-		if (c.sceneA != tinyA || c.sceneB != tinyB)
-			continue;
-		++numShallowSeams;
-		if (c.scaleObservable) {
-			VERBOSE("UnobservableScalePairTest FAILED: the seam (%u, %u) between two rigs a millimetre "
-				"wide claims to observe a scale (%s)", tinyA, tinyB,
-				c.source == SeamCandidate::RIG_B_ON_A ? "the rig of B on A" : "the rig of A on B");
+	// the readings between the two shallow rigs observe no scale, so none enters the block graph
+	for (const SeamCandidate& c : rep.candidates)
+		if (c.sceneA == tinyA && c.sceneB == tinyB) {
+			VERBOSE("UnobservableScalePairTest FAILED: a reading (%u, %u) between two rigs a millimetre wide entered the block "
+				"graph (%s)", tinyA, tinyB, c.source == SeamCandidate::RIG_B_ON_A ? "the rig of B on A" : "the rig of A on B");
 			return false;
 		}
-	}
-	if (numShallowSeams == 0) {
-		VERBOSE("UnobservableScalePairTest FAILED: the pair (%u, %u) yielded no candidate to read",
-			tinyA, tinyB);
-		return false;
-	}
 	// and the scale the two blocks came out at, which can only have come from the other seams
 	if (!CheckRingMerge("UnobservableScalePairTest", rep, scene, gtPoses, cfg.numBlocks, 0.1, 0.001))
 		return false;
@@ -20936,8 +21009,8 @@ bool UnobservableScalePairTest()
 					image, b);
 				return false;
 			}
-	VERBOSE("UnobservableScalePairTest PASSED: %u blocks placed, the %u seam(s) between blocks %u and %u "
-		"observe no scale (%s)", rep.numPlaced, numShallowSeams, tinyA, tinyB, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("UnobservableScalePairTest PASSED: %u blocks placed, no reading between blocks %u and %u entered (%s)",
+		rep.numPlaced, tinyA, tinyB, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -21003,31 +21076,21 @@ bool AmbiguousPairTest()
 	const auto Angle = [&truth](const SeamCandidate& c) {
 		return R2D(ACOS(ComputeAngle(Matrix3x3(c.T.R), Matrix3x3(truth.R))));
 	};
-	// the pair on its own: each direction is read, the planted one far off the truth with the
-	// verified pairs across it against it, the true one within the bar with them for it
+	// the pair on its own: each direction is read, the planted one far off the truth with the verified
+	// pairs across it against it, which keeps it out of the block graph, the true one within the bar
+	// with them for it
 	{
 		GlobalAlignment alignment(scene, alignCfg);
 		std::vector<SeamCandidate> cands;
 		alignment.PrepareSeamEvidence(subScenes, localToGlobals);
 		alignment.EstimateSeamPair(subScenes, 0, 1, cands);
-		const SeamCandidate* right = NULL;
-		const SeamCandidate* planted = NULL;
-		for (const SeamCandidate& c : cands)
-			(Angle(c) <= MAX_ROTATION ? right : planted) = &c;
-		if (right == NULL || planted == NULL || Angle(*planted) < alignCfg.maxGraphRotationResidual) {
-			VERBOSE("AmbiguousPairTest FAILED: the pair yielded %s true reading and %s planted one past the rotation bar",
-				right == NULL ? "no" : "a", planted == NULL || Angle(*planted) < alignCfg.maxGraphRotationResidual ? "no" : "a");
+		if (cands.size() != 1 || Angle(cands[0]) > MAX_ROTATION || !cands[0].pairs.Holds()) {
+			VERBOSE("AmbiguousPairTest FAILED: %u readings of the pair entered, expected the true one alone (the planted one "
+				"refused by its verified pairs)%s", (unsigned)cands.size(), cands.empty() ? "" : String::FormatString(
+				", the first %.2f deg off", Angle(cands[0])).c_str());
 			return false;
 		}
-		if (planted->pairs.Holds() || !right->pairs.Holds() || planted->weight >= right->weight) {
-			VERBOSE("AmbiguousPairTest FAILED: the verified pairs hold %s the planted reading (%.0f for / %.0f against, weight %.2f) "
-				"and %s the true one (%.0f for / %.0f against, weight %.2f)",
-				planted->pairs.Holds() ? "for" : "against", planted->pairs.agree, planted->pairs.disagree, planted->weight,
-				right->pairs.Holds() ? "for" : "against", right->pairs.agree, right->pairs.disagree, right->weight);
-			return false;
-		}
-		VERBOSE("  ambiguous pair: the planted reading %.2f deg off weighs %.2f, the true one %.3f deg off %.2f",
-			Angle(*planted), planted->weight, Angle(*right), right->weight);
+		VERBOSE("  ambiguous pair: the planted reading refused, the true one %.3f deg off entered", Angle(cands[0]));
 	}
 
 	// three blocks, two seams in a chain and no cycle: the true reading carries the pair on its own
@@ -21075,7 +21138,7 @@ bool AmbiguousPairTest()
 // off block 0's arc rather than onto it: the planted direction is the only seam there is, three
 // cameras of block 1 stand behind it, the cameras of block 0 it planted on have nothing to hold
 // against it, so on its cameras alone block 1 would be placed twenty degrees wrong. The verified
-// pairs between the two blocks kept their word, and on a bridge they are what leaves it off
+// pairs between the two blocks kept their word, and they are what keeps the reading out of the block graph
 bool ContradictedPlacementTest()
 {
 	TD_TIMER_START();
@@ -21125,7 +21188,8 @@ bool ContradictedPlacementTest()
 		VERBOSE("  planted placement: %u blocks placed, seam %.2f deg off the truth", rep.numPlaced, angle);
 	}
 
-	// read, they leave the bridge off: block 1 is left unplaced rather than placed wrong
+	// read, they refuse the reading (the one difference from the run above): block 1 is left unplaced rather than
+	// placed wrong
 	{
 		if (!Build())
 			return false;
@@ -21138,21 +21202,12 @@ bool ContradictedPlacementTest()
 				"them contradicts the placement", rep.numPlaced);
 			return false;
 		}
-		unsigned numRead = 0;
-		for (const SeamCandidate& c : rep.candidates) {
-			if (c.sceneA != 0 || c.sceneB != 1)
-				continue;
-			++numRead;
-			if (c.pairs.Holds()) {
-				VERBOSE("ContradictedPlacementTest FAILED: block 1 was left out, but the verified pairs hold for a reading of it "
-					"(%.0f for / %.0f against)", c.pairs.agree, c.pairs.disagree);
+		for (const SeamCandidate& c : rep.candidates)
+			if (c.sceneA == 0 && c.sceneB == 1) {
+				VERBOSE("ContradictedPlacementTest FAILED: a reading of the pair entered the block graph (%.0f for / %.0f against)",
+					c.pairs.agree, c.pairs.disagree);
 				return false;
 			}
-		}
-		if (numRead == 0) {
-			VERBOSE("ContradictedPlacementTest FAILED: the pair yielded no reading, so the pairs were never asked");
-			return false;
-		}
 	}
 	VERBOSE("ContradictedPlacementTest PASSED: a seam %.0f degrees wrong that its cameras carry is refused "
 		"by the verified pairs across it (%s)", (double)ABS(PLANTED_TURN), TD_TIMER_GET_FMT().c_str());
@@ -21517,11 +21572,12 @@ bool OneCameraSideTest()
 }
 /*----------------------------------------------------------------*/
 
-// A direction whose correspondences come from one camera gives no reading: a block is joined by all its cameras
-// together, never by one camera's pose. Three blocks of a ring, each joined to the other two.
-// - The cross pairs of (0, 2) kept only where they hold block 0's first camera: the direction of block 2's cameras on
-//   block 0's points is a rig and gives the pair's one reading, the direction of that single camera on block 2's points
-//   none; the ring is placed whole.
+// A direction whose correspondences come from one camera gives no reading, and a reading whose weaker side one camera
+// supports does not enter the block graph: a block is joined by all its cameras together, never by one camera's pose.
+// Three blocks of a ring, each joined to the other two.
+// - The cross pairs of (0, 2) kept only where they hold block 0's first camera: the direction of that single camera
+//   gives no reading, and the rig of block 2 on block 0's points is supported by that one camera on block 0's side, so
+//   it does not enter; the ring is placed whole through (0, 1) and (1, 2).
 // - Then (0, 2) and (1, 2) each kept to one cross pair (one camera a side): block 2 has no rig reading, stays unplaced,
 //   and its images are released (merged with their features, without poses) for the resection.
 bool OneCameraDirectionTest()
@@ -21558,9 +21614,10 @@ bool OneCameraDirectionTest()
 				++numReadings;
 				numRig += c.source == SeamCandidate::RIG_B_ON_A ? 1u : 0u;
 			}
-		if (numReadings != 1 || numRig != 1) {
+		if (numReadings != 0) {
 			VERBOSE("OneCameraDirectionTest FAILED: the pair (0, 2) seen by one camera of block 0 gave %u readings, %u of them "
-				"block 2's rig on block 0's points (1 and 1 expected: no reading from the single camera)", numReadings, numRig);
+				"block 2's rig on block 0's points (none expected: no reading from the single camera, and the rig's weaker side "
+				"held by one camera)", numReadings, numRig);
 			return false;
 		}
 		GlobalAlignment ga(scene, alignCfg);
@@ -21593,8 +21650,66 @@ bool OneCameraDirectionTest()
 			return false;
 		}
 	}
-	VERBOSE("OneCameraDirectionTest PASSED: a single-camera direction gives no reading, the rig direction places its pair, and "
-		"a block joined by single cameras only is released (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("OneCameraDirectionTest PASSED: a pair one camera holds on one side gives no reading that enters, the ring is placed "
+		"through its other pairs, and a block joined by single cameras only is released (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+static const SeamCandidate* ReadingOf(const std::vector<SeamCandidate>& readings, SeamCandidate::Source source);
+
+// A reading observes a scale only when two of its rig's cameras each hold minCameraInliers of its inliers: one camera
+// holding them and a second holding a few observe none. Three blocks of a ring; the cross pairs of (0, 2) kept only on
+// two cameras of block 2, the second of them reduced to one cross pair of a few matches. The direction of block 2's
+// rig on block 0's points observes no scale and does not enter the block graph; with both cameras holding their full
+// pairs it observes one and enters.
+bool RigScaleTwoCamerasTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{3, 16};
+	const GlobalAlignmentConfig alignCfg;
+	const auto ReadPair02 = [&](unsigned numSecondMatches) {
+		Scene scene;
+		std::vector<IIndexArr> blocks;
+		std::vector<Pose3D> gtPoses;
+		GenerateRingScene(cfg, scene, blocks, gtPoses);
+		const std::set<IIndex> a(blocks[0].begin(), blocks[0].end()), b(blocks[2].begin(), blocks[2].end());
+		const IIndex first = blocks[2].back(), second = blocks[2][blocks[2].size() - 2];
+		bool secondKept = false;
+		RFOREACH(i, scene.pairs) {
+			ImagePair& pair = scene.pairs[i];
+			const IIndex imgA = a.count(pair.ID1) ? pair.ID1 : pair.ID2, imgB = imgA == pair.ID1 ? pair.ID2 : pair.ID1;
+			if (!a.count(imgA) || !b.count(imgB))
+				continue;
+			if (imgB == first || (imgB == second && numSecondMatches == 0))
+				continue;
+			if (imgB == second && !secondKept && pair.matches.size() > numSecondMatches) {
+				pair.matches.resize(numSecondMatches);
+				secondKept = true;
+				continue;
+			}
+			scene.pairs.RemoveAtMove(i);
+		}
+		ComputePairsWeights(scene);
+		std::vector<Scene> subScenes;
+		std::vector<IIndexArr> localToGlobals;
+		std::vector<SEACAVE::Transform> applied;
+		BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+		GlobalAlignment alignment(scene, alignCfg);
+		alignment.PrepareSeamEvidence(subScenes, localToGlobals);
+		std::vector<SeamCandidate> readings;
+		alignment.EstimateSeamPair(subScenes, 0, 2, readings);
+		return ReadingOf(readings, SeamCandidate::RIG_B_ON_A) != NULL;
+	};
+	const bool thinEntered = ReadPair02(4), fullEntered = ReadPair02(0);
+	if (thinEntered || !fullEntered) {
+		VERBOSE("RigScaleTwoCamerasTest FAILED: the rig of one camera holding its inliers and one holding 4 matches %s the block "
+			"graph (it observes no scale: not expected), the rig of two cameras holding theirs %s (expected)",
+			thinEntered ? "entered" : "did not enter", fullEntered ? "entered" : "did not enter");
+		return false;
+	}
+	VERBOSE("RigScaleTwoCamerasTest PASSED: one camera holding the inliers and a second holding a few observe no scale and "
+		"do not enter, two cameras holding theirs observe one and enter (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -21893,8 +22008,8 @@ bool FoldedBlock45Test()
 // A chord across the ring that reads perfectly on its own evidence: two cameras of block 3 are given
 // block 9's wall, turned half a turn about the ring axis onto block 3's own arc and pushed out to
 // 1.6 times the radius, so the implied placement sits three units outside block 9's own cameras
-// instead of among them, while the chord contradicts the way round the ring by half a turn. Only
-// the cycles the chord closes can indict it.
+// instead of among them, while the chord contradicts the way round the ring by half a turn. The
+// entry test keeps it out of the block graph, or the cycles it closes cut it.
 bool FalseChordTest()
 {
 	TD_TIMER_START();
@@ -21926,19 +22041,19 @@ bool FalseChordTest()
 		ga.MergeScenes(subScenes, localToGlobals, rep);
 		measured = log.Contains("Seam (3, 9) rig");
 	}
-	// the chord is measured, enters the block graph, and the cycles it closes cut it
+	// the chord is measured and either refused by the entry test or cut by the cycles it closes
 	uint32_t chord = NO_ID;
 	FOREACH(i, rep.candidates)
 		if (rep.candidates[i].sceneA == 3 && rep.candidates[i].sceneB == 9)
 			chord = (uint32_t)i;
-	if (!measured || chord == NO_ID || ModelSeamOf(rep, 3, 9) != NULL || rep.candidates[chord].residualRotation <= 30) {
+	if (!measured || ModelSeamOf(rep, 3, 9) != NULL || (chord != NO_ID && rep.candidates[chord].residualRotation <= 30)) {
 		VERBOSE("FalseChordTest FAILED: the planted chord was %s", !measured ? "never measured" : "kept or not indicted");
 		return false;
 	}
 	if (!CheckRingMerge("FalseChordTest", rep, scene, gtPoses, cfg.numBlocks, kRingMergeRotation, kRingMergePosition))
 		return false;
-	VERBOSE("FalseChordTest PASSED: the chord planted on %u tracks cut by the cycles, %u blocks placed (%s)", planted,
-		rep.numPlaced, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("FalseChordTest PASSED: the chord planted on %u tracks %s, %u blocks placed (%s)", planted,
+		chord == NO_ID ? "refused by the entry test" : "cut by the cycles", rep.numPlaced, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -22087,7 +22202,7 @@ bool UnplacedBlocksReportedTest()
 	{
 		LogCapture log;
 		ga.MergeScenes(subScenes, localToGlobals, rep);
-		if (!log.Contains("Block 4 not placed: no seam (10 images)")) {
+		if (!log.Contains("Block 4 not placed: no reading entered (no cross pairs, or every reading refused) (10 images)")) {
 			VERBOSE("UnplacedBlocksReportedTest FAILED: the log does not report block 4 by name");
 			return false;
 		}
@@ -23166,14 +23281,13 @@ static bool CheckUnobservableScale(const Transform transforms[2], const Transfor
 	merger.PrepareSeamEvidence(subScenes, localToGlobals);
 	std::vector<SeamCandidate> readings;
 	merger.EstimateSeamPair(subScenes, 0, 1, readings);
-	// the direction registering the two-camera sub-scene cannot observe a scale; the other one can,
-	// and measures it
+	// the direction registering the two-camera sub-scene cannot observe a scale, so its reading does
+	// not enter; the other one can, and measures it
 	const SeamCandidate* shallowRig = ReadingOf(readings, SeamCandidate::RIG_B_ON_A);
 	const SeamCandidate* deepRig = ReadingOf(readings, SeamCandidate::RIG_A_ON_B);
-	if (shallowRig == NULL || deepRig == NULL || shallowRig->scaleObservable || !deepRig->scaleObservable) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the shallow rig's reading is %s, the other direction's %s",
-			shallowRig == NULL ? "missing" : (shallowRig->scaleObservable ? "scaled" : "unscaled"),
-			deepRig == NULL ? "missing" : (deepRig->scaleObservable ? "scaled" : "unscaled"));
+	if (shallowRig != NULL || deepRig == NULL) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the shallow rig's reading %s, the other direction's %s",
+			shallowRig == NULL ? "did not enter (expected)" : "entered", deepRig == NULL ? "is missing" : "entered (expected)");
 		return false;
 	}
 	const REAL errScale = ABS(deepRig->T.scale / expected.scale - REAL(1));
@@ -23181,7 +23295,7 @@ static bool CheckUnobservableScale(const Transform transforms[2], const Transfor
 		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the other direction's reading is %.2f%% off in scale", errScale * 100);
 		return false;
 	}
-	VERBOSE("  shallow rig: its own reading observes no scale, the other direction's is %.2f%% off", errScale * 100);
+	VERBOSE("  shallow rig: its own reading does not enter, the other direction's is %.2f%% off", errScale * 100);
 	return true;
 }
 
@@ -23295,9 +23409,14 @@ bool HierarchicalCameraAlignmentTest()
 		if (!CheckSeamTransform(c.source == SeamCandidate::RIG_B_ON_A ? "both directions, rig of sub-scene 1" :
 			"both directions, rig of sub-scene 0", c.T, expected, extent))
 			return false;
-		if (!c.scaleObservable || c.score.support[0] < defaultCfg.minSeamWeight || c.score.support[1] < defaultCfg.minSeamWeight) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the reading of source %u came out scale %s, %u+%u cameras supporting",
-				(unsigned)c.source, c.scaleObservable ? "observable" : "unobservable", c.score.support[0], c.score.support[1]);
+		if (c.score.support[0] < 2 || c.score.support[1] < 2) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the reading of source %u came out with %u+%u cameras supporting",
+				(unsigned)c.source, c.score.support[0], c.score.support[1]);
+			return false;
+		}
+		if (c.weight != (float)c.score.Weight() * c.pairs.Share()) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the reading of source %u weighs %.3f, its weaker side's %u cameras times "
+				"its pairs' share %.3f", (unsigned)c.source, c.weight, c.score.Weight(), c.pairs.Share());
 			return false;
 		}
 	}
@@ -23318,45 +23437,31 @@ bool HierarchicalCameraAlignmentTest()
 	}
 
 	// the whole bridge running through a single image of the first cluster: that side of the seam
-	// is one camera, and a reading weighs the cameras of its weaker side, however many correspondences
-	// the one camera holds
+	// is one camera, however many correspondences it holds, so no reading of it enters the block graph
 	SeamCase starved;
 	starved.hubBridge = true;
-	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, starved, readings)) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the seam one image carries on its side yielded no reading");
+	MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, starved, readings);
+	if (!readings.empty()) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: %u readings of the seam one image carries on its side entered, the first of "
+			"%u cameras", (unsigned)readings.size(), readings.front().score.Weight());
 		return false;
 	}
-	for (const SeamCandidate& c : readings)
-		if (c.score.Weight() != 1 || !CheckSeamTransform("one image on one side", c.T, expected, extent)) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: a reading of the seam one image carries on its side came out of %u cameras",
-				c.score.Weight());
-			return false;
-		}
-	VERBOSE("  a bridge through one image: readings of one camera");
+	VERBOSE("  a bridge through one image: no reading enters");
 
 	// the two directions made to disagree: sub-scene 1's cameras are moved away from its own points,
 	// so the direction that registers them measures a different similarity than the one that
 	// registers its points; the verified pairs across, which saw the cameras where they truly are,
-	// hold for one of the two and against the other, which weighs less
+	// hold for one of the two and against the other, which does not enter
 	SeamCase disagreeing;
 	disagreeing.rescaledPoses = 1;
-	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, disagreeing, readings) || readings.size() != 2 ||
-		readings[0].pairs.Holds() == readings[1].pairs.Holds()) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the two disagreeing directions gave %u readings, %s",
-			(unsigned)readings.size(), readings.size() == 2 ? "the pairs across holding alike for both" : "not one of each");
+	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, disagreeing, readings) || readings.size() != 1 ||
+		!readings[0].pairs.Holds()) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the two disagreeing directions let %u readings in (the one the pairs hold "
+			"for expected alone)", (unsigned)readings.size());
 		return false;
 	}
-	{
-		const SeamCandidate& held = readings[0].pairs.Holds() ? readings[0] : readings[1];
-		const SeamCandidate& refused = readings[0].pairs.Holds() ? readings[1] : readings[0];
-		if (refused.weight >= held.weight) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the reading the pairs across hold against weighs %.2f, the other %.2f",
-				refused.weight, held.weight);
-			return false;
-		}
-		VERBOSE("  two disagreeing directions: the pairs across hold against one (%.0f for / %.0f against, weight %.2f against %.2f)",
-			refused.pairs.agree, refused.pairs.disagree, refused.weight, held.weight);
-	}
+	VERBOSE("  two disagreeing directions: the one the pairs across hold against does not enter (%.0f for / %.0f against for the other)",
+		readings[0].pairs.agree, readings[0].pairs.disagree);
 	// and the merge of that pair puts sub-scene 1's cameras where they truly are, or leaves it out
 	if (!CheckDisagreeingMerge(transforms, disagreeing))
 		return false;

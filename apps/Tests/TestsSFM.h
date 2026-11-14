@@ -442,6 +442,7 @@ bool StarReferenceViewTest();
 // whatever its inlier count, and its unit baseline guesses a distance no match backs. The reference
 // stays chosen by inlier count.
 bool StarEvidenceTest();
+bool StarScaleGaugeTest();
 bool NearDuplicateYardstickTest();
 
 // A resected pose enters the model only when its support is credible: enough of its 2D-3D
@@ -520,6 +521,7 @@ bool ResectionInlierBarTest();
 // systematic error and outnumber the described ones pull the pose of the robust fit over all of
 // them, and the weighted polish brings it back to the described ones.
 bool ResectionDenseFitWeightTest();
+bool ResectionWeightedInlierBarTest();
 
 // The shared walks: an image's 2D-3D correspondences to a model's inlier tracks (its first keypoint on
 // each, in track order), its observation counts, and the links of a model (its registered pairs carrying
@@ -695,18 +697,18 @@ bool SeamGraphConsensusTest();
 // inverse-error reweighting does not follow a lighter copy that a least-squares solve would sit
 // between; a reading without scale is judged on its rotation; a reading cut by one round's averaging
 // is judged again in the next; a reading of weight 0 gives the scale and translation solves nothing
+bool ReadingWeightCamerasTest();
 bool HeavyWrongChordTest();
 bool TwoDirectionBridgeTest();
 bool SymmetricBridgePairsTest();
-bool OneCameraBridgeTest();
+bool OneCameraReadingTest();
 bool ReweightingStartTest();
-bool RotationOnlyReadingTest();
 bool BarsReEntryTest();
-bool WeightlessScaleReadingTest();
 bool RingPlacementTest();
 // The cross-block track join: seam matches first, every match on the duplicate-image and length guards, the merged
 // model's adjustment keeping the right observations
 bool CrossBlockJoinTest();
+bool MergeJoinReprojectionTest();
 bool MergeTrackLengthTest();
 bool PooledSeamReadingTest();
 // The merge in rounds: a block kept whole, the regrouping around the merged model, the release (driven by hand)
@@ -736,6 +738,7 @@ bool RivalModesOnCycleTest();
 bool OneCameraSideTest();
 // A direction seen by one camera gives no reading; a block joined by single cameras only is released
 bool OneCameraDirectionTest();
+bool RigScaleTwoCamerasTest();
 // The correspondences a ring of bent blocks leaves past the bar and within the loose bar join their
 // tracks at the merge and end inliers within the bar after the final adjustment
 bool BentBlockClosureTest();

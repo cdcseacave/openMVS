@@ -480,6 +480,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::StarEvidenceTest())
 				return false;
+			if (!SFM::StarScaleGaugeTest())
+				return false;
 			if (!SFM::NearDuplicateYardstickTest())
 				return false;
 			if (!SFM::ResectionAcceptanceTest())
@@ -507,6 +509,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::ResectionInlierBarTest())
 				return false;
 			if (!SFM::ResectionDenseFitWeightTest())
+				return false;
+			if (!SFM::ResectionWeightedInlierBarTest())
 				return false;
 			if (!SFM::LinkWalksTest())
 				return false;
@@ -584,25 +588,25 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::SeamGraphConsensusTest())
 				return false;
+			if (!SFM::ReadingWeightCamerasTest())
+				return false;
 			if (!SFM::HeavyWrongChordTest())
 				return false;
 			if (!SFM::TwoDirectionBridgeTest())
 				return false;
 			if (!SFM::SymmetricBridgePairsTest())
 				return false;
-			if (!SFM::OneCameraBridgeTest())
+			if (!SFM::OneCameraReadingTest())
 				return false;
 			if (!SFM::ReweightingStartTest())
 				return false;
-			if (!SFM::RotationOnlyReadingTest())
-				return false;
 			if (!SFM::BarsReEntryTest())
-				return false;
-			if (!SFM::WeightlessScaleReadingTest())
 				return false;
 			if (!SFM::RingPlacementTest())
 				return false;
 			if (!SFM::CrossBlockJoinTest())
+				return false;
+			if (!SFM::MergeJoinReprojectionTest())
 				return false;
 			if (!SFM::MergeTrackLengthTest())
 				return false;
@@ -629,6 +633,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::OneCameraSideTest())
 				return false;
 			if (!SFM::OneCameraDirectionTest())
+				return false;
+			if (!SFM::RigScaleTwoCamerasTest())
 				return false;
 			if (!SFM::RingLoopClosureTest())
 				return false;

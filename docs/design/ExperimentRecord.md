@@ -182,15 +182,6 @@ degrees and passes at 5. The two counts above come from two replays of the trace
 recorded every registration against its own links -- which is why they differ by one: 1537 right of
 1541 accepted in the trace above, 1538 right registrations here.
 
-**A dense-discounted count waiver, not adopted.** A version of the `minInliersAbsolute` waiver that
-counted a dense inlier for less than a described one, the way the pair evidence and the bundle
-adjustment already do, was considered alongside the evidence-share and direction checks and not
-built: none of the three wrong registrations needed the waiver to pass in the first place -- 534's
-inlier share was 26%, 581's 45%, 1733's 36%, each already above the 25% `minInlierRatio` bar on its
-own -- so discounting it could only have refused a right dense-only registration in a textureless
-capture, the case the cap and the two link checks exist to protect, without catching any of the
-three.
-
 **The first validation, the 0.5 gate exempting the wrong registrations** (reconstruction from
 already matched scenes, 2026-09-18). On alameda a pose registered at a 54% inlier share -- image
 581, 87 of 162 correspondences -- landed 1.9 degrees off and took the 15 images registered from its
