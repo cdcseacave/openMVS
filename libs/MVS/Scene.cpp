@@ -858,7 +858,7 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 			-camera.C.x, -camera.C.y, -camera.C.z
 		);
 		f.print(mlp_raster_cam,
-			0, 0,
+			0.0, 0.0, // the lens distortion: doubles for %g (an int shifts every later value on x86-64 System V)
 			imageData.width, imageData.height,
 			camera.K(1,1)/camera.K(0,0), camera.K(0,0),
 			camera.K(0,2), camera.K(1,2)
