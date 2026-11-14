@@ -21572,12 +21572,13 @@ bool OneCameraSideTest()
 }
 /*----------------------------------------------------------------*/
 
-// A direction whose correspondences come from one camera gives no reading, and a reading whose weaker side one camera
-// supports does not enter the block graph: a block is joined by all its cameras together, never by one camera's pose.
+// A pair seen through one camera on one side gives no reading that enters the block graph: a block is joined by all its
+// cameras together, never by one camera's pose.
 // Three blocks of a ring, each joined to the other two.
-// - The cross pairs of (0, 2) kept only where they hold block 0's first camera: the direction of that single camera
-//   gives no reading, and the rig of block 2 on block 0's points is supported by that one camera on block 0's side, so
-//   it does not enter; the ring is placed whole through (0, 1) and (1, 2).
+// - The cross pairs of (0, 2) kept only where they hold block 0's first camera: no reading of (0, 2) enters the block
+//   graph (the direction of that single camera and the rig of block 2 on block 0's points, whose weaker side that one
+//   camera supports, are both refused; the test does not tell which bar refuses which); the ring is placed whole
+//   through (0, 1) and (1, 2).
 // - Then (0, 2) and (1, 2) each kept to one cross pair (one camera a side): block 2 has no rig reading, stays unplaced,
 //   and its images are released (merged with their features, without poses) for the resection.
 bool OneCameraDirectionTest()
@@ -21616,8 +21617,7 @@ bool OneCameraDirectionTest()
 			}
 		if (numReadings != 0) {
 			VERBOSE("OneCameraDirectionTest FAILED: the pair (0, 2) seen by one camera of block 0 gave %u readings, %u of them "
-				"block 2's rig on block 0's points (none expected: no reading from the single camera, and the rig's weaker side "
-				"held by one camera)", numReadings, numRig);
+				"block 2's rig on block 0's points (none expected: one camera holds a side)", numReadings, numRig);
 			return false;
 		}
 		GlobalAlignment ga(scene, alignCfg);
