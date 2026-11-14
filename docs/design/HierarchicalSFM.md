@@ -119,7 +119,7 @@ Every connected component of the kept readings (all of them at first) is average
 
 Every reading is then judged against the poses of its component: kept when its rotation is within `maxGraphRotationResidual` (5°), its scale ratio within `maxGraphScaleResidual` (1.20) and the translation it implies for A's camera centroid within `maxGraphTranslationResidual` (0.20) of the footprint the two blocks share (the smaller block's camera-box diagonal, never under `kMinExtentShare` 0.2 of the larger's). A reading whose two blocks the averaging did not both place cannot be judged and is off. The averaging and the cut repeat — a reading cut in one round is judged again in the next — until the kept set does not change, `kRobustRounds` (10) rounds at most.
 
-**A block pair no cycle tests.** A block pair that no cycle of the other block pairs tests is judged as every other: its readings stand on the cut against their component's poses, and a block it would place that no reading places stays out of the model for the next round.
+**A block pair no cycle tests.** A block pair that no cycle of the other block pairs tests is judged as every other: its readings pass the entry test and stand on the cut against their component's poses, and a block no reading places stays out of the model for the next round.
 
 **The model.** Each connected component of the readings left is a model, its block poses the last averaging's; the one holding the most images is the scene. A block with no pose is a model of its own, with its reason — no reading entered (it has no cross pairs, or the entry test refused every reading of it), every reading off, or no pose from the averaging — in the log and the merge report.
 

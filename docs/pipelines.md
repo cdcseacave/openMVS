@@ -206,7 +206,7 @@ Called from `Scene::Reconstruct()` when `useGlobalSolver=false` (default).
 ```mermaid
 graph TD
     A[ReconstructHierarchical<br/>Scene.cpp:726] --> B{images > maxViewsPerCluster?}
-    B -->|yes| C[SceneCluster::SplitScene<br/>SceneCluster.cpp]
+    B -->|yes| C[SceneCluster::Partition<br/>SceneCluster.cpp]
     B -->|no| D[Single sub-scene = this scene]
     C --> E[Per-cluster: BuildTracks<br/>Track.cpp union-find]
     D --> E
@@ -226,7 +226,7 @@ graph TD
     I -->|no| J[Move single sub-scene back to global]
     I -->|yes| K[GlobalAlignment::MergeScenes<br/>GlobalAlignment.cpp]
     K --> K1[EstimateSeamCandidates<br/>one reading per direction, weaker-side cameras x verified-pair share]
-    K1 --> K2[SelectSeamGraph / AverageBlockPoses<br/>average every component, cut past 5 deg / 1.20 / 0.20, repeat; bridge witnesses]
+    K1 --> K2[SelectSeamGraph / AverageBlockPoses<br/>average every component, cut past 5 deg / 1.20 / 0.20, repeat]
     K2 --> K3[Merge the model of most images<br/>average intrinsics + union-find tracks, closure at the loose bar]
     K3 --> K4[AdjustMergedScene<br/>filter at the loose bar + one BA]
     K4 --> J
@@ -237,7 +237,7 @@ graph TD
 
 **Step 1: Scene Clustering**
 
-- Function: `SceneCluster::SplitScene()` — `libs/SFM/SceneCluster.cpp`
+- Function: `SceneCluster::Partition()` — `libs/SFM/SceneCluster.cpp`
 - Input: full `scene.images`, `scene.pairs`
 - Processing: aggregative bottom-up clustering on covisibility graph; merges highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 200) and never past the ceiling; seven refinement passes then merge small clusters, balance load, split disconnected/thin-waisted clusters, and merge away or widen any cluster boundary the merge could not register against; keypoints/descriptors MOVED (not copied) to sub-scenes
 - Output: `std::vector<Scene> subScenes`, `std::vector<IIndexArr> localToGlobals`
@@ -249,7 +249,7 @@ graph TD
 - Input: `scene.pairs[]` matches (per sub-scene)
 - Processing: union-find over `(imageID, featureID)` pairs; merges observations connected through match chains; discards tracks with < 2 observations; duplicate-image guard
 - Output: `scene.tracks[]` with `Observation[]` arrays
-- Config: `minPairWeight` (3.0, pairs with lower weight ignored)
+- Config: `minPairWeight` (1.22, pairs whose composite weight does not exceed it are ignored; a negative bar ignores none)
 - Parallelism: per sub-scene runs in `BS::light_thread_pool::detach_loop`
 
 **Step 3: Star Initialization**
@@ -271,9 +271,9 @@ graph TD
 **Step 5: Global Alignment Merge**
 
 - Function: `GlobalAlignment::MergeScenes()` — `libs/SFM/GlobalAlignment.cpp`
-- Readings: `EstimateSeamCandidates()`/`EstimateSeamPair()` read every block pair the cross pairs join once per direction — a generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks, refined over its inliers (`ALIGN_CAMERAS`, default; a one-camera rig is a door read by that camera's own pose) — or once by a 3D-3D similarity (`ALIGN_POINTS`, `--cluster-alignment 0`); min `minCommonTracks` (25) inliers, `maxReprojError` (4px); each reading weighs the supporting cameras of its weaker side times the share of the verified pairs' inlier weight it reproduces
-- Selection: `SelectSeamGraph()` averages every component of the kept readings (`AverageBlockPoses()`: rotations by `GlobalRotationEstimator`, log-scales and camera-centroid translations reweighted by the inverse of each reading's error) and keeps every reading within 5 deg / 1.20 / 0.20 of the pair footprint of its component's poses, repeated until the kept set settles; a bridge keeps a reading only with two cameras on its weaker side and its verified pairs not against it; each component left is a model
-- Merge: the model holding the most images is applied — similarity transforms, shared camera intrinsics averaged via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`, keypoints/descriptors moved back, tracks merged by union-find with a 3D-proximity guard (every correspondence of every placed block pair within the loose bar, 3 x 4 px, joins by construction, without that guard); every other block is merged without a pose, for the post-merge resection to recover its images; `AdjustMergedScene()` (`Scene.cpp`) filters the merged scene at the loose bar and adjusts it once
+- Readings: `EstimateSeamCandidates()`/`EstimateSeamPair()` read every block pair the cross pairs join once per direction — a generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks, refined over its inliers (`ALIGN_CAMERAS`, default; a direction of one camera gives no reading) — or once by a 3D-3D similarity (`ALIGN_POINTS`, `--cluster-alignment 0`); min `minCommonTracks` (25) inliers, `maxReprojError` (4px); a reading enters only with two supporting cameras on its weaker side, an observed scale and the verified pairs across it not against it, and weighs those cameras times the share of the pairs' inlier weight it reproduces
+- Selection: `SelectSeamGraph()` averages every component of the kept readings (`AverageBlockPoses()`: rotations by `GlobalRotationEstimator`, log-scales and camera-centroid translations reweighted by the inverse of each reading's error) and keeps every reading within 5 deg / 1.20 / 0.20 of the pair footprint of its component's poses, repeated until the kept set settles; each component left is a model
+- Merge: the model holding the most images is applied — similarity transforms, shared camera intrinsics averaged via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`, keypoints/descriptors moved back, tracks merged by union-find on the duplicate-image and length guards and, for a match of a connecting pair, a reprojection guard (`maxJoinReprojError` 48 px; every correspondence of every placed block pair within the loose bar, 3 x 4 px, joins by construction, without that guard); every other block is merged without a pose, for the post-merge resection to recover its images; `AdjustMergedScene()` (`Scene.cpp`) filters the merged scene at the loose bar and adjusts it once
 - Output: merged global scene with all poses and tracks in one coordinate frame
 
 ---

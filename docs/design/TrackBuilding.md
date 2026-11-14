@@ -183,5 +183,3 @@ under the two policies (median 2, 90th percentile 8, 99th percentile 31 to 33, m
 - `TriangulateSkewLLS` keeps the first two rows of `[d]_x R`; they are linearly dependent for a
   bearing with a zero z component in the camera frame (only the third coordinate is then
   constrained by that observation), which a spherical camera produces at 90 degrees of longitude.
-- The `ReconstructionConfig::minPairWeight` comment says 0 disables the bar; `BuildTracks` disables
-  it with a negative value and a bar of 0 still drops the pairs without a weight.

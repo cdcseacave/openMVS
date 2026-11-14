@@ -22,7 +22,7 @@ adjustment (`Scene::Reconstruct`) closes the pass.
 The retrieval-based match modes (VOCABULARY, RETRIEVAL) rank candidates by visual similarity with no
 notion of capture order, and on a video or hand-held walkthrough that leaves out a share of the truly
 overlapping consecutive pairs -- exactly the ones that hold an interior's matched graph together end to
-end. `--match-sequence-overlap` (default 3, the whole candidate set of SEQUENTIAL mode) is now also
+end. `--match-sequence-overlap` (default 3, the whole candidate set of SEQUENTIAL mode) is also
 added, unconditionally, on top of whatever VOCABULARY or RETRIEVAL already picked
 (`PairsMatcher::AddSequentialPairs`): every image gets its next `overlap` neighbours in import order
 proposed alongside its ranked candidates. Images import in capture order, so a consecutive pair
