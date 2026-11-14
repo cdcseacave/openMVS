@@ -318,19 +318,33 @@ that ends at its twin takes the twin's pose, E and F and re-classifies its candi
 
 ## Validation
 
-Both matchers from images at 8 threads (right / wrong = images registered right or wrong against the capture's
-reference; F1 = the pose score; describe and matching passes in seconds; GPU peak = the process's memory).
+Both matchers at 8 threads (right / wrong = images registered right or wrong against the capture's reference; F1 =
+the pose score; describe and matching passes in seconds; GPU peak = the process's memory). FlexGlue runs from images
+with the bundle and the gate at 0.2. The RoMa2 rows of 4e5c6f6d, 1c65aab4, 5ada248e and Palace run from images; the RoMa2
+rows of the LaMAR sequences reconstruct a scene RoMa2 matched in an earlier run, so they carry no matching times.
 
 | capture | matcher | right / wrong | F1 | describe pass | matching passes | GPU peak MiB |
 |---|---|---|---|---|---|---|
-| 4e5c6f6d | RoMa2 | 249 / 30 | .9132 | 64 | 860 | 9718 |
-| 4e5c6f6d | FlexGlue + gate 0.2 | 258 / 21 to 278 / 0 (two runs) | .9231 to .9690 | 4 to 6 | 353 to 398 | 4160 |
+| 4e5c6f6d | RoMa2 | 250 / 33 | .9159 | 14 | 379 | 9718 |
+| 4e5c6f6d | FlexGlue | 278 / 0 | .9685 | 4 | 349 | 4136 |
 | 1c65aab4 | RoMa2 | 513 / 0 | .9857 | 22 | 634 | 10152 |
-| 1c65aab4 | FlexGlue + gate 0.2 | 514 / 0 | .9865 | 6 | 613 | 4448 |
 | 5ada248e | RoMa2 | 523 / 5 | .9488 | 23 | 664 | 10698 |
-| 5ada248e | FlexGlue + gate 0.2 | 529 / 4 | .9564 | 12 | 782 | 4492 |
 | Palace | RoMa2 | 496 / 1 | .8116 | 46 | 755 | 9962 |
-| Palace | FlexGlue + gate 0.2 | 492 / 1 | .7954 | 7 | 815 | 4296 |
+| Palace | FlexGlue | 494 / 1 | .8049 | 6 | 596 | 4272 |
+| LaMAR CAB_0120 | RoMa2 | 23 / 41 | .2049 | - | - | - |
+| LaMAR CAB_0120 | FlexGlue | 63 / 17 | .2871 | 5 | 389 | 4348 |
+| LaMAR LIN_0622 | RoMa2 | 139 / 0 | .4651 | - | - | - |
+| LaMAR LIN_0622 | FlexGlue | 139 / 0 | .4519 | 7 | 338 | 4132 |
+| LaMAR CAB_0112 | RoMa2 | 81 / 13 | .3260 | - | - | - |
+| LaMAR CAB_0112 | FlexGlue | 154 / 98 | .4276 | 4 | 383 | 4240 |
+| LaMAR CAB_0602 | RoMa2 | 88 / 0 | .2312 | - | - | - |
+| LaMAR CAB_0602 | FlexGlue | 90 / 0 | .2363 | 7 | 631 | 4528 |
+| LaMAR HGE_0118 | RoMa2 | 40 / 0 | .1455 | - | - | - |
+| LaMAR HGE_0118 | FlexGlue | 44 / 0 | .1633 | 6 | 526 | 4400 |
+
+The covisibility gate trades look-alike pairs against true ones: at 0.5 instead of 0.2, CAB_0120 registers 79 right and 0
+wrong images (F1 .3073) and Palace keeps 353 wrong verified pairs instead of 1742 at the same F1 (.8056), while 4e5c6f6d
+loses 3 registered images (F1 .9638); the matching passes take as long, because the warp is computed before the gate.
 
 The FlexGlue bundle matches PyTorch on 12 real pairs of four captures (ONNX Runtime 1.23.2, CPU provider): descriptor
 features to 3.3e-5, retrieval cosine 1.0000000; the H1 head inside the match graph agrees with the source's
@@ -373,9 +387,9 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
 
 - The pose prior (`ImagePair::posePrior`, FlexGlue only) is stored and exported to the pairs CSV but read by nothing;
   its disagreement with the verified pose flags most look-alike pairs (60% of the wrong verified poses at 10 / 30 deg,
-  13.7% of the right ones), measured as soft evidence for the contradiction cut and the pair weight, not used.
-- The covisibility gate's value (0.2) against the look-alike pairs it lets through (offline, on six captures: 0.5 removes 1026 of
-  1231 look-alike verified pairs at 149 of 25,966 true ones).
+  13.7% of the right ones). As a weight inside the contradiction cut's rotation averaging it changes at most 3 pairs per
+  capture; as a factor on the pair weight it is unmeasured.
+- The covisibility gate's value: 0.2 lets through look-alike pairs that 0.5 removes (see Validation).
 - The verdict does not tell apart two images of different instances of a repeated structure (both give a consistent
   correspondence set); the triplet scores and the contradiction cut downstream do (`TripletScores.md`,
   `ContradictionCut.md`).
@@ -385,5 +399,3 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
 - FlexGlue's coarser warp grid (128 cells against 160) is the candidate cause of its lower F1 on Palace.
 - `--roma2` help text names DINOv3/GeM retrieval; with `--dense-matcher flexglue` the retrieval is FlexGlue's pooled
   256-D descriptor.
-- The validation table's FlexGlue rows come from the first export (the H0 head); the bundle's own rows replace them as
-  its runs finish (4e5c6f6d from images, no RoMa2 model reachable: F1 .9701, describe 6 s, matching 596 s, GPU peak 4136 MiB).
