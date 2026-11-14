@@ -25,7 +25,7 @@ In plain words: the images are split into groups (blocks), each block is reconst
 
 #### Covisibility Graph
 
-A weighted undirected graph is built where nodes are images and edge weights are composite pair weights. Edges below `minPairWeight` (3.0) are discarded. The evidence behind that weight counts a pair's dense inliers in proportion to the matcher's frame target (`denseFrameInliers` 50 over `denseMatchesPerFrame` 2000, `PairsWeightingConfig`): a whole frame's worth of dense inliers is a modest descriptor pair's evidence, 50 weighted inliers, so a wide, imprecise dense-only overlap cannot outweigh the descriptor-verified pairs around it, while two dense-only pairs of one image keep the ratio of their counts and a textureless interior keeps its links in order. The graph is stored in CSR format for compatibility with graph partitioning libraries. If the scene arrives with matches but no tracks, they are built once here so the seam statistics the refinement passes below read have something to read; each sub-scene rebuilds its own tracks again once it is split off.
+A weighted undirected graph is built where nodes are images and edge weights are composite pair weights. Edges below `minPairWeight` (0.9, `ClusterConfig`) are discarded. The evidence behind that weight counts a pair's dense inliers in proportion to the matcher's frame target (`denseFrameInliers` 50 over `denseMatchesPerFrame` 2000, `PairsWeightingConfig`): a whole frame's worth of dense inliers is a modest descriptor pair's evidence, 50 weighted inliers, so a wide, imprecise dense-only overlap cannot outweigh the descriptor-verified pairs around it, while two dense-only pairs of one image keep the ratio of their counts and a textureless interior keeps its links in order. The graph is stored in CSR format for compatibility with graph partitioning libraries. If the scene arrives with matches but no tracks, they are built once here so the seam statistics the refinement passes below read have something to read; each sub-scene rebuilds its own tracks again once it is split off.
 
 #### Aggregative Clustering
 
@@ -181,7 +181,7 @@ Merge round r >= 2 (RegroupAfterMerge):
 
 ## 5. Validation of the shipped defaults
 
-Measured with the dev build of this design, 8 threads, one run per capture, each run reloading the capture's saved matched scene (`rotconf-20261107-match/precut`). Points = the share of the final tracks valid.
+Measured with the merge as described here, 8 threads, one run per capture, each run reloading the capture's saved matched scene (`rotconf-20261107-match/precut`). Points = the share of the final tracks valid.
 
 | capture | registered | right / wrong | pose score | points valid | rounds |
 |---|---|---|---|---|---|
@@ -196,13 +196,17 @@ Measured with the dev build of this design, 8 threads, one run per capture, each
 | 26ccbd51 | 726 / 730 | 720 / 0 | .9764 | 97.5% | 1 |
 | Indoor_044 | 1087 / 1087 | 1087 / 0 | .7149 | 96.7% | 1 |
 
-The rows come from the dev build without the anchor at block 0; in every round 2 and 3 these runs ran (4e5c6f6d, 6DCA1E8E) block 0's model was the one merged (its merge dumps), so the anchor changes none of them. The rounds acted on two of the ten captures and changed the outcome on none; 8-thread reloads vary by about .008 in pose score. The wrong images of 6DCA1E8E (134, 240, 283), 5ada248e (129, 491, 494-496) and 4e5c6f6d (block 1's 16-41) are wrong inside their own block, before the merge.
+In every round 2 and 3 these runs ran (4e5c6f6d, 6DCA1E8E) block 0's model was the one merged, so anchoring the rounds at block 0 changes none of the rows. The rounds acted on two of the ten captures and changed the outcome on none; 8-thread reloads vary by about .008 in pose score. The wrong images of 6DCA1E8E (134, 240, 283), 5ada248e (129, 491, 494-496) and 4e5c6f6d (block 1's 16-41) are wrong inside their own block, before the merge.
 
 The join guard at 48 px against the guard off, 12 and 24 px (eight captures, one 8-thread reload each): it refuses 2-7% of the attempted joins, the final tracks are as long as with the guard off, and the pose score does not separate the four values.
 
 ## 6. Rejected alternatives
 
 The final design — extra modes on camera evidence, free space, the evidence product, a consensus over spanning forests and an exclusive-evidence bridge rule — places the same blocks on every capture measured and is recorded as an alternative in `docs/design/ExperimentRecord.md`, section "The block merge as one decision over the block graph (the final design, not shipped)".
+
+- **The block-graph merge of that final design**: the verified pairs as an entry gate refused right readings (5992d620 block 1 wrong, F1 -0.155) where as a factor they remove alameda's wrong block 3 (+0.0076); a free-space conflict factor separates copies (62-66% against 15-17%); a camera trigger instead of the unexplained-share trigger (alameda merge 906 s -> 270 s, 5936fac3 -0.0051) needs an exclusive-evidence bridge rule (else b68e320e's 55-image block is lost, F1 -0.119); a consensus over spanning forests moved only Outdoor_004 (+0.1761); closing at the plain bar costs 0.0126 accuracy. Not shipped: the simple merge gives the same blocks on 17 of 17 captures with about 750 lines fewer (planted failure tests HeavyFalseChordTest, CopyOnDoorTriangleTest, BridgeEqualReadingsTest).
+- **The interleaving gate** (a placement vetoed when under 0.8 of the moved block's cameras keep an own nearest neighbour): it never refused a wrong placement on eight captures and refused right blocks (alameda, 4 of 14).
+- **Skipping the coupling test for a cluster at the target size**: such a cluster absorbed a community under the floor over a thin interface (the seven-image appendage of alameda), so the partition tests the coupling of every merge.
 
 - **The per-pair bars on the readings and the witness** (a cross pair of at least 25 weighted inliers to link two blocks, of 30 to witness a reading): two light pairs of one camera each say nothing alone where their sum does; with them same-image accuracy is .9114 on 5ada248e (.9424 pooled), within the noise elsewhere, and .619 on 6DCA1E8E (.604 pooled, not explained).
 - **No guard on the cross-block join**: the joins it lets through leave tracks at points the merged model's filter and triangulation must repair (right after the join the mean reprojection error is 2.2 million px on 26ccbd51 and 44 thousand px on 5ada248e, against 1.7-2.0 px with the guard at 48 px), for no better final scene.
@@ -246,5 +250,6 @@ Tried as an internal-soundness check inside `GlobalAlignment` and abandoned: on 
 - **Wrong images inside a block** are placed with their block: the merge assumes every image of a block is right in it.
 - **Two planted scenes it places wrong**, neither of which any capture of the 18 produces: a 180° chord carried by every camera of a block with no verified pairs to refuse it (only a free-space test sees it); a bridge whose two readings weigh alike a period of a repeated structure apart (only a search for a second mode sees the rival).
 - **A component the averaging places only in part** — blocks in another rotation frame, or tied to the gauge's side by readings without scale alone — loses the rest: their readings cannot be judged and go off, and their images go to the resection. Not seen on the 18 captures.
-- **The closure is now only a join priority** (the guard it bypassed is gone): dropping it is a possible simplification, not measured (it would not be byte-identical).
+- **The closure is a join priority that skips the join guard**: dropping it is a possible simplification, not measured (it would not be byte-identical).
+- **The standalone community's seam bar** (`IsStrongSeam`, over the whole scene's track graph) counts something else than the merge's bar; a seam bar of the partition that counts what the merge counts is not built.
 - **The 3D-3D alternative** (`--cluster-alignment 0`) is weaker: alameda places block 5 wrong (F1 0.9876 against 0.9972), 1c65aab4 places 2 of 4 blocks (the resection recovers the images, at 2.6 times the run's CPU), b68e320e one block fewer.
