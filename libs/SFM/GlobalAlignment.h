@@ -205,6 +205,11 @@ struct SFM_API GlobalAlignmentConfig
 	// block pairs join their tracks at and the merged scene is first filtered at: a model never closes
 	// its cycles exactly, and a block bent within the graph bars is off by about this at its far end
 	static constexpr float looseSeamFactor = 3.f;
+	// The guard of the cross-block track join, in pixels (0 = off): a match of a connecting pair joins two
+	// tracks only when the point of each, where it has one, reprojects within this into every posed
+	// observation of the other; the correspondences of the closure join on the duplicate-image and length
+	// guards alone
+	float maxJoinReprojError{48.f};
 	// 3D-3D estimator (ALIGN_POINTS):
 	double simInlierThresholdFactor{0.01};  // RANSAC inlier distance as a fraction of the destination bbox diagonal
 	double minSimInlierRatio{0.3};          // minimum RANSAC inlier ratio required to accept a sub-scene pair
@@ -402,8 +407,9 @@ private:
 	 * 2. Union the seam inliers first (a join priority), under the duplicate-image and length guards
 	 * 3. Process the connecting pairs (two sub-scenes, or an image in no sub-scene: a pool image,
 	 *    whose pairs are the only source of its tracks) to connect tracks across boundaries,
-	 *    a join refused when it would hold one image twice or more than 255 observations; the pairs
-	 *    of an unplaced block kept whole are skipped
+	 *    a join refused when it would hold one image twice or more than 255 observations, or when a
+	 *    point of one side reprojects farther than maxJoinReprojError into a posed observation of the
+	 *    other; the pairs of an unplaced block kept whole are skipped
 	 * 4. Assemble final tracks, triangulating any new tracks without 3D positions
 	 *
 	 * Tracks of unplaced sub-scenes (all observations in unregistered images) are seeded with

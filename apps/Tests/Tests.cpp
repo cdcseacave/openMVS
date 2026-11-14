@@ -608,6 +608,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::CrossBlockJoinTest())
 				return false;
+			if (!SFM::MergeJoinReprojectionTest())
+				return false;
 			if (!SFM::MergeTrackLengthTest())
 				return false;
 			if (!SFM::PooledSeamReadingTest())

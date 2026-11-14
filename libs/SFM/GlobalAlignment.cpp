@@ -1687,6 +1687,7 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		Point3 position{Point3::ZERO};
 		uint32_t numInliers{0};
 		std::unique_ptr<std::unordered_set<IIndex>> images;
+		std::unique_ptr<ObservationArr> posedObs; // its observations in posed images, the ones a point joining it must explain
 		bool hasPosition{false};
 
 		void InitImages() {
@@ -1768,13 +1769,19 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 			if (obs.imageID < scene.images.size() &&
 				obs.featureID < scene.images[obs.imageID].keypoints.size()) {
 				meta.images->emplace(obs.imageID);
+				// the inliers of a positioned track (what its point was computed from), every posed one otherwise
+				if ((!meta.hasPosition || i < track.numInliers) && scene.images[obs.imageID].IsValid()) {
+					if (!meta.posedObs)
+						meta.posedObs = std::make_unique<ObservationArr>();
+					meta.posedObs->push_back(obs);
+				}
 			}
 		}
 	}
 
 	// Cross-sub-scene connectivity: the seam inliers below, then every connecting pair in Phase 2,
 	// share one union-find, one set of root guards, and one summary.
-	unsigned numMerged = 0, numRejectedDupImage = 0, numRejectedLength = 0, numNewPairTracks = 0;
+	unsigned numMerged = 0, numRejectedDupImage = 0, numRejectedLength = 0, numRejectedReprojection = 0, numNewPairTracks = 0;
 	unsigned numCrossScenePairs = 0, numSeamMerged = 0;
 
 	// Ensure root has metadata and feature is counted exactly once;
@@ -1788,6 +1795,11 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		RootMeta& meta = rootMeta[ds.Find(gid)];
 		meta.InitImages();
 		meta.images->emplace(imgID);
+		if (scene.images[imgID].IsValid()) {
+			if (!meta.posedObs)
+				meta.posedObs = std::make_unique<ObservationArr>();
+			meta.posedObs->emplace_back(imgID, gid - featureOffsets[imgID]);
+		}
 	};
 
 	// Guard 1, shared by every union below: reject if merging would create duplicate image
@@ -1813,6 +1825,13 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		metaDst.numInliers += metaSrc.numInliers;
 		metaDst.images->insert(metaSrc.images->begin(), metaSrc.images->end());
 		metaSrc.images.reset();
+		if (metaSrc.posedObs) {
+			if (!metaDst.posedObs)
+				metaDst.posedObs = std::move(metaSrc.posedObs);
+			else
+				metaDst.posedObs->Join(*metaSrc.posedObs);
+			metaSrc.posedObs.reset();
+		}
 	};
 
 	// Guard 2, shared by every union below: a track holds at most 255 observations (its inlier count is a
@@ -1821,9 +1840,28 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		return metaDst.images->size() + metaSrc.images->size() <= 255;
 	};
 
-	// One join of two features' sets under guards 1 and 2, counted in `numJoined`: no reprojection test,
-	// the triangulation and the track filter that follow the merge decide each observation
-	auto Join = [&](uint32_t gid1, uint32_t gid2, unsigned& numJoined) {
+	// Guard 3, for the matches of the connecting pairs: the point of a root, where it has one, must
+	// reproject within maxJoinReprojError into every posed observation of the other, judged as FilterTracks
+	// judges (the angle between the observed ray and the point, the bar converted per camera); a root
+	// without posed observations offers nothing to check. The closure's correspondences skip it: the final
+	// block poses already explain them within the loose bar
+	ASSERT(config.maxJoinReprojError >= 0.f);
+	auto ReprojectsInto = [&](const Point3& X, const RootMeta& meta) -> bool {
+		if (!meta.posedObs)
+			return true;
+		for (const Observation& obs : *meta.posedObs) {
+			const Image& img = scene.images[obs.imageID];
+			ASSERT(img.IsValid() && img.HasCamera());
+			const Point3 Xcam = img.TransformPointW2C(X);
+			const Point3 observedRay = img.pCamera->UnprojectNormalized(Cast<REAL>(img.keypoints[obs.featureID].pt));
+			if (ComputeAngle(observedRay.ptr(), Xcam.ptr()) < COS(img.pCamera->PixelErrorToAngular(config.maxJoinReprojError)))
+				return false;
+		}
+		return true;
+	};
+
+	// One join of two features' sets under guards 1 and 2, and guard 3 when asked, counted in `numJoined`
+	auto Join = [&](uint32_t gid1, uint32_t gid2, unsigned& numJoined, bool guarded) {
 		ds.UnionIf(gid1, gid2,
 			[&](uint32_t rootDst, uint32_t rootSrc) -> bool {
 				RootMeta& metaDst = rootMeta[rootDst];
@@ -1835,6 +1873,12 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 				}
 				if (!FitsInTrack(metaDst, metaSrc)) {
 					++numRejectedLength;
+					return false;
+				}
+				if (guarded && config.maxJoinReprojError > 0.f &&
+					((metaDst.hasPosition && !ReprojectsInto(metaDst.position, metaSrc)) ||
+					 (metaSrc.hasPosition && !ReprojectsInto(metaSrc.position, metaDst)))) {
+					++numRejectedReprojection;
 					return false;
 				}
 				MergeRoots(metaDst, metaSrc);
@@ -1854,7 +1898,7 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		const uint32_t gid2 = featureOffsets[corr.imageB] + corr.featureB;
 		AccumulateFeature(gid1, corr.imageA);
 		AccumulateFeature(gid2, corr.imageB);
-		Join(gid1, gid2, numSeamMerged);
+		Join(gid1, gid2, numSeamMerged, false);
 	}
 
 	// Phase 2: Process ONLY the connecting pairs to merge tracks across sub-scene boundaries.
@@ -1901,7 +1945,7 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 			AccumulateFeature(gid1, pair.ID1);
 			AccumulateFeature(gid2, pair.ID2);
 
-			Join(gid1, gid2, numMerged);
+			Join(gid1, gid2, numMerged, true);
 		}
 	}
 
@@ -1951,9 +1995,9 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 	}
 
 	DEBUG("Track merge: %u/%u tracks, %u cross-sub-scene merges from %u connecting pairs, "
-		"%u from seam inliers, %u new from pairs, %u rejected by duplicate image, %u rejected by length",
+		"%u from seam inliers, %u new from pairs, %u rejected by duplicate image, %u rejected by length, %u rejected by reprojection (%g px)",
 		scene.status.nTracks, scene.tracks.size(), numMerged, numCrossScenePairs,
-		numSeamMerged, numNewPairTracks, numRejectedDupImage, numRejectedLength);
+		numSeamMerged, numNewPairTracks, numRejectedDupImage, numRejectedLength, numRejectedReprojection, config.maxJoinReprojError);
 }
 /*----------------------------------------------------------------*/
 

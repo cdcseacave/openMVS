@@ -20504,13 +20504,13 @@ bool RingPlacementTest()
 // block placed 0.5 too deep along its own camera's ray (well under a pixel in every view); the false
 // one joins two different near points 0.5 apart across the ray (50 px). The same for a one-sided root,
 // a block-0 track matched to a keypoint of block 1 no track holds, once at its true projection and once
-// 50 px off. The merge joins every one of them on the duplicate-image and length guards alone (no
-// reprojection guard); the merged model's adjustment (AdjustMergedScene: the loose-bar filter, the
-// triangulation, the filter again) decides each observation: the right matches end as inliers of one
-// track, the false ones never do. And the closure's join priority: a far point whose seam match (i, j) and a
+// 50 px off. With the join guard off the merge joins every one of them on the duplicate-image and length
+// guards alone; at a guard under 50 px the false ones are refused. The merged model's adjustment
+// (AdjustMergedScene: the loose-bar filter, the triangulation, the filter again) decides each observation:
+// the right matches end as inliers of one track, the false ones never do. And the closure's join priority: a far point whose seam match (i, j) and a
 // competing match of a pair (a0, j) visited before it in the connecting pairs' order both put a keypoint of j on
 // its track: the seam match joins first, the competing one is refused for holding image j twice.
-bool CrossBlockJoinTest()
+static bool CrossBlockJoinCase(const char* name, float maxJoinReprojError)
 {
 	TD_TIMER_START();
 	RingSceneConfig cfg{2, 20};
@@ -20526,7 +20526,7 @@ bool CrossBlockJoinTest()
 	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
 	ImagePair* crossPair = scene.FindPair(i, j);
 	if (crossPair == NULL) {
-		VERBOSE("CrossBlockJoinTest FAILED: no pair across the seam between images %u and %u", i, j);
+		VERBOSE("%s FAILED: no pair across the seam between images %u and %u", name, i, j);
 		return false;
 	}
 	const auto LocalOf = [&](uint32_t b, IIndex g) -> IIndex {
@@ -20582,7 +20582,7 @@ bool CrossBlockJoinTest()
 		!AddTrack(0, a0, i, near2, near2, fOneFalseI) || !AddKeypoint(1, j, near2 + across * d, fOneFalseJ) ||
 		!AddTrack(0, a0, i, far3, far3, fFirstI, &fFirstA0) || !AddTrack(1, j, b1, far3, far3, fFirstJ) ||
 		!AddKeypoint(1, j, far3 + across * REAL(4), fFirstBadJ)) {
-		VERBOSE("CrossBlockJoinTest FAILED: a test point does not project into the seam's four images");
+		VERBOSE("%s FAILED: a test point does not project into the seam's four images", name);
 		return false;
 	}
 	crossPair->matches.emplace_back(fRightI, fRightJ);
@@ -20604,11 +20604,12 @@ bool CrossBlockJoinTest()
 	}
 
 	GlobalAlignmentConfig alignCfg;
+	alignCfg.maxJoinReprojError = maxJoinReprojError;
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
 	if (rep.numPlaced != 2) {
-		VERBOSE("CrossBlockJoinTest FAILED: %u of 2 blocks placed", rep.numPlaced);
+		VERBOSE("%s FAILED: %u of 2 blocks placed", name, rep.numPlaced);
 		return false;
 	}
 	// joined: one merged track holds both ends of the match (as inliers, when asked)
@@ -20630,29 +20631,42 @@ bool CrossBlockJoinTest()
 	// the seam-consistent match took the far point's track; the competing one, visited first, was refused
 	const bool firstRight = Joined(fFirstI, fFirstJ, false), firstWrong = Joined(fFirstI, fFirstBadJ, false);
 	if (!firstRight || firstWrong) {
-		VERBOSE("CrossBlockJoinTest FAILED: the seam match of the far point %s and the competing match of the pair visited "
+		VERBOSE("%s FAILED: the seam match of the far point %s and the competing match of the pair visited "
 			"before it %s (the seam match expected to join first, the other refused for holding image %u twice)",
-			firstRight ? "joined" : "did not join", firstWrong ? "joined" : "did not join", j);
+			name, firstRight ? "joined" : "did not join", firstWrong ? "joined" : "did not join", j);
 		return false;
 	}
 	const bool joined[4] = {Joined(fRightI, fRightJ, false), Joined(fFalseI, fFalseJ, false),
 		Joined(fOneRightI, fOneRightJ, false), Joined(fOneFalseI, fOneFalseJ, false)};
-	if (!joined[0] || !joined[1] || !joined[2] || !joined[3]) {
-		VERBOSE("CrossBlockJoinTest FAILED: the merge joined right %d, false %d, one-sided right %d, one-sided 50 px off %d "
-			"(every match expected joined, on the duplicate-image and length guards alone)", joined[0], joined[1], joined[2], joined[3]);
+	// with the guard off every match joins; at 48 px the false ones (50 px off) are refused
+	const bool guarded = maxJoinReprojError > 0.f;
+	if (!joined[0] || joined[1] == guarded || !joined[2] || joined[3] == guarded) {
+		VERBOSE("%s FAILED: the merge joined right %d, false %d, one-sided right %d, one-sided 50 px off %d "
+			"(the right ones expected joined, the false ones %s at a join guard of %g px)", name, joined[0], joined[1], joined[2], joined[3],
+			guarded ? "refused" : "joined", maxJoinReprojError);
 		return false;
 	}
 	AdjustMergedScene(scene, ReconstructionConfig());
 	const bool right = Joined(fRightI, fRightJ, true), wrong = Joined(fFalseI, fFalseJ, true);
 	const bool oneRight = Joined(fOneRightI, fOneRightJ, true), oneWrong = Joined(fOneFalseI, fOneFalseJ, true);
 	if (!right || wrong || !oneRight || oneWrong) {
-		VERBOSE("CrossBlockJoinTest FAILED: after the merged model's adjustment, two positioned roots d=%g apart: right match %s (expected inliers of one track), false match %s (expected not); one positioned root: right %s (expected inliers), 50 px off %s (expected not)",
-			d, right ? "inliers" : "not", wrong ? "inliers" : "not", oneRight ? "inliers" : "not", oneWrong ? "inliers" : "not");
+		VERBOSE("%s FAILED: after the merged model's adjustment, two positioned roots d=%g apart: right match %s (expected inliers of one track), false match %s (expected not); one positioned root: right %s (expected inliers), 50 px off %s (expected not)",
+			name, d, right ? "inliers" : "not", wrong ? "inliers" : "not", oneRight ? "inliers" : "not", oneWrong ? "inliers" : "not");
 		return false;
 	}
-	VERBOSE("CrossBlockJoinTest PASSED: the seam match joined before a competing one, every match joined, and after the merged model's adjustment the right ones are inliers of one track, the false ones (%g apart, 50 px) not (%s)",
-		d, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("%s PASSED: the seam match joined before a competing one, the right matches joined and the false ones %s at a join guard of %g px, and after the merged model's adjustment the right ones are inliers of one track, the false ones (%g apart, 50 px) not (%s)",
+		name, guarded ? "refused" : "joined", maxJoinReprojError, d, TD_TIMER_GET_FMT().c_str());
 	return true;
+}
+bool CrossBlockJoinTest()
+{
+	return CrossBlockJoinCase("CrossBlockJoinTest", 0.f);
+}
+// The guard of the cross-block join at its default, 48 px: the same seam, the right matches joined, the two false ones
+// (50 px off) refused
+bool MergeJoinReprojectionTest()
+{
+	return CrossBlockJoinCase("MergeJoinReprojectionTest", GlobalAlignmentConfig().maxJoinReprojError);
 }
 /*----------------------------------------------------------------*/
 
