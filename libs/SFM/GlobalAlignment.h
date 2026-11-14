@@ -337,8 +337,8 @@ private:
 	 * @param footprints per block, its camera footprint; its size is the number of blocks
 	 * @param poses out: one entry per block; every block the rotation, scale and translation
 	 * averaging reaches from the gauge gets its local -> gauge frame transform and model 0, the
-	 * rest keep model NO_ID and state UNPLACED (all of them when the component's readings observe
-	 * no scale at all)
+	 * rest keep model NO_ID and state UNPLACED (all of them when the scale and translation solves
+	 * leave no metric tie to the gauge)
 	 */
 	void AverageBlockPoses(
 		const std::vector<SeamCandidate>& candidates,

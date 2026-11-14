@@ -18039,7 +18039,7 @@ bool SceneClusterCoupledOrphanSkippedTest()
 // cluster hanging under the coupling floor: X holds a 10-image body, a 5-image stretch and the one
 // image bridging them, which leans toward the smaller cluster Y (affinity 1.5, past the pass's 0.7);
 // moving it would leave the stretch on the body by a pair of weight 4 against its own 550. It stays,
-// and so does the stretch, where the pass used to move the bridge and strand it.
+// and so does the stretch, where moving the bridge would strand it.
 bool SceneClusterBalanceCouplingTest()
 {
 	TD_TIMER_START();

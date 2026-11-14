@@ -94,7 +94,7 @@ public:
 
 	// Cut, while two keypoints of one image share a piece without being one feature (within
 	// mergeDist2; negative merges nothing), the least-supported link on the shortest path between
-	// them: the fewest triangles through it, then the lighter pair, then the later link. The
+	// them: the fewest triangles through it, then the lighter pair, then the earlier one in pair order. The
 	// support is counted once, on the component as it arrived: a triangle is evidence whether or
 	// not one of its links has since been cut. Returns the number of links cut.
 	unsigned Cut(float mergeDist2) {

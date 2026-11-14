@@ -691,12 +691,13 @@ bool GlobalAlignmentTranslationAveragingExtendedTest();
 bool RobustAveragingScaleTest();
 bool RobustAveragingTranslationTest();
 bool SeamGraphConsensusTest();
-// The selection over planted block graphs: a chord heavier than any one true seam and wrong by 30
-// degrees across two cycles is left off; a bridge keeps a reading only where its two directions
-// agree, two cameras hold its weaker side and the verified pairs across it are not against it; the
-// inverse-error reweighting does not follow a lighter copy that a least-squares solve would sit
-// between; a reading without scale is judged on its rotation; a reading cut by one round's averaging
-// is judged again in the next; a reading of weight 0 gives the scale and translation solves nothing
+// The selection over planted block graphs: a reading weighs the supporting cameras of its weaker side
+// times its verified pairs' share; a chord heavier than any one true seam and wrong by 30 degrees
+// across two cycles is left off; of the two directions of a block pair no cycle tests (a bridge), the
+// one turned past the rotation bar is cut; a reading whose weaker side is one camera does not enter,
+// nor one the verified pairs across it are against; the inverse-error reweighting does not follow a
+// lighter copy that a least-squares solve would sit between; a reading cut by one round's averaging
+// is judged again in the next
 bool ReadingWeightCamerasTest();
 bool HeavyWrongChordTest();
 bool TwoDirectionBridgeTest();
