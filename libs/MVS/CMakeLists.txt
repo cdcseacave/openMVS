@@ -43,13 +43,19 @@ LIST(REMOVE_ITEM LIBRARY_FILES_C "${PATH_PythonWrapper_cpp}")
 set(_METAL_SHADERS PatchMatchMetal ConfidenceMetal)
 if(_USE_METAL)
 	set(_METAL_MSL_HEADER "// AUTO-GENERATED at configure time from ${_METAL_SHADERS} (.metal) -- do not edit.\n#pragma once\n")
+	set(_METAL_LIBRARY_SRC "")
 	foreach(_SHADER ${_METAL_SHADERS})
 		# an edit of the kernels re-runs the configure step that embeds them
 		set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_SHADER}.metal")
 		file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_SHADER}.metal" _MSL_SRC)
 		string(APPEND _METAL_MSL_HEADER "static const char* k${_SHADER}MSL = R\"METALSRC(\n${_MSL_SRC})METALSRC\";\n")
+		string(APPEND _METAL_LIBRARY_SRC "#line 1 \"${CMAKE_CURRENT_SOURCE_DIR}/${_SHADER}.metal\"\n${_MSL_SRC}\n")
 	endforeach()
 	file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal_msl.h" "${_METAL_MSL_HEADER}")
+	# the one library the runtime compiles: the shader sources joined in this order (PatchMatchMetal.mm),
+	# ConfidenceMetal.metal using the camera models of PatchMatchMetal.metal; the line directives keep
+	# the offline compiler's messages on the source files
+	file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/MetalLibrary.metal" "${_METAL_LIBRARY_SRC}")
 	LIST(APPEND LIBRARY_FILES_C "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.mm")
 endif()
 
@@ -77,15 +83,11 @@ if(_USE_METAL)
 	execute_process(COMMAND xcrun -sdk macosx metal -c "${_METAL_PROBE}" -o "${CMAKE_CURRENT_BINARY_DIR}/MetalProbe.air"
 		RESULT_VARIABLE _METAL_PROBE_RESULT OUTPUT_QUIET ERROR_QUIET)
 	if(_METAL_PROBE_RESULT EQUAL 0)
-		set(_METAL_AIRS)
-		foreach(_SHADER ${_METAL_SHADERS})
-			add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${_SHADER}.air"
-				COMMAND xcrun -sdk macosx metal -c "${CMAKE_CURRENT_SOURCE_DIR}/${_SHADER}.metal" -o "${CMAKE_CURRENT_BINARY_DIR}/${_SHADER}.air"
-				DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_SHADER}.metal"
-				COMMENT "Compiling ${_SHADER}.metal with the offline Metal compiler")
-			list(APPEND _METAL_AIRS "${CMAKE_CURRENT_BINARY_DIR}/${_SHADER}.air")
-		endforeach()
-		add_custom_target(PatchMatchMetalCheck DEPENDS ${_METAL_AIRS})
+		add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/MetalLibrary.air"
+			COMMAND xcrun -sdk macosx metal -c "${CMAKE_CURRENT_BINARY_DIR}/MetalLibrary.metal" -o "${CMAKE_CURRENT_BINARY_DIR}/MetalLibrary.air"
+			DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/MetalLibrary.metal"
+			COMMENT "Compiling the Metal kernels with the offline Metal compiler")
+		add_custom_target(PatchMatchMetalCheck DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/MetalLibrary.air")
 		add_dependencies(MVS PatchMatchMetalCheck)
 	else()
 		MESSAGE(STATUS "No offline Metal compiler: the Metal kernels are compiled at runtime only")

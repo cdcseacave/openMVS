@@ -12,6 +12,12 @@ if(VCPKG_TARGET_IS_WINDOWS)
     vcpkg_check_linkage(ONLY_STATIC_LIBRARY)
 endif()
 
+# PoseLib builds with -Wall -Werror; GCC 15 reports a false -Warray-bounds inside the AVX loads of
+# Eigen's vectorized QR on fixed 5x5 matrices (p2p2pl.cc): keep that one a warning
+if(VCPKG_TARGET_IS_LINUX)
+    string(APPEND VCPKG_CXX_FLAGS " -Wno-error=array-bounds")
+endif()
+
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
