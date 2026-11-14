@@ -1467,9 +1467,10 @@ bool GlobalAlignment::MergeTransformedScenes(
 	const std::vector<SeamCorrespondence>& seamInliers,
 	bool releaseUnplaced)
 {
-	// A block still admitted is one the merged model took in: every other block is unplaceable,
-	// and an unplaced block is merged without poses below, so transforming it would be wasted work
-	// -- and its pose, which the merged model does not hold, would inject garbage.
+	// A block still admitted is one the merged model took in, and only its pose is applied: every
+	// other block is unplaceable, and transforming it would be wasted work -- and its pose, which
+	// the merged model does not hold, would inject garbage. An unplaced block is merged without
+	// poses below when releaseUnplaced is set, and kept whole in its own scene otherwise.
 	ASSERT(poses.size() == subScenes.size());
 	std::vector<bool> placed(subScenes.size(), false);
 	FOREACH(sceneIdx, subScenes) {
