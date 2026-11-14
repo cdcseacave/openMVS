@@ -234,13 +234,17 @@ floor.
 
 Pooled inlier/outlier ROC-AUC and the contamination/completeness frontier, raw photometric
 confidence vs. the shipped recalibration, measured against real ground-truth depth (BlendedMVS +
-ETH3D, 28 scene-levels; a GT inlier is `|d_est − d_gt| ≤ 1%·d_gt`):
+ETH3D, 28 scene-levels: ETH3D courtyard, facade, meadow, office, delivery_area, pipes at
+resolution levels 3/2/1 and five BlendedMVS validation scenes at levels 1/0, `--max-resolution 3200`;
+CUDA estimation with `--postprocess-dmaps 0`, then the standalone CPU sweep with `--postprocess-dmaps 8
+--geometric-iters 0` on the same maps; a GT inlier is `|d_est − d_gt| ≤ 1%·d_gt`; values are means
+over the scene-levels):
 
 | pool | ROC-AUC (raw → adjusted) | completeness @ ≤1% contamination | contamination @ ≥90% completeness |
 |---|---|---|---|
-| ALL (28 scene-levels) | 0.844 → 0.926 | 31.5% → 57.9% | 10.4% → 7.1% |
-| ETH3D (18) | 0.816 → 0.910 | 17.9% → 49.0% | 11.3% → 8.7% |
-| BlendedMVS (10) | 0.895 → 0.956 | 58.6% → 73.9% | 8.7% → 4.1% |
+| ALL (28 scene-levels) | 0.847 → 0.930 | 34.7% → 59.9% | 10.1% → 6.3% |
+| ETH3D (18) | 0.820 → 0.917 | 22.2% → 52.0% | 10.9% → 7.7% |
+| BlendedMVS (10) | 0.894 → 0.955 | 53.6% → 74.2% | 8.7% → 3.8% |
 
 GPU against CPU on identical inputs (`Tests` suite 2 `GPUConfidenceTest`, a synthetic cube face and
 12 neighbour faces, GT depths with 0.2 % noise and 5 % outliers): Metal mean |Δconf| 2.2e-6, 2 of
@@ -249,12 +253,19 @@ mean confidence. Cost of the fused Metal launch (Apple M3 Max, SceauxCastle 11 i
 min of 3): the last geometric-consistency iteration 0.88 s against 0.73 s with the recalibration off,
 neighbour normal/confidence loads included.
 
-ROC-AUC improves on 28/28 scene-levels; completeness at a ≤1% contamination budget improves on
-27/27 comparable scene-levels. 11/28 scene-levels have no usable ≤1% operating point at all on raw
-confidence (the highest raw confidences are already over 1% contaminated); recalibration gives most
-of those a real one. At extreme completeness targets (≥99%) the frontier is largely unchanged, and a
-few textureless/repetitive indoor levels regress at ≥95% completeness even as every ≤1–2% budget
+ROC-AUC improves on 28/28 scene-levels (mean +0.084, largest +0.19 on facade level 3); completeness
+at a ≤1% contamination budget improves on 25/25 comparable scene-levels (mean +31 points). 14/28
+scene-levels have no usable ≤1% operating point at all on raw confidence (the highest raw
+confidences are already over 1% contaminated); recalibration gives 10 of those a real one (≥5%
+completeness). At extreme completeness targets (≥99%) the frontier is largely unchanged (adjusted
+≤ raw on 10/28), and the textureless/repetitive levels regress at ≥95% completeness (office +8 to
++11 points, BlendedMVS 5b7a3890 +6, pipes level 1 +3, meadow level 1 +3) even as every ≤1–2% budget
 point and the ROC improve (see §7 open items).
+
+The recalibration is independent of the camera-model work: the same raw maps adjusted by the
+pinhole-only code and by the camera-model generic code give byte-identical maps on ETH3D, and on
+BlendedMVS differ only through the order of the selected neighbour views (mean ROC-AUC difference
+0.0000, at most ±0.0003 per scene-level).
 
 ## 6. Rejected alternatives
 

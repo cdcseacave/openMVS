@@ -169,6 +169,7 @@ write `Tests-*.log` in the current directory; the result tables go to the log an
 ```
 Tests synth <outDir> [panoWidth=512]                       # the dataset: PNG, GT .dmap, cameras.json, scene.mvs of the faces
 Tests sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]
+Tests mixtest <verbosity> [gpu=0]                          # PatchMatch on cube faces against panoramas (SyntheticMixedGPUTest's run)
 Tests conftest <verbosity>                                 # GPUConfidenceTest alone
 Tests sphfuse <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [fusionFilter=2] [maxThreads]   # faces 2: mixed scene
 Tests scorebench <verbosity> [panoWidth=1536] [rounds=4] [maxElevation] [faceWidth=panoWidth/4]  # ns per ScorePixel

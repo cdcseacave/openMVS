@@ -255,7 +255,7 @@ Depth-maps, fraction of GT pixels within 1 / 5 % and abs-rel median:
 | | B | Metal | 0.982 | 0.00041 | 0.986 | 0.995 |
 | synthetic 512x256 | B | CPU | 0.956 | 0.00147 | 0.919 | 0.986 |
 | | B | CUDA / Metal | 0.964 | 0.00138 / 0.00139 | 0.931 | 0.988 |
-| synthetic 384, 6 faces 96x96 against 2 panoramas (`Tests mixtest 1`, `Tests mixtest 1 1` on the GPU) | B | CPU / Metal | 0.838 / 0.990 | 0.00247 / 0.00225 | 0.839 / 0.880 | 0.976 / 0.977 |
+| synthetic 384, 6 faces 96x96 against 2 panoramas (`Tests mixtest 1`, `Tests mixtest 1 1` on the GPU) | B | CPU / CUDA / Metal | 0.838 / 0.991 / 0.990 | 0.00247 / 0.00226 / 0.00225 | 0.839 / 0.879 / 0.880 | 0.976 / 0.978 / 0.977 |
 | Holo360D 1440 | A / B / C | CPU | 0.954 / 0.954 / 0.774 | 0.182 / 0.201 / 0.130 | | 0.352 / 0.346 / 0.375 |
 | | A / B / C | CUDA | 0.680 / 0.681 / 0.644 | 0.0460 / 0.0471 / 0.0945 | | 0.513 / 0.509 / 0.406 |
 | | B | Metal | 0.681 | 0.0471 | | 0.509 |
@@ -355,8 +355,7 @@ per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness
   with a texel buffer summed into locals); a whole single-threaded densify shows no difference, GCC none at all.
 - Pinhole CPU on arm64: +5 % multi-threaded from the release/acquire fences of the per-pixel estimate
   hand-over (a `dmb`, where x86 orders the stores for free).
-- CUDA clamps the rows at the poles where the CPU rejects the view. The `MODEL_PINHOLE_REF` kernels (pinhole
-  reference, spherical neighbors) are tested on Metal (`SyntheticMixedGPUTest`), not on CUDA.
+- CUDA clamps the rows at the poles where the CPU rejects the view.
 - The shape constants of the confidence recalibration were calibrated on pinhole ground truth; a
   spherical calibration (Holo360D) is untested.
 - The view gate still ranks hypotheses that leave a pixel different views; a soft weight by the
