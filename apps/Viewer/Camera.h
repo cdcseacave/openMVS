@@ -72,8 +72,8 @@ private:
 		Eigen::Vector3d target;
 		Eigen::Vector3d up;
 		cv::Size size;
-		double fov;
-		bool orthographic;
+		double fov = 0;
+		bool orthographic = false;
 	};
 	std::optional<CameraState> savedState;
 

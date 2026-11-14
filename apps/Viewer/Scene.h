@@ -75,6 +75,7 @@ public:
 		Point3f sceneSize{0, 0, 0};
 		float sceneDistance{1.f};
 		PointConfidenceFilter pointConfidence; // range set by RefreshLayerState
+		bool hasSphericalImages{false}; // set by RefreshLayerState: the mesh workflows support pinhole cameras only
 
 		Layer() = default;
 		Layer(const Layer&) = delete;
@@ -187,7 +188,7 @@ public:
 
 	// Track-based neighbor information with shared point indices
 	struct ViewScoreWithPoints {
-		MVS::ViewScore score;
+		MVS::ViewScore score{};
 		MVS::PointCloud::IndexArr sharedPoints; // indices of shared points in the pointcloud
 	};
 	typedef CLISTDEFIDX(ViewScoreWithPoints,uint32_t) ViewScoreWithPointsArr;
@@ -253,7 +254,7 @@ public:
 	inline bool IsOpen() const { return IsValid() && !layers.empty(); }
 
 	bool SetViewFromFile(const String& viewFileName);
-	bool SetViewFromCamera(unsigned camIndex);
+	bool SetViewFromCamera(unsigned camIndex, bool bCameraViewMode=false);
 
 	// Scene management
 	bool Open(const String& fileName, String geometryFileName = {});

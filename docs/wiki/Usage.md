@@ -41,6 +41,8 @@ From either the keyframes produced above or any folder / semicolon-separated lis
 CreateStructure -s images_folder -o scene.sfm --export-mvs scene.mvs --extract-colors 1
 ```
 
+The exported project references the original images: distorted cameras are written with their Brown distortion and undistorted by the MVS modules when they load the images. `--undistort-extension .png` (or `.jpg`, `.jxl`) writes undistorted copies into an `undistorted` folder instead, with `--undistort-alpha` choosing how much of the image they keep.
+
 ![native sparse reconstruction](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_sparse.jpg)
 
 When the input is a `.sfm` produced by `ExtractKeyframes` or `CreateStructure` with feature extraction and matching only, point `--source` at that file directly: `CreateStructure` loads the saved features and pair matches and skips re-detection.
@@ -105,7 +107,7 @@ A complete reconstruction starting from a 360° video file:
 
 ```
 ExtractKeyframes -i pano.mp4 -o scene_keyframes.sfm -d frames --camera-type 1
-CreateStructure -s scene_keyframes.sfm -o scene.sfm --export-mvs scene.mvs --extract-colors 1
+CreateStructure -s scene_keyframes.sfm -o scene.sfm --export-mvs scene.mvs --extract-colors 1 --spherical-export cubemap
 DensifyPointCloud scene.mvs
 ReconstructMesh scene_dense.mvs -p scene_dense.ply
 TextureMesh scene_dense.mvs -m scene_dense_mesh.ply
@@ -114,7 +116,7 @@ TextureMesh scene_dense.mvs -m scene_dense_mesh.ply
 ![spherical untextured mesh](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_spherical_dense_mesh.jpg)
 ![spherical reconstruction result](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_spherical_dense.jpg)
 
-Equirectangular images and video are supported end-to-end: the SfM stage processes them natively, and the downstream MVS modules receive an automatic six-face cube-map projection — no manual flat-panorama unwrapping is needed.
+Equirectangular images and video are processed natively by the SfM stage. The `.mvs` export writes them as native spherical cameras, whose depth-maps `DensifyPointCloud` estimates and fuses natively (CPU, CUDA or Metal; the mesh modules do not support them). `CreateStructure --spherical-export cubemap`, used in the example above because it continues to a textured mesh, writes instead each panorama as an automatic six-face cube-map of pinhole views, which the downstream MVS modules consume as they are — no manual flat-panorama unwrapping is needed.
 
 </details>
 
@@ -209,7 +211,7 @@ The directory made with the -d switch will store the undistorted images.
 <details>
 <summary><strong>Convert SfM scene from any other format</strong></summary>
 
-`OpenMVS` can process any scene, calibrated by any Structure-from-Motion solver, as long as it receives as input the camera poses, the sparse point-cloud and the corresponding undistorted images. All that needs to be done is to store this information in the `MVS` file format as described in [Interface.h](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/Interface.h) header file. This file is stand-alone, and can be copied as it is in the SfM solver code and use it directly to export the data in `MVS` format.
+`OpenMVS` can process any scene, calibrated by any Structure-from-Motion solver, as long as it receives as input the camera poses, the sparse point-cloud and the corresponding undistorted images. All that needs to be done is to store this information in the `MVS` file format as described in [Interface.h](https://github.com/cdcseacave/openMVS/blob/master/libs/IO/Interface.h) header file. This file is stand-alone, and can be copied as it is in the SfM solver code and use it directly to export the data in `MVS` format.
 
 A typical sparse point-cloud and camera poses obtained by the previous steps will look like this:
 
@@ -263,7 +265,7 @@ DensifyPointCloud scene.mvs --fusion-mode -2
 <details>
 <summary><strong>Dense Point-Cloud Reconstruction using available depth-maps (optional)</strong></summary>
 
-The densification module can skip depth-maps estimation if these are known for certain images. In order to use pre-computed depth-maps, all you need to do is to store them in `depthXXXX.dmap` files, where `XXXX` is the ID of the image, using the very simple/portable format explained in [Interface.h](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/Interface.h#L631). Once depth-maps exported as `DMAP` files, simply run `DensifyPointCloud` as usual, and it will only estimate missing depth-maps, and continue by fusing them in a dense point-cloud.
+The densification module can skip depth-maps estimation if these are known for certain images. In order to use pre-computed depth-maps, all you need to do is to store them in `depthXXXX.dmap` files, where `XXXX` is the ID of the image, using the very simple/portable format explained in [Interface.h](https://github.com/cdcseacave/openMVS/blob/master/libs/IO/Interface.h#L631). Once depth-maps exported as `DMAP` files, simply run `DensifyPointCloud` as usual, and it will only estimate missing depth-maps, and continue by fusing them in a dense point-cloud.
 
 </details>
 

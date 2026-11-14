@@ -142,11 +142,13 @@ bool Scene::EstimateGravityDirection(Point3f& up) const
 	const float minCosConfirm(COS(D2R(20.f))); // min cos(angle) for the two cues to confirm each other
 	// collect the world-space image axes of the valid cameras
 	std::vector<Eigen::Vector3f> xAxes, yAxes;
+	std::vector<bool> sphericals;
 	for (const Image& image: images) {
 		if (!image.IsValid())
 			continue;
 		xAxes.emplace_back(Cast<float>(Point3(image.camera.R.row(0))));
 		yAxes.emplace_back(Cast<float>(Point3(image.camera.R.row(1))));
+		sphericals.push_back(image.IsSpherical());
 	}
 	const size_t numCameras(xAxes.size());
 	if (numCameras < 4)
@@ -155,8 +157,12 @@ bool Scene::EstimateGravityDirection(Point3f& up) const
 	for (const Eigen::Vector3f& y: yAxes)
 		meanDown += y;
 	// a camera supports a gravity candidate if the candidate is (nearly) perpendicular
-	// to the camera horizontal axis: x in landscape, y in portrait orientation
+	// to the camera horizontal axis: x in landscape, y in portrait orientation; a panorama has no
+	// orientation to choose and every horizontal direction but one is perpendicular to its x axis,
+	// so it supports only the candidates (nearly) along its image-down axis
 	const auto SupportsCandidate = [&](const Eigen::Vector3f& g, size_t i) {
+		if (sphericals[i])
+			return SQUARE(g.dot(yAxes[i])) >= 1.f-SQUARE(maxSinRoll);
 		return MINF(ABS(g.dot(xAxes[i])), ABS(g.dot(yAxes[i]))) <= maxSinRoll;
 	};
 	const auto CountSupport = [&](const Eigen::Vector3f& g) {
@@ -642,7 +648,7 @@ float Scene::ComputeDistanceCameras2Scene(float depthPercentile, bool bForceReco
 							continue;
 						const Point3f& point = pointcloud.points[idxPoint];
 						if (!pObb || pObb->Intersects(point))
-							depths.emplace_back(imageData.camera.PointDepth(point));
+							depths.emplace_back(imageData.PointDepth(Cast<REAL>(point)));
 						break;
 					}
 				}
@@ -652,6 +658,11 @@ float Scene::ComputeDistanceCameras2Scene(float depthPercentile, bool bForceReco
 					const Point3f& point = pointcloud.points[idxPoint];
 					if (pObb && !pObb->Intersects(point))
 						continue;
+					if (imageData.IsSpherical()) {
+						// a spherical image sees every direction
+						depths.emplace_back(imageData.PointDepth(Cast<REAL>(point)));
+						continue;
+					}
 					const auto [proj, depth] = imageData.camera.ProjectPointP(point);
 					if (depth > 0 && imageData.camera.IsInside(proj, imageSize))
 						depths.emplace_back(depth);

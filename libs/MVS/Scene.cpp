@@ -39,7 +39,9 @@ using namespace MVS;
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define PROJECT_ID "MVS\0" // identifies the project stream
-#define PROJECT_VER ((uint32_t)2) // identifies the version of a project stream
+// identifies the version of a project stream: the native archive is not backward compatible (only the
+// interface format is), so every change of what the scene serializes changes it
+#define PROJECT_VER ((uint32_t)3)
 
 #pragma push_macro("VERBOSE")
 #undef VERBOSE
@@ -49,6 +51,38 @@ using namespace MVS;
 // S T R U C T S ///////////////////////////////////////////////////
 
 DEFINE_LOG_NAME(lt, _T("Scene   "));
+
+static_assert((uint8_t)CameraModelType::PINHOLE == Interface::Platform::Camera::PINHOLE, "camera model ids differ");
+static_assert((uint8_t)CameraModelType::BROWN == Interface::Platform::Camera::BROWN, "camera model ids differ");
+static_assert((uint8_t)CameraModelType::SPHERICAL == Interface::Platform::Camera::SPHERICAL, "camera model ids differ");
+
+namespace {
+
+// the Interface BROWN params: k1,k2,p1,p2,k3[,k4,k5,k6]
+BrownDistortion<REAL> ParamsToBrownDistortion(const std::vector<double>& params)
+{
+	ASSERT(params.size() == 5 || params.size() == 8);
+	BrownDistortion<REAL> distortion{params[0], params[1], params[2], params[3], params[4], REAL(0), REAL(0), REAL(0)};
+	if (params.size() == 8) {
+		distortion.k4 = params[5];
+		distortion.k5 = params[6];
+		distortion.k6 = params[7];
+	}
+	return distortion;
+}
+// the 8-value form only if the rational terms are used
+std::vector<double> BrownDistortionToParams(const BrownDistortion<REAL>& distortion)
+{
+	std::vector<double> params{distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3};
+	if (distortion.k4 != 0 || distortion.k5 != 0 || distortion.k6 != 0) {
+		params.push_back(distortion.k4);
+		params.push_back(distortion.k5);
+		params.push_back(distortion.k6);
+	}
+	return params;
+}
+
+} // namespace
 
 void Scene::Release()
 {
@@ -80,6 +114,22 @@ bool Scene::ImagesHaveNeighbors() const
 	return false;
 }
 
+bool Scene::HasSphericalImages() const
+{
+	for (const Image& image: images)
+		if (image.IsValid() && image.IsSpherical())
+			return true;
+	return false;
+}
+
+bool Scene::CheckPinholeOnly(LPCTSTR stage) const
+{
+	if (!HasSphericalImages())
+		return true;
+	VERBOSE("error: the scene has spherical images, %s supports pinhole cameras only; %s", stage, PINHOLE_ONLY_HINT);
+	return false;
+}
+
 
 bool Scene::LoadInterface(const String& fileName)
 {
@@ -102,7 +152,25 @@ bool Scene::LoadInterface(const String& fileName)
 			camera.K = itCamera.K;
 			camera.R = itCamera.R;
 			camera.C = itCamera.C;
-			if (!itCamera.IsNormalized()) {
+			switch (itCamera.model) {
+			case Interface::Platform::Camera::PINHOLE:
+				break;
+			case Interface::Platform::Camera::BROWN:
+				// the camera exposes the undistorted images: K' from the lens of the image files
+				if (!itCamera.HasResolution() || (itCamera.params.size() != 5 && itCamera.params.size() != 8)) {
+					VERBOSE("error: Brown camera %u of platform %u needs its resolution and 5 or 8 distortion coefficients", platform.cameras.size()-1, platforms.size()-1);
+					return false;
+				}
+				camera.SetBrownLens(itCamera.K, ParamsToBrownDistortion(itCamera.params), cv::Size((int)itCamera.width, (int)itCamera.height));
+				break;
+			case Interface::Platform::Camera::SPHERICAL:
+				camera.model = CameraModelType::SPHERICAL;
+				break;
+			default:
+				VERBOSE("error: unknown model %u of camera %u of platform %u", (unsigned)itCamera.model, platform.cameras.size()-1, platforms.size()-1);
+				return false;
+			}
+			if (camera.model != CameraModelType::BROWN && !itCamera.IsNormalized()) {
 				// normalize K
 				ASSERT(itCamera.HasResolution());
 				camera.K = camera.GetScaledK(REAL(1)/Camera::GetNormalizationScale(itCamera.width, itCamera.height));
@@ -159,6 +227,17 @@ bool Scene::LoadInterface(const String& fileName)
 				return false;
 		}
 		imageData.UpdateCamera(platforms);
+		if (imageData.IsSpherical()) {
+			// an equirectangular camera has no free intrinsics: its K is the angular K of the image size
+			const Spherical<REAL> model(Spherical<REAL>::FromSize((int)imageData.width, (int)imageData.height));
+			const KMatrix& K = imageData.camera.K;
+			if (ABS(K(0,0)-model.fx) > model.fx*1e-3 || ABS(K(1,1)-model.fy) > model.fy*1e-3 ||
+				ABS(K(0,2)-model.cx) > 1e-2 || ABS(K(1,2)-model.cy) > 1e-2 || K(0,1) != 0) {
+				VERBOSE("error: spherical image '%s' (%ux%u) needs the equirectangular camera matrix of its size: fx %g, fy %g, cx %g, cy %g",
+					image.name.c_str(), imageData.width, imageData.height, model.fx, model.fy, model.cx, model.cy);
+				return false;
+			}
+		}
 		// init neighbors
 		imageData.neighbors.CopyOf(image.viewScores.data(), (uint32_t)image.viewScores.size());
 		imageData.avgDepth = image.avgDepth;
@@ -175,6 +254,11 @@ bool Scene::LoadInterface(const String& fileName)
 		pointcloud.points.resize(obj.vertices.size());
 		pointcloud.pointViews.resize(obj.vertices.size());
 		pointcloud.pointWeights.resize(obj.vertices.size());
+		ObservationMapArr observationMaps;
+		if (obj.HasObservations()) {
+			pointcloud.pointObservations.resize(obj.vertices.size());
+			observationMaps = ObservationMap::MakeMaps(images);
+		}
 		FOREACH(i, pointcloud.points) {
 			const Interface::Vertex& vertex = obj.vertices[i];
 			PointCloud::Point& point = pointcloud.points[i];
@@ -196,6 +280,15 @@ bool Scene::LoadInterface(const String& fileName)
 				if (view.confidence != 0)
 					bValidWeights = true;
 			});
+			if (obj.HasObservations()) {
+				// observations in the frame of the camera, as the images are read
+				PointCloud::ObservationArr& observations = pointcloud.pointObservations[i];
+				observations.resize(views.size());
+				views.ForEach([&](PointCloud::ViewArr::IDX v) {
+					ASSERT(images[views[v]].IsValid());
+					observations[v] = observationMaps[views[v]].FileToCamera(Point2f(vertex.views[indices[v]].x));
+				});
+			}
 		}
 		if (!bValidWeights)
 			pointcloud.pointWeights.Release();
@@ -227,6 +320,17 @@ bool Scene::LoadInterface(const String& fileName)
 bool Scene::SaveInterface(const String& fileName, int version) const
 {
 	TD_TIMER_STARTD();
+	// the versions before 8 hold pinhole cameras only
+	if (version >= 0 && version < 8) {
+		for (const Platform& platform: platforms) {
+			for (const Platform::Camera& camera: platform.cameras) {
+				if (camera.model != CameraModelType::PINHOLE) {
+					VERBOSE("error: the interface version %d can not store the Brown or spherical cameras of the scene", version);
+					return false;
+				}
+			}
+		}
+	}
 	Interface obj;
 
 	// export platforms
@@ -239,6 +343,14 @@ bool Scene::SaveInterface(const String& fileName, int version) const
 			cam.K = camera.K;
 			cam.R = camera.R;
 			cam.C = camera.C;
+			cam.model = static_cast<uint8_t>(camera.model);
+			if (camera.model == CameraModelType::BROWN) {
+				// the lens of the image files, at their resolution
+				cam.K = camera.lens.K;
+				cam.width = (uint32_t)camera.lens.size.width;
+				cam.height = (uint32_t)camera.lens.size.height;
+				cam.params = BrownDistortionToParams(camera.lens.distortion);
+			}
 			plat.cameras.emplace_back(cam);
 		}
 		plat.poses.reserve(platform.poses.size());
@@ -286,6 +398,21 @@ bool Scene::SaveInterface(const String& fileName, int version) const
 			view.imageID = views[v];
 			view.confidence = (pointcloud.pointWeights.IsEmpty() ? 0.f : pointcloud.pointWeights[i][v]);
 		});
+	}
+	if (!pointcloud.pointObservations.empty()) {
+		ASSERT(pointcloud.pointObservations.size() == pointcloud.points.size());
+		const ObservationMapArr observationMaps(ObservationMap::MakeMaps(images));
+		FOREACH(i, pointcloud.points) {
+			const PointCloud::ViewArr& views = pointcloud.pointViews[i];
+			const PointCloud::ObservationArr& observations = pointcloud.pointObservations[i];
+			ASSERT(observations.size() == views.size());
+			MVS::Interface::Vertex& vertex = obj.vertices[i];
+			views.ForEach([&](PointCloud::ViewArr::IDX v) {
+				ASSERT(images[views[v]].IsValid());
+				vertex.views[v].x = observationMaps[views[v]].CameraToFile(observations[v]);
+			});
+		}
+		obj.flags |= Interface::HAS_OBSERVATIONS;
 	}
 	if (!pointcloud.normals.IsEmpty()) {
 		obj.verticesNormal.resize(pointcloud.normals.size());
@@ -370,13 +497,17 @@ bool Scene::LoadDMAP(const String& fileName)
 	NormalMap normalMap;
 	ConfidenceMap confMap;
 	ViewsMap viewsMap;
-	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
+	bool bSpherical;
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap,
+			HeaderDepthDataRaw::CONTENT_MASK, NULL, &bSpherical))
 		return false;
 
 	// create image
 	Platform& platform = platforms.AddEmpty();
 	platform.name = _T("platform0");
 	platform.cameras.emplace_back(camera.GetScaledK(REAL(1)/CameraIntern::GetNormalizationScale((uint32_t)imageSize.width,(uint32_t)imageSize.height)), RMatrix::IDENTITY, CMatrix::ZERO);
+	if (bSpherical)
+		platform.cameras.back().model = CameraModelType::SPHERICAL; // K is the angular camera matrix, the depth the range
 	platform.poses.emplace_back(Platform::Pose{camera.R, camera.C});
 	Image& image = images.AddEmpty();
 	image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageFileName);
@@ -401,6 +532,7 @@ bool Scene::LoadDMAP(const String& fileName)
 
 	// create point-cloud
 	camera.K = camera.GetScaledK(imageSize, depthMap.size());
+	const ModelCamera modelCamera(camera, image.model);
 	pointcloud.points.reserve(depthMap.area());
 	pointcloud.pointViews.reserve(depthMap.area());
 	pointcloud.colors.reserve(depthMap.area());
@@ -413,7 +545,7 @@ bool Scene::LoadDMAP(const String& fileName)
 			const Depth depth = depthMap(r,c);
 			if (depth <= 0)
 				continue;
-			pointcloud.points.emplace_back(camera.TransformPointI2W(Point3(c,r,depth)));
+			pointcloud.points.emplace_back(modelCamera.TransformPointI2W(Point2(c,r), depth));
 			pointcloud.pointViews.emplace_back(PointCloud::ViewArr{0});
 			pointcloud.colors.emplace_back(imageColor(r,c));
 			if (!normalMap.empty())
@@ -569,7 +701,8 @@ Scene::SCENE_TYPE Scene::Load(const String& fileName, bool bImport)
 	uint32_t nVer;
 	fs.read((char*)&nVer, sizeof(uint32_t));
 	if (!fs || nVer != PROJECT_VER) {
-		VERBOSE("error: different project version");
+		VERBOSE("error: project saved by a different version (stream version %u, expected %u): "
+			"regenerate it or exchange the scene in the interface format", nVer, PROJECT_VER);
 		return SCENE_NA;
 	}
 	// load stream type
@@ -688,20 +821,44 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 	// write MLP header containing the referenced PLY file
 	f.print(mlp_header, Util::getFileName(fileNameScene).c_str(), MAKE_PATH_REL(WORKING_FOLDER_FULL, fileNameScene).c_str());
 
-	// write the raster layers
+	// write the raster layers: MeshLab sees a pinhole camera, so a spherical image is left out, and the
+	// image file of a BROWN camera is written undistorted onto the camera grid (the pixels the camera
+	// describes) in the folder of the rasters
+	const String rastersFolder(MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFileFullName(fileName)) + _T("_rasters") PATH_SEPARATOR_STR);
+	unsigned nSkipped(0);
 	f <<  " <RasterGroup>\n";
 	FOREACH(i, images) {
 		const Image& imageData = images[i];
 		// skip invalid, uncalibrated or discarded images
 		if (!imageData.IsValid())
 			continue;
+		if (imageData.IsSpherical()) {
+			++nSkipped;
+			continue;
+		}
+		String rasterName(imageData.name);
+		if (imageData.IsUndistortedOnRead()) {
+			Image8U3 pixels;
+			if (imageData.ReadPixels(pixels) == NULL) {
+				++nSkipped;
+				continue;
+			}
+			if (pixels.size() != imageData.GetSize())
+				cv::resize(pixels, pixels, imageData.GetSize(), 0, 0, cv::INTER_AREA);
+			rasterName = rastersFolder + String::FormatString("%u_", i) + Util::getFileNameExt(imageData.name);
+			Util::ensureFolder(rasterName);
+			if (!pixels.Save(rasterName)) {
+				++nSkipped;
+				continue;
+			}
+		}
 		const Camera& camera = imageData.camera;
 		f.print(mlp_raster_pos,
 			Util::getFileName(imageData.name).c_str(),
 			-camera.C.x, -camera.C.y, -camera.C.z
 		);
 		f.print(mlp_raster_cam,
-			0, 0,
+			0.0, 0.0, // the lens distortion: doubles for %g (an int shifts every later value on x86-64 System V)
 			imageData.width, imageData.height,
 			camera.K(1,1)/camera.K(0,0), camera.K(0,0),
 			camera.K(0,2), camera.K(1,2)
@@ -710,10 +867,12 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 			 camera.R(0,0),  camera.R(0,1),  camera.R(0,2),
 			-camera.R(1,0), -camera.R(1,1), -camera.R(1,2),
 			-camera.R(2,0), -camera.R(2,1), -camera.R(2,2),
-			MAKE_PATH_REL(WORKING_FOLDER_FULL, imageData.name).c_str()
+			MAKE_PATH_REL(WORKING_FOLDER_FULL, rasterName).c_str()
 		);
 	}
 	f << " </RasterGroup>\n</MeshLabProject>\n";
+	if (nSkipped > 0)
+		DEBUG("warning: %u images left out of the MeshLab project: spherical or unreadable", nSkipped);
 
 	return true;
 } // ExportCamerasMLP

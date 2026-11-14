@@ -108,7 +108,7 @@ public:
 	};
 	SELECTION selectionType;
 	Point3f selectionPoints[4];
-	double selectionTimeClick, selectionTime;
+	double selectionTimeClick = 0, selectionTime = 0;
 	IDXArr selectionIdx; // indices of selected point/triangle/camera (empty if none) (if camera, the indices are in the Viewer scene images)
 	MVS::IIndex selectedNeighborCamera; // index of neighbor camera to highlight (NO_ID if none) (index is in the Viewer scene images)
 

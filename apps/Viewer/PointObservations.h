@@ -40,7 +40,8 @@ namespace VIEWER {
 class Window;
 
 // The observations of the selected point: for every view seeing it, the image patch
-// centered on the point's projection.
+// centered on the point's projection, and the feature observation stored for that view
+// when the point-cloud has them.
 //
 // The patches are cropped from the full resolution images on a thread pool, through an
 // image cache bound to the active layer. The crop tasks use only the values they are
@@ -53,23 +54,28 @@ public:
 	};
 
 	struct Observation {
-		MVS::IIndex idxImage; // image index in the MVS scene
-		MVS::IIndex idxView; // image index in the Viewer layer
-		uint32_t ID; // image ID
+		MVS::IIndex idxImage = NO_ID; // image index in the MVS scene
+		MVS::IIndex idxView = NO_ID; // image index in the Viewer layer
+		uint32_t ID = NO_ID; // image ID
 		String name; // image file name
 		Point2f proj; // point projection, in the resolution the camera is currently scaled to
-		float width; // image width the camera is currently scaled to
-		float nativeScale; // current resolution relative to the image file (MVS::Image::scale)
-		float depth; // point depth
-		float footprint; // pixels covered by a unit of surface at the point, in the current resolution
-		float weight; // view confidence (0 if the point-cloud has none)
-		float angle; // angle between the point normal and the view direction (degrees, -1 if no normal)
+		float width = 0; // image width the camera is currently scaled to
+		float nativeScale = 1; // current resolution relative to the image file (MVS::Image::scale)
+		float depth = 0; // point depth
+		float footprint = 0; // pixels covered by a unit of surface at the point, in the current resolution
+		float weight = 0; // view confidence (0 if the point-cloud has none)
+		float angle = 0; // angle between the point normal and the view direction (degrees, -1 if no normal)
+		Point2f feature; // stored feature observation, in the image file resolution (valid if the point-cloud has observations)
+		Point2f featureOffset; // feature minus projection, in the image file resolution (shortest column offset for a spherical image)
 		bool failed{false}; // the image could not be decoded
 		Texture patch; // cropped patch, invalid until its crop task finishes
+		float patchMagnification = 0; // patch pixels per image file pixel of the uploaded patch
 
 		// the pixel and the footprint in the image file resolution
 		Point2f ProjNative() const { return MVS::Camera::ScaleImagePixel(proj, 1.f/nativeScale); }
 		float FootprintNative() const { return footprint/nativeScale; }
+		// distance between the feature observation and the projection, in image file pixels
+		float ReprojectionError() const { return norm(featureOffset); }
 	};
 	typedef std::vector<Observation> ObservationArr;
 
@@ -92,12 +98,13 @@ public:
 	bool IsEmpty() const { return observations.empty(); }
 	uint32_t GetPointIdx() const { return pointIdx; }
 	bool HasWeights() const { return hasWeights; }
+	bool HasFeatures() const { return hasFeatures; }
 	const ObservationArr& GetObservations() const { return observations; }
 
 private:
 	void Clear();
 	void BuildObservations(const Window& window);
-	void RequestPatches();
+	void RequestPatches(const MVS::Scene& scene);
 	void UploadPatches();
 
 private:
@@ -106,6 +113,7 @@ private:
 		struct Patch {
 			uint32_t generation;
 			uint32_t idxObservation;
+			float magnification; // patch pixels per image file pixel
 			Image8U3 image; // empty if the image failed to decode
 		};
 		std::atomic<uint32_t> generation{0}; // latest request; the tasks of older ones stop
@@ -119,6 +127,7 @@ private:
 	uint32_t pointIdx{NO_ID};
 	bool sortedByWeight{true};
 	bool hasWeights{false};
+	bool hasFeatures{false};
 	ObservationArr observations;
 	float footprintRef{0}; // median native footprint, shown at the zoom when equalized
 	// patch settings of the last request

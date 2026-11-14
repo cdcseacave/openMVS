@@ -44,6 +44,12 @@ bool TestTetraFlow();
 // test the Potts message path of the loopy belief propagation against the generic one on random
 // graphs whose nodes have random, partly shared label sets: the labels must match after every iteration
 bool TestLBPPotts();
+
+// the camera models (pinhole, Brown, spherical): round trips, conventions and Ceres Jet evaluation
+bool TestCameraModels();
+
+// the spherical tangent-plane patch warp against the exact per-texel warp, per target elevation
+bool TestSphericalPatchWarp();
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

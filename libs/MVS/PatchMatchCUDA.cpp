@@ -199,9 +199,17 @@ void PatchMatch::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 	CUDA_CHECK(cudaMalloc((void**)&cudaRandStates, sizeof(curandState) * size));
 }
 
-void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap)
+void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap, bool bSpherical)
 {
 	const cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
+	// bilinear filtering; unnormalized coordinates clamp at the borders (CUDA ignores the wrap mode
+	// for them), an equirectangular view takes normalized coordinates, the only ones the hardware
+	// wraps, to sample across its seam (the rows clamp)
+	const auto SetAddressing = [bSpherical](cudaTextureDesc& texDesc) {
+		texDesc.addressMode[0] = cudaAddressModeWrap;
+		texDesc.addressMode[1] = bSpherical ? cudaAddressModeClamp : cudaAddressModeWrap;
+		texDesc.normalizedCoords = bSpherical ? 1 : 0;
+	};
 
 	if (bInitImage) {
 		CUDA_CHECK(cudaMallocArray(&cudaImageArrays[i], &channelDesc, image.cols, image.rows));
@@ -213,11 +221,9 @@ void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitI
 
 		struct cudaTextureDesc texDesc;
 		memset(&texDesc, 0, sizeof(cudaTextureDesc));
-		texDesc.addressMode[0] = cudaAddressModeWrap;
-		texDesc.addressMode[1] = cudaAddressModeWrap;
+		SetAddressing(texDesc);
 		texDesc.filterMode = cudaFilterModeLinear;
 		texDesc.readMode  = cudaReadModeElementType;
-		texDesc.normalizedCoords = 0;
 
 		CUDA_CHECK(cudaCreateTextureObject(&textureImages[i], &resDesc, &texDesc, NULL));
 	}
@@ -238,11 +244,9 @@ void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitI
 
 		struct cudaTextureDesc texDesc;
 		memset(&texDesc, 0, sizeof(cudaTextureDesc));
-		texDesc.addressMode[0] = cudaAddressModeWrap;
-		texDesc.addressMode[1] = cudaAddressModeWrap;
+		SetAddressing(texDesc);
 		texDesc.filterMode = cudaFilterModeLinear;
 		texDesc.readMode  = cudaReadModeElementType;
-		texDesc.normalizedCoords = 0;
 
 		CUDA_CHECK(cudaCreateTextureObject(&textureDepths[i-1], &resDesc, &texDesc, NULL));
 	}
@@ -262,8 +266,21 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	ViewsMap lowResViewsMap;
 	IIndex prevNumImages = (IIndex)images.size();
 	const IIndex numImages = depthData.images.size();
+	// the kernels hold the reference and up to MAX_VIEWS (32) neighbors; SelectViews keeps at most
+	// OPTDENSE::MAX_ESTIMATION_NEIGHBORS of them
+	ASSERT(numImages - 1 <= OPTDENSE::MAX_ESTIMATION_NEIGHBORS);
+	// the camera models, one bit per view: a slot whose model changes gets textures of the new addressing
+	const uint64_t prevSphericalViews = params.sphericalViews;
+	params.sphericalViews = 0;
+	for (IIndex i = 0; i < numImages; ++i)
+		if (depthData.images[i].IsSpherical())
+			params.sphericalViews |= uint64_t(1) << i;
+	params.fSinSqWarpMaxElevation = SQUARE(SIN(D2R(DepthEstimatorBase::fSphericalWarpMaxElevation)));
+	params.fCosMinViewAngle = COS(D2R(OPTDENSE::fMinAngle));
+	ASSERT(!pConfRequest || pConfRequest->spherical == ((params.sphericalViews & 1u) != 0));
+	ASSERT(params.refTrig == NULL);
 	params.nNumViews = (int)numImages-1;
-	params.nInitTopK = MINF(params.nInitTopK, params.nNumViews);
+	params.nInitTopK = MINF(Params().nInitTopK, params.nNumViews); // from the default each time: the object is reused
 	params.fDepthMin = depthData.dMin;
 	params.fDepthMax = depthData.dMax;
 	if (prevNumImages < numImages) {
@@ -277,6 +294,10 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		textureDepths.resize(params.nNumViews);
 	}
 	const int maxPixelViews(MINF(params.nNumViews, 4));
+	// the ignore mask of the reference (with the validity mask of an image undistorted on read), at the
+	// resolution of the estimate: applied to it at the end, and before the fused confidence recalibration
+	BitMatrix mask;
+	const bool bMasked(DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, depthData.images.front().image.size(), OPTDENSE::nIgnoreMaskLabel, mask));
 	for (unsigned scaleNumber = totalScaleNumber+1; scaleNumber-- > 0; ) {
 		// initialize
 		const float scale = 1.f / POWI(2, scaleNumber);
@@ -329,13 +350,21 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			}
 		}
 
+		// the kernels only relate the views to each other: every center is taken from the reference
+		// center in double precision before the conversion to single precision, which would round the
+		// centers of a scene far from its origin (geo-referenced coordinates) to the float spacing at
+		// that distance, and with them the baselines and the points of the geometric consistency
+		const Eigen::Map<const SEACAVE::Point3::EVec> centerRef(depthData.images[0].camera.C.ptr());
 		for (IIndex i = 0; i < numImages; ++i) {
 			const DepthData::ViewData& view = depthData.images[i];
 			const Image32F image = view.image;
+			const bool bSpherical = view.IsSpherical();
+			// an equirectangular camera keeps its angular K on the grid of every level (fx=W/2pi, fy=H/pi)
+			ASSERT(!bSpherical || (ISEQUAL(view.camera.K(0,0)*REAL(TWO_PI), REAL(image.cols)) && ISEQUAL(view.camera.K(1,1)*REAL(PI), REAL(image.rows))));
 			const Camera camera(
 				Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.K.val).cast<float>(),
 				Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.R.val).cast<float>(),
-				Eigen::Map<const SEACAVE::Point3::EVec>(view.camera.C.ptr()).cast<float>(),
+				(Eigen::Map<const SEACAVE::Point3::EVec>(view.camera.C.ptr()) - centerRef).cast<float>(),
 				image.cols, image.rows);
 			// store camera and image
 			if (i == 0 && (prevNumImages < numImages || images[0].size() != image.size())) {
@@ -346,19 +375,19 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			}
 			if (i >= prevNumImages) {
 				// allocate image CUDA memory
-				AllocateImageCUDA(i, image, true, !view.depthMap.empty());
+				AllocateImageCUDA(i, image, true, !view.depthMap.empty(), bSpherical);
 			} else
-			if (images[i].size() != image.size()) {
+			if (images[i].size() != image.size() || bSpherical != (((prevSphericalViews >> i) & 1u) != 0)) {
 				// reallocate image CUDA memory
 				FreeTextureArray(cudaImageArrays[i], textureImages[i]);
 				if (params.bGeomConsistency && i > 0)
 					FreeTextureArray(cudaDepthArrays[i-1], textureDepths[i-1]);
-				AllocateImageCUDA(i, image, true, !view.depthMap.empty());
+				AllocateImageCUDA(i, image, true, !view.depthMap.empty(), bSpherical);
 			} else
 			if (params.bGeomConsistency && i > 0 && (view.depthMap.empty() != (cudaDepthArrays[i-1] == NULL))) {
 				// reallocate depth CUDA memory
 				FreeTextureArray(cudaDepthArrays[i-1], textureDepths[i-1]);
-				AllocateImageCUDA(i, image, false, !view.depthMap.empty());
+				AllocateImageCUDA(i, image, false, !view.depthMap.empty(), bSpherical);
 			}
 			// large images stage through per-instance pinned slot for a truly-async
 			// H->D DMA on cudaStream; small images fall through to direct pageable
@@ -414,6 +443,16 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		// pinned host buffer => DMA-async on cudaStream
 		CUDA_CHECK(cudaMemcpyAsync(cudaDepthNormalEstimates, depthNormalEstimates, sizeof(Point4) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice, cudaStream));
 
+		// the sines and cosines of the longitude of every column and of the elevation of every row of an
+		// equirectangular reference, its rays and ray frames being built from them
+		cList<float2, const float2&, 0> refTrig;
+		if (params.sphericalViews & 1u) {
+			refTrig.resize(size.width + size.height);
+			ComputeSphericalTrig(MakeCameraModel<Spherical<double>>(depthData.images.front().camera), size, refTrig.data(), refTrig.data() + size.width);
+			CUDA_CHECK(cudaMallocAsync((void**)&params.refTrig, sizeof(float2) * refTrig.size(), cudaStream));
+			CUDA_CHECK(cudaMemcpyAsync((void*)params.refTrig, refTrig.data(), sizeof(float2) * refTrig.size(), cudaMemcpyHostToDevice, cudaStream));
+		}
+
 		// load low resolution depth-map into CUDA memory
 		if (params.bLowResProcessed) {
 			ASSERT(depthData.depthMap.isContinuous());
@@ -459,27 +498,35 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		if (pConfRequest && scaleNumber == 0 && params.bGeomConsistency &&
 			!depthData.confMap.empty() && depthData.confMap.isContinuous() &&
 			depthData.confMap.size() == depthData.depthMap.size()) {
+			// the ignore mask applied below discards its depths: the recalibration reads them as missing
+			ASSERT(!bMasked || mask.size() == depthData.depthMap.size());
 			// neighbor-depth texture reuse: the geometric-consistency pass already holds every
 			// neighbor's raw previous-iteration depth in cudaDepthArrays/textureDepths, so point
 			// the launcher at the resident texture instead of re-uploading the same map -- but only
 			// when the upload above did NOT resize it (view.depthMap.size() == image.size()),
 			// otherwise the texture holds an INTER_LINEAR-resized copy while the host pointer (and
-			// the CPU path) sample the native map; mismatched neighbors keep the linear upload.
+			// the CPU path) sample the native map; mismatched neighbors keep the linear upload, as do
+			// spherical ones, whose texture takes normalized coordinates.
 			for (ConfNeighborHost& n : pConfRequest->neighbors) {
 				n.texDepth = 0;
-				if (n.srcImage >= 1 && (size_t)n.srcImage < depthData.images.size() &&
+				if (!n.spherical && n.srcImage >= 1 && (size_t)n.srcImage < depthData.images.size() &&
 					(size_t)(n.srcImage-1) < textureDepths.size() && textureDepths[n.srcImage-1] != 0 &&
 					depthData.images[n.srcImage].depthMap.size() == images[n.srcImage].size() &&
 					n.width == images[n.srcImage].cols && n.height == images[n.srcImage].rows)
 					n.texDepth = (unsigned long long)textureDepths[n.srcImage-1];
 			}
 			bFusedConfDone = RunConfidenceFusedCUDA(size.width, size.height,
-				cudaDepthNormalEstimates, cudaDepthNormalCosts,
-				pConfRequest->fx, pConfRequest->fy, pConfRequest->cx, pConfRequest->cy,
+				cudaDepthNormalEstimates, cudaDepthNormalCosts, bMasked ? reinterpret_cast<const uint32_t*>(mask.data) : NULL,
+				pConfRequest->fx, pConfRequest->fy, pConfRequest->cx, pConfRequest->cy, reinterpret_cast<const float*>(params.refTrig),
 				pConfRequest->neighbors.data(), (int)pConfRequest->neighbors.size(),
 				pConfRequest->params,
 				(void*)cudaStream, depthData.confMap.ptr<float>());
 			pConfRequest->done = bFusedConfDone;
+		}
+		// the sine/cosine table of a spherical reference, read by the estimation and the recalibration
+		if (params.refTrig) {
+			CUDA_CHECK(cudaFreeAsync((void*)params.refTrig, cudaStream));
+			params.refTrig = NULL;
 		}
 
 		// load depth-map, normal-map and confidence-map from CUDA memory
@@ -530,12 +577,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	}
 
 	// apply ignore mask
-	if (OPTDENSE::nIgnoreMaskLabel >= 0) {
-		const DepthData::ViewData& view = depthData.GetView();
-		BitMatrix mask;
-		if (DepthEstimator::ImportIgnoreMask(*view.pImageData, depthData.depthMap.size(), (uint8_t)OPTDENSE::nIgnoreMaskLabel, mask))
-			depthData.ApplyIgnoreMask(mask);
-	}
+	if (bMasked)
+		depthData.ApplyIgnoreMask(mask);
 
 	DEBUG_EXTRA("Depth-map for image %3u %s: %dx%d (%s)", depthData.images.front().GetID(),
 		depthData.images.GetSize() > 2 ?

@@ -14,13 +14,16 @@ that predicts whether a depth will survive fusion as an inlier, combining an int
 prior with continuous multi-view confirmation and a free-space-violation penalty.
 
 **Code.** `libs/MVS/ConfidenceRefine.h` (shared host/device per-pixel math), `libs/Common/DepthGeometry.h`
-(the depth-plane fit and its normal, shared with depth-map estimation), `libs/MVS/ConfidenceCUDA.{h,cu}`
-(GPU kernels + launchers), `libs/MVS/SceneDensify.cpp` (`DepthMapsData::ComputeIntraMapPrior`,
-`GetIntraMapPrior`, `AdjustConfidence` (two overloads), `AdjustConfidenceCUDA`,
-`AdjustConfidenceSweep`), `libs/MVS/PatchMatchCUDA.cpp` (fused launch inside
+(the depth-plane fit and its normal, shared with depth-map estimation), `libs/MVS/ConfidenceGPU.h`
+(the backend-neutral neighbour descriptors and fused-launch request), `libs/MVS/ConfidenceCUDA.{h,cu}`
+(CUDA kernels + launchers), `libs/MVS/ConfidenceMetal.metal` (Metal kernels, a hand mirror of the CUDA
+ones) and `libs/MVS/PatchMatchMetal.mm` (their launcher, `PatchMatch::Impl::RunConfidence`),
+`libs/MVS/SceneDensify.cpp` (`DepthMapsData::ComputeIntraMapPrior`, `GetIntraMapPrior`,
+`AdjustConfidence` (two overloads), `HasGPUConfidence`, `AdjustConfidenceGPU`,
+`AdjustConfidenceSweep`), `libs/MVS/PatchMatchCUDA.cpp` and `PatchMatchMetal.mm` (fused launch inside
 `PatchMatch::EstimateDepthMap`), `libs/MVS/DMapCache.{h,cpp}` (phase-lifetime depth-map cache used
 by the standalone sweep), `libs/MVS/DepthMap.h` (`OPTDENSE::DepthFlags`, `DepthData::bConfAdjusted`),
-`libs/MVS/Interface.h` (`HeaderDepthDataRaw::CONF_ADJUSTED`).
+`libs/IO/Interface.h` (`HeaderDepthDataRaw::CONF_ADJUSTED`).
 
 Out of scope: fusion's own join/keep gates and `fFusePriorWeight` (see `DepthMapFusion.md`, which
 reuses the same intra-map prior as virtual support); the mesh step's consumption of the stored
@@ -57,6 +60,19 @@ if Kf ≥ 1: conf = max(conf, CONF_FLOOR · confPhoto)        // anti-cascade fl
   `VIOLATION_MARGIN·thDepth` behind the point along the same ray, that neighbour's line of sight
   passes through where the point claims to be — direct negative evidence, diluting the posterior's
   denominator.
+
+**Camera models.** The reference and every neighbour are pinhole or equirectangular (spherical), in
+any combination; depth is the distance along the model's ray (`z` for pinhole, range for spherical,
+`SphericalPatchMatch.md`). Per neighbour, `NeighborProj` (`SceneDensify.cpp`, mirrored by
+`ConfNeighborHost`) composes one single-precision map `q = A·u + b`: `u` is the reference pixel at its
+depth `d` as `(c·d, r·d, d)` for a pinhole reference and as its camera-frame point `Ray(c,r)·d` for a
+spherical one; `q` is the neighbour's homogeneous pixel (`q.z` its depth) for a pinhole neighbour and
+its camera-frame point for a spherical one, projected by `Spherical::ProjectFast` with depth `|q|`. The
+columns of a spherical map wrap: the prior's 3x3 window, the neighbour's nearest pixel and the
+bilinear taps (`SampleDepthBilinear`), and the prior's normal comes from the spherical ray frame. Two
+pinhole cameras keep the row-vectorized projection (stage A of `AdjustConfidenceSweep`); a pair with a
+spherical camera projects pixel by pixel through the models. The gates and the posterior are the same
+for every model.
 
 `ConfRefine::Params` (`ConfidenceRefine.h`, built once by `MakeConfRefineParams` for both the CPU
 sweep and the CUDA kernel) carries the shape constants, the calibrated confirmation tolerance
@@ -116,42 +132,50 @@ is a function of raw neighbour confidences only. This is enforced structurally:
 `OPTDENSE::nOptimize` (`--postprocess-dmaps`) bits: `1` `REMOVE_SPECKLES`, `2` `FILL_GAPS`, `4`
 `ADJUST_CONFIDENCE_AUTO` (default), `8` `ADJUST_CONFIDENCE` (force on). `Scene::ComputeDepthMaps`
 resolves `AUTO` once per call, once the estimation backend is known
-(`SceneDensify.cpp`), to `ADJUST_CONFIDENCE` only when **all** of: a CUDA PatchMatch pool
-exists, `OPTDENSE::bEstimateConfidenceCUDA` is true, `nFusionMode >= 0`, and
-`nEstimationGeometricIters > 0` — otherwise it resolves to off. The resolution is scoped to that
-call (restored on return), so a later `DenseReconstruction` in the same process re-resolves `AUTO`
-for its own backend. Metal and CPU-only builds therefore always resolve `AUTO` to off.
+(`SceneDensify.cpp`), to `ADJUST_CONFIDENCE` only when **all** of: a GPU (CUDA or Metal)
+PatchMatch pool exists and `OPTDENSE::bEstimateConfidenceGPU` is true (`HasGPUConfidence`),
+`nFusionMode >= 0`, and `nEstimationGeometricIters > 0` — otherwise it resolves to off. The
+resolution is scoped to that call (restored on return), so a later `DenseReconstruction` in the same
+process re-resolves `AUTO` for its own backend. CPU estimation therefore always resolves `AUTO` to off.
 
 When `ADJUST_CONFIDENCE` is set (auto-resolved or forced), three paths exist, tried in this order:
 
-1. **Fused in-estimation** (`PatchMatch::EstimateDepthMap`, `PatchMatchCUDA.cpp`): fires
+1. **Fused in-estimation** (`PatchMatch::EstimateDepthMap`, `PatchMatchCUDA.cpp` or
+   `PatchMatchMetal.mm`, the request built by `MakeConfAdjustRequest`): fires
    only when `scaleNumber == 0`, `params.bGeomConsistency`, this is the last geometric-consistency
    iteration, and `nOptimize & OPTIMIZE` (speckle/gap filters) is **not** set — those filters run
    after estimation and would change the depth the confidence was computed from, so the fused path
    defers to the epilogue whenever they are enabled. Reads the reference depth/normal/cost straight
    from the PatchMatch instance's resident device buffers (`cudaDepthNormalEstimates`,
    `cudaDepthNormalCosts`); only the neighbours' raw previous-iteration maps are uploaded (or read
-   from a resident depth texture when its resolution matches). On success `confMap` is written
+   from a resident depth texture when its resolution matches and the neighbour is pinhole: a
+   spherical view's texture takes normalized coordinates). The reference's ignore mask (with the
+   validity mask of an image undistorted on read), which the estimation applies right after, is
+   applied first: CUDA uploads it as bits and reads the masked depths as missing, Metal zeroes them in
+   its shared estimates buffer — so the fused result equals the epilogue's and the CPU's, whose
+   estimation never produces those depths. On success `confMap` is written
    directly, skipping the cost→confidence conversion the caller would otherwise apply.
-2. **Epilogue GPU re-upload** (`DepthMapsData::AdjustConfidenceCUDA`, called from the
+2. **Epilogue GPU re-upload** (`DepthMapsData::AdjustConfidenceGPU`, called from the
    `EVT_SAVEDEPTHMAP` handler): runs when the fused launch did not run or failed (`bConfAdjusted`
-   still false) — e.g. speckle/gap filters on, non-contiguous maps, or a CUDA error. Re-uploads the
-   reference and neighbour maps and runs `MVS::CUDA::RunConfidenceCUDA`.
+   still false) — e.g. speckle/gap filters on, non-contiguous maps, or a GPU error. Re-uploads the
+   reference and neighbour maps and runs `MVS::CUDA::RunConfidenceCUDA` or
+   `MVS::METAL::PatchMatch::AdjustConfidence` (on the first instance of the pool).
 3. **Standalone CPU sweep** (`DepthMapsData::AdjustConfidence(DepthData&, const IIndexArr&)`,
-   `--postprocess-dmaps 8`, CPU/Metal estimation, `--geometric-iters 0`, or re-adjusting already-saved
+   `--postprocess-dmaps 8`, CPU estimation, `--geometric-iters 0`, or re-adjusting already-saved
    dmaps): its own phase (`EVT_FILTERDEPTHMAP` / `EVT_ADJUSTDEPTHMAP`), using up to 8 neighbours per
    reference (`numMaxNeighbors` in `SceneDensify.cpp`) through a phase-lifetime `DMapCache`
    (`g_pAdjustDMapCache`) shared across the whole phase.
 
 Within one reference view, a fallback chain applies: fused → epilogue GPU
-(`AdjustConfidenceCUDA`) → epilogue CPU (`AdjustConfidence(DepthData&)`), each only attempted if the
-previous one did not set `bConfAdjusted`. `bEstimateConfidenceCUDA = 0` (dense config file only,
-not a CLI flag) forces the CPU implementation even when CUDA estimates.
+(`AdjustConfidenceGPU`) → epilogue CPU (`AdjustConfidence(DepthData&)`), each only attempted if the
+previous one did not set `bConfAdjusted`. `bEstimateConfidenceGPU = 0` (dense config file only,
+not a CLI flag; the name predates the Metal port) forces the CPU implementation even when a GPU
+estimates.
 
 **Double-adjust guards.** In-process: the standalone phase's `AdjustConfidence` overload returns
 `false` immediately when `depthDataRef.bConfAdjusted` is already set. Cross-process: every
 recalibrated dmap carries a `CONF_ADJUSTED` flag bit in its header
-(`HeaderDepthDataRaw::CONF_ADJUSTED`, `libs/MVS/Interface.h`), loaded back into
+(`HeaderDepthDataRaw::CONF_ADJUSTED`, `libs/IO/Interface.h`), loaded back into
 `DepthData::bConfAdjusted` on read; the standalone phase checks it before adjusting, and `InitViews`
 checks it before trusting a neighbour's confidence (see above).
 
@@ -159,8 +183,8 @@ checks it before trusting a neighbour's confidence (see above).
 
 | CLI option | struct field | default | meaning |
 |---|---|---|---|
-| `--postprocess-dmaps` | `OPTDENSE::nOptimize` | `4` (`ADJUST_CONFIDENCE_AUTO`) | `0` disabled, `1` remove-speckles, `2` fill-gaps, `4` auto (on for CUDA estimation, off otherwise), `8` force on |
-| *(dense config file only)* | `OPTDENSE::bEstimateConfidenceCUDA` | `true` | when CUDA estimates, run the recalibration on the GPU; `0` forces the CPU sweep |
+| `--postprocess-dmaps` | `OPTDENSE::nOptimize` | `4` (`ADJUST_CONFIDENCE_AUTO`) | `0` disabled, `1` remove-speckles, `2` fill-gaps, `4` auto (on for GPU estimation, CUDA or Metal, off otherwise), `8` force on |
+| *(dense config file only)* | `OPTDENSE::bEstimateConfidenceGPU` | `true` | when a GPU (CUDA or Metal) estimates, run the recalibration on it; `0` forces the CPU sweep |
 | *(dense config file only)* | `OPTDENSE::fNCCThresholdKeep` | `0.9` | `minConfidence = 1 − this` is gate 4's centre (the estimation's photometric floor) |
 | — (compile-time) | `ConfRefine::CONFIRM_DEPTH` | `0.005` | gate 1 relative-depth width; unit of the free-space margin and the prior's plane-fit band |
 | — (compile-time) | `ConfRefine::CONFIRM_SIN_ANGLE` | `sin 20°` | gate 2: triangulation angle of a full vote |
@@ -182,9 +206,8 @@ floor.
 
 - **Single Jacobi pass**: adjusted confidence is a pure function of raw neighbour data; never cache
   or read adjusted confidence as a neighbour's evidence (see §2).
-- **AUTO requires all of**: a non-empty CUDA PatchMatch pool, `bEstimateConfidenceCUDA`,
-  `nFusionMode >= 0`, `nEstimationGeometricIters > 0`. Metal-only and CPU-only builds always resolve
-  `AUTO` to off.
+- **AUTO requires all of**: a non-empty GPU (CUDA or Metal) PatchMatch pool, `bEstimateConfidenceGPU`,
+  `nFusionMode >= 0`, `nEstimationGeometricIters > 0`. CPU estimation always resolves `AUTO` to off.
 - **The fused path only fires on the last geometric-consistency iteration, at full resolution, with
   the speckle/gap filters off.** Any post-estimation filter forces the epilogue path instead, since
   the fused kernel reads depth/normal that is about to change.
@@ -195,28 +218,54 @@ floor.
 - The recalibration never reads fusion's join thresholds (`fDepthDiffThreshold`,
   `fDepthReprojectionErrorThreshold`): changing how finely fusion clusters must not move the
   confidence scale that fusion's floor is applied to.
-- The CPU and GPU paths share the exact same per-pixel math and parameter snapshot
+- The CPU and CUDA paths share the exact same per-pixel math and parameter snapshot
   (`ConfidenceRefine.h` and `Common/DepthGeometry.h`, compiled under both the host compiler and
-  `nvcc`); the GPU path differs only in using single-precision `expf`.
+  `nvcc`); the GPU path differs only in using single-precision `expf`. MSL can not include those
+  headers: `ConfidenceMetal.metal` mirrors them function by function (`precise::exp`,
+  `FitDepthGradient`, the pinhole `NormalFromDepthGradient`) and takes the spherical model from the
+  camera-model mirror of `PatchMatchMetal.metal`, compiled into the same library before it;
+  `GPUConfidenceTest` holds CUDA or Metal to the CPU sweep for a pinhole and a spherical reference,
+  each against pinhole and spherical neighbours.
+- The Metal kernels read the reference as planes (normal, depth), the PatchMatch estimates' layout,
+  and its photometric confidence or, in the fused launch, the ZNCC cost it converts as the readback
+  does; the neighbour maps are packed one after the other into three buffers.
 
 ## 5. Validation of the shipped defaults
 
 Pooled inlier/outlier ROC-AUC and the contamination/completeness frontier, raw photometric
 confidence vs. the shipped recalibration, measured against real ground-truth depth (BlendedMVS +
-ETH3D, 28 scene-levels; a GT inlier is `|d_est − d_gt| ≤ 1%·d_gt`):
+ETH3D, 28 scene-levels: ETH3D courtyard, facade, meadow, office, delivery_area, pipes at
+resolution levels 3/2/1 and five BlendedMVS validation scenes at levels 1/0, `--max-resolution 3200`;
+CUDA estimation with `--postprocess-dmaps 0`, then the standalone CPU sweep with `--postprocess-dmaps 8
+--geometric-iters 0` on the same maps; a GT inlier is `|d_est − d_gt| ≤ 1%·d_gt`; values are means
+over the scene-levels):
 
 | pool | ROC-AUC (raw → adjusted) | completeness @ ≤1% contamination | contamination @ ≥90% completeness |
 |---|---|---|---|
-| ALL (28 scene-levels) | 0.844 → 0.926 | 31.5% → 57.9% | 10.4% → 7.1% |
-| ETH3D (18) | 0.816 → 0.910 | 17.9% → 49.0% | 11.3% → 8.7% |
-| BlendedMVS (10) | 0.895 → 0.956 | 58.6% → 73.9% | 8.7% → 4.1% |
+| ALL (28 scene-levels) | 0.847 → 0.930 | 34.7% → 59.9% | 10.1% → 6.3% |
+| ETH3D (18) | 0.820 → 0.917 | 22.2% → 52.0% | 10.9% → 7.7% |
+| BlendedMVS (10) | 0.894 → 0.955 | 53.6% → 74.2% | 8.7% → 3.8% |
 
-ROC-AUC improves on 28/28 scene-levels; completeness at a ≤1% contamination budget improves on
-27/27 comparable scene-levels. 11/28 scene-levels have no usable ≤1% operating point at all on raw
-confidence (the highest raw confidences are already over 1% contaminated); recalibration gives most
-of those a real one. At extreme completeness targets (≥99%) the frontier is largely unchanged, and a
-few textureless/repetitive indoor levels regress at ≥95% completeness even as every ≤1–2% budget
+GPU against CPU on identical inputs (`Tests` suite 2 `GPUConfidenceTest`, a synthetic cube face and
+12 neighbour faces, GT depths with 0.2 % noise and 5 % outliers): Metal mean |Δconf| 2.2e-6, 2 of
+65536 pixels above 1e-4 (a rounding across a gate threshold); outliers 0.007 against inliers 0.224
+mean confidence. Cost of the fused Metal launch (Apple M3 Max, SceauxCastle 11 images at 2.6 MP,
+min of 3): the last geometric-consistency iteration 0.88 s against 0.73 s with the recalibration off,
+neighbour normal/confidence loads included.
+
+ROC-AUC improves on 28/28 scene-levels (mean +0.084, largest +0.19 on facade level 3); completeness
+at a ≤1% contamination budget improves on 25/25 comparable scene-levels (mean +31 points). 14/28
+scene-levels have no usable ≤1% operating point at all on raw confidence (the highest raw
+confidences are already over 1% contaminated); recalibration gives 10 of those a real one (≥5%
+completeness). At extreme completeness targets (≥99%) the frontier is largely unchanged (adjusted
+≤ raw on 10/28), and the textureless/repetitive levels regress at ≥95% completeness (office +8 to
++11 points, BlendedMVS 5b7a3890 +6, pipes level 1 +3, meadow level 1 +3) even as every ≤1–2% budget
 point and the ROC improve (see §7 open items).
+
+The recalibration is independent of the camera-model work: the same raw maps adjusted by the
+pinhole-only code and by the camera-model generic code give byte-identical maps on ETH3D, and on
+BlendedMVS differ only through the order of the selected neighbour views (mean ROC-AUC difference
+0.0000, at most ±0.0003 per scene-level).
 
 ## 6. Rejected alternatives
 

@@ -33,6 +33,7 @@ not serialized, but preserved by regular `Scene` copies and moves.
 - **Camera** (abstract base): Virtual `Project()`, `Unproject()`, `GetK()`, `AccumulateIntrinsics()`, `ScaleIntrinsics()`
 - **PinholeCamera**: `fx, fy, cx, cy` + Brown-Conrady distortion `k1-k6, p1, p2`. Flag `useAdditionalDistortion` for k4-k6
 - **SphericalCamera**: Equirectangular 360 projection, no distortion params
+- Both are thin wrappers over `libs/Math/Camera/CameraModels.h` (`GetModel()`, `GetDistortion()`)
 
 ### Image / View (`Image.h`, `View.h`)
 ```cpp
@@ -248,7 +249,13 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
   `trustIntrinsics`) / `POSES` (R + C) / `POSITIONS` (C only). Rows match by file-name stem
   (case-insensitive, ambiguous stems rejected) and `score <= 0` invalidates the pose.
   `ImportPoses` (`PoseIO.h`) dispatches on extension: `.csv` here, `.json` to `ImportFramesJSON`
-- **MVS export** (`InterfaceMVS.h`): Conversion to MVS binary format. The SFM image ID is written
+- **MVS export** (`InterfaceMVS.h`): Conversion to MVS binary format (Interface v8). Distorted
+  pinhole cameras are written as `BROWN` cameras of the original images (MVS undistorts on load)
+  unless `undistortImageDir` asks for undistorted files; spherical cameras are written natively
+  unless `sphericalExport` is `CUBEMAP`; observations only with `includeObservations`. One platform per
+  camera and file orientation: the portrait files rotated on load share the camera with the landscape
+  ones and get its rotated-back copy. The design
+  is in `docs/design/SphericalCameraSupport.md`. The SFM image ID is written
   into `Interface::Image::ID` (the external/global-ID field) so per-image data keyed by SFM ID —
   e.g. the pose-quality CSV — correlates after import; `Vertex::View::imageID` stays the
   images-ARRAY-POSITION (hard invariant), tracked separately from the IDs. Spherical cube-map faces

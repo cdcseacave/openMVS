@@ -791,23 +791,23 @@ graph TD
 
 **Import direction** (COLMAP to OpenMVS):
 
-1. `ImportScene()` (line 722): reads `sparse/cameras.{txt,bin}` → `Interface::Platform/Camera` (PINHOLE model; pixel center shift -0.5)
+1. `ImportScene()`: reads `sparse/cameras.{txt,bin}` → `Interface::Platform/Camera` (SIMPLE_PINHOLE/PINHOLE as PINHOLE, SIMPLE_RADIAL/RADIAL/OPENCV/FULL_OPENCV as BROWN; pixel center shift -0.5)
 2. Reads `sparse/images.{txt,bin}` → `Interface::Image` with `platformID`, `cameraID`, `poseID`, quaternion+translation pose
-3. Reads `sparse/points3D.{txt,bin}` → `Interface::Vertex` (3D points with track observations)
+3. Reads `sparse/points3D.{txt,bin}` → `Interface::Vertex` (3D points with their tracks; the 2D points of `images` become the feature observations, `HAS_OBSERVATIONS`)
 4. Optionally reads `stereo/fusion.cfg` → dense depth map paths
 5. Writes `.mvs` via `MVS::Scene::Save()`
 
 **Export direction** (OpenMVS to COLMAP):
 
-1. `ExportScene()` (line 1007): writes `sparse/cameras.{txt,bin}` (PINHOLE model; adds +0.5 pixel center)
+1. `ExportScene()`: writes `sparse/cameras.{txt,bin}` (PINHOLE, a Brown camera as OPENCV/FULL_OPENCV; adds +0.5 pixel center)
 2. Writes `sparse/images.{txt,bin}` (world-to-camera R, t)
-3. Writes `sparse/points3D.{txt,bin}` with track observations
+3. Writes `sparse/points3D.{txt,bin}` with the tracks; their 2D points are the stored observations, else the projections through the camera model
 4. Optional: writes dense stereo configuration files
 
 **Key conventions**:
 
 - COLMAP pixel center at (0.5, 0.5); OpenMVS at (0, 0) → `cx -= 0.5`, `cy -= 0.5` on import
-- Normalized intrinsics: optional `bNormalizeIntrinsics` flag
+- Normalized intrinsics: optional `bNormalizeIntrinsics` flag (pinhole cameras only; a Brown camera keeps its resolution)
 - Binary vs text: auto-detected on import; configurable on export
 
 ### 10.2 OpenMVG Import
@@ -823,9 +823,9 @@ graph TD
 
 **App**: `InterfaceMetashape` — `apps/InterfaceMetashape/InterfaceMetashape.cpp`
 
-1. Reads Metashape XML project file (`.xml`)
-2. Parses `<chunk>/<sensors>` → camera intrinsics; `<cameras>` → image poses; `<markers>` → optional GCPs; `<point_cloud>` or `<dense_cloud>` → 3D points
-3. Converts coordinate system if reference frame specified
+1. Reads a Metashape cameras XML or a BlocksExchange XML (`.xml`)
+2. Parses the sensors/photogroups → camera intrinsics, a distorted one as a BROWN camera (`Platform::Camera::SetBrownLens`, the images are undistorted when read), a spherical one as a SPHERICAL camera; the cameras/photos → image poses; the BlocksExchange tie points → sparse points with their measurements as feature observations (`ObservationMap::FileToCamera`); else an optional point cloud (`-p`) assigned to the views by visibility
+3. Moves a geo-referenced BlocksExchange block to local coordinates
 4. Writes `.mvs` via `MVS::Scene::Save()`
 
 ### 10.4 MVSNet Import

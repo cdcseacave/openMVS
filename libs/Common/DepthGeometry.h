@@ -11,7 +11,6 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include <cfloat>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -21,10 +20,20 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// Local geometry of a depth-map seen by a skew-free pinhole camera (focal lengths f and principal
-// point pp, in pixels), shared by host code and CUDA device code: depth similarity, the depth
-// plane fitted around a pixel, the normal that plane implies, and a neighbor's plane carried to a
-// pixel. The including context provides Eigen and ASSERT (Common.h, or CUDA/Maths.h in .cu files).
+// Local geometry of a depth-map, shared by host code and CUDA device code: depth similarity, the depth
+// plane fitted around a pixel, the normal that plane implies, a neighbor's plane carried to a pixel,
+// and the plane-induced patch warp between two views. The camera-dependent functions take a camera
+// model of Math/Camera/CameraModels.h: the generic version works through the model's Ray/RayFrame/
+// PixelHomography, and a Pinhole overload keeps the closed-form pinhole operations. The including
+// context provides Eigen, ASSERT and the camera models (Common.h, or CUDA/Maths.h in .cu files).
+
+template<typename T> struct Pinhole; // Math/Camera/CameraModels.h
+
+// the column of an equirectangular map of the given width holding column c, for c within one width of it
+HOST_DEVICE inline int WrapColumn(int c, int width) {
+	ASSERT(c >= -width && c < 2*width);
+	return c < 0 ? c + width : (c >= width ? c - width : c);
+}
 
 // relative difference of depth d1 to depth d0
 template<typename T>
@@ -67,9 +76,10 @@ struct DepthPlaneFit {
 
 // fit the depth plane at pixel x over its 3x3 neighbors within 3% of its depth: fills the depth at x
 // and the plane's gradient; false if x has no depth or the fit is not valid. DEPTHMAP is indexed
-// (row,col) and has rows/cols members: a DepthMap on the host, the kernels' own views on the device
+// (row,col) and has rows/cols members: a DepthMap on the host, the kernels' own views on the device;
+// wrapCols makes the first and the last column neighbors (equirectangular maps)
 template<typename DEPTHMAP>
-HOST_DEVICE inline bool FitDepthGradient(const DEPTHMAP& depthMap, const Eigen::Vector2i& x, float& depth, Eigen::Vector2f& gradient) {
+HOST_DEVICE inline bool FitDepthGradient(const DEPTHMAP& depthMap, const Eigen::Vector2i& x, float& depth, Eigen::Vector2f& gradient, bool wrapCols=false) {
 	ASSERT(x.x() >= 0 && x.x() < depthMap.cols && x.y() >= 0 && x.y() < depthMap.rows);
 	depth = depthMap(x.y(), x.x());
 	if (depth <= 0.f)
@@ -80,7 +90,9 @@ HOST_DEVICE inline bool FitDepthGradient(const DEPTHMAP& depthMap, const Eigen::
 		if (r < 0 || r >= depthMap.rows)
 			continue;
 		for (int i = -1; i <= 1; ++i) {
-			const int c = x.x() + i;
+			int c = x.x() + i;
+			if (wrapCols)
+				c = WrapColumn(c, depthMap.cols);
 			if ((i == 0 && j == 0) || c < 0 || c >= depthMap.cols)
 				continue;
 			const float d = depthMap(r, c);
@@ -94,40 +106,93 @@ HOST_DEVICE inline bool FitDepthGradient(const DEPTHMAP& depthMap, const Eigen::
 	return true;
 }
 
-// camera-facing unit normal of the depth plane through pixel x at the given depth and gradient
-HOST_DEVICE inline Eigen::Vector3f NormalFromDepthGradient(const Eigen::Vector2f& f, const Eigen::Vector2f& pp, const Eigen::Vector2i& x, float depth, const Eigen::Vector2f& gradient) {
-	ASSERT(depth > 0.f);
-	return Eigen::Vector3f(
-		f.x()*gradient.x(),
-		f.y()*gradient.y(),
-		(pp.x()-(float)x.x())*gradient.x() + (pp.y()-(float)x.y())*gradient.y() - depth).normalized();
+// camera-facing unit normal of the depth plane through the pixel of ray frame F (CameraModels.h
+// RayFrame) at the given depth and gradient (camera frame): the cross product of the plane's tangents
+// along the pixel axes
+template<typename T>
+HOST_DEVICE inline Eigen::Matrix<T,3,1> NormalFromDepthGradient(const Eigen::Matrix<T,3,3>& F, T depth, const Eigen::Matrix<T,2,1>& gradient) {
+	typedef Eigen::Matrix<T,3,1> Vec3;
+	ASSERT(depth > T(0));
+	const Vec3 tx(gradient.x()*F.col(2) + depth*F.col(0));
+	const Vec3 ty(gradient.y()*F.col(2) + depth*F.col(1));
+	return ty.cross(tx).normalized();
+}
+// the same through pixel x of the camera
+template<typename MODEL>
+HOST_DEVICE inline typename MODEL::Vec3 NormalFromDepthGradient(const MODEL& camera, const Eigen::Vector2i& x, typename MODEL::Scalar depth, const typename MODEL::Vec2& gradient) {
+	return NormalFromDepthGradient(camera.RayFrame(x.cast<typename MODEL::Scalar>()), depth, gradient);
+}
+// pinhole: the same normal in closed form
+template<typename T>
+HOST_DEVICE inline typename Pinhole<T>::Vec3 NormalFromDepthGradient(const Pinhole<T>& camera, const Eigen::Vector2i& x, typename Pinhole<T>::Scalar depth, const typename Pinhole<T>::Vec2& gradient) {
+	ASSERT(depth > T(0));
+	return typename Pinhole<T>::Vec3(
+		camera.fx*gradient.x(),
+		camera.fy*gradient.y(),
+		(camera.cx-(T)x.x())*gradient.x() + (camera.cy-(T)x.y())*gradient.y() - depth).normalized();
 }
 
+// depth along ray of the plane through the point at nDepth along nRay with the given normal (camera
+// frame): nDepth*(n.nRay)/(n.ray); nDepth if the plane is parallel to ray or the new depth is outside
+// [dMin,dMax]
+template<typename T>
+HOST_DEVICE inline T InterpolatePlaneDepth(const Eigen::Matrix<T,3,1>& ray, const Eigen::Matrix<T,3,1>& nRay, T nDepth, const Eigen::Matrix<T,3,1>& normal, T dMin, T dMax) {
+	ASSERT(nDepth > T(0) && dMin < dMax);
+	const T denom(normal.dot(ray));
+	if (Eigen::numext::abs(denom) < Eigen::NumTraits<T>::epsilon())
+		return nDepth;
+	const T depth(nDepth*normal.dot(nRay)/denom);
+	return depth >= dMin && depth <= dMax ? depth : nDepth;
+}
 // depth at pixel x of the plane through neighbor pixel nx at depth nDepth with the given normal
-// (camera frame): a neighbor on the same column or row is intersected in that slice, any other
-// one along the ray through x; nDepth if the plane is parallel to that ray or the new depth is
-// outside [dMin,dMax]
-HOST_DEVICE inline float InterpolatePlaneDepth(const Eigen::Vector2f& f, const Eigen::Vector2f& pp, const Eigen::Vector2i& x, const Eigen::Vector2i& nx, float nDepth, const Eigen::Vector3f& normal, float dMin, float dMax) {
-	ASSERT(nDepth > 0.f && dMin < dMax);
-	float num, denom;
+// (camera frame), intersected with the ray through x: depth = nDepth*(n.Ray(nx))/(n.Ray(x));
+// nDepth if the plane is parallel to that ray or the new depth is outside [dMin,dMax]
+template<typename MODEL>
+HOST_DEVICE inline typename MODEL::Scalar InterpolatePlaneDepth(const MODEL& camera, const Eigen::Vector2i& x, const Eigen::Vector2i& nx, typename MODEL::Scalar nDepth, const typename MODEL::Vec3& normal, typename MODEL::Scalar dMin, typename MODEL::Scalar dMax) {
+	return InterpolatePlaneDepth(camera.Ray(x.cast<typename MODEL::Scalar>()), camera.Ray(nx.cast<typename MODEL::Scalar>()), nDepth, normal, dMin, dMax);
+}
+// pinhole: a neighbor on the same column or row is intersected in that slice, any other one along
+// the ray through x
+template<typename T>
+HOST_DEVICE inline T InterpolatePlaneDepth(const Pinhole<T>& camera, const Eigen::Vector2i& x, const Eigen::Vector2i& nx, typename Pinhole<T>::Scalar nDepth, const typename Pinhole<T>::Vec3& normal, typename Pinhole<T>::Scalar dMin, typename Pinhole<T>::Scalar dMax) {
+	ASSERT(nDepth > T(0) && dMin < dMax);
+	T num, denom;
 	if (x.x() == nx.x()) {
-		const float rayY = ((float)x.y()-pp.y())/f.y();
-		const float nRayY = ((float)nx.y()-pp.y())/f.y();
+		const T rayY = ((T)x.y()-camera.cy)/camera.fy;
+		const T nRayY = ((T)nx.y()-camera.cy)/camera.fy;
 		denom = normal.z() + rayY*normal.y();
 		num = nDepth*(normal.z() + nRayY*normal.y());
 	} else if (x.y() == nx.y()) {
-		const float rayX = ((float)x.x()-pp.x())/f.x();
-		const float nRayX = ((float)nx.x()-pp.x())/f.x();
+		const T rayX = ((T)x.x()-camera.cx)/camera.fx;
+		const T nRayX = ((T)nx.x()-camera.cx)/camera.fx;
 		denom = normal.z() + rayX*normal.x();
 		num = nDepth*(normal.z() + nRayX*normal.x());
 	} else {
-		num = normal.dot(Eigen::Vector3f(nDepth*((float)nx.x()-pp.x())/f.x(), nDepth*((float)nx.y()-pp.y())/f.y(), nDepth));
-		denom = normal.dot(Eigen::Vector3f(((float)x.x()-pp.x())/f.x(), ((float)x.y()-pp.y())/f.y(), 1.f));
+		num = normal.dot(typename Pinhole<T>::Vec3(nDepth*((T)nx.x()-camera.cx)/camera.fx, nDepth*((T)nx.y()-camera.cy)/camera.fy, nDepth));
+		denom = normal.dot(typename Pinhole<T>::Vec3(((T)x.x()-camera.cx)/camera.fx, ((T)x.y()-camera.cy)/camera.fy, T(1)));
 	}
-	if (fabsf(denom) < FLT_EPSILON)
+	if (Eigen::numext::abs(denom) < Eigen::NumTraits<T>::epsilon())
 		return nDepth;
-	const float depth = num/denom;
+	const T depth = num/denom;
 	return depth >= dMin && depth <= dMax ? depth : nDepth;
+}
+
+// homography H = Rrel + t*n^T/(n.X) mapping reference camera-frame rays to target camera-frame rays
+// through the plane with normal n containing the reference camera-frame point X, where Rrel = Rj*Rref^T
+// and t = Rj*(Cref-Cj) give the target pose relative to the reference
+template<typename MAT3, typename VEC3>
+HOST_DEVICE inline MAT3 PlaneRayHomography(const MAT3& Rrel, const VEC3& t, const VEC3& normal, const VEC3& X) {
+	ASSERT(normal.dot(X) < typename VEC3::Scalar(0));
+	return Rrel + t*(normal.transpose()/normal.dot(X));
+}
+// plane-induced patch warp from reference pixel offsets (dx,dy,1) around x0 to homogeneous pixels of
+// a target view: M = trg.PixelHomography(H*r0)*H*ref.RayFrame(x0), with H the PlaneRayHomography
+template<typename REF, typename TRG>
+HOST_DEVICE inline typename REF::Mat3 PlanePatchWarp(const REF& ref, const TRG& trg, const typename REF::Mat3& Rrel, const typename REF::Vec3& t, const typename REF::Vec3& normal, const typename REF::Vec3& X, const typename REF::Vec2& x0) {
+	typedef typename REF::Mat3 Mat3;
+	const Mat3 H(PlaneRayHomography(Rrel, t, normal, X));
+	const Mat3 F(ref.RayFrame(x0));
+	return trg.PixelHomography(H*F.col(2))*H*F;
 }
 /*----------------------------------------------------------------*/
 

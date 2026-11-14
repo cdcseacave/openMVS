@@ -275,8 +275,8 @@ bool StarInitializer::Initialize(
 
 	// 2. Register connected views from relative poses
 	struct ConnectedView {
-		IIndex viewID; // ID of the connected target view
-		unsigned numInliers; // number of inliers in the pair
+		IIndex viewID = NO_ID; // ID of the connected target view
+		unsigned numInliers = 0; // number of inliers in the pair
 		Pose3D relPose; // relative pose to reference
 	};
 	CLISTDEF0IDX(ConnectedView, IIndex) candidates;

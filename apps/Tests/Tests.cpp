@@ -36,6 +36,7 @@
 #include "TestsMath.h"
 #include "TestsSFM.h"
 #include "TestsMVS.h"
+#include "TestsSynthetic.h"
 #include "Tests.h"
 
 
@@ -187,21 +188,32 @@ int main(int argc, LPCTSTR* argv)
 	// every VERBOSE()/LOG() line the tests emit is discarded (the console sink does not reach
 	// stdout, so failures would otherwise report nothing but an exit code). The log is written
 	// to the current directory, not WORKING_FOLDER, to keep the source data folder clean.
+	// The tool modes (named, not numbered) always write the log file: their results are logged.
+	const bool toolMode = (argc > 1 && !std::isdigit((unsigned char)argv[1][0]));
 	const int nVerbosity = (argc > 2 ? std::atoi(argv[2]) : 0);
 	const bool verbose = (nVerbosity != 0);
-	if (verbose) {
+	if (verbose)
 		g_nVerbosityLevel = nVerbosity;
+	if (verbose || toolMode)
 		OPEN_LOGFILE((APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
-	}
 	const bool forceCPU = (argc > 3 && std::atoi(argv[3]) != 0);
 	// run the selected suite inside a lambda so the teardown below is reached on failure
 	// too: the log file in particular must be closed, or a failing run truncates its own log
 	const bool succeeded = [&]() {
+		// the tool modes are named (MVS::SynthTool), the suites numbered
+		if (toolMode)
+			return MVS::SynthTool(argc-1, argv+1);
 		if (argc < 2 || std::atoi(argv[1]) == 0) {
 			if (!UnitTests())
 				return false;
 		} else if (std::atoi(argv[1]) == 1) {
 			// Run SFM smoke tests
+			if (!SEACAVE::TestCameraModels())
+				return false;
+			if (!SEACAVE::TestSphericalPatchWarp())
+				return false;
+			if (!MVS::SphericalImageSizeTest())
+				return false;
 			if (!SFM::TestSimilarityTransform())
 				return false;
 			if (!SFM::KnownPosesImportTest())
@@ -300,7 +312,13 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::HierarchicalSFMWithRandomTransformTest())
 				return false;
 		} else {
+			if (!MVS::InterfaceV8Test())
+				return false;
+			if (!MVS::BrownUndistortOnLoadTest())
+				return false;
 			// Run MVS pipeline test
+			if (!MVS::PatchWarpModelTest())
+				return false;
 			if (!MVS::PipelineTest(forceCPU, verbose))
 				return false;
 			if (!MVS::MeshRefineSyntheticTest(forceCPU, verbose))
@@ -311,13 +329,45 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!MVS::SelectNeighborViewsScaleTest())
 				return false;
+			if (!MVS::SelectNeighborViewsSphericalTest())
+				return false;
+			if (!MVS::GapInterpolationNormalsTest())
+				return false;
+			if (!MVS::WrapPixelTest())
+				return false;
+			if (!MVS::ConfidenceSeamTest())
+				return false;
+			if (!MVS::ComputeFOVTest())
+				return false;
+			if (!MVS::NeighborViewsPointCloudRigTest())
+				return false;
+			if (!MVS::EstimatePointCloudNormalsSphericalTest())
+				return false;
+			if (!MVS::TowerSphericalTest())
+				return false;
 			if (!MVS::DMapCacheKeepsRequestedImageTest())
+				return false;
+			if (!MVS::SyntheticDepthBaselineTest())
+				return false;
+			if (!MVS::SyntheticSphericalTest())
+				return false;
+			#ifdef _USE_METAL
+			if (!MVS::MetalModelMathTest(forceCPU))
+				return false;
+			#endif
+			if (!MVS::SyntheticSphericalGPUTest(forceCPU))
+				return false;
+			if (!MVS::SyntheticMixedGPUTest(forceCPU))
+				return false;
+			if (!MVS::GPUConfidenceTest(forceCPU))
+				return false;
+			if (!MVS::SyntheticSphericalFusionTest())
 				return false;
 		}
 		return true;
 	}();
 	Finalize();
-	if (verbose)
+	if (verbose || toolMode)
 		CLOSE_LOGFILE();
 	CLOSE_LOGCONSOLE();
 	CLOSE_LOG();

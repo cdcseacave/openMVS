@@ -103,7 +103,7 @@ scenes), `SceneGeometry.cpp` (normals, sparse surface, CropToROI).
 Scene::DenseReconstruction(nFusionMode, ...)
   -> SelectViews() -> InitViews() -> EstimateDepthMap() -> FuseDepthMaps()
 ```
-- **PatchMatch stereo**: Random init + iterative propagation + sub-pixel refinement
+- **PatchMatch stereo**: Random init + iterative propagation + sub-pixel refinement; camera-model generic (pinhole or spherical reference, depth = distance along the ray) on the CPU, CUDA and Metal; every consumer of depth-maps reaches a view through `ModelCamera` (`Image.h`); see `docs/design/SphericalPatchMatch.md`
 - **Semi-Global Matching** (`SemiGlobalMatcher.h`): alternative CPU depth-map estimator to PatchMatch (`--fusion-mode -2`), multi-view hierarchical SGM over inverse-depth samples
 - **Confidence filtering**: Multi-view consistency checks
 - **Confidence recalibration** (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`): replaces the photometric `1-NCC` confidence with a posterior predicting fusion survival (intra-map plane prior + soft multi-view confirmation + free-space violations). Controlled by the `ADJUST_CONFIDENCE` bit of `nOptimize`, whose default `ADJUST_CONFIDENCE_AUTO` resolves in `ComputeDepthMaps` to ON only for CUDA estimation (fused into the last geometric iteration, ~3ms/map) and OFF for CPU. The posterior's shape constants are deliberately compile-time in `ConfidenceRefine.h` -- one jointly GT-calibrated operating point, not independent knobs. Design, GT evidence, rejected alternatives and open threads: `docs/design/DepthMapConfidence.md`.
@@ -148,7 +148,7 @@ Renders the textured mesh from each camera viewpoint and compares against the or
 - **Native**: `.mvs` (Boost serialization)
 - **Point clouds**: `.ply` (binary/ASCII), `.gltf`
 - **Meshes**: `.ply`, `.obj` (with MTL), `.gltf`
-- **Interface**: COLMAP, OpenMVG via `Interface.h`
+- **Interface**: COLMAP, OpenMVG via `Interface.h` (`libs/IO/Interface.h`, shared with SFM)
 - **Depth-maps**: `.dmap`, read and written by `Interface.h` alone
   (`Export/ImportDepthDataRaw`); `DepthMap.cpp` and `SFM/InterfaceMVS.cpp` only adapt
   the scene types to it.

@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "Maths.h"
+#include "../../Math/Camera/CameraModels.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -94,6 +95,15 @@ struct LinearCameraModel {
 	// compute camera ray direction for the given pixel
 	__host__ __device__ inline Point3 ViewDirection(const Point2i& x) const {
 		return TransformPointI2C(x.cast<float>()).normalized();
+	}
+
+	// the same camera as a CameraModels.h model, for the shared depth geometry
+	__host__ __device__ inline SEACAVE::Pinhole<float> AsPinhole() const {
+		return SEACAVE::Pinhole<float>{f.x(), f.y(), p.x(), p.y()};
+	}
+	// an equirectangular camera keeps its angular K in the same fields
+	__host__ __device__ inline SEACAVE::Spherical<float> AsSpherical() const {
+		return SEACAVE::Spherical<float>{f.x(), f.y(), p.x(), p.y()};
 	}
 };
 /*----------------------------------------------------------------*/

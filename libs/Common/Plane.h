@@ -40,7 +40,7 @@ public:
 
 	//---------------------------------------
 
-	inline TPlane() {}
+	NO_INIT_MEMBERS inline TPlane() {}
 	inline TPlane(const VECTOR&, TYPE);
 	inline TPlane(const VECTOR&, const POINT&);
 	inline TPlane(const POINT&, const POINT&, const POINT&);

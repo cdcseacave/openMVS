@@ -1079,7 +1079,7 @@ struct TPixel {
 	static const TPixel MAGENTA;
 	static const TPixel CYAN;
 	// init
-	inline TPixel() {}
+	NO_INIT_MEMBERS inline TPixel() {}
 	template <typename T> inline TPixel(const TPixel<T>& p)
 		#if _COLORMODE == _COLORMODE_BGR
 		: b(TYPE(p.b)), g(TYPE(p.g)), r(TYPE(p.r)) {}
@@ -1424,7 +1424,7 @@ public:
 	enum { numBitsShift = LOG2I<TBitMatrix::numBitsPerCell>() };
 
 public:
-	inline TBitMatrix() : data(NULL) {}
+	inline TBitMatrix() : rows(0), cols(0), data(NULL) {}
 	inline TBitMatrix(int _rows, int _cols=1) : rows(_rows), cols(_cols), data(rows && cols ? new Type[computeLength(rows, cols)] : NULL) {}
 	inline TBitMatrix(int _rows, int _cols, uint8_t v) : rows(_rows), cols(_cols), data(rows && cols ? new Type[computeLength(rows, cols)] : NULL) { if (!empty()) memset(v); }
 	inline TBitMatrix(const Size& sz) : rows(sz.height), cols(sz.width), data(rows && cols ? new Type[computeLength(sz)] : NULL) {}
@@ -1678,7 +1678,7 @@ template <typename IndexType, typename ScoreType>
 struct TIndexScore {
 	IndexType idx;
 	ScoreType score;
-	inline TIndexScore() {}
+	NO_INIT_MEMBERS inline TIndexScore() {}
 	inline TIndexScore(IndexType _idx, ScoreType _score) : idx(_idx), score(_score) {}
 	// compare by index (increasing)
 	inline bool operator<(IndexType i) const { return (idx < i); }
@@ -1720,7 +1720,7 @@ struct PairIdx {
 			#endif
 		};
 	};
-	inline PairIdx() {}
+	NO_INIT_MEMBERS inline PairIdx() {}
 	inline PairIdx(PairIndex _idx) : idx(_idx) {}
 	inline PairIdx(Index _i, Index _j)
 		#if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -1765,7 +1765,7 @@ struct cuint32_t {
 		uint32_t idx;
 		uint8_t i;
 	};
-	inline cuint32_t() {}
+	NO_INIT_MEMBERS inline cuint32_t() {}
 	inline cuint32_t(uint32_t _idx) : idx(_idx) {}
 	inline operator uint32_t () const { return idx; }
 	inline operator uint32_t& () { return idx; }

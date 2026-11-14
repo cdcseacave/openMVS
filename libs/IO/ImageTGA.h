@@ -30,7 +30,7 @@ public:
 	bool		WriteData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
 
 protected:
-	bool		m_bRLE;
+	bool		m_bRLE = false;
 }; // class CImageTGA
 /*----------------------------------------------------------------*/
 

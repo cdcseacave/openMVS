@@ -123,7 +123,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("align-layers", boost::program_options::bool_switch(&OPT::bAlignLayers)->default_value(false), "align additional layers to the active layer using shared cameras")
 		("view-file", boost::program_options::value<std::string>(&OPT::strViewFileName), "transform file controlling the screenshot viewpoint (12 or 16 whitespace-separated values, row-major camera-to-world); if omitted the default fitted view is used")
 		("view-camera", boost::program_options::value(&OPT::nViewCamera)->default_value(-1), "set the screenshot viewpoint to this scene camera's pose for a natural upright framing (-1 disabled; out-of-range selects a central camera); overridden by --view-file")
-		("screenshot-show", boost::program_options::value<std::string>(&OPT::strShow), "which scene components to render in the screenshot, as a string of flags: p=point-cloud, m=mesh, t=textured, c=cameras, w=wireframe, b=bounding-box, u=UI overlay (e.g. 'p', 'm', 'mt', 'mu'); if omitted the interactive defaults are kept and the UI overlay is disabled")
+		("screenshot-show", boost::program_options::value<std::string>(&OPT::strShow), "which scene components to render in the screenshot, as a string of flags: p=point-cloud, m=mesh, t=textured, c=cameras, w=wireframe, b=bounding-box, i=image overlay of the --view-camera (its camera view mode), u=UI overlay (e.g. 'p', 'm', 'mt', 'mu'); if omitted the interactive defaults are kept and the UI overlay is disabled")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -284,7 +284,7 @@ int main(int argc, LPCTSTR* argv)
 		if (!OPT::strViewFileName.empty()) {
 			if (!viewer.SetViewFromFile(MAKE_PATH_SAFE(OPT::strViewFileName)))
 				return EXIT_FAILURE;
-		} else if (OPT::nViewCamera >= 0 && !viewer.SetViewFromCamera((unsigned)OPT::nViewCamera)) {
+		} else if (OPT::nViewCamera >= 0 && !viewer.SetViewFromCamera((unsigned)OPT::nViewCamera, OPT::strShow.find('i') != std::string::npos)) {
 			return EXIT_FAILURE;
 		}
 		viewer.GetWindow().RequestScreenshot(MAKE_PATH_SAFE(OPT::strScreenshotFileName), includeUI, true);
@@ -295,7 +295,7 @@ int main(int argc, LPCTSTR* argv)
 }
 #ifdef _WIN32
 // bridge WinMain -> main()
-int APIENTRY WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+int APIENTRY WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
 	return main(__argc, const_cast<LPCTSTR*>(__argv));
 }
 #endif

@@ -217,8 +217,8 @@ GPU code targets compute capabilities 5.0, 7.2, and 7.5+. When CUDA is not avail
 | PLY | `.ply` | Point clouds and meshes (binary or ASCII) |
 | OBJ | `.obj` | Textured mesh export (with .mtl and texture images) |
 | glTF | `.gltf`/`.glb` | Modern 3D format for interchange |
-| Interface | various | COLMAP, OpenMVG import/export via `Interface.h` |
-| Depth-map | `.dmap` | quantized depth/normal/confidence/views, 11 bytes per pixel; the codec lives in `Interface.h`, which is self-contained and can be dropped into any project |
+| Interface | various | COLMAP, OpenMVG import/export via `libs/IO/Interface.h` |
+| Depth-map | `.dmap` | quantized depth/normal/confidence/views, 11 bytes per pixel; the codec lives in `libs/IO/Interface.h`, which is self-contained and can be dropped into any project |
 
 ## Performance and Threading
 
@@ -244,7 +244,6 @@ libs/MVS/
 ├── PointCloud.h/cpp          # Point cloud with attributes
 ├── Mesh.h/cpp                # Triangle mesh with topology
 ├── DepthMap.h/cpp            # Depth/normal/confidence maps
-├── Interface.h               # External format definitions + the .dmap codec
 │
 │ # Pipeline stages (one file per stage)
 ├── SceneDensify.cpp          # Dense depth estimation (98 KB)

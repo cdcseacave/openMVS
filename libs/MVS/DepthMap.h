@@ -36,6 +36,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "PointCloud.h"
+#include <atomic>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -111,6 +112,9 @@ extern MVS_API unsigned nMinResolution;
 extern MVS_API unsigned nSubResolutionLevels;
 extern MVS_API unsigned nMinViews;
 extern MVS_API unsigned nMaxViews;
+// the most neighbor views a depth-map is estimated with, whatever nMaxViews/nNumViews ask for:
+// the GPU estimators hold the reference and at most this many neighbors
+constexpr unsigned MAX_ESTIMATION_NEIGHBORS = 31;
 extern MVS_API unsigned nMinViewsFuse;
 extern MVS_API unsigned nMaxViewsFuse;
 extern MVS_API unsigned nMinViewsTrustPoint;
@@ -164,7 +168,7 @@ extern MVS_API int nFuseViolationMax;
 // off by default: worth enabling when the dense point-cloud itself is the final output, not when a
 // mesh reconstruction follows (which interpolates the extra points anyway).
 extern MVS_API bool bFuseRecycleDropped;
-extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
+extern MVS_API bool bEstimateConfidenceGPU; // when GPU (CUDA or Metal) estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
 extern MVS_API unsigned nPatchMatchCUDAInstances;
@@ -191,16 +195,16 @@ struct WeightedPatchFix {
 	};
 	Pixel weights[nTexels];
 	float sumWeights;
-	float normSq0;
-	WeightedPatchFix() : normSq0(0) {}
+	float normSq0; // 0 until the weights are computed, on first use
+	NO_INIT_MEMBERS WeightedPatchFix() : normSq0(0) {}
 };
 
 struct MVS_API DepthData {
 	struct ViewData {
-		float scale; // image scale relative to the reference image
+		float scale = 1; // image scale relative to the reference image
 		Camera camera; // camera matrix corresponding to this image
 		Image32F image; // image float intensities
-		Image* pImageData; // image data
+		Image* pImageData = NULL; // image data
 
 		Matrix3x3 Hl; //
 		Vec3 Hm;      // constants during per-pixel loops
@@ -212,6 +216,14 @@ struct MVS_API DepthData {
 		Point3f Tm;    // constants during per-pixel geometric-consistent loops
 		Matrix3x3f Tr; //
 		Point3f Tn;    //
+
+		// the pose of this view relative to the reference, for the warps of any camera model: the
+		// reference camera-frame point X is Rrel*X+trel in this view's camera frame, RrelDM*X+trelDM in
+		// the frame of its depth-map camera
+		Eigen::Matrix3f Rrel;
+		Eigen::Vector3f trel;
+		Eigen::Matrix3f RrelDM;
+		Eigen::Vector3f trelDM;
 
 		// this neighbor's own normal/confidence maps, loaded ALONGSIDE depthMap (same
 		// disk file, same InitViews() call -- no extra file open) ONLY during the LAST
@@ -227,12 +239,33 @@ struct MVS_API DepthData {
 			Hl = camera.K * camera.R * cameraRef.R.t();
 			Hm = camera.K * camera.R * (cameraRef.C - camera.C);
 			Hr = cameraRef.K.inv();
+			const Matrix3x3 R(camera.R * cameraRef.R.t());
+			const Vec3 t(camera.R * (cameraRef.C - camera.C));
+			Rrel = Eigen::Map<const Eigen::Matrix<double,3,3,Eigen::RowMajor>>(R.val).cast<float>();
+			trel = Eigen::Map<const Eigen::Vector3d>(t.val).cast<float>();
 			if (!depthMap.empty()) {
 				Tl = cameraDepthMap.K * cameraDepthMap.R * cameraRef.R.t();
 				Tm = cameraDepthMap.K * cameraDepthMap.R * (cameraRef.C - cameraDepthMap.C);
 				Tr = cameraRef.K * cameraRef.R * cameraDepthMap.R.t() * cameraDepthMap.GetInvK();
 				Tn = cameraRef.K * cameraRef.R * (cameraDepthMap.C - cameraRef.C);
+				const Matrix3x3 RDM(cameraDepthMap.R * cameraRef.R.t());
+				const Vec3 tDM(cameraDepthMap.R * (cameraRef.C - cameraDepthMap.C));
+				RrelDM = Eigen::Map<const Eigen::Matrix<double,3,3,Eigen::RowMajor>>(RDM.val).cast<float>();
+				trelDM = Eigen::Map<const Eigen::Vector3d>(tDM.val).cast<float>();
 			}
+		}
+		// the view is an equirectangular panorama (else a pinhole camera: Brown images are read undistorted)
+		inline bool IsSpherical() const {
+			return pImageData->model == CameraModelType::SPHERICAL;
+		}
+		inline ModelCamera GetModelCamera() const {
+			return ModelCamera(camera, pImageData->model);
+		}
+		// homography from reference pixels to this view's pixels induced by the plane through the
+		// reference camera-frame point X0*depth with the given normal (pinhole cameras, cached constants)
+		inline Matrix3x3f ComputeHomography(const Point3& X0, Depth depth, const Normal& normal) const {
+			const Vec3 n(normal);
+			return (Hl + Hm * (n.t()*INVERT(n.dot(X0)*depth))) * Hr;
 		}
 
 		inline IIndex GetID() const {
@@ -247,11 +280,11 @@ struct MVS_API DepthData {
 			return ABS(scale-1.f) >= 0.15f;
 		}
 		template <typename IMAGE>
-		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
+		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale, bool bSpherical) {
 			if (!NeedScaleImage(scale))
 				return false;
 			// the camera of the scaled view comes from GetCamera(), so scale on its uniform grid
-			Image::ResizeUniform(image, imageScaled, Image8U::computeResize(image.size(), scale), scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
+			Image::ResizeUniform(image, imageScaled, Image::ComputeResize(image.size(), scale, bSpherical), scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
 			return true;
 		}
 	};
@@ -276,6 +309,9 @@ struct MVS_API DepthData {
 	ViewsMap viewsMap; // view-IDs map (indexing images vector starting after first view)
 	float dMin, dMax; // global depth range for this image
 	cv::Size size; // image size used to estimate this depth-map
+	// the least width of an equirectangular depth-map at any estimation level: the propagation of the
+	// GPU estimators reaches 23 columns either side of a pixel, which must stay within one turn
+	enum { MIN_SPHERICAL_WIDTH = 32 };
 	bool bConfAdjusted; // the confidence recalibration already ran for this view -- either fused
 		// into the last geometric-consistency estimation itself (resident-buffer reuse, see
 		// DepthMapsData::EstimateDepthMap) or restored by Load() from the dmap header's
@@ -284,7 +320,7 @@ struct MVS_API DepthData {
 	unsigned references; // how many times this depth-map is referenced (on 0 can be safely unloaded)
 	CriticalSection cs; // used to count references
 
-	inline DepthData() : bConfAdjusted(false), references(0) {}
+	inline DepthData() : dMin(0), dMax(0), bConfAdjusted(false), references(0) {}
 	DepthData(const DepthData&);
 
 	inline void ReleaseImages() {
@@ -314,7 +350,6 @@ struct MVS_API DepthData {
 	const Camera& GetCamera() const { return GetView().camera; }
 
 	void GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
-	void GetNormal(const Point2f& x, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
 
 	void ApplyIgnoreMask(const BitMatrix&);
 
@@ -345,7 +380,37 @@ typedef CLISTDEFIDX(DepthData,IIndex) DepthDataArr;
 /*----------------------------------------------------------------*/
 
 
-struct MVS_API DepthEstimator {
+// the camera model of a view: pinhole and spherical models are both parametrized by the focal
+// lengths and the principal point of the view's K
+template<typename MODEL>
+inline MODEL MakeCameraModel(const Camera& camera) {
+	typedef typename MODEL::Scalar T;
+	ASSERT(ISZERO(camera.K(0,1)));
+	return MODEL{T(camera.K(0,0)), T(camera.K(1,1)), T(camera.K(0,2)), T(camera.K(1,2))};
+}
+
+// the sines and cosines of the longitude of every column and of the elevation of every row of an
+// equirectangular image of the given size, computed in double precision and stored in single
+// precision as (sin, cos) pairs of any two-float type (SINCOS): the rays and ray frames of its pixels
+// are built from them (Spherical::Ray, Spherical::RayFrame); the one table of the CPU and GPU estimators
+// and confidence recalibrations
+template<typename SINCOS>
+inline void ComputeSphericalTrig(const Spherical<double>& camera, const cv::Size& size, SINCOS* lonSinCos, SINCOS* elSinCos) {
+	static_assert(sizeof(SINCOS) == 2*sizeof(float), "SINCOS holds two floats: sin, cos");
+	ASSERT(ISEQUAL(camera.fx*TWO_PI, (double)size.width) && ISEQUAL(camera.fy*PI, (double)size.height));
+	const auto Store = [](double angle, SINCOS& sinCos) {
+		const float sc[2] = {(float)std::sin(angle), (float)std::cos(angle)};
+		memcpy(&sinCos, sc, sizeof(sc));
+	};
+	for (int c=0; c<size.width; ++c)
+		Store(camera.Angles(Eigen::Vector2d(c, 0)).x(), lonSinCos[c]);
+	for (int r=0; r<size.height; ++r)
+		Store(camera.Angles(Eigen::Vector2d(0, r)).y(), elSinCos[r]);
+}
+
+// the part of the PatchMatch estimator independent of the camera model: patch layout, pixel order
+// and the shared types
+struct MVS_API DepthEstimatorBase {
 	enum { nSizeHalfWindow = 4 };
 	enum { nSizeWindow = nSizeHalfWindow*2+1 };
 	enum { nSizeStep = 2 };
@@ -369,7 +434,7 @@ struct MVS_API DepthEstimator {
 	};
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	struct NeighborEstimate {
-		Depth depth;
+		Depth depth = 0;
 		Normal normal;
 		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 		Planef::POINT X;
@@ -388,9 +453,51 @@ struct MVS_API DepthEstimator {
 	typedef CLISTDEFIDX(Weight,int) WeightMap;
 	#endif
 
+	// per-pixel state of a propagation pass: 1 while the pixel is not estimated yet in this pass, 2 while
+	// its estimate is written to the maps, 0 once it is
+	typedef std::atomic<uint8_t> PixelPending;
+	// the smallest stripe height of the zigzag pixel order: off the stripe corners, the preceding
+	// neighbors of a pixel are at least this many pixels before it in the order
+	enum { nZigzagMinStride = 64 };
+
+	// the mask stored in the scene, else the file next to the image, resized into a local buffer (the
+	// Image is never touched, so it is safe to call concurrently for the same Image and across scales);
+	// bmask gets the keep-mask (bit set = keep), or pMask the mask != label if given; returns false
+	// and leaves both untouched if there is no mask to load
+	static bool ImportIgnoreMask(const Image&, const cv::Size&, int nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
+	static void MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& coords, const BitMatrix& mask, int rawStride=nZigzagMinStride);
+
+	static const float scaleRanges[12];
+
+	// a spherical target view is sampled through the tangent-plane homography of the patch while the
+	// elevation of the patch center seen from the target is at most this (degrees), and through the
+	// exact per-texel warp above it, where the homography error grows as 1/cos(elevation)
+	static float fSphericalWarpMaxElevation;
+};
+
+// PatchMatch depth-map estimator of a reference view seen through the camera model MODEL
+// (Math/Camera/CameraModels.h): a depth is the distance lambda along the model's ray, so the
+// camera-frame point of pixel x is lambda*Ray(x). The code is shared by both models; the reference
+// model enters through camera0/camera0f (the rays and the DepthGeometry.h functions) and the
+// `if constexpr (bSphericalRef)` branches (wrapped columns, tabulated rays, the normal frame); the
+// model of a neighbor view is resolved once per (pixel, hypothesis, view), never per texel.
+// Concurrent estimators pull pixels in the zigzag order of coords; an estimate is written to the maps
+// as a whole at the end of its pixel, so a neighbor's estimate is read whole: the one of this pass if
+// that neighbor is done, else the previous pass's (a single thread reads lower neighbors final and
+// higher ones from the previous pass). On the short anti-diagonals of a stripe corner, where the
+// estimators work on adjacent pixels, a pixel waits for its preceding neighbors still in flight, so
+// it reads them as a single thread does. The columns of a spherical reference wrap: the first and the
+// last column are neighbors.
+template<template<typename> class MODEL>
+struct DepthEstimatorT : DepthEstimatorBase {
+	typedef MODEL<REAL> Model; // in the precision of the reference rays
+	typedef MODEL<float> Modelf; // in the precision of the depth geometry
+	static constexpr bool bSphericalRef = std::is_same<Model, Spherical<REAL>>::value;
+
 	SEACAVE::Random rnd;
 
 	volatile Thread::safe_t& idxPixel; // current image index to be processed
+	PixelPending* const pending; // per pixel of the reference image, its state in this propagation pass
 	#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_NA
 	CLISTDEF0IDX(NeighborData,IIndex) neighbors; // neighbor pixels coordinates to be processed
 	#else
@@ -399,9 +506,23 @@ struct MVS_API DepthEstimator {
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	CLISTDEF0IDX(NeighborEstimate,IIndex) neighborsClose; // close neighbor pixel depths to be used for smoothing
 	#endif
+	CLISTDEF0IDX(float,IIndex) neighborsConf; // the confidence of each of the neighbors
 	Point3 X0;	      //
 	ImageRef x0;	  // constants during one pixel loop
-	float normSq0;	  //
+	float normSq0 = 0;	  //
+	Matrix3x3f normalFrame0; // spherical reference: the frame random and perturbed normals are drawn in
+		// (columns: the longitude and the downward elevation tangents at X0, and X0)
+	Eigen::Matrix3f rayFrame0; // Model::RayFrame at x0, if bModelWarp
+	struct SinCos { float s, c; };
+	CLISTDEF0IDX(SinCos,int) lonSinCos0, elSinCos0; // spherical reference: the longitude of each column and
+		// the elevation of each row, by their sine and cosine (the trigonometry of its rays)
+	CLISTDEF0IDX(Eigen::Matrix3f,IIndex) viewRayFrames0; // per view, Rrel*rayFrame0: the ray frame at x0 in the view's camera frame
+	enum { nTexelsPacked = (nTexels+15)/16*16 }; // whole SIMD packets
+	struct TexelRays { float x[nTexelsPacked], y[nTexelsPacked], z[nTexelsPacked]; }; // padded with the last texel
+	TexelRays texelRays0 = {}; // the rays of the patch texels at x0, for the exact warp, filled on first use
+	CLISTDEF0IDX(TexelRays,IIndex) viewTexelRays0; // per view, Rrel*texelRays0, filled on first use
+	CLISTDEF0IDX(bool,IIndex) bViewTexelRays0; // per view, viewTexelRays0 is filled for x0 (the last entry: texelRays0)
+	CLISTDEF0IDX(Eigen::Vector3f,IIndex) viewCenters0; // per view, its center in the reference camera frame, if bModelWarp
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
 	TexelVec texels0; //
 	#endif
@@ -432,16 +553,18 @@ struct MVS_API DepthEstimator {
 	#endif
 	const MapRefArr& coords;
 	const Image8U::Size size;
-	const Eigen::Vector2f focal, principal; // image0's intrinsics (skew-free)
+	const Model camera0; // image0's camera model
+	const Modelf camera0f; // the same, single precision
 	const Depth dMin, dMax;
 	const Depth dMinSqr, dMaxSqr;
 	const ENDIRECTION dir;
+	const bool bModelWarp; // a spherical camera is involved: some view is warped through the camera models
 	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH || DENSE_AGGNCC == DENSE_AGGNCC_MINMEAN
 	const IDX idxScore;
 	#endif
 
-	DepthEstimator(
-		unsigned nIter, DepthData& _depthData0, volatile Thread::safe_t& _idx,
+	DepthEstimatorT(
+		unsigned nIter, DepthData& _depthData0, volatile Thread::safe_t& _idx, PixelPending* _pending,
 		#if DENSE_NCC == DENSE_NCC_WEIGHTED
 		WeightMap& _weightMap0,
 		#else
@@ -454,7 +577,69 @@ struct MVS_API DepthEstimator {
 	float ScorePixelImage(const DepthData::ViewData& image1, Depth, const Normal&);
 	float ScorePixel(Depth, const Normal&);
 	void ProcessPixel(IDX idx);
+	void ReadEstimate(const ImageRef&, Depth&, Normal&, float& conf) const;
+	void EstimatePixel(Depth&, Normal&, float& conf);
 	Depth InterpolatePixel(const ImageRef&, Depth, const Normal&) const;
+	// the geometric-consistency cost of the depth at x0 against the target's depth-map, and the
+	// camera-frame point of reference pixel nx at the given depth
+	float ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth) const;
+	Point3f ComputeNeighborPoint(const ImageRef& nx, Depth) const;
+	// the NCC terms of the target texels of the patch at x0, accumulated texel by texel in the order of
+	// the reference texels as the patch samplers hand them over (sums(value), nTexels calls)
+	struct PatchSums {
+		#if DENSE_NCC == DENSE_NCC_WEIGHTED
+		const typename Weight::Pixel* weights; // of the reference texels
+		#elif DENSE_NCC == DENSE_NCC_FAST
+		const TexelVec* texels0;
+		#else
+		TexelVec* texels1; // the target texels, stored
+		#endif
+		int n;
+		float sum;
+		#if DENSE_NCC != DENSE_NCC_DEFAULT
+		float sumSq, num;
+		#endif
+		FORCEINLINE void operator()(float v) {
+			ASSERT(n < nTexels);
+			#if DENSE_NCC == DENSE_NCC_FAST
+			sum += v;
+			sumSq += SQUARE(v);
+			num += (*texels0)(n++)*v;
+			#elif DENSE_NCC == DENSE_NCC_WEIGHTED
+			const typename Weight::Pixel& pw = weights[n++];
+			const float vw(v*pw.weight);
+			sum += vw;
+			sumSq += v*vw;
+			num += v*pw.tempWeight;
+			#else
+			sum += (*texels1)(n++) = v;
+			#endif
+		}
+	};
+	inline PatchSums InitPatchSums() {
+		#if DENSE_NCC == DENSE_NCC_WEIGHTED
+		return PatchSums{weightMap0[x0.y*image0.image.width()+x0.x].weights, 0, 0.f, 0.f, 0.f};
+		#elif DENSE_NCC == DENSE_NCC_FAST
+		return PatchSums{&texels0, 0, 0.f, 0.f, 0.f};
+		#else
+		return PatchSums{&texels1, 0, 0.f};
+		#endif
+	}
+	// the cost of the plane (depth, normal) in the target view from the NCC sums of its whole patch,
+	// with the smoothness, geometric-consistency and depth-prior terms
+	FORCEINLINE float ScorePatch(const DepthData::ViewData& image1, Depth, const Normal&, PatchSums);
+	// the texels of the patch of the plane (depth, normal) at x0 as seen in the target view, handed to
+	// sink one by one in the order of the reference texels; false, after fewer, if one of them is not
+	// seen there; used as soon as a spherical camera is involved in the scene (between pinhole cameras
+	// ScorePixelImage samples the cached plane homography itself)
+	template<typename TexelSink>
+	bool SampleModelPatch(const DepthData::ViewData& image1, Depth, const Normal&, TexelSink& sink);
+	// the same through the exact per-texel warp into a spherical target (single precision)
+	template<typename TexelSink>
+	bool SampleExactPatch(const DepthData::ViewData& image1, const Spherical<float>& trg, Depth, const Normal&, TexelSink& sink);
+	// the geometric-consistency cost against the depth-map of a target of model TRG (single precision)
+	template<typename TRG>
+	float GeometricConsistency(const DepthData::ViewData& image1, const TRG& trg, Depth) const;
 	#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 	void InitPlane(Depth, const Normal&);
 	#endif
@@ -472,37 +657,30 @@ struct MVS_API DepthEstimator {
 	}
 	#endif
 
+	// the reference image column c: wrapped for a spherical reference, whose patches cross the seam
+	inline int Col0(int c) const {
+		if constexpr (bSphericalRef)
+			return WrapColumn(c, size.width);
+		return c;
+	}
+	// spherical reference: the ray of the pixel (c,r), the column within one width of the image
+	inline Eigen::Vector3f Ray0(int c, int r) const {
+		ASSERT(bSphericalRef && !lonSinCos0.empty());
+		const SinCos& lon(lonSinCos0[Col0(c)]), el(elSinCos0[r]);
+		return Spherical<float>::Ray(lon.s, lon.c, el.s, el.c);
+	}
+
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
 	float GetWeight(const ImageRef& x, float center) const {
 		// color weight [0..1]
 		const float sigmaColor(-1.f/(2.f*SQUARE(0.1f)));
-		const float wColor(SQUARE(image0.image(x0+x)-center) * sigmaColor);
+		const float wColor(SQUARE(image0.image(x0.y+x.y, Col0(x0.x+x.x))-center) * sigmaColor);
 		// spatial weight [0..1]
 		const float sigmaSpatial(-1.f/(2.f*SQUARE((int)nSizeHalfWindow-1)));
 		const float wSpatial(float(SQUARE(x.x) + SQUARE(x.y)) * sigmaSpatial);
 		return DENSE_EXP(wColor+wSpatial);
 	}
 	#endif
-
-	inline Matrix3x3f ComputeHomographyMatrix(const DepthData::ViewData& img, Depth depth, const Normal& normal) const {
-		#if 0
-		// compute homography matrix
-		const Matrix3x3f H(img.camera.K*HomographyMatrixComposition(image0.camera, img.camera, Vec3(normal), Vec3(X0*depth))*image0.camera.K.inv());
-		#else
-		// compute homography matrix as above, caching some constants
-		const Vec3 n(normal);
-		return (img.Hl + img.Hm * (n.t()*INVERT(n.dot(X0)*depth))) * img.Hr;
-		#endif
-	}
-
-	static inline Point3 ComputeRelativeC(const DepthData& depthData) {
-		return depthData.images[1].camera.R*(depthData.images[0].camera.C-depthData.images[1].camera.C);
-	}
-	static inline Matrix3x3 ComputeRelativeR(const DepthData& depthData) {
-		RMatrix R;
-		ComputeRelativeRotation(depthData.images[0].camera.R, depthData.images[1].camera.R, R);
-		return R;
-	}
 
 	// generate random depth and normal
 	inline Depth RandomDepth(Depth dMinSqr, Depth dMaxSqr) {
@@ -513,14 +691,33 @@ struct MVS_API DepthEstimator {
 		Normal normal;
 		Dir2Normal(Point2f(rnd.randomRange(D2R(0.f),D2R(180.f)), rnd.randomRange(D2R(90.f),D2R(180.f))), normal);
 		ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
+		normal = NormalFromLocal(normal);
 		return normal.dot(viewRay) > 0 ? -normal : normal;
 	}
+	// random and perturbed normals are drawn as directions (Dir2Normal) in a frame whose z axis is the
+	// viewing ray: the camera frame for a pinhole reference, normalFrame0 for a spherical one, where
+	// the normal turned into that frame is unit only to the rounding, hence its polar angle by atan2
+	inline void NormalToDir(const Normal& normal, Point2f& p) const {
+		if constexpr (bSphericalRef) {
+			const Normal local(Matrix3x3f(normalFrame0.t()) * normal);
+			p.x = ATAN2(local.y, local.x);
+			p.y = ATAN2(SQRT(SQUARE(local.x)+SQUARE(local.y)), local.z);
+			return;
+		}
+		Normal2Dir(normal, p);
+	}
+	inline Normal NormalFromLocal(const Normal& normal) const {
+		if constexpr (bSphericalRef)
+			return Normal(normalFrame0 * normal);
+		return normal;
+	}
 
-	// adjust normal such that it makes at most 90 degrees with the viewing angle
+	// adjust normal such that it makes more than 90 degrees with the viewing direction, as the
+	// patch scoring needs (a plane seen edge-on has no patch)
 	inline void CorrectNormal(Normal& normal) const {
 		const Normal viewDir(Cast<float>(X0));
 		const float cosAngLen(normal.dot(viewDir));
-		if (cosAngLen > 0) {
+		if (cosAngLen >= 0) {
 			// rotation axis = unit(normal x viewDir); RMatrixBaseF requires |axis|==1;
 			// if normal is parallel to viewDir, the cross product is zero and no
 			// rotation axis exists, so flip the (camera-facing, invalid) normal instead
@@ -532,14 +729,8 @@ struct MVS_API DepthEstimator {
 				normal = -normal;
 		}
 		ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
+		ASSERT(normal.dot(viewDir) < 0);
 	}
-
-	// the mask stored in the scene, else the file next to the image, resized into a local buffer (the
-	// Image is never touched, so it is safe to call concurrently for the same Image and across scales);
-	// bmask gets the keep-mask (bit set = keep), or pMask the mask != label if given; returns false
-	// and leaves both untouched if there is no mask to load
-	static bool ImportIgnoreMask(const Image&, const cv::Size&, uint8_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
-	static void MapMatrix2ZigzagIdx(const cv::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;
 	const float smoothSigmaDepth, smoothSigmaNormal;
@@ -550,8 +741,20 @@ struct MVS_API DepthEstimator {
 	#if DENSE_REFINE == DENSE_REFINE_EXACT
 	const float thPerturbation;
 	#endif
-	static const float scaleRanges[12];
+	const float sinSqWarpMaxElevation; // SQUARE(SIN(fSphericalWarpMaxElevation))
+	const float cosMinViewAngle; // COS(OPTDENSE::fMinAngle): the per-pixel view gate of a model warp (ScorePixel)
 };
+// the estimators are instantiated in DepthMap.cpp, and exported for the tests
+// (MSVC takes dllexport on the instantiation definition alone; GCC/clang take the visibility
+// of the first declaration, so there the extern declaration carries it too)
+#if defined(MVS_EXPORTS) && defined(_MSC_VER)
+extern template struct DepthEstimatorT<Pinhole>;
+extern template struct DepthEstimatorT<Spherical>;
+#else
+extern template struct MVS_API DepthEstimatorT<Pinhole>;
+extern template struct MVS_API DepthEstimatorT<Spherical>;
+#endif
+typedef DepthEstimatorT<Pinhole> DepthEstimator;
 /*----------------------------------------------------------------*/
 
 
@@ -588,9 +791,31 @@ MVS_API unsigned ColorPointSegmentation(PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);
 
 MVS_API bool EstimateNormalMap(const Matrix3x3f& K, const DepthMap&, NormalMap&);
+// the same for an equirectangular depth-map (columns wrapping), depth being the range
+inline void EstimateNormalMap(const Spherical<float>& camera, const DepthMap& depthMap, NormalMap& normalMap) {
+	normalMap.create(depthMap.size());
+	for (int r=0; r<normalMap.rows; ++r) {
+		for (int c=0; c<normalMap.cols; ++c) {
+			const ImageRef x(c,r);
+			Depth depth;
+			Eigen::Vector2f gradient;
+			normalMap(r,c) = FitDepthGradient(depthMap, x, depth, gradient, true) ?
+				Normal(NormalFromDepthGradient(camera, x, depth, gradient)) : Normal::ZERO;
+		}
+	}
+}
+// the same for the depth-map of a camera of either model
+inline void EstimateNormalMap(const ModelCamera& camera, const DepthMap& depthMap, NormalMap& normalMap) {
+	if (camera.bSpherical)
+		EstimateNormalMap(MakeCameraModel<Spherical<float>>(camera.camera), depthMap, normalMap);
+	else
+		EstimateNormalMap(camera.camera.K, depthMap, normalMap);
+}
 
 // Standalone confidence estimators, deriving a confidence-map from the geometry of one
-// depth-map alone -- no images, no neighboring views, no matching cost. The dense
+// depth-map alone -- no image pixels, no neighboring views, no matching cost; they read
+// only the camera model of the depth-map's view (depthData.images front, with its image
+// data set), as the columns of a panorama wrap. The dense
 // pipeline does not use them: its own estimates come with a photometric score, which
 // DensifyPointCloud can recalibrate against the neighboring views (see
 // OPTDENSE::ADJUST_CONFIDENCE). They are meant for the depth-maps that reach the library
@@ -627,14 +852,16 @@ MVS_API bool ExportDepthDataRaw(const String&, const String& imageFileName,
 	const KMatrix&, const RMatrix&, const CMatrix&,
 	Depth dMin, Depth dMax,
 	const DepthMap&, const NormalMap&, const ConfidenceMap&, const ViewsMap&,
-	bool bConfAdjusted=false/*mark the stored confMap as already recalibrated (CONF_ADJUSTED)*/);
+	bool bConfAdjusted=false/*mark the stored confMap as already recalibrated (CONF_ADJUSTED)*/,
+	bool bSpherical=false/*the maps belong to an equirectangular view (SPHERICAL)*/);
 MVS_API bool ImportDepthDataRaw(const String&, String& imageFileName,
 	IIndexArr&, cv::Size& imageSize,
 	KMatrix&, RMatrix&, CMatrix&,
 	Depth& dMin, Depth& dMax,
 	DepthMap&, NormalMap&, ConfidenceMap&, ViewsMap&,
 	unsigned flags=HeaderDepthDataRaw::CONTENT_MASK/*maps to read, all of them by default*/,
-	bool* pbConfAdjusted=NULL/*receives the stored CONF_ADJUSTED flag*/);
+	bool* pbConfAdjusted=NULL/*receives the stored CONF_ADJUSTED flag*/,
+	bool* pbSpherical=NULL/*receives the stored SPHERICAL flag*/);
 
 MVS_API void CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold=0.01f);
 MVS_API void CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalMapGT, uint32_t idxImage);

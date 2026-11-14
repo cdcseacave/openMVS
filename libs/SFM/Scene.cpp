@@ -1297,27 +1297,18 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 	if (extension.empty())
 		extension = ".jxl";
 
-	struct UndistortData {
-		cv::Mat map1;
-		cv::Mat map2;
-		KMatrix newK;
-	};
-	std::unordered_map<const Camera*, UndistortData> undistortMaps;
+	std::unordered_map<const Camera*, UndistortMaps> undistortMaps;
 	undistortMaps.reserve(cameras.size());
 	for (CameraPtr const camPtr : cameras) {
 		if (!camPtr->IsValid() || !camPtr->HasDistortion())
 			continue;
-		const cv::Size imgSize(camPtr->GetSize());
 		switch (camPtr->GetType()) {
 		case CameraType::PINHOLE: {
 			const PinholeCamera* pc = static_cast<const PinholeCamera*>(camPtr);
-			const cv::Mat distCoeffs = pc->GetDistortionCoeffs();
-			UndistortData data;
-			data.newK = cv::getOptimalNewCameraMatrix(pc->GetK(), distCoeffs, imgSize, alpha);
-			cv::initUndistortRectifyMap(pc->GetK(), distCoeffs, cv::noArray(), data.newK, imgSize, CV_16SC2, data.map1, data.map2);
+			UndistortMaps& maps = undistortMaps[pc];
+			maps.Init(pc->GetK(), pc->GetDistortion(), camPtr->GetSize(), alpha);
 			if (undistortedIntrinsics)
-				undistortedIntrinsics->emplace(pc, data.newK);
-			undistortMaps.emplace(pc, std::move(data));
+				undistortedIntrinsics->emplace(pc, maps.K);
 			break;
 		}
 		default:
@@ -1340,7 +1331,10 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 	for (int_t _i = 0; _i < (int_t)images.size(); ++_i) {
 		const IIndex i = static_cast<IIndex>(_i);
 		const Image& img = images[i];
-		if (!img.IsValid())
+		// only the images of the distorted pinhole cameras are undistorted, posed or not, as they all
+		// share the undistorted camera of the export
+		const auto itMaps = undistortMaps.find(img.pCamera);
+		if (itMaps == undistortMaps.end())
 			continue;
 		bool loadedHere = false;
 		if (!img.HasPixels()) {
@@ -1350,9 +1344,7 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 		if (!img.HasPixels())
 			continue;
 		cv::Mat undistorted;
-		const UndistortData& data = undistortMaps.at(img.pCamera);
-		// Undistort image
-		cv::remap(img.pixels, undistorted, data.map1, data.map2, cv::INTER_CUBIC, cv::BORDER_CONSTANT, cv::Scalar::all(0));
+		itMaps->second.Remap(img.pixels, undistorted, cv::INTER_CUBIC);
 		if (loadedHere)
 			const_cast<Image&>(img).ReleasePixels();
 		// Restore original orientation if the working copy was rotated to landscape
@@ -1458,10 +1450,13 @@ void Scene::PrecomputeTrackBasedNeighbors(std::vector<ViewScoreArr>& neighbors) 
 				const auto [ptB, validB] = otherImage.ProjectPoint(track.position);
 				if (!validB || ptB.x < 0 || ptB.x >= boundsB.x || ptB.y < 0 || ptB.y >= boundsB.y)
 					continue;
-				const auto [ptA, validA] = refImage.ProjectPoint(track.position);
+				// bounds tested on the single precision position the area is binned by: a double just
+				// inside the image can round to its size
+				const auto [ptAd, validA] = refImage.ProjectPoint(track.position);
+				const Point2f ptA(Cast<float>(ptAd));
 				if (!validA || ptA.x < 0 || ptA.x >= boundsA.x || ptA.y < 0 || ptA.y >= boundsA.y)
 					continue;
-				projs.emplace_back(Cast<float>(ptA));
+				projs.emplace_back(ptA);
 			}
 
 			// Add neighbor entry

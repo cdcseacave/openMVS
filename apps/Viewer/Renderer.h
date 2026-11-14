@@ -48,16 +48,16 @@ struct ViewProjectionData {
 	Eigen::Matrix4f projection;
 	Eigen::Matrix4f viewProjection;
 	Eigen::Vector3f cameraPos;
-	float padding; // Alignment
+	float padding = 0; // Alignment
 };
 
 struct LightingData {
 	Eigen::Vector3f lightDirection;
-	float lightIntensity;
+	float lightIntensity = 0;
 	Eigen::Vector3f lightColor;
-	float ambientStrength;
+	float ambientStrength = 0;
 	Eigen::Vector3f ambientColor;
-	float padding; // Alignment
+	float padding = 0; // Alignment
 };
 
 class Renderer {
@@ -147,6 +147,11 @@ private:
 	std::unique_ptr<VBO> imageOverlayVBO;
 	std::unique_ptr<VBO> imageOverlayEBO;
 	size_t imageOverlayIndexCount;
+	// the overlay of a spherical image: the unit sphere of its rays, placed at the image by the shader
+	std::unique_ptr<VAO> panoramaOverlayVAO;
+	std::unique_ptr<VBO> panoramaOverlayVBO;
+	std::unique_ptr<VBO> panoramaOverlayEBO;
+	size_t panoramaOverlayIndexCount = 0;
 
 	// Selection rendering
 	std::unique_ptr<Shader> selectionShader;
@@ -180,9 +185,9 @@ private:
 	std::unique_ptr<Shader> gizmoShader;
 	std::unique_ptr<VAO> gizmoVAO;
 	std::unique_ptr<VBO> gizmoVBO, gizmoEBO;
-	size_t gizmoCircleIndexCount; // Circle rendering indices
-	size_t gizmoCenterAxesBaseVertex; // Starting vertex for center axes
-	size_t gizmoCenterAxesVertexCount; // Number of center axes vertices
+	size_t gizmoCircleIndexCount = 0; // Circle rendering indices
+	size_t gizmoCenterAxesBaseVertex = 0; // Starting vertex for center axes
+	size_t gizmoCenterAxesVertexCount = 0; // Number of center axes vertices
 
 	// Picker FBO (ID-only rendering)
 	std::unique_ptr<Shader> pickerMeshShader;
@@ -221,7 +226,9 @@ public:
 	void RenderMesh(const Window& window);
 	void RenderCameras(const Window& window);
 	void RenderUncertaintyEllipsoids(const Window& window);
-	void RenderImageOverlays(const Window& window);
+	// the loaded panoramas on the globes of their cameras, and the photo of the camera view mode
+	// (the latter only in the pass showing the active layer)
+	void RenderImageOverlays(const Window& window, bool bActiveLayerPass);
 	void RenderSelection(const Window& window);
 	void RenderSelectionOverlay(const Window& window);
 	void RenderSelectedGeometry(const Window& window);
@@ -240,7 +247,7 @@ public:
 		uint32_t index{NO_ID};
 		uint32_t layerID{NO_ID};
 		Point3f points[3];
-		bool isPoint;
+		bool isPoint{false};
 		bool IsValid() const { return index != NO_ID && layerID != NO_ID; }
 	};
 	PickResult PickPrimitiveAt(const Point2f& screenPos, int radius, const Window& window);

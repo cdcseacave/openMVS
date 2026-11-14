@@ -81,6 +81,7 @@ bool bUseGlobalSolver;
 bool bExtractColors;
 float undistortAlpha;
 String strUndistortExt;
+String strSphericalExport;
 float thAlignGPS;
 double gpsPositionWeight;
 double gpsPositionWeightZ;
@@ -163,7 +164,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(false), "use global solver for calibration instead of the hierarchical solver")
 		("extract-colors", boost::program_options::value<bool>(&OPT::bExtractColors)->default_value(false), "extract colors for reconstructed points")
 		("undistort-alpha", boost::program_options::value<float>(&OPT::undistortAlpha)->default_value(0.6f), "alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)")
-		("undistort-extension", boost::program_options::value<std::string>(&OPT::strUndistortExt)->default_value(".jxl"), "file extension/format for the exported undistorted images (e.g. .jpg, .png, .jxl)")
+		("undistort-extension", boost::program_options::value<std::string>(&OPT::strUndistortExt), "file extension/format of undistorted images written by the MVS export (e.g. .jpg, .png, .jxl); empty (default) exports the distorted cameras with the original images, undistorted when the MVS scene loads them")
+		("spherical-export", boost::program_options::value<std::string>(&OPT::strSphericalExport)->default_value("native"), "MVS export of the spherical cameras: native (equirectangular cameras) or cubemap (rendered pinhole faces)")
 		("align-gps-threshold", boost::program_options::value<float>(&OPT::thAlignGPS)->default_value(5.f), "maximum distance in meters for aligning GPS positions to reconstruction poses (0 = disabled)")
 		("gps-position-weight", boost::program_options::value(&OPT::gpsPositionWeight)->default_value(0.0), "horizontal weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
 		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(0.0), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
@@ -346,10 +348,17 @@ int main(int argc, LPCTSTR* argv)
 	// Export MVS scene
 	if (!OPT::strOutputFileNameMVS.empty()) {
 		SFM::ExportMVSConfig cfg;
-		cfg.undistortImageDir = MAKE_PATH("undistorted");
-		cfg.undistortAlpha    = OPT::undistortAlpha;
-		if (!OPT::strUndistortExt.empty())
-			cfg.extension = OPT::strUndistortExt;
+		if (!OPT::strUndistortExt.empty()) {
+			// write undistorted image files instead of the Brown cameras of the original ones
+			cfg.undistortImageDir = MAKE_PATH("undistorted");
+			cfg.undistortAlpha    = OPT::undistortAlpha;
+			cfg.extension         = OPT::strUndistortExt;
+		}
+		if (OPT::strSphericalExport != "native" && OPT::strSphericalExport != "cubemap") {
+			VERBOSE("error: invalid spherical-export '%s' (native or cubemap)", OPT::strSphericalExport.c_str());
+			return EXIT_FAILURE;
+		}
+		cfg.sphericalExport = OPT::strSphericalExport == "cubemap" ? SFM::ExportMVSConfig::Spherical::CUBEMAP : SFM::ExportMVSConfig::Spherical::NATIVE;
 		if (!ExportMVS(MAKE_PATH_SAFE(OPT::strOutputFileNameMVS), scene, cfg)) {
 			VERBOSE("error: failed to export MVS file to %s", OPT::strOutputFileNameMVS.c_str());
 			return EXIT_FAILURE;
@@ -362,7 +371,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	if (!depthMapFiles.empty())
-		UndistortDepthMaps(scene, depthMapFiles, OPT::undistortAlpha);
+		UndistortDepthMaps(scene, depthMapFiles, OPT::strUndistortExt.empty() ? UNDISTORT_ALPHA : (double)OPT::undistortAlpha);
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/

@@ -112,15 +112,15 @@ public:
 protected:
 	IOSTREAMPTR			m_pStream;		// stream used to read/write the image data
 	CAutoPtrArr<BYTE>	m_data;			// image's data buffer
-	Size				m_width;		// image width in pixels
-	Size				m_height;		// image height in pixels
-	Size				m_dataWidth;	// image's data width including mipmaps
-	Size				m_dataHeight;	// image's data height
-	Size				m_stride;		// bytes per pixel
-	Size				m_lineWidth;	// image canvas width in bytes
-	PIXELFORMAT			m_format;		// image format (pixel type)
-	BYTE				m_numLevels;	// number of mipmap levels (0 = auto-generate)
-	BYTE				m_level;		// index of the mipmap level currently reading
+	Size				m_width = 0;		// image width in pixels
+	Size				m_height = 0;		// image height in pixels
+	Size				m_dataWidth = 0;	// image's data width including mipmaps
+	Size				m_dataHeight = 0;	// image's data height
+	Size				m_stride = 0;		// bytes per pixel
+	Size				m_lineWidth = 0;	// image canvas width in bytes
+	PIXELFORMAT			m_format = PF_UNKNOWN;		// image format (pixel type)
+	BYTE				m_numLevels = 0;	// number of mipmap levels (0 = auto-generate)
+	BYTE				m_level = 0;		// index of the mipmap level currently reading
 	String				m_fileName;		// image's file name
 }; // class CImage
 typedef CSharedPtr<CImage> IMAGEPTR;

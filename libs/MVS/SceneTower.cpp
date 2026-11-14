@@ -56,14 +56,17 @@ DEFINE_LOG_NAME(lt, _T("Scene   "));
 // if the up direction is given, the line must additionally be (near) vertical, so that
 // horizontal linear trajectories (corridors, single flight lines) are not misclassified
 bool Scene::ComputeCenterLine(Line3f &camCenterLine, const Point3f* up) const {
-	if (images.size() < 20) {
-		DEBUG_ULTIMATE("error: too few images to be a tower: '%d'", images.size());
-		return false;
-	}
 	FitLineOnline<float> fitline;
-	FOREACH(imgIdx, images) {
-		const Eigen::Vector3f camPos(Cast<float>(images[imgIdx].camera.C));
-		fitline.Update(camPos);
+	unsigned numCameras(0);
+	for (const Image& image: images) {
+		if (!image.IsValid())
+			continue;
+		fitline.Update(Eigen::Vector3f(Cast<float>(image.camera.C)));
+		++numCameras;
+	}
+	if (numCameras < 20) {
+		DEBUG_ULTIMATE("error: too few images to be a tower: '%u'", numCameras);
+		return false;
 	}
 	Point3f quality = fitline.GetLine(camCenterLine);
 	// check if ROI is mostly long and narrow on one direction
@@ -102,12 +105,14 @@ bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 		return false;
 
 	AABB3f aabbOutsideCameras(true);
-	CLISTDEF0(Point2f) cameras2D(images.size());
+	CLISTDEF0(Point2f) cameras2D(0, images.size());
 	FloatArr camHeigths;
-	FOREACH(imgIdx, images) {
-		const Eigen::Vector3f camPos(Cast<float>(images[imgIdx].camera.C));
+	for (const Image& image: images) {
+		if (!image.IsValid())
+			continue;
+		const Eigen::Vector3f camPos(Cast<float>(image.camera.C));
 		aabbOutsideCameras.InsertFull(camPos);
-		cameras2D[imgIdx] = Point2f(camPos.x(), camPos.y());
+		cameras2D.emplace_back(camPos.x(), camPos.y());
 		camHeigths.InsertSortUnique(camPos.z());
 	}
 
@@ -158,12 +163,13 @@ size_t Scene::DrawCircle(PointCloud& pc, PointCloud::PointArr& outCircle, const 
 		PointCloud::ViewArr views;
 		FOREACH(idxImg, images) {
 			const Image& image = images[idxImg];
-			const Point3f xz(image.camera.TransformPointW2I3(Cast<REAL>(newPoint)));
-			const Point2f x(xz.x, xz.y);
-			if (!Image8U::isInside<float>(x, image.GetSize()) ||
-				xz.z <= 0)
+			if (!image.IsValid())
 				continue;
-			if (n.dot(Cast<float>(image.camera.RayPoint<REAL>(x))) >= 0)
+			const ModelCamera camera(image.GetModelCamera());
+			Point2f x;
+			if (!camera.ProjectPointInside(newPoint, image.GetSize(), x))
+				continue;
+			if (n.dot(Cast<float>(camera.RayPoint(Point2(x)))) >= 0)
 				continue;
 			views.emplace_back(idxImg);
 		}
@@ -361,6 +367,8 @@ void Scene::InitTowerScene(const int towerMode)
 	mesh.Release();
 
 	const auto AppendPointCloud = [this](const PointCloud& towerPC) {
+		// the tower points are not features: a cloud holding them has no observation for every point
+		pointcloud.pointObservations.Release();
 		bool bHasNormal(towerPC.normals.size() == towerPC.GetSize());
 		bool bHasColor(towerPC.colors.size() == towerPC.GetSize());
 		bool bHasWeights(towerPC.pointWeights.size() == towerPC.GetSize());

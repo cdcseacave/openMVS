@@ -111,6 +111,11 @@
 #define _ENVIRONMENT32
 #endif
 
+#ifdef _PREFAST_
+// the code analysis (/analyze) ignores OpenMP and says so for every file using it
+#pragma warning(disable: 6993)
+#endif
+
 #else // _MSC_VER
 
 #if !defined(_DEBUG) && !defined(NDEBUG)
@@ -200,7 +205,14 @@
 #	define MEMALLOC __attribute__ ((__malloc__))
 #	define HOT __attribute__((hot)) __attribute__((optimize("-O3"))) __attribute__((optimize("-ffast-math"))) //optimize for speed, even in debug
 #	define COLD __attribute__((cold)) //optimize for size
-#	define FORCEINLINE inline //__attribute__((always_inline))
+#	if defined(__clang__)
+	// inlined as MSVC's __forceinline is: the hot loops are tuned for it (e.g. the PatchMatch patch
+	// samplers, which clang leaves out of line otherwise); GCC fails the build where an always_inline
+	// function can not be inlined, so it keeps the hint
+#	define FORCEINLINE inline __attribute__((always_inline))
+#	else
+#	define FORCEINLINE inline
+#	endif
 #else
 #	define ALIGN(n)
 #	define NOINITVTABLE
@@ -218,6 +230,15 @@
 #	define HOST_DEVICE __host__ __device__
 #else
 #	define HOST_DEVICE
+#endif
+
+// a constructor leaving members uninitialized on purpose (the code analysis rule type.6 is silenced):
+// a value type (pixel, index pair, SIMD register) left uninitialized as a built-in type is, or
+// members filled before being read on a per-pixel path, where clearing them would cost
+#if defined(_MSC_VER) && !defined(__CUDACC__)
+#	define NO_INIT_MEMBERS [[gsl::suppress("type.6")]]
+#else
+#	define NO_INIT_MEMBERS
 #endif
 
 #define SAFE_DELETE(p)		{ if (p!=NULL) { delete (p);     (p)=NULL; } }
@@ -303,7 +324,7 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 #define SIMPLE_ASSERT(exp) {if (!(exp)) _ASSERT_BREAK(); ASSERT_ANALYSIS_ASSUME(exp);}
 #define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); _ASSERT_BREAK();} ASSERT_ANALYSIS_ASSUME(exp);}
 #endif // _INC_CRTDBG
-#define TRACE(...) {TCHAR buffer[2048]; _sntprintf(buffer, 2048, __VA_ARGS__); OutputDebugString(buffer);}
+#define TRACE(...) {TCHAR buffer[2048]; _sntprintf_s(buffer, 2048, _TRUNCATE, __VA_ARGS__); OutputDebugString(buffer);}
 #else // !_MSC_VER
 #include <assert.h>
 #define SIMPLE_ASSERT(exp) {if (!(exp)) _ASSERT_BREAK();}

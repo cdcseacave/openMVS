@@ -1794,8 +1794,9 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, T
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
 	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
 	val[8] = v8;
-	for (int i = 9; i < channels; i++)
-		val[i] = TYPE(0);
+	if constexpr (channels > 9)
+		for (int i = 9; i < channels; i++)
+			val[i] = TYPE(0);
 }
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8, TYPE v9)
@@ -1836,8 +1837,9 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, T
 	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
 	val[8] = v8; val[9] = v9; val[10] = v10; val[11] = v11;
 	val[12] = v12; val[13] = v13; val[14] = v14; val[15] = v15;
-	for (int i = 16; i < channels; i++)
-		val[i] = TYPE(0);
+	if constexpr (channels > 16)
+		for (int i = 16; i < channels; i++)
+			val[i] = TYPE(0);
 }
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(const TYPE* values)

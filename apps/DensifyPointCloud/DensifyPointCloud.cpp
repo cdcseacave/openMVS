@@ -123,12 +123,15 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		;
 
 	// group of options allowed both on command line and in config file
-	#ifdef _USE_CUDA
+	// the GPU estimators afford more views and iterations; a CPU run (also --gpu-device cpu in a GPU
+	// build, see below) keeps the CPU defaults
+	const unsigned nNumViewsCPU(5), numItersCPU(3);
+	#if defined(_USE_CUDA) || defined(_USE_METAL)
 	const unsigned nNumViewsDefault(8);
 	const unsigned numIters(4);
 	#else
-	const unsigned nNumViewsDefault(5);
-	const unsigned numIters(3);
+	const unsigned nNumViewsDefault(nNumViewsCPU);
+	const unsigned numIters(numItersCPU);
 	#endif
 	unsigned nResolutionLevel;
 	unsigned nMaxResolution;
@@ -161,10 +164,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(2560), "do not scale images higher than this resolution")
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("sub-resolution-levels", boost::program_options::value(&nSubResolutionLevels)->default_value(2), "number of patch-match sub-resolution iterations (0 - disabled)")
-		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
+		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available; the default is 5 when estimating on CPU)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(2), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (<0 - disabled)")
-		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations")
+		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations (the default is 3 when estimating on CPU)")
 		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("patch-match-cuda-instances", boost::program_options::value(&nPatchMatchCUDAInstances)->default_value(4), "number of parallel CUDA PatchMatch worker instances (clamped to nMaxThreads)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
@@ -233,6 +236,16 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG(e.what());
 		return false;
 	}
+
+	#if defined(_USE_CUDA) || defined(_USE_METAL)
+	// CPU estimation requested in a GPU build: the defaults not set explicitly fall back to the CPU ones
+	if (SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)) {
+		if (OPT::vm["number-views"].defaulted())
+			nNumViews = nNumViewsCPU;
+		if (OPT::vm["iters"].defaulted())
+			nEstimationIters = numItersCPU;
+	}
+	#endif
 
 	// initialize the log file
 	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
@@ -565,7 +578,7 @@ int main(int argc, LPCTSTR* argv)
 	if (OPT::nEstimateSegmentation != 0 && !scene.pointcloud.IsEmpty() && !scene.images.empty() && !scene.images.front().maskName.empty()) {
 		// segment point-cloud using image segmentation masks
 		for (Image& image: scene.images)
-			if (image.mask.empty() && !image.mask.Load(image.GetMaskFileName()))
+			if (image.mask.empty() && !image.LoadMask(image.mask))
 				VERBOSE("error: cannot load mask image %s", image.GetMaskFileName().c_str());
 		EstimatePointSegmentation(scene.images, scene.pointcloud, ABS(OPT::nEstimateSegmentation));
 	}

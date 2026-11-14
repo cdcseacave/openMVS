@@ -10,10 +10,11 @@ Example usage:
   from MvsUtils import loadDMAP, saveDMAP, loadMVSInterface
 '''
 
+import math
 import numpy as np
 
 
-# DMAP header content type, mirroring MVS::HeaderDepthDataRaw (libs/MVS/Interface.h):
+# DMAP header content type, mirroring MVS::HeaderDepthDataRaw (libs/IO/Interface.h):
 # the low bits list the maps the file stores, the bits above them are flags qualifying
 # them, so each bit has to be tested on its own and the rest masked off
 DMAP_HAS_DEPTH = 1 << 0
@@ -24,6 +25,9 @@ DMAP_CONTENT_MASK = DMAP_HAS_DEPTH | DMAP_HAS_NORMAL | DMAP_HAS_CONF | DMAP_HAS_
 # the stored confidence-map is the recalibrated (fusion-survival) confidence, already
 # adjusted once: a second adjust pass must not re-run on it
 DMAP_CONF_ADJUSTED = 1 << 4
+# the maps belong to an equirectangular view: the depth is the range along the pixel ray and K
+# holds the angular fx=fy=width/(2*pi) and the center
+DMAP_SPHERICAL = 1 << 5
 
 
 def scale_K(K, sx, sy):
@@ -43,24 +47,30 @@ def scale_K(K, sx, sy):
   ], dtype=np.float64)
 
 
-def sample_depth_map(depth_map, x):
+def sample_depth_map(depth_map, x, wrap_columns=False):
   """
   Sample the depth map at the given coordinates using bilinear interpolation.
   Args:
     depth_map (numpy.ndarray): The depth map.
     x (numpy.ndarray): The real number coordinates to sample from.
+    wrap_columns (bool): The columns wrap around (equirectangular depth map), only the rows are bounded.
   Returns:
     float: The sampled depth value;
       0.0 if the coordinates are out of bounds or if the sampled depth is zero.
   """
-  x0 = int(x[0])
-  y0 = int(x[1])
-  x1 = x0 + 1
-  y1 = y0 + 1
-  if x0 < 0 or y0 < 0 or x1 >= depth_map.shape[1] or y1 >= depth_map.shape[0]:
-    return 0.0
+  x0 = math.floor(x[0])
+  y0 = math.floor(x[1])
   dx = x[0] - x0
   dy = x[1] - y0
+  x1 = x0 + 1
+  y1 = y0 + 1
+  if wrap_columns:
+    x0 %= depth_map.shape[1]
+    x1 %= depth_map.shape[1]
+  elif x0 < 0 or x1 >= depth_map.shape[1]:
+    return 0.0
+  if y0 < 0 or y1 >= depth_map.shape[0]:
+    return 0.0
   depth = (
     (depth_map[y0, x0] * (1.0 - dx) + depth_map[y0, x1] * dx) * (1.0 - dy) +
     (depth_map[y1, x0] * (1.0 - dx) + depth_map[y1, x1] * dx) * dy
@@ -101,7 +111,7 @@ def encodeNormalMap(normal_map: np.ndarray):
   folded = z < 0.0
   xf = np.where(folded, np.copysign(1.0 - np.abs(y), x), x)
   yf = np.where(folded, np.copysign(1.0 - np.abs(x), y), y)
-  # floor(x+0.5), the rounding the C++ encoder in MVS/Interface.h applies, so that both
+  # floor(x+0.5), the rounding the C++ encoder in IO/Interface.h applies, so that both
   # produce the same code for a value landing exactly on a tie
   normal_oct = np.floor(np.clip(np.stack([xf, yf], axis=-1), -1.0, 1.0) * 32767.0 + 0.5).astype(np.int16)
   normal_oct[invalid] = -32768
@@ -127,6 +137,7 @@ def loadDMAP(dmap_path: str):
     has_conf = bool(content_type & DMAP_HAS_CONF)
     has_views = bool(content_type & DMAP_HAS_VIEWS)
     conf_adjusted = bool(content_type & DMAP_CONF_ADJUSTED)
+    spherical = bool(content_type & DMAP_SPHERICAL)
 
     image_width, image_height = np.frombuffer(dmap.read(8), dtype=np.uint32)
     depth_width, depth_height = np.frombuffer(dmap.read(8), dtype=np.uint32)
@@ -156,6 +167,7 @@ def loadDMAP(dmap_path: str):
       'has_conf': has_conf,
       'has_views': has_views,
       'conf_adjusted': conf_adjusted,
+      'spherical': spherical,
       'image_width': image_width,
       'image_height': image_height,
       'depth_width': depth_width,
@@ -227,6 +239,8 @@ def saveDMAP(data: dict, dmap_path: str):
   # run would recalibrate it a second time (see the cross-process double-adjust guard)
   if data.get('conf_adjusted', False):
     content_type |= DMAP_CONF_ADJUSTED
+  if data.get('spherical', False):
+    content_type |= DMAP_SPHERICAL
 
   depth_map = np.asarray(data['depth_map'], dtype=np.float32)
   # take the exponent from the data rather than from depth_max, which callers may set
@@ -282,6 +296,45 @@ def saveDMAP(data: dict, dmap_path: str):
       data['views_map'].astype(np.uint8).tofile(dmap)
 
 
+# Interface::Platform::Camera::Model and Interface::Flags (libs/IO/Interface.h)
+CAMERA_MODEL_PINHOLE = 0
+CAMERA_MODEL_BROWN = 1
+CAMERA_MODEL_SPHERICAL = 2
+HAS_OBSERVATIONS = 1
+
+
+def projectCamera(K, X, spherical=False):
+  """
+  Project a point given in the camera frame; spherical selects the equirectangular model
+  (Math/Camera/CameraModels.h Spherical) with K the angular camera matrix, else the pinhole.
+  Returns:
+    (x, y, depth): the pixel and the depth, which is the range |X| for spherical and z for pinhole.
+  """
+  X = np.asarray(X, dtype=np.float64)
+  if spherical:
+    rho = np.hypot(X[0], X[2])
+    return (K[0][0]*np.arctan2(X[0], X[2]) + K[0][2], K[1][1]*np.arctan2(X[1], rho) + K[1][2], float(np.linalg.norm(X)))
+  return (K[0][0]*X[0]/X[2] + K[0][1]*X[1]/X[2] + K[0][2], K[1][1]*X[1]/X[2] + K[1][2], float(X[2]))
+
+
+def unprojectDepthMap(depth_map, K, spherical=False):
+  """
+  Back-project a depth map to points in the camera frame (H x W x 3, zero depth gives the zero point).
+  K is the camera matrix at the resolution of the depth map (DMAP 'depth_K'); spherical selects the
+  equirectangular model, whose depth is the range along the unit pixel ray.
+  """
+  h, w = depth_map.shape
+  u, v = np.meshgrid(np.arange(w, dtype=np.float64), np.arange(h, dtype=np.float64))
+  if spherical:
+    lon = (u - K[0][2]) / K[0][0]
+    el = (K[1][2] - v) / K[1][1]
+    ray = np.stack([np.cos(el)*np.sin(lon), -np.sin(el), np.cos(el)*np.cos(lon)], axis=-1)
+  else:
+    y = (v - K[1][2]) / K[1][1]
+    ray = np.stack([(u - K[0][2]) / K[0][0] - K[0][1]*y/K[0][0], y, np.ones_like(u)], axis=-1)
+  return ray * depth_map[..., None]
+
+
 def loadMVSInterface(archive_path):
   """
   Load and parse an MVS (Multi-View Stereo) interface file.
@@ -298,6 +351,8 @@ def loadMVSInterface(archive_path):
       - band_name (str, optional): The band name (if version > 3).
       - width (int, optional): The width of the camera image (if version > 0).
       - height (int, optional): The height of the camera image (if version > 0).
+      - model (int, optional): The projection model, 0=PINHOLE, 1=BROWN, 2=SPHERICAL (if version > 7).
+      - params (list, optional): The BROWN distortion coefficients k1,k2,p1,p2,k3[,k4,k5,k6] (if model is BROWN).
       - K (list): The intrinsic camera matrix.
       - R (list): The rotation matrix relative to the platform.
       - C (list): The camera center relative to the platform.
@@ -321,11 +376,14 @@ def loadMVSInterface(archive_path):
       - angle (float): The angle.
       - area (float): The area.
       - score (float): The score.
+  - flags (int, optional): The optional content, bit HAS_OBSERVATIONS (if version > 7).
   - vertices (list): A list of vertices, each containing:
     - X (list): The vertex coordinates.
     - views (list): A list of views, each containing:
       - image_id (int): The image ID.
       - confidence (float): The confidence.
+      - x (list, optional): The observation [x, y] in the image file as it is on disk (distorted for a
+        BROWN camera), pixel centers at integer coordinates (if flags has HAS_OBSERVATIONS).
   - vertices_normal (list): A list of vertex normals.
   - vertices_color (list): A list of vertex colors.
   - lines (list, optional): A list of lines (if version > 0), each containing:
@@ -381,6 +439,13 @@ def loadMVSInterface(archive_path):
         R = np.asarray(np.frombuffer(mvs.read(72), dtype=np.float64)).reshape(3, 3).tolist()
         C = np.asarray(np.frombuffer(mvs.read(24), dtype=np.float64)).tolist()
         data['platforms'][platform_index]['cameras'][camera_index].update({'K': K, 'R': R, 'C': C})
+        if version > 7:
+          model = np.frombuffer(mvs.read(1), dtype=np.uint8).tolist()[0]
+          data['platforms'][platform_index]['cameras'][camera_index].update({'model': model})
+          if model == CAMERA_MODEL_BROWN:
+            params_size = np.frombuffer(mvs.read(8), dtype=np.uint64)[0]
+            params = np.frombuffer(mvs.read(8*int(params_size)), dtype=np.float64).tolist()
+            data['platforms'][platform_index]['cameras'][camera_index].update({'params': params})
       # the poses follow the whole camera array, not each camera (Platform::serialize does
       # `ar & cameras; ar & poses;`), so reading them per camera desynced the stream and
       # consumed the next camera's bytes on any multi-camera (rig) platform
@@ -413,6 +478,10 @@ def loadMVSInterface(archive_path):
           scale, angle, area, score = np.frombuffer(mvs.read(16), dtype=np.float32).tolist()
           data['images'][image_index]['view_scores'].append({'id': id, 'points': points, 'scale': scale, 'angle': angle, 'area': area, 'score': score})
     
+    flags = 0
+    if version > 7:
+      flags = np.frombuffer(mvs.read(1), dtype=np.uint8).tolist()[0]
+      data.update({'flags': flags})
     vertices_size = np.frombuffer(mvs.read(8), dtype=np.uint64)[0]
     for vertex_index in range(vertices_size):
       X = np.frombuffer(mvs.read(12), dtype=np.float32).tolist()
@@ -421,7 +490,10 @@ def loadMVSInterface(archive_path):
       for _ in range(views_size):
         image_id = np.frombuffer(mvs.read(4), dtype=np.uint32).tolist()[0]
         confidence = np.frombuffer(mvs.read(4), dtype=np.float32).tolist()[0]
-        data['vertices'][vertex_index]['views'].append({'image_id': image_id, 'confidence': confidence})
+        view = {'image_id': image_id, 'confidence': confidence}
+        if flags & HAS_OBSERVATIONS:
+          view.update({'x': np.frombuffer(mvs.read(8), dtype=np.float32).tolist()})
+        data['vertices'][vertex_index]['views'].append(view)
     
     vertices_normal_size = np.frombuffer(mvs.read(8), dtype=np.uint64)[0]
     for _ in range(vertices_normal_size):
@@ -471,7 +543,7 @@ def saveMVSInterface(data: dict, archive_path: str):
   Save a scene as an MVS (Multi-View Stereo) interface file.
   Example:
     scene = {
-      'stream_version': 3,
+      'stream_version': 8,
       'platforms': [],
       'images': [],
       'vertices': [],
@@ -490,7 +562,7 @@ def saveMVSInterface(data: dict, archive_path: str):
   """
   with open(archive_path, 'wb') as mvs:
     mvs.write('MVSI'.encode())
-    version = data.get('stream_version', 7)
+    version = data.get('stream_version', 8)
     mvs.write(np.array([version], dtype=np.uint32))
     mvs.write(np.array([0], dtype=np.uint32))  # reserve
 
@@ -506,15 +578,27 @@ def saveMVSInterface(data: dict, archive_path: str):
         camera_name = camera['name'].encode()
         mvs.write(np.array([len(camera_name)], dtype=np.uint64))
         mvs.write(camera_name)
-        if 'band_name' in camera:
-          band_name = camera['band_name'].encode()
+        # every field the stream version holds is written, from the Interface defaults when the
+        # dictionary lacks it (empty band name, no resolution)
+        if version > 3:
+          band_name = camera.get('band_name', '').encode()
           mvs.write(np.array([len(band_name)], dtype=np.uint64))
           mvs.write(band_name)
-        if 'width' in camera and 'height' in camera:
-          mvs.write(np.array([camera['width'], camera['height']], dtype=np.uint32))
+        if version > 0:
+          mvs.write(np.array([camera.get('width', 0), camera.get('height', 0)], dtype=np.uint32))
         mvs.write(np.array(camera['K'], dtype=np.float64).tobytes())
         mvs.write(np.array(camera['R'], dtype=np.float64).tobytes())
         mvs.write(np.array(camera['C'], dtype=np.float64).tobytes())
+        # a v7 stream has no camera model: only a pinhole camera can be written to it
+        assert version > 7 or camera.get('model', CAMERA_MODEL_PINHOLE) == CAMERA_MODEL_PINHOLE,           'stream_version < 8 stores PINHOLE cameras only'
+        if version > 7:
+          model = camera.get('model', CAMERA_MODEL_PINHOLE)
+          assert model in (CAMERA_MODEL_PINHOLE, CAMERA_MODEL_BROWN, CAMERA_MODEL_SPHERICAL), 'unknown camera model'
+          mvs.write(np.array([model], dtype=np.uint8))
+          if model == CAMERA_MODEL_BROWN:
+            assert len(camera['params']) in (5, 8)
+            mvs.write(np.array([len(camera['params'])], dtype=np.uint64))
+            mvs.write(np.array(camera['params'], dtype=np.float64).tobytes())
       poses_size = len(platform['poses'])
       mvs.write(np.array([poses_size], dtype=np.uint64))
       for pose in platform['poses']:
@@ -527,21 +611,26 @@ def saveMVSInterface(data: dict, archive_path: str):
       name = image['name'].encode()
       mvs.write(np.array([len(name)], dtype=np.uint64))
       mvs.write(name)
-      if 'mask_name' in image:
-        mask_name = image['mask_name'].encode()
+      if version > 4:
+        mask_name = image.get('mask_name', '').encode()
         mvs.write(np.array([len(mask_name)], dtype=np.uint64))
         mvs.write(mask_name)
       mvs.write(np.array([image['platform_id'], image['camera_id'], image['pose_id']], dtype=np.uint32))
-      if 'id' in image:
-        mvs.write(np.array([image['id']], dtype=np.uint32))
-      if 'min_depth' in image and 'avg_depth' in image and 'max_depth' in image:
-        mvs.write(np.array([image['min_depth'], image['avg_depth'], image['max_depth']], dtype=np.float32))
-        view_scores_size = len(image['view_scores'])
-        mvs.write(np.array([view_scores_size], dtype=np.uint64))
-        for view_score in image['view_scores']:
+      if version > 2:
+        # default: NO_ID (the image has no ID outside this scene)
+        mvs.write(np.array([image.get('id', 0xFFFFFFFF)], dtype=np.uint32))
+      if version > 6:
+        mvs.write(np.array([image.get('min_depth', 0), image.get('avg_depth', 0), image.get('max_depth', 0)], dtype=np.float32))
+        view_scores = image.get('view_scores', [])
+        mvs.write(np.array([len(view_scores)], dtype=np.uint64))
+        for view_score in view_scores:
           mvs.write(np.array([view_score['id'], view_score['points']], dtype=np.uint32))
           mvs.write(np.array([view_score['scale'], view_score['angle'], view_score['area'], view_score['score']], dtype=np.float32))
 
+    flags = 0
+    if version > 7:
+      flags = data.get('flags', 0)
+      mvs.write(np.array([flags], dtype=np.uint8))
     vertices_size = len(data['vertices'])
     mvs.write(np.array([vertices_size], dtype=np.uint64))
     for vertex in data['vertices']:
@@ -551,6 +640,8 @@ def saveMVSInterface(data: dict, archive_path: str):
       for view in vertex['views']:
         mvs.write(np.array([view['image_id']], dtype=np.uint32))
         mvs.write(np.array([view['confidence']], dtype=np.float32))
+        if flags & HAS_OBSERVATIONS:
+          mvs.write(np.array(view['x'], dtype=np.float32))
 
     vertices_normal_size = len(data['vertices_normal'])
     mvs.write(np.array([vertices_normal_size], dtype=np.uint64))
@@ -562,10 +653,13 @@ def saveMVSInterface(data: dict, archive_path: str):
     for color in data['vertices_color']:
       mvs.write(np.array(color, dtype=np.uint8))
 
-    if 'lines' in data:
-      lines_size = len(data['lines'])
+    # the reader consumes every block below that the stream version holds, so each one is always
+    # written, from the Interface defaults when the dictionary lacks it
+    if version > 0:
+      lines = data.get('lines', [])
+      lines_size = len(lines)
       mvs.write(np.array([lines_size], dtype=np.uint64))
-      for line in data['lines']:
+      for line in lines:
         mvs.write(np.array(line['pt1'], dtype=np.float32))
         mvs.write(np.array(line['pt2'], dtype=np.float32))
         views_size = len(line['views'])
@@ -574,19 +668,25 @@ def saveMVSInterface(data: dict, archive_path: str):
           mvs.write(np.array([view['image_id']], dtype=np.uint32))
           mvs.write(np.array([view['confidence']], dtype=np.float32))
 
-      lines_normal_size = len(data['lines_normal'])
+      lines_normal = data.get('lines_normal', [])
+      lines_normal_size = len(lines_normal)
       mvs.write(np.array([lines_normal_size], dtype=np.uint64))
-      for normal in data['lines_normal']:
+      for normal in lines_normal:
         mvs.write(np.array(normal, dtype=np.float32))
 
-      lines_color_size = len(data['lines_color'])
+      lines_color = data.get('lines_color', [])
+      lines_color_size = len(lines_color)
       mvs.write(np.array([lines_color_size], dtype=np.uint64))
-      for color in data['lines_color']:
+      for color in lines_color:
         mvs.write(np.array(color, dtype=np.uint8))
 
-    if 'transform' in data:
-      mvs.write(np.array(data['transform'], dtype=np.float64).tobytes())
-      if 'obb' in data:
-        mvs.write(np.array(data['obb']['rot'], dtype=np.float64).tobytes())
-        mvs.write(np.array(data['obb']['pt_min'], dtype=np.float64).tobytes())
-        mvs.write(np.array(data['obb']['pt_max'], dtype=np.float64).tobytes())
+      if version > 1:
+        # default: identity transform
+        transform = data.get('transform', np.eye(4).tolist())
+        mvs.write(np.array(transform, dtype=np.float64).tobytes())
+        if version > 5:
+          # default: the invalid OBB of Interface::OBB() (rot = I, pt_min = pt_max = 0)
+          obb = data.get('obb', {'rot': np.eye(3).tolist(), 'pt_min': [0.0, 0.0, 0.0], 'pt_max': [0.0, 0.0, 0.0]})
+          mvs.write(np.array(obb['rot'], dtype=np.float64).tobytes())
+          mvs.write(np.array(obb['pt_min'], dtype=np.float64).tobytes())
+          mvs.write(np.array(obb['pt_max'], dtype=np.float64).tobytes())

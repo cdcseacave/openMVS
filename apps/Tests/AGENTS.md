@@ -9,6 +9,7 @@ main(argv)
   argv[1] == 0 or missing → UnitTests()      — data structures & math
   argv[1] == 1            → SFM smoke tests   — multiple sequential tests
   argv[1] >= 2            → MVS::PipelineTest() — full dense reconstruction
+  argv[1] not a number    → MVS::SynthTool()    — tool modes (see Synthetic Depth GT)
 ```
 
 Each test prints `VERBOSE` progress and returns `false` on failure, causing `main()` to `return EXIT_FAILURE` immediately.
@@ -107,6 +108,78 @@ spread of both the CPU and GPU PatchMatch backends, which differ by design.
 
 Keeps the depth maps on disk (`OPTDENSE::bRemoveDmaps = false`) for `SceneSplitTest` and deletes them right after it, whatever its outcome. Optionally saves `.ply` outputs when verbose (into the data folder: remove them after a verbose run).
 
+## Synthetic Depth GT (`TestsSynthetic.h` / `TestsSynthetic.cpp`)
+
+Ray-cast ground truth without data files, for the camera models and the spherical PatchMatch:
+- **Scene:** closed room [-8,8]x[-5,5]x[0,5] m (z up) with 3 spheres, a ramp and a thin pillar, a solid
+  world-space procedural texture and one low-texture patch.
+- **Views** (`SynthGenerate`): per panorama of an 8-pose trajectory the equirectangular view (`panoWidth` x
+  `panoWidth/2`), its 6 `SphereCubeMap` faces (`panoWidth/4`), and Brown-distorted views between panoramas;
+  GT lambda (z for pinhole, z of the undistorted ray for Brown, range for spherical) and normals at the
+  pixel centers. `SynthBuildScene` makes an `MVS::Scene` of face/panorama views with GT sparse points.
+- **Metrics:** `DepthEvaluator` (completeness, abs-rel, % within 1/2/5 %, normal angle) per band: all;
+  equator (|elev| < 30), north/south (|elev| > 70), seam and its antipode (16 px); pinhole center/border
+  (16 px). `CloudEvaluator`: precision/recall/F of a cloud against GT range maps at three relative
+  thresholds, per band.
+
+Tests (MVS suite 2), each bound being the measured accuracy less a margin:
+
+| Test | Checks |
+|------|--------|
+| `BrownUndistortOnLoadTest()` | Brown views read through `MVS::Image` match the pinhole render at `K'`; ignore mask = undistortion mask; observations on their `K'` projections, also after `Scene::ScaleImages` (files stored distorted, lens scaled); the MeshLab raster of a Brown image holds its undistorted pixels and the camera at `K'` |
+| `NeighborViewsPointCloudRigTest()` | `Scene::EstimateNeighborViewsPointCloud` on two rigs (a panorama and its 6 faces at one center each) without sparse points: no assertion, every point finite and seen by the views of two rigs |
+| `EstimatePointCloudNormalsSphericalTest()` | `Scene::EstimatePointCloudNormals` on 3 panoramas at half resolution: the scene images keep their resolution, camera and pixels; every point whose target view projects within 4 columns of the seam is refined (points next to a pole left out), its mean normal error within 1.5x that of the others |
+| `TowerSphericalTest()` | `Scene::InitTowerScene` on 24 panoramas in three rings around the pillar, on their seam: every tower point has a horizontal normal and two panoramas seeing it from the side it faces |
+| `SyntheticDepthBaselineTest()` | GT consistency across the models, then CPU PatchMatch on the 18 128x128 faces of 3 panoramas |
+| `SyntheticSphericalTest()` | CPU PatchMatch on 3 512x256 panoramas, overall and per band (seam held to its antipodal band) |
+| `MetalModelMathTest()` | Apple only: the Metal mirror of `CameraModels.h` / `DepthGeometry.h` against the C++ models |
+| `SyntheticSphericalGPUTest()` | the same panoramas on CUDA or Metal, moved 1e6 m from the origin (as accurate as there: the estimator only relates the views); skipped without a GPU or with `forceCPU` |
+| `SyntheticMixedGPUTest()` | CUDA or Metal on the 6 96x96 faces of the middle of 3 rigs with the 384x192 panoramas of the 2 others as their only neighbors (pinhole reference, spherical neighbors: the `MODEL_PINHOLE_REF` kernels), held to the CPU accuracy on the same views; skipped without a GPU or with `forceCPU` |
+| `GPUConfidenceTest()` | the confidence recalibration on CUDA or Metal against the CPU sweep, on noisy GT depth-maps, for a cube face then a panorama against the faces and panoramas of two others (every pair of camera models); both separate the outliers; skipped without a GPU or with `forceCPU` |
+| `SyntheticSphericalFusionTest()` | CPU PatchMatch + dense fusion of the panoramas, cloud precision/recall per band |
+
+## Spherical seam and model consistency (`TestsMVS.cpp`)
+
+MVS suite, before the synthetic tests: `GapInterpolationNormalsTest()` (`GapInterpolation` fills a gap
+between two normals with unit normals within their angle, pinhole and spherical, also across the seam of a
+spherical row), `WrapPixelTest()` (`ModelCamera::WrapPixel` wraps the columns of a spherical camera only,
+never rows), `ConfidenceSeamTest()` (`EstimateConfidenceFromDepth/Normal` read across the seam of a spherical
+depth-map), `ComputeFOVTest()` (`Image::ComputeFOV`: 2π x π for a full panorama, the pinhole angles otherwise).
+
+## Camera models (`TestsMVS.cpp`)
+
+`InterfaceV8Test()` (MVS suite, before the pipeline): Interface v8 round trip of every camera
+model (pinhole, Brown 5 and 8 coefficients, spherical) with and without observations; a v7 stream
+written and loaded back; the size identity (v8 = v7 + 1 byte per camera + 1 flags byte without
+observations); `MVS::Scene` load/save of the models (Brown lens kept exactly, observations within
+1e-3 px), also through the native boost archive (interface -> native -> interface); `K'` identical
+between `UndistortedK`, the SfM `UndistortMaps::Init`, the map cache and the loaded image camera; a
+standalone spherical `.dmap` loaded by `Scene::LoadDMAP` keeps the SPHERICAL model and its points at
+the stored range.
+
+## Running
+
+```
+Tests <suite> [verbosity] [forceCPU]   # suite 0/1/2; verbosity > 0 writes Tests-*.log in the current directory
+```
+Debug builds define `_HEADLESS_DEBUG`: capture stderr (`2> err.txt`), a failed `ASSERT` prints `[ASSERT]` there.
+
+Tool modes (argv[1] is not a number; an unknown mode prints the usage). They always
+write `Tests-*.log` in the current directory; the result tables go to the log and, for most modes, stdout:
+```
+Tests synth <outDir> [panoWidth=512]                       # the dataset: PNG, GT .dmap, cameras.json, scene.mvs of the faces
+Tests sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]
+Tests mixtest <verbosity> [gpu=0]                          # PatchMatch on cube faces against panoramas (SyntheticMixedGPUTest's run)
+Tests conftest <verbosity>                                 # GPUConfidenceTest alone
+Tests sphfuse <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [fusionFilter=2] [maxThreads]   # faces 2: mixed scene
+Tests scorebench <verbosity> [panoWidth=1536] [rounds=4] [maxElevation] [faceWidth=panoWidth/4]  # ns per ScorePixel
+Tests evaldepth <gt.dmap|gtFolder> <est.dmap|estFolder> [pinhole|spherical]
+Tests evalcloud <cloud.ply|scene.mvs> <gtFolder> [evalWidth] [th1% th2% th3%]
+Tests facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]   # cube-face baseline of a spherical scene
+Tests undistortbench <scene.mvs> [numImages=8]             # decode vs remap time of images undistorted on read
+```
+`maxElevation` overrides `DepthEstimatorBase::fSphericalWarpMaxElevation` (0: exact warp everywhere).
+
 ## Logging Convention
 
 Each file defines its own log name:
@@ -114,6 +187,7 @@ Each file defines its own log name:
 DEFINE_LOG_NAME(lt, "Test    ")  // Tests.cpp
 DEFINE_LOG_NAME(lt, "TestSFM ")  // TestsSFM.cpp
 DEFINE_LOG_NAME(lt, "TestMVS ")  // TestsMVS.cpp
+DEFINE_LOG_NAME(lt, "TestSyn ")  // TestsSynthetic.cpp
 ```
 
 ## Build

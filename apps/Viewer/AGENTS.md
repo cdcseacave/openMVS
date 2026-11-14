@@ -51,7 +51,7 @@ main() [Viewer.cpp]
 Use `Window::RequestRedraw()` to post a GLFW event that wakes the wait-for-events loop.
 
 ### Background Worker
-`Scene::thread` processes `Scene::events` for async workflow and image-load execution. Workflows are tied to a stable layer ID; results are finalized on the main thread via `CheckWorkflowCompletion()` → `FinalizeWorkflow()`. Layer-container mutation is disabled while background work holds layer/image references.
+`Scene::thread` processes `Scene::events` for async workflow and image-load execution. Workflows are tied to a stable layer ID; results are finalized on the main thread via `CheckWorkflowCompletion()` → `FinalizeWorkflow()`. Layer-container mutation is disabled while background work holds layer/image references. An image load (`EVTLoadImage`) decodes into a copy of the `MVS::Image` and hands its pixels to the overlay: the scene image keeps its resolution, scale and camera, and the worker writes nothing the UI thread reads.
 
 ## Rendering Pipeline
 
@@ -72,7 +72,7 @@ RenderPointCloud()                 — GL_POINTS with dynamic point size
 RenderMesh()                       — solid + wireframe + textured variants
 RenderCameras()                    — frustum line rendering
 RenderUncertaintyEllipsoids()      — pose-uncertainty translucent shaded solids (ellipsoidShader)
-RenderImageOverlays()              — 3D photo planes with per-image opacity
+RenderImageOverlays()              — the photo of the camera view mode (a plane), and every loaded panorama on its globe
 RenderSelection()                  — highlighted primitives
 RenderSelectionOverlay()           — 2D screen-space selection UI
 RenderBounds()                     — AABB wireframe
@@ -84,6 +84,16 @@ EndFrame()
 Non-UI screenshots (`--screenshot-file` without the `u` flag) are captured after ALL 3D layers
 (cameras, ellipsoids, bounds, overlays) but before any ImGui window — the `--screenshot-show`
 layer flags (`c`, `b`, ...) therefore apply to the capture.
+
+### Camera Models
+A pinhole camera is drawn as its frustum, a spherical (equirectangular) one as a globe: the great circles
+of its equator and two meridians (`AppendCameraGlyphLines`, shared by the camera pass and the selection
+highlight). A panorama whose image is loaded (entering its camera view loads it, and it stays loaded) is drawn on
+the sphere of its rays around the image center, at the globe radius (one unit-sphere mesh, placed by the
+`model` uniform of `imageoverlay.vert`, far side only): from outside the camera is a ball showing the
+panorama, depth tested with the scene; in its camera view mode it is drawn over the scene and the view
+keeps its field of view with the navigation target next to the center, so dragging looks around inside
+the panorama. Every projection of a scene point into an image goes through `MVS::ModelCamera`.
 
 ### Pose-Uncertainty Ellipsoids
 `Scene::LoadPoseUncertainty(csv)` (triggered by `--pose-quality-file`) parses a CreateStructure
@@ -211,6 +221,8 @@ Async MVS pipeline stages executable from the Viewer UI:
 | RefineMesh | `RefineMeshWorkflowOptions` | `resolutionLevel`, `maxViews`, `scales`, `regularityWeight` |
 | TextureMesh | `TextureMeshWorkflowOptions` | `resolutionLevel`, `ratioDataSmoothness`, `globalSeamLeveling`, `maxTextureSize` |
 
+The mesh workflows (ReconstructMesh, RefineMesh, TextureMesh) support pinhole cameras only (`MVS::Scene::CheckPinholeOnly`): for a layer with spherical images (`Layer::hasSphericalImages`, set in `RefreshLayerState`, read instead of the scene a running workflow owns) their dialogs show a notice pointing to `--spherical-export cubemap` and disable Run, and the Batch window deselects them.
+
 ### State Machine
 `WorkflowState`: IDLE → RUNNING → COMPLETED / FAILED. Tracked via atomics (`workflowState`, `currentWorkflowType`, `geometryModified`). Each worker event owns an immutable copy of its options. Batch execution queues workflow types and starts the next stage from main-thread finalization, so stages run sequentially against the same active layer. `workflowHistory` records duration and success for stats display. Protected by `workflowMutex`.
 
@@ -236,7 +248,8 @@ Async MVS pipeline stages executable from the Viewer UI:
 - **Drag-and-drop**: Files dropped on the window are added as layers
 - **Save**: `Scene::Save()` writes the active layer as a self-contained `.mvs` project
 - **Export**: export the active layer or merge all visible layer geometry
-- **Screenshot**: `Window::RequestScreenshot(path, includeUI)` captures framebuffer
+- **Screenshot**: `Window::RequestScreenshot(path, includeUI)` captures framebuffer, once no image load is
+  pending; `--screenshot-show i` with `--view-camera` enters that camera's view mode (image overlay)
 
 ### Track-Based Neighbors
 `Scene::PrecomputeTrackBasedNeighbors()` computes per-image neighbor lists with shared 3D point indices, stored as `trackBasedNeighbors` (array of `ViewScoreWithPointsArr`). Used for camera neighbor visualization in the UI.

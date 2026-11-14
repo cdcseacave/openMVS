@@ -101,28 +101,6 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 	// project each pixel from the target view patch to every reference view and compute the ZNCC score;
 	// use gradient descent to refine the normal estimate, keeping the depth constant.
 
-	// Load images
-	// TODO: replace with images cache
-	bool bImagesReloaded(false);
-	#ifdef SCENE_USE_OPENMP
-	#pragma omp parallel for
-	for (int64_t _idx=0; _idx<(int64_t)images.size(); ++_idx) {
-		const IIndex idx(static_cast<IIndex>(_idx));
-	#else
-	FOREACH(idx, images) {
-	#endif
-		Image& imageData = images[idx];
-		if (!imageData.IsValid())
-			continue;
-		if (imageData.image.empty())
-			bImagesReloaded = true; // need to reload images
-		if (!imageData.ReloadImage(1024)) {
-			DEBUG("error: cannot reload image '%s'", imageData.name.c_str());
-			exit(EXIT_FAILURE);
-		}
-		imageData.UpdateCamera(platforms);
-	}
-
 	// Refine normals using lmmin optimization with ZNCC correlation
 	constexpr int patchRadius = 3; // Half-size of the patch window
 	constexpr int patchSize = patchRadius * 2 + 1;
@@ -133,6 +111,53 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 	const Sampler sampler;
 	typedef RobustNorm::Cauchy<double> RobustNormFunc;
 	const RobustNormFunc robust(0.7);
+
+	// load the images into copies: the pixels serve this refinement only, the scene images keep their
+	// resolution and cameras
+	// TODO: replace with images cache
+	ImageArr scaledImages(images.size());
+	#ifdef SCENE_USE_OPENMP
+	bool bAbort(false);
+	#pragma omp parallel for
+	for (int64_t _idx=0; _idx<(int64_t)images.size(); ++_idx) {
+		#pragma omp flush (bAbort)
+		if (bAbort)
+			continue;
+		const IIndex idx(static_cast<IIndex>(_idx));
+	#else
+	FOREACH(idx, images) {
+	#endif
+		if (!images[idx].IsValid())
+			continue;
+		Image& view = scaledImages[idx];
+		view = images[idx];
+		view.ReleaseImage(); // the copy shares the pixels of the scene image: decode into its own buffer
+		if (!view.ReloadImage(1024)) {
+			#ifdef SCENE_USE_OPENMP
+			bAbort = true;
+			#pragma omp flush (bAbort)
+			continue;
+			#else
+			pointcloud.normals.Release();
+			return false;
+			#endif
+		}
+		view.UpdateCamera(platforms);
+		if (view.IsSpherical()) {
+			// the columns of a panorama wrap: repeat them in a margin on both sides and move the principal point
+			// by it, so a patch across the seam is sampled like any other; a target patch reaches patchRadius
+			// past a projection, and bilinear sampling needs one more pixel
+			constexpr int seamMargin = patchRadius + 2;
+			cv::copyMakeBorder(view.image, view.image, 0, 0, seamMargin, seamMargin, cv::BORDER_WRAP);
+			view.camera.K(0,2) += seamMargin;
+		}
+	}
+	#ifdef SCENE_USE_OPENMP
+	if (bAbort) {
+		pointcloud.normals.Release();
+		return false;
+	}
+	#endif
 
 	// Define optimization data structure
 	struct NormalOptimizationData {
@@ -161,7 +186,9 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 			Point3 normal;
 			Dir2Normal(*reinterpret_cast<const Point2d*>(x), normal);
 			// Ensure normal points toward target camera
-			const Camera& targetCamera = data.images[data.views[data.targetViewIdx]].camera;
+			const Image& targetImage = data.images[data.views[data.targetViewIdx]];
+			const Camera& targetCamera = targetImage.camera;
+			const ModelCamera targetModel(targetImage.GetModelCamera());
 			const Point3 viewDir = normalized(targetCamera.C - Cast<REAL>(data.point));
 			if (normal.dot(viewDir) < 0)
 				normal = -normal;
@@ -182,14 +209,16 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 					for (int dx = -patchRadius; dx <= patchRadius; ++dx) {
 						const Point2f targetPos = data.targetProjection + Point2f(dx, dy);
 						// Back-project target pixel to 3D using the refined normal
-						const Ray3 ray(targetCamera.C, normalized(targetCamera.RayPoint(Cast<REAL>(targetPos))));
+						const Ray3 ray(targetCamera.C, normalized(targetModel.RayPoint(Cast<REAL>(targetPos))));
 						// Intersect ray with plane to get 3D point
 						Point3::EVec X3D;
 						if (!ray.Intersects(plane, false, NULL, &X3D))
 							continue;
-						// Project 3D point to reference image
-						const Point2f refPos = refImage.camera.TransformPointW2I(Point3(X3D));
-						if (refImage.image.isInsideWithBorder<float,1>(refPos)) {
+						// Project 3D point to reference image (a plane grazing the target ray can place it
+						// behind a pinhole reference, which does not see it)
+						const auto [refPosD, refDepth] = refImage.GetModelCamera().ProjectPointP(Point3(X3D));
+						const Point2f refPos(refPosD);
+						if (refDepth > 0 && refImage.image.isInsideWithBorder<float,1>(refPos)) {
 							const Pixel32F pixelValue = refImage.image.sample<Sampler,Pixel32F>(data.sampler, refPos);
 							const float intensity = pixelValue.r * 0.299f + pixelValue.g * 0.587f + pixelValue.b * 0.114f;
 							refPatch[validTexels++] = intensity;
@@ -235,13 +264,14 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 		float bestScore = -1.f;
 		Point2f bestProjection;
 		FOREACH(viewIdx, views) {
-			const Image& imageData = images[views[viewIdx]];
+			const Image& imageData = scaledImages[views[viewIdx]];
 			ASSERT(imageData.IsValid() && !imageData.image.empty());
 			const Camera& camera = imageData.camera;
 			const Point3f viewDir = normalized(camera.C - Cast<REAL>(point));
 			// Project point to image
-			const auto [projection, depth] = camera.ProjectPointP(point);
-			if (depth <= 0 || !imageData.image.isInsideWithBorder<float>(projection, patchRadius))
+			const auto [projection, depth] = imageData.GetModelCamera().ProjectPointP(point);
+			// the bilinear target patch reaches patchRadius+1 pixels past the projection
+			if (depth <= 0 || !imageData.image.isInsideWithBorder<float>(projection, patchRadius+1))
 				continue;
 			// Compute view score: angle compatibility and footprint
 			const float angle = ACOS(ComputeAngleN(normal.ptr(), viewDir.ptr()));
@@ -256,30 +286,27 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 		}
 		if (bestTargetIdx == NO_ID)
 			continue;
-		const Image& targetImage = images[views[bestTargetIdx]];
+		const Image& targetImage = scaledImages[views[bestTargetIdx]];
 
 		// Extract target patch - convert to grayscale intensities
 		std::array<float,nTexels> targetPatch;
 		double targetMean(0);
-		int validTexels = 0;
+		int texel = 0;
 		for (int dy = -patchRadius; dy <= patchRadius; ++dy) {
 			for (int dx = -patchRadius; dx <= patchRadius; ++dx) {
 				const Point2f samplePos = bestProjection + Point2f(dx, dy);
-				if (targetImage.image.isInsideWithBorder<float,1>(samplePos)) {
-					const Pixel32F pixelValue = targetImage.image.sample<Sampler,Pixel32F>(sampler, samplePos);
-					const float intensity = pixelValue.r * 0.299f + pixelValue.g * 0.587f + pixelValue.b * 0.114f;
-					targetPatch[validTexels++] = intensity;
-					targetMean += intensity;
-				}
+				ASSERT((targetImage.image.isInsideWithBorder<float,1>(samplePos)));
+				const Pixel32F pixelValue = targetImage.image.sample<Sampler,Pixel32F>(sampler, samplePos);
+				const float intensity = pixelValue.r * 0.299f + pixelValue.g * 0.587f + pixelValue.b * 0.114f;
+				targetPatch[texel++] = intensity;
+				targetMean += intensity;
 			}
 		}
-		if (validTexels < nTexels)
-			continue;
 		targetMean /= nTexels;
 
 		// Compute target patch variance
 		double targetVariance(0);
-		for (int i = 0; i < validTexels; ++i) {
+		for (int i = 0; i < nTexels; ++i) {
 			const double diff = static_cast<double>(targetPatch[i]) - targetMean;
 			targetPatch[i] = diff; // Store normalized values
 			targetVariance += diff * diff;
@@ -290,7 +317,7 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 		// Create optimization data
 		Point2d paramN;
 		Normal2Dir(normal, paramN); // Convert normal to spherical coordinates
-		NormalOptimizationData optData(point, views, images, bestTargetIdx, bestProjection,
+		NormalOptimizationData optData(point, views, scaledImages, bestTargetIdx, bestProjection,
 									   targetPatch, targetVariance, sampler, robust);
 		// Setup and run lmmin optimization
 		constexpr int numParams(2);
@@ -307,12 +334,6 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 				normal = -normal; // Flip normal if it points away from target camera
 		}
 		// Note: If optimization fails, keep the original normal estimate
-	}
-
-	if (bImagesReloaded) {
-		// Release images
-		for (Image& imageData: images)
-			imageData.ReleaseImage();
 	}
 	return true;
 } // EstimatePointCloudNormals
@@ -595,8 +616,8 @@ FloatArr ComputeMeanDistanceToClosestN(const PointCloud::PointArr &pts, const Un
 } // anonymous namespace
 
 // Compute a weight for each of the selected points in the scene point cloud based on:
-//  - proximity to image center
-//  - depth from camera
+//  - proximity to image center (pinhole views; a panorama has none)
+//  - depth from camera (the range for a panorama)
 //  - mean distance to closest neighbors in the point cloud
 // only the points at the given indices are weighted (pass all indices for the full cloud);
 // medianNeighborDistance receives the median of the mean neighbor distances, a robust
@@ -647,6 +668,17 @@ FloatArr Scene::ROIPointWeights(const UnsignedArr& indices, float& medianNeighbo
 			if (!image.IsValid())
 				continue;
 			const Point3 camX(image.camera.TransformPointW2C(X));
+			if (image.IsSpherical()) {
+				// a panorama sees every direction and has no image center: the depth is the range and
+				// every observation counts as central
+				const float range((float)norm(camX));
+				if (range <= 0)
+					continue;
+				imageDepths[views[idxView]].push_back(range);
+				obsDepth[v] = range;
+				obsRadial[v] = 1.f;
+				continue;
+			}
 			if (camX.z <= 0)
 				continue;
 			imageDepths[views[idxView]].push_back((float)camX.z);

@@ -62,6 +62,7 @@ PointCloud& MVS::PointCloud::Swap(PointCloud& rhs)
 	points.Swap(rhs.points);
 	pointViews.Swap(rhs.pointViews);
 	pointWeights.Swap(rhs.pointWeights);
+	pointObservations.Swap(rhs.pointObservations);
 	normals.Swap(rhs.normals);
 	colors.Swap(rhs.colors);
 	labels.Swap(rhs.labels);
@@ -74,6 +75,7 @@ void PointCloud::Release()
 	points.Release();
 	pointViews.Release();
 	pointWeights.Release();
+	pointObservations.Release();
 	normals.Release();
 	colors.Release();
 	labels.Release();
@@ -89,6 +91,9 @@ void PointCloud::RemovePoint(IDX idx)
 	ASSERT(pointWeights.empty() || pointWeights.size() == points.size());
 	if (!pointWeights.empty())
 		pointWeights.RemoveAt(idx);
+	ASSERT(pointObservations.empty() || pointObservations.size() == points.size());
+	if (!pointObservations.empty())
+		pointObservations.RemoveAt(idx);
 	ASSERT(normals.empty() || normals.size() == points.size());
 	if (!normals.empty())
 		normals.RemoveAt(idx);
@@ -1119,7 +1124,7 @@ bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, f
 		if (pointWeights.empty()) {
 			confidence = (float)pointViews[i].size();
 			for (IIndex idxView: pointViews[i]) {
-				const float footprint((float)images[idxView].camera.GetFootprintWorld(X));
+				const float footprint((float)images[idxView].camera.GetFootprintWorld(images[idxView].PointDepth(X)));
 				ASSERT(footprint > 0);
 				if (scale > footprint)
 					scale = footprint;
@@ -1129,7 +1134,7 @@ bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, f
 			float scaleWeightBest = FLT_MAX;
 			FOREACH(j, pointViews[i]) {
 				const IIndex idxView = pointViews[i][j];
-				const float footprint((float)images[idxView].camera.GetFootprintWorld(X));
+				const float footprint((float)images[idxView].camera.GetFootprintWorld(images[idxView].PointDepth(X)));
 				ASSERT(footprint > 0);
 				const float conf(pointWeights[i][j]);
 				const float scaleWeight(footprint/conf);

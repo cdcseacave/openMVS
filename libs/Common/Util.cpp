@@ -889,12 +889,14 @@ LPSTR* Util::CommandLineToArgvA(LPCSTR CmdLine, size_t& _argc)
 	bool   in_SPACE(true);
 
 	size_t argc(0);
-	size_t len = strlen(CmdLine);
-	size_t i = ((len+2)/2)*sizeof(void*) + sizeof(void*);
-	LPSTR* argv = (LPSTR*)(new uint8_t[i + (len+2)*sizeof(CHAR)]);
-	LPSTR _argv = (LPSTR)(((CHAR*)argv)+i);
+	const size_t len(strlen(CmdLine));
+	// one allocation: the argument pointers (at most one argument per two characters, plus the
+	// terminating NULL), followed by the arguments
+	const size_t numSlots((len+2)/2 + 1);
+	LPSTR* argv = (LPSTR*)(new uint8_t[numSlots*sizeof(LPSTR) + (len+2)*sizeof(CHAR)]);
+	LPSTR _argv = (LPSTR)(argv+numSlots);
 	argv[argc] = _argv;
-	size_t j(0); i = 0;
+	size_t i(0), j(0);
 
 	CHAR a;
 	while ((a = CmdLine[i]) != 0) {
@@ -911,6 +913,7 @@ LPSTR* Util::CommandLineToArgvA(LPCSTR CmdLine, size_t& _argc)
 					in_QM = true;
 					in_TEXT = true;
 					if (in_SPACE) {
+						ASSERT(argc+1 < numSlots);
 						argv[argc] = _argv+j;
 						argc++;
 					}
@@ -930,6 +933,7 @@ LPSTR* Util::CommandLineToArgvA(LPCSTR CmdLine, size_t& _argc)
 				default:
 					in_TEXT = true;
 					if (in_SPACE) {
+						ASSERT(argc+1 < numSlots);
 						argv[argc] = _argv+j;
 						argc++;
 					}
@@ -942,6 +946,7 @@ LPSTR* Util::CommandLineToArgvA(LPCSTR CmdLine, size_t& _argc)
 		i++;
 	}
 	_argv[j] = '\0';
+	ASSERT(argc < numSlots);
 	argv[argc] = NULL;
 
 	_argc = argc;

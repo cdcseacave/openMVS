@@ -58,6 +58,20 @@ struct Transform {
 - `DecomposeProjectionMatrix(P, K, R, C)` - RQ decomposition of P=K[R|-RC]
 - `AssembleProjectionMatrix(K, R, C, P)` - Construct P from components
 
+## Camera Models (`Camera/CameraModels.h`, `Camera/CameraUndistort.h/cpp`)
+- `CameraModels.h`: header-only, `HOST_DEVICE`, Eigen, templated on the scalar (host, CUDA, Ceres Jets):
+  `Pinhole<T>{fx,fy,cx,cy}`, `BrownDistortion<T>{k1,k2,p1,p2,k3,k4,k5,k6}` (OpenCV order, rational
+  k4..k6; Newton `Undistort`), `Spherical<T>{fx=W/2pi,fy=H/pi,cx=(W-1)/2,cy=(H-1)/2}` (equirect),
+  each with `Ray(x)` / `Project(X,x)` / `Depth(X)`; `CameraModelType` ids. One convention for all:
+  pixel centers at integer coordinates, camera frame x-right/y-down/z-forward. SFM cameras and the
+  BA cost functors are thin wrappers over these; never re-derive the formulas elsewhere.
+- `CameraUndistort.h/cpp`: resampling between models: `UndistortedK` (the one rule for the
+  undistorted camera K' of a Brown camera: `getOptimalNewCameraMatrix`, same size, `UNDISTORT_ALPHA`
+  = 0.6 unless an exporter writes undistorted files with its own alpha), `UndistortMaps` (OpenCV remap
+  tables + new K, image and depth-aware depth-map remap), `GetCameraUndistortMaps` (process-wide,
+  thread-safe cache of the maps plus their validity mask per lens and size, used by the MVS image
+  loader) and `SphereCubeMap` (equirect -> N tangent pinhole faces).
+
 ## Geodetic Transforms (`GeodeticTransforms.h/cpp`)
 WGS84 coordinate conversions for GPS integration.
 

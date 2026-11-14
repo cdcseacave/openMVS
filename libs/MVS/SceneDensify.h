@@ -73,6 +73,9 @@ public:
 	bool FetchViewImage(DepthData::ViewData& view);
 	bool InitDepthMap(DepthData& depthData);
 	bool EstimateDepthMap(IIndex idxImage, int nGeometricIter);
+	// the CPU PatchMatch estimation, for a reference of camera model MODEL
+	template<template<typename> class MODEL>
+	bool EstimateDepthMapCPU(IIndex idxImage, int nGeometricIter);
 
 	#ifdef _USE_CUDA
 	// Construct poolSize PatchMatch instances ready for the depth-map phase;
@@ -115,11 +118,13 @@ public:
 	// above indexes into. Writes depthDataRef.confMap directly (no confMapAdjusted deferred swap: see
 	// the .cpp comment for why the standalone phase's race does not apply here).
 	bool AdjustConfidence(DepthData& depthDataRef);
-	#ifdef _USE_CUDA
+	// whether the GPU estimating the depth-maps (CUDA or Metal) also recalibrates their confidence:
+	// a GPU PatchMatch pool exists and bEstimateConfidenceGPU is set
+	bool HasGPUConfidence() const;
 	// GPU counterpart of AdjustConfidence(DepthData&) -- same neighbor build, the prior +
-	// confirmation sweep run in ConfidenceCUDA.cu. Returns false on any CUDA error (CPU fallback).
-	bool AdjustConfidenceCUDA(DepthData& depthDataRef);
-	#endif
+	// confirmation sweep run on the estimating GPU (ConfidenceCUDA.cu or ConfidenceMetal.metal);
+	// requires HasGPUConfidence(). Returns false on any GPU error (CPU fallback).
+	bool AdjustConfidenceGPU(DepthData& depthDataRef);
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
@@ -130,9 +135,9 @@ public:
 	size_t ComputeImageCacheMemory(const IIndexArr& images) const;
 
 protected:
-	static void* STCALL ScoreDepthMapTmp(void*);
-	static void* STCALL EstimateDepthMapTmp(void*);
-	static void* STCALL EndDepthMapTmp(void*);
+	template<typename ESTIMATOR> static void* STCALL ScoreDepthMapTmp(void*);
+	template<typename ESTIMATOR> static void* STCALL EstimateDepthMapTmp(void*);
+	template<typename ESTIMATOR> static void* STCALL EndDepthMapTmp(void*);
 
 public:
 	Scene& scene;

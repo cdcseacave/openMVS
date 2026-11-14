@@ -2146,6 +2146,119 @@ static double ResizeTestMaxError(const Camera& camera, const std::vector<Point3>
 	}
 	return maxError;
 }
+// a pinhole seen through the generic DepthGeometry.h functions instead of their pinhole overloads
+struct PinholeGenericf : Pinhole<float> {};
+// the patch warp composed from the camera models (PlanePatchWarp) against the cached pinhole
+// homography the CPU estimator warps with, over random poses, planes and pixels; the pinhole
+// ray/projection/depth round trips the estimator relies on; and the generic depth geometry against
+// its pinhole overloads (and the exact ray-plane intersection, also for a spherical camera)
+bool PatchWarpModelTest()
+{
+	std::mt19937 rng(11);
+	std::uniform_real_distribution<double> U(0, 1);
+	const auto R = [&](double a, double b) { return a + (b - a) * U(rng); };
+	const auto RandomCamera = [&]() {
+		Camera camera;
+		camera.K = KMatrix::IDENTITY;
+		camera.K(0,0) = R(800, 3000); camera.K(1,1) = camera.K(0,0)*R(0.98, 1.02);
+		camera.K(0,2) = R(900, 1100); camera.K(1,2) = R(650, 850);
+		const Eigen::Matrix3d rot(Eigen::AngleAxisd(R(0, 0.4), Eigen::Vector3d(R(-1,1), R(-1,1), R(-1,1)).normalized()).toRotationMatrix());
+		for (int r=0; r<3; ++r)
+			for (int c=0; c<3; ++c)
+				camera.R(r,c) = rot(r,c);
+		camera.C = CMatrix(R(-1,1), R(-1,1), R(-1,1));
+		return camera;
+	};
+	const auto ToEigen = [](const RMatrix& m) {
+		Eigen::Matrix3d e;
+		for (int r=0; r<3; ++r)
+			for (int c=0; c<3; ++c)
+				e(r,c) = m(r,c);
+		return e;
+	};
+	double maxWarpErr(0), maxProjErr(0), maxDepthErr(0), maxNormalErr(0), maxPlaneErr(0), maxPlaneSphErr(0);
+	unsigned numWarps(0);
+	for (int i=0; i<2000; ++i) {
+		const Camera cameraRef(RandomCamera()), cameraTrg(RandomCamera());
+		const Pinhole<REAL> ref(MakeCameraModel<Pinhole<REAL>>(cameraRef)), trg(MakeCameraModel<Pinhole<REAL>>(cameraTrg));
+		const ImageRef x0(ROUND2INT(R(100, 1900)), ROUND2INT(R(100, 1400)));
+		// the estimator's reference ray is the camera's back-projection, bit for bit
+		const Point3 X0(ref.Ray(Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)));
+		if (X0 != cameraRef.TransformPointI2C(Cast<REAL>(x0))) {
+			VERBOSE("error: PatchWarpModelTest: the pinhole ray of pixel (%d,%d) differs from the camera back-projection", x0.x, x0.y);
+			return false;
+		}
+		// the round trips through the reference model
+		const Depth depth((Depth)R(2, 20));
+		const Eigen::Vector3d X(Eigen::Vector3d(X0)*(REAL)depth);
+		Eigen::Vector2d x;
+		if (!ref.Project(X, x)) {
+			VERBOSE("error: PatchWarpModelTest: a point in front of the camera is not visible");
+			return false;
+		}
+		maxProjErr = MAXF(maxProjErr, (x - Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)).norm());
+		maxDepthErr = MAXF(maxDepthErr, ABS(Pinhole<REAL>::Depth(X) - (REAL)depth)/(REAL)depth);
+		// a camera-facing plane within ~60 degrees of the reversed ray
+		Eigen::Vector3f n(-Eigen::Vector3d(X0).cast<float>().normalized() + Eigen::Vector3f((float)R(-.5,.5), (float)R(-.5,.5), (float)R(-.5,.5)));
+		n.normalize();
+		if (n.dot(Eigen::Vector3d(X0).cast<float>()) >= 0)
+			continue;
+		const Normal normal(n);
+		// the target sees the patch in front, away from its center
+		const Eigen::Matrix3d Rref(ToEigen(cameraRef.R)), Rtrg(ToEigen(cameraTrg.R));
+		const Eigen::Matrix3d Rrel(Rtrg*Rref.transpose());
+		const Eigen::Vector3d t(Rtrg*(Eigen::Vector3d(cameraRef.C)-Eigen::Vector3d(cameraTrg.C)));
+		if ((Rrel*X+t).z() < 1)
+			continue;
+		DepthData::ViewData view;
+		view.camera = cameraTrg;
+		view.Init(cameraRef);
+		const Matrix3x3f H(view.ComputeHomography(X0, depth, normal));
+		const Eigen::Matrix3d M(PlanePatchWarp(ref, trg, Rrel, t, Eigen::Vector3d(n.cast<double>()), X, Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)));
+		for (int dy=-DepthEstimator::nSizeHalfWindow; dy<=DepthEstimator::nSizeHalfWindow; dy+=DepthEstimator::nSizeStep) {
+			for (int dx=-DepthEstimator::nSizeHalfWindow; dx<=DepthEstimator::nSizeHalfWindow; dx+=DepthEstimator::nSizeStep) {
+				const Point2f xc(H*Point3f(float(x0.x+dx), float(x0.y+dy), 1.f));
+				const Eigen::Vector2d xm((M*Eigen::Vector3d(dx, dy, 1)).hnormalized());
+				maxWarpErr = MAXF(maxWarpErr, (Eigen::Vector2d(xc.x, xc.y) - xm).norm());
+			}
+		}
+		++numWarps;
+		// the generic depth geometry agrees with the pinhole closed forms
+		const Pinhole<float> camf(MakeCameraModel<Pinhole<float>>(cameraRef));
+		const PinholeGenericf camg{camf};
+		const Eigen::Vector2f gradient((float)R(-0.05, 0.05)*depth, (float)R(-0.05, 0.05)*depth);
+		const Eigen::Vector2i p(x0.x, x0.y);
+		maxNormalErr = MAXF(maxNormalErr, (double)(NormalFromDepthGradient(camg, p, depth, gradient) - NormalFromDepthGradient(camf, p, depth, gradient)).norm());
+		// a diagonal neighbor is intersected along the ray in both, matching the exact intersection
+		const Eigen::Vector2i np(x0.x+1, x0.y+1);
+		const float dPinhole(InterpolatePlaneDepth(camf, p, np, depth, n, 0.01f, 1000.f));
+		const float dGeneric(InterpolatePlaneDepth(camg, p, np, depth, n, 0.01f, 1000.f));
+		const Eigen::Vector3d nX(Eigen::Vector3d(ref.Ray(np.cast<double>()))*(REAL)depth), r(ref.Ray(p.cast<double>()));
+		const double dExact(n.cast<double>().dot(nX)/n.cast<double>().dot(r));
+		maxPlaneErr = MAXF(maxPlaneErr, MAXF(ABS(dPinhole - dExact), ABS(dGeneric - dExact))/dExact);
+		// the generic plane depth on a spherical camera
+		const Spherical<float> sph(Spherical<float>::FromSize(4000, 2000));
+		const Eigen::Vector2i ps(ROUND2INT(R(10, 3990)), ROUND2INT(R(200, 1800))), nps(ps.x()+1, ps.y()-1);
+		const Eigen::Vector3f rs(sph.Ray(ps.cast<float>())), nrs(sph.Ray(nps.cast<float>()));
+		Eigen::Vector3f ns(-nrs + Eigen::Vector3f((float)R(-.5,.5), (float)R(-.5,.5), (float)R(-.5,.5)));
+		ns.normalize();
+		if (ns.dot(rs) < -0.2f && ns.dot(nrs) < -0.2f) {
+			const float dSph(InterpolatePlaneDepth(sph, ps, nps, depth, ns, 0.01f, 1000.f));
+			const double dSphExact(depth*ns.cast<double>().dot(Eigen::Vector3d(Spherical<double>::FromSize(4000, 2000).Ray(nps.cast<double>())))/
+				ns.cast<double>().dot(Eigen::Vector3d(Spherical<double>::FromSize(4000, 2000).Ray(ps.cast<double>()))));
+			maxPlaneSphErr = MAXF(maxPlaneSphErr, ABS(dSph - dSphExact)/dSphExact);
+		}
+	}
+	VERBOSE("PatchWarpModelTest: %u warps: max warp difference %g px, projection %g px, depth %g, normal %g, plane depth %g (spherical %g)",
+		numWarps, maxWarpErr, maxProjErr, maxDepthErr, maxNormalErr, maxPlaneErr, maxPlaneSphErr);
+	if (numWarps < 500 || maxWarpErr > 2e-3 || maxProjErr > 1e-9 || maxDepthErr > 1e-15 || maxNormalErr > 1e-5 || maxPlaneErr > 1e-5 || maxPlaneSphErr > 1e-5) {
+		VERBOSE("error: PatchWarpModelTest: the camera-model warp/geometry disagrees with the pinhole estimator");
+		return false;
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // every image resize the pipeline pairs with a camera must move the pixels exactly as that camera's K
 // is scaled: a point must project, through the camera of the resized view, onto the spot the resize
 // actually moved it to. A 1957x1091 view (odd sides, so rounded sizes and scale factors disagree)
@@ -2221,7 +2334,7 @@ bool ImageResizeCameraTest()
 	// a neighbor view scaled to match the reference resolution (DepthMapsData::InitViews)
 	constexpr float neighborScale(0.73f);
 	Image32F neighborGray;
-	if (!DepthData::ViewData::ScaleImage(gray, neighborGray, neighborScale))
+	if (!DepthData::ViewData::ScaleImage(gray, neighborGray, neighborScale, false))
 		return false;
 	const Camera neighborCamera(image.GetCamera(platforms, neighborGray.size()));
 	if (image.GetCamera(platforms, Image8U::computeResize(image.GetSize(), neighborScale)).K != neighborCamera.K) {
@@ -2245,6 +2358,221 @@ bool ImageResizeCameraTest()
 			!Check("ScaleDepthData neighbor", scaled.images[1].camera, scaled.images[1].image, scale*neighborScale))
 			return false;
 	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// every size of an equirectangular image keeps an even width (the seam-wrapped red/black propagation)
+// and the 2:1 ratio of its angular K (fx=W/2pi, fy=H/pi): the load scale of --max-resolution 3001,
+// the level 5 of a 5472 px panorama (5472>>5 = 171 px), the neighbor scale and the pyramid
+bool SphericalImageSizeTest()
+{
+	const auto IsSphericalSize = [](const cv::Size& size) {
+		return size.width % 2 == 0 && size.width == 2*size.height;
+	};
+	const auto HasAngularK = [](const Camera& camera, const cv::Size& size) {
+		return ISEQUAL(camera.K(0,0)*REAL(TWO_PI), REAL(size.width)) && ISEQUAL(camera.K(1,1)*REAL(PI), REAL(size.height)) &&
+			ISEQUAL(camera.K(0,2), REAL(size.width-1)/2) && ISEQUAL(camera.K(1,2), REAL(size.height-1)/2);
+	};
+	constexpr int width(5472), height(2736);
+	PlatformArr platforms;
+	{
+		const Spherical<REAL> sphere(Spherical<REAL>::FromSize(width, height));
+		KMatrix K(KMatrix::IDENTITY);
+		K(0,0) = sphere.fx; K(1,1) = sphere.fy; K(0,2) = sphere.cx; K(1,2) = sphere.cy;
+		Platform& platform = platforms.emplace_back();
+		platform.cameras.emplace_back(ScaleK(K, REAL(1)/Camera::GetNormalizationScale(width, height)), RMatrix::IDENTITY, CMatrix::ZERO).model = CameraModelType::SPHERICAL;
+		Platform::Pose& pose = platform.poses.emplace_back();
+		pose.R = RMatrix::IDENTITY;
+		pose.C = CMatrix::ZERO;
+	}
+	Image image;
+	image.platformID = image.cameraID = image.poseID = image.ID = 0;
+	image.width = width; image.height = height; image.scale = 1;
+	image.UpdateCamera(platforms);
+	if (!image.IsSpherical() || !HasAngularK(image.camera, image.GetSize())) {
+		VERBOSE("ERROR: SphericalImageSizeTest: the full resolution camera is not the angular one!");
+		return false;
+	}
+	// the load scale of --max-resolution and of the resolution levels (computeMaxResolution)
+	unsigned level(5);
+	for (unsigned maxResolution: {3001u, Image8U::computeMaxResolution(width, height, level, 0), 999u, 2u}) {
+		Image scaled(image);
+		scaled.ResizeImage(maxResolution);
+		scaled.UpdateCamera(platforms);
+		if (!IsSphericalSize(scaled.GetSize()) || scaled.GetSize() != image.GetSize(maxResolution) ||
+			(maxResolution > 2 && std::abs((int)scaled.width-(int)maxResolution) > 1) || !HasAngularK(scaled.camera, scaled.GetSize())) {
+			VERBOSE("ERROR: SphericalImageSizeTest: max resolution %u gives %ux%u", maxResolution, scaled.width, scaled.height);
+			return false;
+		}
+	}
+	// a pinhole image keeps the size of TImage::computeResize
+	const cv::Size pinholeSize(Image::ComputeResize(cv::Size(width, height), 3001.0/width, false));
+	if (pinholeSize != Image8U::computeResize(cv::Size(width, height), 3001.0/width) || pinholeSize.width != 3001) {
+		VERBOSE("ERROR: SphericalImageSizeTest: the pinhole size changed");
+		return false;
+	}
+	// the neighbor scale (DepthMapsData::InitViews) and the pyramid (DepthMapsData::ScaleDepthData) of a
+	// 684x342 view, whose quarter would be 171 px wide
+	image.ResizeImage(684);
+	image.UpdateCamera(platforms);
+	const cv::Size neighborSize(Image::ComputeResize(image.GetSize(), 0.73, true));
+	if (!IsSphericalSize(neighborSize) || !HasAngularK(image.GetCamera(platforms, neighborSize), neighborSize)) {
+		VERBOSE("ERROR: SphericalImageSizeTest: the neighbor scale gives %dx%d", neighborSize.width, neighborSize.height);
+		return false;
+	}
+	DepthData depthData;
+	{
+		DepthData::ViewData& ref = depthData.images.emplace_back();
+		ref.pImageData = &image; ref.scale = 1; ref.camera = image.camera; ref.image.create(image.GetSize());
+		ref.image.memset(0);
+	}
+	for (float scale: {0.5f, 0.25f, 0.125f}) {
+		const DepthData scaled(DepthMapsData::ScaleDepthData(depthData, scale));
+		const DepthData::ViewData& ref = scaled.images[0];
+		if (!IsSphericalSize(ref.image.size()) || !HasAngularK(ref.camera, ref.image.size())) {
+			VERBOSE("ERROR: SphericalImageSizeTest: pyramid scale %g gives %dx%d", scale, ref.image.width(), ref.image.height());
+			return false;
+		}
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// GapInterpolation fills a gap between two normals with unit normals lying within the angle between
+// them, for a pinhole view and for a spherical one, also across the column seam of its rows
+bool GapInterpolationNormalsTest()
+{
+	OPTDENSE::init();
+	OPTDENSE::update();
+	constexpr int width(64), height(32), row(10);
+	const Normal normalFirst(normalized(Normal(-0.6f, +0.05f, -0.8f)));
+	const Normal normalLast(normalized(Normal(-0.6f, -0.05f, -0.8f)));
+	const float cosBetween(normalFirst.dot(normalLast));
+	// the valid pixels uFirst and uLast of the row, with the gap between them (across the seam if uLast < uFirst)
+	const auto Run = [&](CameraModelType model, int uFirst, int uLast) {
+		Scene scene;
+		Image& image = scene.images.emplace_back();
+		image.model = model;
+		DepthMapsData depthMaps(scene);
+		DepthData depthData;
+		depthData.images.emplace_back().pImageData = &image;
+		depthData.depthMap.create(height, width);
+		depthData.depthMap.memset(0);
+		depthData.normalMap.create(height, width);
+		depthData.normalMap.memset(0);
+		depthData.depthMap(row, uFirst) = depthData.depthMap(row, uLast) = 5;
+		depthData.normalMap(row, uFirst) = normalFirst;
+		depthData.normalMap(row, uLast) = normalLast;
+		if (!depthMaps.GapInterpolation(depthData))
+			return false;
+		for (int u=(uFirst+1)%width; u!=uLast; u=(u+1)%width) {
+			const Normal& normal = depthData.normalMap(row, u);
+			if (depthData.depthMap(row, u) <= 0 || !ISEQUAL(norm(normal), 1.f, 1e-4f) ||
+				normal.dot(normalFirst) < cosBetween-1e-4f || normal.dot(normalLast) < cosBetween-1e-4f) {
+				VERBOSE("ERROR: GapInterpolationNormalsTest: pixel %d of the %s view got depth %g, normal (%g, %g, %g)",
+					u, model == CameraModelType::SPHERICAL ? "spherical" : "pinhole", depthData.depthMap(row, u), normal.x, normal.y, normal.z);
+				return false;
+			}
+		}
+		return true;
+	};
+	if (!Run(CameraModelType::PINHOLE, 20, 24) || !Run(CameraModelType::SPHERICAL, 20, 24) ||
+		!Run(CameraModelType::SPHERICAL, width-2, 2))
+		return false;
+	VERBOSE("GapInterpolationNormalsTest passed");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// ModelCamera::WrapPixel wraps the columns of a spherical camera, never its rows, and wraps nothing
+// of a pinhole one
+bool WrapPixelTest()
+{
+	const Camera camera;
+	const cv::Size size(64, 32);
+	const ModelCamera spherical(camera, CameraModelType::SPHERICAL), pinhole(camera, CameraModelType::PINHOLE);
+	const auto Check = [&](const ModelCamera& model, ImageRef ir, bool bInside, int col) {
+		const bool bResult(model.WrapPixel(ir, size));
+		if (bResult != bInside || (bInside && ir.x != col)) {
+			VERBOSE("ERROR: WrapPixelTest: the %s camera maps the pixel to column %d, inside %d, expected column %d, inside %d",
+				model.bSpherical ? "spherical" : "pinhole", ir.x, (int)bResult, col, (int)bInside);
+			return false;
+		}
+		return true;
+	};
+	if (!Check(spherical, ImageRef(-1, 5), true, size.width-1) || !Check(spherical, ImageRef(size.width, 5), true, 0) ||
+		!Check(spherical, ImageRef(-size.width, 5), true, 0) || !Check(spherical, ImageRef(7, 5), true, 7) ||
+		!Check(spherical, ImageRef(3, -1), false, 0) || !Check(spherical, ImageRef(3, size.height), false, 0) ||
+		!Check(pinhole, ImageRef(-1, 5), false, 0) || !Check(pinhole, ImageRef(size.width, 5), false, 0) ||
+		!Check(pinhole, ImageRef(7, 5), true, 7) || !Check(pinhole, ImageRef(3, -1), false, 0))
+		return false;
+	VERBOSE("WrapPixelTest passed");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// the field of view of a full equirectangular image is 2pi x pi, a pinhole image keeps the planar angle
+bool ComputeFOVTest()
+{
+	constexpr int width(64), height(32);
+	Image image;
+	image.width = width;
+	image.height = height;
+	image.camera.K = KMatrix::IDENTITY;
+	image.model = CameraModelType::SPHERICAL;
+	image.camera.K(0,0) = width/(2*PI);
+	image.camera.K(1,1) = height/PI;
+	if (!ISEQUAL(image.ComputeFOV(0), 2*PI, 1e-9) || !ISEQUAL(image.ComputeFOV(1), PI, 1e-9)) {
+		VERBOSE("ERROR: ComputeFOVTest: the spherical image spans %g x %g, expected %g x %g!",
+			image.ComputeFOV(0), image.ComputeFOV(1), 2*PI, PI);
+		return false;
+	}
+	image.model = CameraModelType::PINHOLE;
+	image.camera.K(0,0) = image.camera.K(1,1) = width;
+	if (!ISEQUAL(image.ComputeFOV(0), 2*atan(0.5), 1e-9) || !ISEQUAL(image.ComputeFOV(1), 2*atan(0.25), 1e-9)) {
+		VERBOSE("ERROR: ComputeFOVTest: the pinhole image spans %g x %g!", image.ComputeFOV(0), image.ComputeFOV(1));
+		return false;
+	}
+	VERBOSE("ComputeFOVTest passed");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// the standalone confidence estimators read their window across the column seam of a spherical
+// depth-map: of constant range with radial camera-facing normals it is the same in every column
+bool ConfidenceSeamTest()
+{
+	constexpr int width(64), height(32), winHalfSize(2);
+	const Spherical<REAL> sphere(Spherical<REAL>::FromSize(width, height));
+	Scene scene;
+	Image& image = scene.images.emplace_back();
+	image.model = CameraModelType::SPHERICAL;
+	DepthData depthData;
+	depthData.images.emplace_back().pImageData = &image;
+	depthData.dMin = 1;
+	depthData.dMax = 10;
+	depthData.depthMap.create(height, width);
+	depthData.depthMap.setTo(Depth(5));
+	depthData.normalMap.create(height, width);
+	for (int r=0; r<height; ++r)
+		for (int c=0; c<width; ++c) {
+			const Eigen::Vector3d ray(sphere.Ray(Eigen::Vector2d(c, r)));
+			depthData.normalMap(r, c) = Normal(-float(ray.x()), -float(ray.y()), -float(ray.z()));
+		}
+	ConfidenceMap confDepth, confNormal;
+	EstimateConfidenceFromDepth(depthData, confDepth, winHalfSize, 20);
+	EstimateConfidenceFromNormal(depthData, confNormal, winHalfSize);
+	for (int r=0; r<height; ++r)
+		for (int c: {0, width-1}) {
+			if (!ISEQUAL(confDepth(r, c), confDepth(r, width/2), 1e-4f) ||
+				!ISEQUAL(confNormal(r, c), confNormal(r, width/2), 1e-4f)) {
+				VERBOSE("ERROR: ConfidenceSeamTest: row %d column %d: confidence from depth %g, from normal %g; at the middle %g, %g",
+					r, c, confDepth(r, c), confNormal(r, c), confDepth(r, width/2), confNormal(r, width/2));
+				return false;
+			}
+		}
+	VERBOSE("ConfidenceSeamTest passed");
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -3468,6 +3796,79 @@ bool SelectNeighborViewsScaleTest()
 }
 /*----------------------------------------------------------------*/
 
+// four panoramas with the same heading, the reference at the origin, sharing 7 points that lie just
+// past the seam of the reference (behind it, on the first half pixel of column -1/2), at 7 elevations:
+// the covered area of every neighbor is those 7 cells of the last column of the 16x16 grid; then the
+// sub-scene of three of the images keeps one observation per view it keeps
+bool SelectNeighborViewsSphericalTest()
+{
+	constexpr int width(512), height(256);
+	constexpr unsigned numPoints(7);
+	static const Point3 camCenters[4] = {Point3(0,0,0), Point3(1,0,0), Point3(-1,0,0), Point3(0,0,1)};
+	Scene scene(1);
+	const Spherical<REAL> sphere(Spherical<REAL>::FromSize(width, height));
+	{
+		KMatrix K(KMatrix::IDENTITY);
+		K(0,0) = sphere.fx; K(1,1) = sphere.fy; K(0,2) = sphere.cx; K(1,2) = sphere.cy;
+		Platform& platform = scene.platforms.emplace_back();
+		platform.cameras.emplace_back(ScaleK(K, REAL(1)/Camera::GetNormalizationScale(width, height)), RMatrix::IDENTITY, CMatrix::ZERO).model = CameraModelType::SPHERICAL;
+		for (unsigned i=0; i<4; ++i) {
+			Platform::Pose& pose = platform.poses.emplace_back();
+			pose.R = RMatrix::IDENTITY;
+			pose.C = camCenters[i];
+			Image& image = scene.images.emplace_back();
+			image.platformID = image.cameraID = 0;
+			image.poseID = image.ID = i;
+			image.width = width; image.height = height; image.scale = 1;
+			image.UpdateCamera(scene.platforms);
+		}
+	}
+	scene.nCalibratedImages = 4;
+	for (unsigned i=0; i<numPoints; ++i) {
+		// a quarter pixel past the seam, the rows 28 pixels apart
+		const Eigen::Vector3d ray(sphere.Ray(Eigen::Vector2d(-0.25, sphere.cy + 28.0*(int(i)-int(numPoints/2)))));
+		scene.pointcloud.points.emplace_back(Point3f(float(ray.x()*10), float(ray.y()*10), float(ray.z()*10)));
+		PointCloud::ViewArr& views = scene.pointcloud.pointViews.emplace_back();
+		PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations.emplace_back();
+		for (PointCloud::View v=0; v<4; ++v) {
+			views.push_back(v);
+			observations.push_back(Cast<float>(scene.images[v].GetModelCamera().TransformPointW2I(Cast<REAL>(scene.pointcloud.points.back()))));
+		}
+	}
+	if (scene.images[0].GetModelCamera().TransformPointW2I(Cast<REAL>(scene.pointcloud.points[0])).x >= 0) {
+		VERBOSE("ERROR: SelectNeighborViewsSphericalTest: the points are not past the seam of the reference!");
+		return false;
+	}
+	IndexArr points;
+	if (!scene.SelectNeighborViews(0, points) || scene.images[0].neighbors.size() != 3) {
+		VERBOSE("ERROR: SelectNeighborViewsSphericalTest found %u neighbors, expected 3!", (unsigned)scene.images[0].neighbors.size());
+		return false;
+	}
+	for (const ViewScore& neighbor: scene.images[0].neighbors) {
+		if (neighbor.points != numPoints || ABS(neighbor.area-float(numPoints)/256) > 1e-6f) {
+			VERBOSE("ERROR: SelectNeighborViewsSphericalTest neighbor %u shares %u points over the area %g, expected %u over %g!",
+				neighbor.ID, neighbor.points, neighbor.area, numPoints, float(numPoints)/256);
+			return false;
+		}
+	}
+	const Scene subScene(scene.SubScene(IIndexArr{0, 1, 3}));
+	const PointCloud& subCloud = subScene.pointcloud;
+	if (subCloud.points.size() != numPoints || subCloud.pointObservations.size() != numPoints) {
+		VERBOSE("ERROR: SelectNeighborViewsSphericalTest: the sub-scene holds %u points with %u observation lists, expected %u of each!",
+			(unsigned)subCloud.points.size(), (unsigned)subCloud.pointObservations.size(), numPoints);
+		return false;
+	}
+	FOREACH(i, subCloud.points) {
+		if (subCloud.pointViews[i].size() != 3 || subCloud.pointObservations[i].size() != 3 ||
+			subCloud.pointObservations[i][2] != scene.pointcloud.pointObservations[i][3]) {
+			VERBOSE("ERROR: SelectNeighborViewsSphericalTest: point %u of the sub-scene lost the observations of its views!", (unsigned)i);
+			return false;
+		}
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 bool DMapCacheKeepsRequestedImageTest()
 {
 	// two depth-maps already in memory, each larger than the whole budget: UseImage() accounts
@@ -3490,6 +3891,247 @@ bool DMapCacheKeepsRequestedImageTest()
 			!arrDepthData[0].IsEmpty(), !arrDepthData[1].IsEmpty());
 		return false;
 	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+namespace {
+typedef Interface::Platform::Camera ICamera;
+
+// an Interface with one platform per given camera model, two posed images per platform, and
+// points seen by every image pair of a platform; the camera K at full resolution
+Interface MakeTestInterface(const std::vector<std::pair<uint8_t,size_t>>& models, bool bObservations)
+{
+	Interface obj;
+	for (size_t p = 0; p < models.size(); ++p) {
+		Interface::Platform& platform = obj.platforms.emplace_back();
+		platform.name = String::FormatString("platform%u", (unsigned)p);
+		ICamera& camera = platform.cameras.emplace_back();
+		camera.name = String::FormatString("camera%u", (unsigned)p);
+		camera.model = models[p].first;
+		camera.R = Interface::Mat33d::eye();
+		camera.C = Interface::Pos3d(0, 0, 0);
+		camera.K = Interface::Mat33d::eye();
+		if (camera.model == ICamera::SPHERICAL) {
+			camera.width = 1024; camera.height = 512;
+			const Spherical<REAL> sphere(Spherical<REAL>::FromSize(1024, 512));
+			camera.K(0,0) = sphere.fx; camera.K(1,1) = sphere.fy; camera.K(0,2) = sphere.cx; camera.K(1,2) = sphere.cy;
+		} else {
+			camera.width = 640; camera.height = 480;
+			camera.K(0,0) = 520.25; camera.K(1,1) = 519.5; camera.K(0,2) = 321.125; camera.K(1,2) = 238.375;
+			const double params[8] = {-0.21, 0.05, 0.0007, -0.0005, 0.01, 0.002, -0.001, 0.0005};
+			camera.params.assign(params, params + models[p].second);
+		}
+		for (int i = 0; i < 2; ++i) {
+			Interface::Platform::Pose& pose = platform.poses.emplace_back();
+			pose.R = Interface::Mat33d::eye();
+			pose.C = Interface::Pos3d(0.3*i, 0.1*p, 0);
+			Interface::Image& image = obj.images.emplace_back();
+			image.name = String::FormatString("image%u_%d.png", (unsigned)p, i);
+			image.platformID = (uint32_t)p;
+			image.cameraID = 0;
+			image.poseID = (uint32_t)i;
+			image.ID = (uint32_t)obj.images.size()-1;
+		}
+	}
+	for (int v = 0; v < 20; ++v) {
+		Interface::Vertex& vertex = obj.vertices.emplace_back();
+		vertex.X = Interface::Pos3f(0.1f*v - 1.f, 0.05f*v - 0.5f, 4.f + 0.01f*v);
+		const uint32_t p((uint32_t)(v % models.size()));
+		for (uint32_t i = 0; i < 2; ++i) {
+			Interface::Vertex::View& view = vertex.views.emplace_back();
+			view.imageID = 2*p + i;
+			view.confidence = 0;
+			view.x = Interface::Pos2f(40.f + 23.5f*v + 3.f*i, 30.f + 17.25f*v - 2.f*i);
+		}
+	}
+	if (bObservations)
+		obj.flags |= Interface::HAS_OBSERVATIONS;
+	return obj;
+}
+
+bool EqualMat(const Interface::Mat33d& a, const Interface::Mat33d& b, double eps)
+{
+	for (int i = 0; i < 9; ++i)
+		if (std::abs(a.val[i] - b.val[i]) > eps * std::max(1.0, std::abs(a.val[i])))
+			return false;
+	return true;
+}
+
+// the content of two Interfaces, apart from the version-dependent members
+bool EqualInterfaces(const Interface& a, const Interface& b, bool bObservations, double epsK, double epsX, const char* what)
+{
+	if (a.platforms.size() != b.platforms.size() || a.images.size() != b.images.size() || a.vertices.size() != b.vertices.size()) {
+		VERBOSE("ERROR: InterfaceV8Test %s: sizes differ", what);
+		return false;
+	}
+	FOREACH(p, a.platforms) {
+		const ICamera& ca = a.platforms[p].cameras[0];
+		const ICamera& cb = b.platforms[p].cameras[0];
+		if (ca.model != cb.model || ca.params != cb.params || ca.width != cb.width || ca.height != cb.height || !EqualMat(ca.K, cb.K, epsK)) {
+			VERBOSE("ERROR: InterfaceV8Test %s: camera %u differs (model %u/%u, %u/%u params)", what, (unsigned)p,
+				(unsigned)ca.model, (unsigned)cb.model, (unsigned)ca.params.size(), (unsigned)cb.params.size());
+			return false;
+		}
+	}
+	FOREACH(i, a.vertices) {
+		const Interface::Vertex& va = a.vertices[i];
+		const Interface::Vertex& vb = b.vertices[i];
+		if (va.views.size() != vb.views.size()) {
+			VERBOSE("ERROR: InterfaceV8Test %s: vertex %u views differ", what, (unsigned)i);
+			return false;
+		}
+		FOREACH(v, va.views) {
+			if (va.views[v].imageID != vb.views[v].imageID ||
+				(bObservations && (std::abs(va.views[v].x.x - vb.views[v].x.x) > epsX || std::abs(va.views[v].x.y - vb.views[v].x.y) > epsX))) {
+				VERBOSE("ERROR: InterfaceV8Test %s: vertex %u view %u differs", what, (unsigned)i, (unsigned)v);
+				return false;
+			}
+		}
+	}
+	if (a.HasObservations() != bObservations || b.HasObservations() != bObservations) {
+		VERBOSE("ERROR: InterfaceV8Test %s: observation flags %d/%d, expected %d", what, a.HasObservations(), b.HasObservations(), bObservations);
+		return false;
+	}
+	return true;
+}
+} // namespace
+
+bool InterfaceV8Test()
+{
+	TD_TIMER_START();
+	const ScopedTempDir tmpDir(_T("InterfaceV8Test"));
+	if (!tmpDir.IsValid())
+		return false;
+	const std::vector<std::pair<uint8_t,size_t>> allModels{{ICamera::PINHOLE, 0}, {ICamera::BROWN, 5}, {ICamera::BROWN, 8}, {ICamera::SPHERICAL, 0}};
+	const std::vector<std::pair<uint8_t,size_t>> pinholeModels{{ICamera::PINHOLE, 0}, {ICamera::PINHOLE, 0}};
+
+	// Interface round trip of every model, with and without observations
+	for (int bObservations = 0; bObservations < 2; ++bObservations) {
+		const Interface obj(MakeTestInterface(allModels, bObservations != 0));
+		const String fileName(tmpDir(String::FormatString("models%d.mvs", bObservations)));
+		Interface loaded;
+		uint32_t version(0);
+		if (!ARCHIVE::SerializeSave(obj, fileName) || !ARCHIVE::SerializeLoad(loaded, fileName, &version) || version != MVSI_PROJECT_VER) {
+			VERBOSE("ERROR: InterfaceV8Test: v8 save/load failed");
+			return false;
+		}
+		if (!EqualInterfaces(obj, loaded, bObservations != 0, 0, 0, "v8 round trip"))
+			return false;
+	}
+
+	// a v7 stream loads, and the v8 size identity
+	{
+		const Interface obj(MakeTestInterface(pinholeModels, false));
+		const String fileName7(tmpDir("pinhole7.mvs")), fileName8(tmpDir("pinhole8.mvs"));
+		Interface loaded7;
+		uint32_t version(0);
+		if (!ARCHIVE::SerializeSave(obj, fileName7, 7) || !ARCHIVE::SerializeLoad(loaded7, fileName7, &version) || version != 7 ||
+			!ARCHIVE::SerializeSave(obj, fileName8)) {
+			VERBOSE("ERROR: InterfaceV8Test: v7 save/load failed");
+			return false;
+		}
+		if (!EqualInterfaces(obj, loaded7, false, 0, 0, "v7 load"))
+			return false;
+		const uintmax_t size7(std::filesystem::file_size(fileName7.c_str())), size8(std::filesystem::file_size(fileName8.c_str()));
+		if (size8 != size7 + pinholeModels.size() + 1) {
+			VERBOSE("ERROR: InterfaceV8Test: v8 size %u, expected v7 size %u + %u cameras + 1", (unsigned)size8, (unsigned)size7, (unsigned)pinholeModels.size());
+			return false;
+		}
+	}
+
+	// MVS::Scene load/save round trip: the models, the lens of the image files kept exactly, the
+	// observations in the undistorted frame and back; the K' rule identical between SfM and MVS
+	for (int bObservations = 0; bObservations < 2; ++bObservations) {
+		const Interface obj(MakeTestInterface(allModels, bObservations != 0));
+		const String fileName(tmpDir(String::FormatString("scene%d.mvs", bObservations)));
+		const String fileNameOut(tmpDir(String::FormatString("scene%d_out.mvs", bObservations)));
+		if (!ARCHIVE::SerializeSave(obj, fileName))
+			return false;
+		Scene scene;
+		if (scene.Load(fileName) != Scene::SCENE_INTERFACE || !scene.SaveInterface(fileNameOut)) {
+			VERBOSE("ERROR: InterfaceV8Test: scene load/save failed");
+			return false;
+		}
+		Interface saved;
+		if (!ARCHIVE::SerializeLoad(saved, fileNameOut))
+			return false;
+		// the pinhole and spherical K go through the normalization, the observations through
+		// the undistortion and back
+		if (!EqualInterfaces(obj, saved, bObservations != 0, 1e-12, 1e-3f, "scene round trip"))
+			return false;
+		FOREACH(p, obj.platforms) {
+			const ICamera& camera = obj.platforms[p].cameras[0];
+			const Platform::Camera& mvsCamera = scene.platforms[(uint32_t)p].cameras[0];
+			if ((uint8_t)mvsCamera.model != camera.model) {
+				VERBOSE("ERROR: InterfaceV8Test: MVS camera %u model %u, expected %u", (unsigned)p, (unsigned)mvsCamera.model, (unsigned)camera.model);
+				return false;
+			}
+			if (camera.model != ICamera::BROWN)
+				continue;
+			// the camera every MVS consumer sees is K' of the one rule, the same the SfM undistortion uses
+			const cv::Size size((int)camera.width, (int)camera.height);
+			const KMatrix K(camera.K);
+			const BrownDistortion<REAL>& distortion = mvsCamera.lens.distortion;
+			const KMatrix Ku(UndistortedK(K, distortion, size));
+			UndistortMaps sfmMaps;
+			sfmMaps.Init(K, distortion, size, UNDISTORT_ALPHA);
+			if (!EqualMat(Ku, UndistortedK(K, distortion, size), 0) || !EqualMat(Ku, sfmMaps.K, 0) ||
+				!EqualMat(Ku, GetCameraUndistortMaps(K, distortion, size)->K, 0)) {
+				VERBOSE("ERROR: InterfaceV8Test: the undistorted camera K' differs between its users");
+				return false;
+			}
+			const Image& imageData = scene.images[(uint32_t)(2*p)];
+			if (!EqualMat(Ku, imageData.camera.K, 1e-12) || !imageData.IsUndistortedOnRead()) {
+				VERBOSE("ERROR: InterfaceV8Test: image camera of Brown camera %u is not K'", (unsigned)p);
+				return false;
+			}
+		}
+		#ifdef _USE_BOOST
+		// the native archive keeps the models and the observations: interface -> native -> interface
+		const String fileNameNative(tmpDir(String::FormatString("scene%d_native.mvs", bObservations)));
+		const String fileNameBack(tmpDir(String::FormatString("scene%d_back.mvs", bObservations)));
+		Scene sceneNative;
+		Interface back;
+		if (!scene.Save(fileNameNative, ARCHIVE_BINARY) || sceneNative.Load(fileNameNative) != Scene::SCENE_MVS ||
+			!sceneNative.SaveInterface(fileNameBack) || !ARCHIVE::SerializeLoad(back, fileNameBack)) {
+			VERBOSE("ERROR: InterfaceV8Test: native scene save/load failed");
+			return false;
+		}
+		if (!EqualInterfaces(obj, back, bObservations != 0, 1e-12, 1e-3f, "native round trip"))
+			return false;
+		#endif
+	}
+
+	// a standalone spherical .dmap imports with its camera model, its depths the ranges
+	{
+		constexpr int width(8), height(4);
+		constexpr Depth range(10);
+		const Spherical<REAL> sphere(Spherical<REAL>::FromSize(width, height));
+		KMatrix K(KMatrix::IDENTITY);
+		K(0,0) = sphere.fx; K(1,1) = sphere.fy; K(0,2) = sphere.cx; K(1,2) = sphere.cy;
+		const String fileName(tmpDir("sphere.dmap"));
+		const DepthMap depthMap(cv::Size(width, height), range);
+		if (!ExportDepthDataRaw(fileName, "sphere.png", IIndexArr{0}, depthMap.size(), K, RMatrix::IDENTITY, CMatrix::ZERO,
+				range, range, depthMap, NormalMap(), ConfidenceMap(), ViewsMap(), false, true)) {
+			VERBOSE("ERROR: InterfaceV8Test: spherical depth-map export failed");
+			return false;
+		}
+		Scene scene;
+		if (!scene.LoadDMAP(fileName) || scene.images.size() != 1 || !scene.images[0].IsSpherical() ||
+			scene.pointcloud.GetSize() != (size_t)depthMap.area()) {
+			VERBOSE("ERROR: InterfaceV8Test: spherical depth-map import lost the camera model or points");
+			return false;
+		}
+		for (const PointCloud::Point& X : scene.pointcloud.points) {
+			if (std::abs(norm(X) - range) > 1e-4f*range) {
+				VERBOSE("ERROR: InterfaceV8Test: spherical depth-map point at distance %g, expected %g", norm(X), range);
+				return false;
+			}
+		}
+	}
+	VERBOSE("InterfaceV8Test passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

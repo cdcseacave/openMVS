@@ -1026,7 +1026,7 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) co
 		typedef TRasterMesh<RasterMesh> Base;
 		const Mesh& mesh;
 		Image8U3& image;
-		FIndex idxFaceTex;
+		FIndex idxFaceTex = NO_ID;
 		TexCoord xt;
 		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, Image8U3& _image)
 			: Base(_mesh.vertices, _camera, _depthMap), mesh(_mesh), image(_image) {}
@@ -1069,7 +1069,7 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, NormalMap& normalMa
 		typedef TRasterMesh<RasterMesh> Base;
 		const Mesh& mesh;
 		NormalMap& normalMap;
-		const Face::Type* idxVerts;
+		const Face::Type* idxVerts = NULL;
 		const Matrix3x3f R;
 		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, NormalMap& _normalMap)
 			: Base(_mesh.vertices, _camera, _depthMap), mesh(_mesh), normalMap(_normalMap), R(camera.R) {}
@@ -1139,7 +1139,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 		typedef TRasterMesh<RasterMesh> Base;
 		const Mesh& mesh;
 		Image8U3& image;
-		FIndex idxFaceTex;
+		FIndex idxFaceTex = NO_ID;
 		TexCoord xt;
 		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, Image8U3& _image)
 			: Base(_mesh.vertices, _camera, _depthMap), mesh(_mesh), image(_image) {}

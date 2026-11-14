@@ -34,6 +34,7 @@ def estimate_gsd_from_depth_maps(dmap_paths):
     for dmap_path in dmap_paths:
         # Read depth map
         dmap = loadDMAP(dmap_path)
+        assert not dmap["spherical"], "spherical depth-maps are not supported: " + dmap_path
 
         # Compute the mean depth value
         mean_depth = np.mean(dmap["depth_map"])
@@ -67,6 +68,7 @@ def create_mesh_from_depth_maps(dmap_paths, voxel_length=0.01, truncation_mult=4
     for dmap_path in tqdm(dmap_paths, desc="Integrating depth-maps"):
         # Read depth map
         dmap = loadDMAP(dmap_path)
+        assert not dmap["spherical"], "spherical depth-maps are not supported: " + dmap_path
 
         # Create RGBD image (using dummy color image)
         depth = o3d.geometry.Image(dmap["depth_map"])

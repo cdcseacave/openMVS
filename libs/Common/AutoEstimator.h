@@ -80,7 +80,7 @@ static inline void makelogcombi_k(size_t nmax, std::vector<Type>& l)
 struct ErrorIndex {
 	double first;
 	size_t second;
-	inline ErrorIndex() {}
+	NO_INIT_MEMBERS inline ErrorIndex() {}
 	inline ErrorIndex(double _first, size_t _second) : first(_first), second(_second) {}
 	inline bool operator==(const ErrorIndex& r) const { return (first == r.first); }
 	inline bool operator <(const ErrorIndex& r) const { return (first < r.first); }
