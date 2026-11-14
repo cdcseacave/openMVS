@@ -87,7 +87,7 @@ parallel.
   to the front of `observations`.
 - It fails, returning 0 and leaving the track with no inliers, when fewer than `minInliers` (2)
   observations are inliers or when the widest angle between two inlier rays
-  (`Track::ComputeMinAngleBetweenRays`, the angle the pair of cameras furthest apart sees the point
+  (`Track::ComputeMaxAngleBetweenRays`, the angle the pair of cameras furthest apart sees the point
   under) is below `minAngleThreshold`. The position written stays, and a later adjustment does not
   take the track in because it has no inliers.
 

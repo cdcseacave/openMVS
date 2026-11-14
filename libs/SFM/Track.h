@@ -99,8 +99,8 @@ struct SFM_API Track
 	// Get the number of observations whose image has a pose (a position needs MIN_VIEWS of them)
 	unsigned GetNumPosedObservations(const ImageArr&) const;
 
-	// Compute the minimum angle between any two inlier observations
-	float ComputeMinAngleBetweenRays(const ImageArr&) const;
+	// Compute the widest angle between the rays of any two inlier observations (the angle the pair of cameras furthest apart sees the point under)
+	float ComputeMaxAngleBetweenRays(const ImageArr&) const;
 
 	// Iterators for inlier observations only
 	typedef Observation value_type;

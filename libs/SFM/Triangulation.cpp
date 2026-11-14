@@ -99,7 +99,7 @@ unsigned SFM::TriangulateDLT(
 	// triangulation angle, leaves the track with none: IsInlier() is what the adjustments that
 	// follow read, and the caller counts the track as failed (the position written stays)
 	if (track.numInliers < minInliers ||
-		R2D(track.ComputeMinAngleBetweenRays(images)) < minAngleThreshold) {
+		R2D(track.ComputeMaxAngleBetweenRays(images)) < minAngleThreshold) {
 		track.numInliers = 0;
 		return 0;
 	}
@@ -215,7 +215,7 @@ unsigned SFM::TriangulateSkewLLS(
 	// triangulation angle, leaves the track with none: IsInlier() is what the adjustments that
 	// follow read, and the caller counts the track as failed (the position written stays)
 	if (track.numInliers < minInliers ||
-		R2D(track.ComputeMinAngleBetweenRays(images)) < minAngleThreshold) {
+		R2D(track.ComputeMaxAngleBetweenRays(images)) < minAngleThreshold) {
 		track.numInliers = 0;
 		return 0;
 	}

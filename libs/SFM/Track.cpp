@@ -26,9 +26,9 @@ unsigned Track::GetNumPosedObservations(const ImageArr& images) const
 	return numPosed;
 }
 
-float Track::ComputeMinAngleBetweenRays(const ImageArr& images) const
+float Track::ComputeMaxAngleBetweenRays(const ImageArr& images) const
 {
-	// Minimum triangulation angle
+	// the widest angle is the smallest cosine
 	float minCosAngle = 1;
 	for (uint32_t i=0; i+1<numInliers; ++i) {
 		const Observation& obs1 = observations[i];
@@ -665,9 +665,9 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 		if (!track.IsInlier())
 			continue;
 
-		// Check minimum angle between any two inlier observations
-		const float minAngle = track.ComputeMinAngleBetweenRays(scene.images);
-		if (minAngle < minAngleRadians) {
+		// the widest angle between two inlier rays must reach the minimum triangulation angle
+		const float maxAngle = track.ComputeMaxAngleBetweenRays(scene.images);
+		if (maxAngle < minAngleRadians) {
 			track.numInliers = 0; // mark track as outlier
 			continue;
 		}

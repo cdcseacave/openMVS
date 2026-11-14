@@ -14172,7 +14172,7 @@ bool TriangulationFailureTest()
 	{
 		Track track = Fresh();
 		const unsigned returned = TriangulateSkewLLS(track, scene.images, 4.f, looseAngle);
-		const double angle = R2D(track.ComputeMinAngleBetweenRays(scene.images));
+		const double angle = R2D(track.ComputeMaxAngleBetweenRays(scene.images));
 		if (returned != 2 || !track.IsInlier() || angle < 0.25 || angle > 1.0) {
 			VERBOSE("TriangulationFailureTest FAILED: premise not met: at %g degrees the track triangulates with %u inliers (%s) and %.3f degrees of parallax, expected 2 and a parallax between 0.25 and 1",
 				looseAngle, returned, track.IsInlier() ? "an inlier" : "not an inlier", angle);
