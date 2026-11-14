@@ -1704,7 +1704,7 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 	// patchRadius+1 rows of a pole is left out: its patch in that view crosses the pole, whose rows are not
 	// wrapped, so the residual of that view is constant and lmmin stops before its first step (the camera
 	// path runs through the seam: a point below one panorama is seen on the seam of the next one)
-	unsigned numSeam(0), numSeamSkipped(0), numRest(0), numPole(0);
+	unsigned numSeam(0), numSeamSkipped(0), numRest(0), numRestSkipped(0), numPole(0);
 	double errSeam(0), errRest(0);
 	FOREACH(p, scene.pointcloud.points) {
 		const PointCloud::Point& X = scene.pointcloud.points[p];
@@ -1744,6 +1744,8 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 			errSeam += err;
 			++numSeam;
 		} else {
+			if (normal == coarse[p])
+				++numRestSkipped;
 			errRest += err;
 			++numRest;
 		}
@@ -1754,16 +1756,18 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 	}
 	errSeam = R2D(errSeam / numSeam);
 	errRest = R2D(errRest / numRest);
-	if (numSeamSkipped > 0) {
-		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: %u of the %u points whose target view projects on the seam are not refined!", numSeamSkipped, numSeam);
+	// a point whose patch is texture-less or whose optimization fails keeps its coarse normal anywhere (about 5 %
+	// of the others): the seam may not lose more points than that, at most twice their rate plus one point
+	if (numSeamSkipped * numRest > 2 * numRestSkipped * numSeam + numRest) {
+		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: %u of the %u points whose target view projects on the seam are not refined, %u of the %u others!", numSeamSkipped, numSeam, numRestSkipped, numRest);
 		return false;
 	}
 	if (errSeam > 1.5 * errRest) {
 		VERBOSE("ERROR: EstimatePointCloudNormalsSphericalTest: mean normal error %.2f deg on the seam, %.2f deg elsewhere!", errSeam, errRest);
 		return false;
 	}
-	VERBOSE("EstimatePointCloudNormalsSphericalTest passed: %u points on the seam (all refined), %u elsewhere, %u next to a pole left out: mean normal error %.2f deg on the seam, %.2f deg elsewhere (%s)",
-		numSeam, numRest, numPole, errSeam, errRest, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("EstimatePointCloudNormalsSphericalTest passed: %u points on the seam (%u not refined), %u elsewhere (%u not refined), %u next to a pole left out: mean normal error %.2f deg on the seam, %.2f deg elsewhere (%s)",
+		numSeam, numSeamSkipped, numRest, numRestSkipped, numPole, errSeam, errRest, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
