@@ -1141,6 +1141,7 @@ PairAgreement GlobalAlignment::MeasureSeamPairs(
 const char* GlobalAlignment::RefusedReading(const SeamScore& score, bool scaleObservable, const PairAgreement& pairs,
 	const GlobalAlignmentConfig& config)
 {
+	ASSERT(config.minSeamWeight > 0); // a reading that enters has a supporting camera on each side (ReadingWeight)
 	return score.Weight() < config.minSeamWeight ? "cameras" : !scaleObservable ? "no scale" : !pairs.Holds() ? "pairs" : NULL;
 }
 
