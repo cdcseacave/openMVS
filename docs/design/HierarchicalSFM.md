@@ -188,13 +188,19 @@ The merge with its entry test against the same merge without it (every reading e
 | CAB_0120 | without the entry test | 20 / 38 | .1253 | 58 / 346 | 2/6, 1/5, 1/5 | – |
 | CAB_0120 | entry test | 20 / 38 | .1253 | 58 / 346 | 2/6, 1/5, 1/5 | 0 / 1 / 0 |
 | 5ada248e | without | 517 / 3 | .9537 | 520 / 540 | 4/10, 7/7 | – |
-| 5ada248e | entry test | 517 / 3 | .9437 | 520 / 540 | 4/10, 7/7 | 4 / 0 / 1 |
-| alameda | without | 1731 / 0 | .9970 | 1734 / 1734 | 15/15 | – |
-| alameda | entry test | 1731 / 0 | .9967 | 1734 / 1734 | 14/15, 2/2 | 3 / 1 / 4 |
+| 5ada248e | entry test | 517 / 3 | .9406 | 520 / 540 | 4/10, 7/7 | 4 / 0 / 1 |
 | 6DCA1E8E | without | 467 / 8 | .7466 | 599 / 872 | 11/15, 1/5, 1/5 | – |
-| 6DCA1E8E | entry test | 468 / 7 | .7339 | 602 / 872 | 11/15, 1/5, 1/5 | 5 / 3 / 4 |
+| 6DCA1E8E | entry test | 468 / 7 | .7534 | 602 / 872 | 11/15, 1/5, 1/5 | 3 / 3 / 5 |
+| alameda | without | 1731 / 0 | .9970 | 1734 / 1734 | 15/15 | – |
+| alameda | entry test | 1731 / 0 | .9970 | 1734 / 1734 | 14/15, 2/2 | 4 / 2 / 3 |
+| Palace | without | 493 / 1 | .8213 | 494 / 509 | 5/5 | – |
+| Palace | entry test | 494 / 1 | .8203 | 495 / 509 | 5/5 | 0 / 0 / 0 |
+| 4e5c6f6d | without | 249 / 33 | .9149 | 291 / 302 | 4/4 | – |
+| 4e5c6f6d | entry test | 249 / 33 | .9140 | 288 / 302 | 4/4 | 0 / 0 / 0 |
+| Outdoor_004 | without | 767 / 7 | .7329 | 774 / 824 | 8/8 | – |
+| Outdoor_004 | entry test | 767 / 7 | .7326 | 774 / 824 | 8/8 | 2 / 0 / 0 |
 
-Each row is one 8-thread reload of the capture's saved matched scene with the join guard at 48 px. The entry test places the same blocks in every round on three captures; on alameda one right block pair whose verified pairs are split (666 for, 697 against) is refused, and its block is placed in the next round against the merged model. The score differences are within each capture's swing between reloads (.014 on 6DCA1E8E, .02 on 5ada248e); 6DCA1E8E differs by one image whose score is 0.05. The refusals count every refusal of every round, a reading refused again in a later round each time: of the 26, 19 fall on block pairs whose two blocks the merge places right, and every such block is placed, at worst one round later; the other 7 fall on two blocks whose start was wrong (CAB_0120, 1), on a block no run places (6DCA1E8E, 2) and on a block the reference does not cover (6DCA1E8E, 4).
+Each row is one 8-thread reload of the capture's saved matched scene with the join guard at 48 px. The entry test places the same blocks in every round on six captures; on alameda one right block pair whose verified pairs are split (666 for, 697 against) is refused, and its block is placed in the next round against the merged model. The score differences are within each capture's swing between reloads (.014 on 6DCA1E8E, .02 on 5ada248e, where the same blocks are placed after the same refusals); 6DCA1E8E differs by one image whose score is 0.05, Palace by one image the merge without the test leaves unregistered. The refusals count every refusal of every round, a reading refused again in a later round each time: of the 28, 21 fall on block pairs whose two blocks the merge places right, and every such block is placed, at worst one round later; the other 7 fall on two blocks whose start was wrong (CAB_0120, 1), on a block no run places (6DCA1E8E, 1) and on a block the reference does not cover (6DCA1E8E, 5).
 
 The join guard at 48 px against the guard off, 12 and 24 px (eight captures, one 8-thread reload each): it refuses 2-7% of the attempted joins, the final tracks are as long as with the guard off, and the pose score does not separate the four values.
 
@@ -254,7 +260,7 @@ Tried as an internal-soundness check inside `GlobalAlignment` and abandoned: on 
 - **Wrong images inside a block** are placed with their block: the merge assumes every image of a block is right in it.
 - **Two planted scenes it places wrong**, neither of which any capture of the 18 produces: a 180° chord carried by every camera of a block with no verified pairs to refuse it (only a free-space test sees it); a block pair no cycle tests whose two readings weigh alike a period of a repeated structure apart (only a search for a second mode sees the rival).
 - **A component the averaging places only in part** — blocks in another rotation frame — loses the rest: their readings cannot be judged and go off, and their images go to the resection. Not seen on the 18 captures.
-- **A right block pair whose verified pairs are evenly split** is refused by the entry test and placed one round later (alameda: 666 for, 697 against; the extra round costs about two minutes).
+- **A right block pair whose verified pairs are evenly split** is refused by the entry test and placed one round later (alameda: 666 for, 697 against; the run's wall time stays within a minute of the merge without the test).
 - **The closure is a join priority that skips the join guard**: dropping it is a possible simplification, not measured (it would not be byte-identical).
 - **The standalone community's seam bar** (`IsStrongSeam`, over the whole scene's track graph) counts something else than the merge's bar; a seam bar of the partition that counts what the merge counts is not built.
 - **The 3D-3D alternative** (`--cluster-alignment 0`) is weaker: alameda places block 5 wrong (F1 0.9876 against 0.9972), 1c65aab4 places 2 of 4 blocks (the resection recovers the images, at 2.6 times the run's CPU), b68e320e one block fewer.
