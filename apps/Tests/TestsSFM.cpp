@@ -20874,7 +20874,7 @@ bool MergeInRoundsTest()
 	const unsigned numRounds = sceneBlocks.MergeInRounds(resectionCfg, config);
 	// one half posed, the other released whole
 	unsigned numPosedHalves = 0, numReleasedHalves = 0;
-	for (const IIndexArr half : {IIndexArr{blocks[0]}.Join(blocks[1]), IIndexArr{blocks[2]}.Join(blocks[3])}) {
+	for (const IIndexArr& half : {IIndexArr{blocks[0]}.Join(blocks[1]), IIndexArr{blocks[2]}.Join(blocks[3])}) {
 		bool posed = true, released = true;
 		for (const IIndex g : half) {
 			posed = posed && scene.images[g].HasPose();
