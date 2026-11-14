@@ -21659,57 +21659,78 @@ bool OneCameraDirectionTest()
 static const SeamCandidate* ReadingOf(const std::vector<SeamCandidate>& readings, SeamCandidate::Source source);
 
 // A reading observes a scale only when two of its rig's cameras each hold minCameraInliers of its inliers: one camera
-// holding them and a second holding a few observe none. Three blocks of a ring; the cross pairs of (0, 2) kept only on
-// two cameras of block 2, the second of them reduced to one cross pair of a few matches. The direction of block 2's
-// rig on block 0's points observes no scale and does not enter the block graph; with both cameras holding their full
-// pairs it observes one and enters.
+// holding them and a second holding fewer observe none. Three blocks of a ring; the cross pairs of (0, 2) kept only on
+// two cameras of block 2. In the thin arm the keypoints of the second camera are displaced far past the reprojection bar
+// but for a few, so it holds fewer than minCameraInliers inliers of the direction of block 2's rig on block 0's points
+// while its correspondences still hold on block 2's points seen by block 0's cameras: two cameras support each side of
+// the seam (the other direction's reading enters with the weight the cameras bar asks) and the rig reading is refused
+// for its scale alone. With the second camera's keypoints in place it observes one and enters.
 bool RigScaleTwoCamerasTest()
 {
 	TD_TIMER_START();
 	const RingSceneConfig cfg{3, 16};
 	const GlobalAlignmentConfig alignCfg;
-	const auto ReadPair02 = [&](unsigned numSecondMatches) {
+	const auto ReadPair02 = [&](bool displaceSecond) {
 		Scene scene;
 		std::vector<IIndexArr> blocks;
 		std::vector<Pose3D> gtPoses;
 		GenerateRingScene(cfg, scene, blocks, gtPoses);
 		const std::set<IIndex> a(blocks[0].begin(), blocks[0].end()), b(blocks[2].begin(), blocks[2].end());
 		const IIndex first = blocks[2].back(), second = blocks[2][blocks[2].size() - 2];
-		bool secondKept = false;
 		RFOREACH(i, scene.pairs) {
-			ImagePair& pair = scene.pairs[i];
+			const ImagePair& pair = scene.pairs[i];
 			const IIndex imgA = a.count(pair.ID1) ? pair.ID1 : pair.ID2, imgB = imgA == pair.ID1 ? pair.ID2 : pair.ID1;
-			if (!a.count(imgA) || !b.count(imgB))
-				continue;
-			if (imgB == first || (imgB == second && numSecondMatches == 0))
-				continue;
-			if (imgB == second && !secondKept && pair.matches.size() > numSecondMatches) {
-				pair.matches.resize(numSecondMatches);
-				secondKept = true;
-				continue;
-			}
-			scene.pairs.RemoveAtMove(i);
+			if (a.count(imgA) && b.count(imgB) && imgB != first && imgB != second)
+				scene.pairs.RemoveAtMove(i);
 		}
 		ComputePairsWeights(scene);
 		std::vector<Scene> subScenes;
 		std::vector<IIndexArr> localToGlobals;
 		std::vector<SEACAVE::Transform> applied;
 		BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+		// its matched keypoints displaced far past the bar but those of minCameraInliers / 2 matches (the blocks' points are
+		// triangulated by now, which would have dropped them): block 2's rig keeps the few inliers that fix its scale to its
+		// first camera, the second one holding fewer than minCameraInliers of them, while its correspondences still hold on
+		// block 2's points seen by block 0's cameras
+		if (displaceSecond) {
+			std::map<uint32_t, unsigned> numMatches;
+			for (const ImagePair& pair : scene.pairs)
+				if ((pair.ID1 == second && a.count(pair.ID2)) || (pair.ID2 == second && a.count(pair.ID1)))
+					for (const DMatch& match : pair.matches)
+						++numMatches[pair.ID1 == second ? match.queryIdx : match.trainIdx];
+			std::mt19937 rng(cfg.seed + 2);
+			std::uniform_real_distribution<float> shift(-150.f, 150.f);
+			unsigned budget = alignCfg.minCameraInliers / 2;
+			FOREACH(l, localToGlobals[2])
+				if (localToGlobals[2][l] == second)
+					for (const auto& [feature, count] : numMatches) {
+						if (count <= budget) {
+							budget -= count;
+							continue;
+						}
+						subScenes[2].images[l].keypoints[feature].pt += cv::Point2f(shift(rng), shift(rng));
+					}
+		}
 		GlobalAlignment alignment(scene, alignCfg);
 		alignment.PrepareSeamEvidence(subScenes, localToGlobals);
 		std::vector<SeamCandidate> readings;
 		alignment.EstimateSeamPair(subScenes, 0, 2, readings);
-		return ReadingOf(readings, SeamCandidate::RIG_B_ON_A) != NULL;
+		return readings;
 	};
-	const bool thinEntered = ReadPair02(4), fullEntered = ReadPair02(0);
-	if (thinEntered || !fullEntered) {
-		VERBOSE("RigScaleTwoCamerasTest FAILED: the rig of one camera holding its inliers and one holding 4 matches %s the block "
-			"graph (it observes no scale: not expected), the rig of two cameras holding theirs %s (expected)",
-			thinEntered ? "entered" : "did not enter", fullEntered ? "entered" : "did not enter");
+	const std::vector<SeamCandidate> thin = ReadPair02(true), full = ReadPair02(false);
+	const SeamCandidate* const thinOther = ReadingOf(thin, SeamCandidate::RIG_A_ON_B);
+	if (ReadingOf(thin, SeamCandidate::RIG_B_ON_A) != NULL || thinOther == NULL || thinOther->score.Weight() < alignCfg.minSeamWeight ||
+		ReadingOf(full, SeamCandidate::RIG_B_ON_A) == NULL) {
+		VERBOSE("RigScaleTwoCamerasTest FAILED: the rig of block 2 with one camera holding inliers %s the block graph (it observes no "
+			"scale: not expected), the seam %s weigh %u cameras on its weaker side with the other direction (%u expected), the rig of two "
+			"cameras holding theirs %s (expected)",
+			ReadingOf(thin, SeamCandidate::RIG_B_ON_A) ? "entered" : "did not enter", thinOther ? "did" : "did not",
+			thinOther ? thinOther->score.Weight() : 0u, alignCfg.minSeamWeight,
+			ReadingOf(full, SeamCandidate::RIG_B_ON_A) ? "entered" : "did not enter");
 		return false;
 	}
-	VERBOSE("RigScaleTwoCamerasTest PASSED: one camera holding the inliers and a second holding a few observe no scale and "
-		"do not enter, two cameras holding theirs observe one and enter (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("RigScaleTwoCamerasTest PASSED: a rig whose second camera holds too few inliers observes no scale and does not "
+		"enter although two cameras a side support the seam, two cameras holding theirs observe one and enter (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
