@@ -1144,6 +1144,12 @@ const char* GlobalAlignment::RefusedReading(const SeamScore& score, bool scaleOb
 	return score.Weight() < config.minSeamWeight ? "cameras" : !scaleObservable ? "no scale" : !pairs.Holds() ? "pairs" : NULL;
 }
 
+float GlobalAlignment::ReadingWeight(const SeamScore& score, const PairAgreement& pairs)
+{
+	ASSERT(score.Weight() > 0 && pairs.Holds());
+	return (float)score.Weight() * pairs.Share();
+}
+
 void GlobalAlignment::EstimateSeamPair(
 	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
 	std::vector<SeamCandidate>& candidates) const
@@ -1181,8 +1187,8 @@ void GlobalAlignment::EstimateSeamPair(
 		c.pairs = MeasureSeamPairs(subScenes, a, b, reading.T);
 		// a reading enters the block graph only with minSeamWeight supporting cameras on its weaker
 		// side, an observed scale and its verified pairs not against it; one refused leaves its block
-		// pair to its other readings, or to the next round of the merge. It weighs the share of the
-		// verified pairs' inlier weight it reproduces
+		// pair to its other readings, or to the next round of the merge (ReadingWeight: its weaker side's
+		// cameras, how much evidence it carries, times its pairs' share, how far that evidence agrees)
 		const char* const refused = RefusedReading(c.score, reading.scaleObservable, c.pairs, config);
 		DEBUG_EXTRA("Seam (%u, %u) %s: %u/%u inliers, cameras %u+%u, %u pairs weighing %.0f for / %.0f against%s%s",
 			a, b, SourceWord(reading.source), c.score.inliers, (unsigned)observations.size(), c.score.support[0], c.score.support[1],
@@ -1193,7 +1199,7 @@ void GlobalAlignment::EstimateSeamPair(
 		c.sceneB = b;
 		c.T = reading.T;
 		c.source = reading.source;
-		c.weight = c.pairs.Share();
+		c.weight = ReadingWeight(c.score, c.pairs);
 		candidates.emplace_back(std::move(c));
 	}
 }

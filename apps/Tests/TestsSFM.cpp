@@ -19241,7 +19241,7 @@ struct PlantedSeamGraph
 		c.sceneB = b;
 		c.T = G[b].Invert() * G[a] * planted;
 		c.score.support[0] = c.score.support[1] = cameras;
-		c.weight = (float)cameras;
+		c.weight = GlobalAlignment::ReadingWeight(c.score, c.pairs);
 		candidates.push_back(std::move(c));
 		return candidates.size() - 1;
 	}
@@ -19280,6 +19280,40 @@ struct PlantedSeamGraph
 		return num;
 	}
 };
+
+// Block 3, tied to a triangle by two readings of (2, 3) within the graph bars of each other: the true
+// one carried by 20 supporting cameras on its weaker side and one 3 degrees and 0.1 of the footprint
+// off carried by 2. A reading weighs its cameras times its pairs' share, so the averaging puts block 3
+// within a quarter of the offset from the truth; weighed by the share alone the two readings weigh
+// alike and block 3 lands halfway between them.
+bool ReadingWeightCamerasTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned TRIANGLE_CAMERAS = 5, STRONG = 20, WEAK = 2;
+	constexpr REAL OFF_DEG = 3, OFF_SHIFT = 0.1;
+	PlantedSeamGraph graph(4, 3301);
+	graph.Add(0, 1, TRIANGLE_CAMERAS);
+	graph.Add(1, 2, TRIANGLE_CAMERAS);
+	graph.Add(0, 2, TRIANGLE_CAMERAS);
+	const size_t strong = graph.Add(2, 3, STRONG);
+	const size_t weak = graph.Add(2, 3, WEAK, OFF_DEG, OFF_SHIFT);
+	graph.Select();
+	if (!graph.IsOn(strong) || !graph.IsOn(weak) || graph.ModelSize(0) != 4) {
+		VERBOSE("ReadingWeightCamerasTest FAILED: premise, the strong reading is %s, the weak one %s, the model holds %u blocks",
+			graph.IsOn(strong) ? "on" : "off", graph.IsOn(weak) ? "on" : "off", graph.ModelSize(0));
+		return false;
+	}
+	const SEACAVE::Transform estimated(graph.poses[3].T.Invert() * graph.poses[2].T), truth(graph.G[3].Invert() * graph.G[2]);
+	const REAL angle = R2D(ACOS(ComputeAngle(Matrix3x3(estimated.R), Matrix3x3(truth.R))));
+	if (angle > OFF_DEG / 4) {
+		VERBOSE("ReadingWeightCamerasTest FAILED: block 3 sits %.2f deg from the truth (under %.2f expected: the reading of %u cameras "
+			"outweighs the one of %u, %.0f deg off)", angle, OFF_DEG / 4, STRONG, WEAK, OFF_DEG);
+		return false;
+	}
+	VERBOSE("ReadingWeightCamerasTest PASSED: block 3 %.2f deg from the truth, the %u-camera reading outweighing the %u-camera one "
+		"%.0f deg off (%s)", angle, STRONG, WEAK, OFF_DEG, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 
 // A chord that is wrong by 30 degrees and heavier than every true seam, across two cycles of true
 // seams: a short one of two seams and a long one of five. The two seams the chord would put off the
@@ -23380,9 +23414,9 @@ bool HierarchicalCameraAlignmentTest()
 				(unsigned)c.source, c.score.support[0], c.score.support[1]);
 			return false;
 		}
-		if (c.weight != c.pairs.Share()) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the reading of source %u weighs %.3f, its pairs' share is %.3f",
-				(unsigned)c.source, c.weight, c.pairs.Share());
+		if (c.weight != (float)c.score.Weight() * c.pairs.Share()) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the reading of source %u weighs %.3f, its weaker side's %u cameras times "
+				"its pairs' share %.3f", (unsigned)c.source, c.weight, c.score.Weight(), c.pairs.Share());
 			return false;
 		}
 	}

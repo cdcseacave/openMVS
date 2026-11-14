@@ -588,6 +588,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::SeamGraphConsensusTest())
 				return false;
+			if (!SFM::ReadingWeightCamerasTest())
+				return false;
 			if (!SFM::HeavyWrongChordTest())
 				return false;
 			if (!SFM::TwoDirectionBridgeTest())

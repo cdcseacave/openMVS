@@ -697,6 +697,7 @@ bool SeamGraphConsensusTest();
 // inverse-error reweighting does not follow a lighter copy that a least-squares solve would sit
 // between; a reading without scale is judged on its rotation; a reading cut by one round's averaging
 // is judged again in the next; a reading of weight 0 gives the scale and translation solves nothing
+bool ReadingWeightCamerasTest();
 bool HeavyWrongChordTest();
 bool TwoDirectionBridgeTest();
 bool SymmetricBridgePairsTest();

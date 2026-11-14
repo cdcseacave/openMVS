@@ -44,8 +44,9 @@ class SFM_API Scene;
  * scored on every correspondence of the pair -- the cameras that support it on its weaker side --
  * and read against the verified image pairs across it, together. It enters the block graph only
  * with minSeamWeight supporting cameras on its weaker side, an observed scale and its verified pairs
- * not against it, weighing the share of their inlier weight it reproduces; a reading refused leaves
- * its block pair to its other readings, or to the next round of the merge.
+ * not against it, weighing its weaker side's supporting cameras times the share of the pairs'
+ * inlier weight it reproduces; a reading refused leaves its block pair to its other readings, or to
+ * the next round of the merge.
  *
  * Selection (SelectSeamGraph): every component of the kept readings (all of them at first) is
  * averaged (AverageBlockPoses: rotations by GlobalRotationEstimator, log-scales and translations
@@ -121,7 +122,8 @@ struct SFM_API SeamCandidate
 	Transform T;                           // p_B = T * p_A
 	Source source{POINTS};
 	SeamScore score;                       // T scored on every correspondence of the pair, side 0 = A, side 1 = B
-	// what the averaging weighs T by: the share of the verified pairs' inlier weight it reproduces
+	// what the averaging weighs T by: the supporting cameras of its weaker side (how much evidence it
+	// carries) times the share of the verified pairs' inlier weight it reproduces (how far it agrees)
 	float weight{0.f};
 	PairAgreement pairs;                   // the verified pairs across the seam, read against T
 	// what the averaged poses of its component make of T: rotation (degrees), scale ratio >= 1 and
@@ -186,8 +188,8 @@ struct SFM_API GlobalAlignmentConfig
 	// minPairInliers weighted inliers in total they say nothing; a pair agrees when the relative
 	// rotation and the baseline direction the reading gives its two images are within
 	// maxPairRotationResidual of what it measured. A reading whose pairs weigh more against it than for
-	// it does not enter the block graph, and the share of the inlier weight that agrees is a reading's
-	// weight. maxPairRotationResidual 0 disables it.
+	// it does not enter the block graph, and the share of the inlier weight that agrees is a factor of
+	// a reading's weight. maxPairRotationResidual 0 disables it.
 	unsigned minPairInliers{30};
 	float maxPairRotationResidual{5.f};     // degrees
 	// The graph bars: a reading stays in the block graph while the averaged poses of its component
@@ -290,6 +292,12 @@ public:
 	 */
 	static const char* RefusedReading(const SeamScore& score, bool scaleObservable, const PairAgreement& pairs,
 		const GlobalAlignmentConfig& config);
+	/**
+	 * @brief The weight of a reading that entered the block graph: the supporting cameras of its weaker
+	 * side (how much evidence it carries) times the share of its verified pairs' inlier weight it
+	 * reproduces (how far that evidence agrees)
+	 */
+	static float ReadingWeight(const SeamScore& score, const PairAgreement& pairs);
 
 	/**
 	 * @brief The one decision over the block graph: which readings stay, and where the blocks of
