@@ -8282,8 +8282,11 @@ bool SphericalBottomBandTest()
 		VERBOSE("SphericalBottomBandTest FAILED: %u keypoints in the discarded bottom band", (unsigned)onBelow);
 		return false;
 	}
-	if (onAbove < offAbove * 9 / 10) {
-		VERBOSE("SphericalBottomBandTest FAILED: the rows above the band lost keypoints (%u of %u)", (unsigned)onAbove, (unsigned)offAbove);
+	// the band masks keypoints one by one after the faces' detection, which it does not touch: the rows above the band keep
+	// every keypoint (the angular NMS across the face seams could only differ where a masked keypoint lies within
+	// cubemapDedupAngleDeg, 0.25 degrees or a row or two of the image, of one above)
+	if (onAbove != offAbove) {
+		VERBOSE("SphericalBottomBandTest FAILED: the rows above the band hold %u keypoints, %u without the band", (unsigned)onAbove, (unsigned)offAbove);
 		return false;
 	}
 	if ((int)onAbove != descOn.rows) {
