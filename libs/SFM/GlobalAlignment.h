@@ -42,15 +42,16 @@ class SFM_API Scene;
  * from one camera gives no reading. The two directions stay two readings. ALIGN_POINTS
  * fits one 3D-3D similarity to the matches lying on an inlier track in both blocks. A reading is
  * scored on every correspondence of the pair -- the cameras that support it on its weaker side --
- * and read against the verified image pairs across it, together.
+ * and read against the verified image pairs across it, together. It enters the block graph only
+ * with minSeamWeight supporting cameras on its weaker side, an observed scale and its verified pairs
+ * not against it, weighing the share of their inlier weight it reproduces; a reading refused leaves
+ * its block pair to its other readings, or to the next round of the merge.
  *
  * Selection (SelectSeamGraph): every component of the kept readings (all of them at first) is
  * averaged (AverageBlockPoses: rotations by GlobalRotationEstimator, log-scales and translations
  * reweighted by the inverse of each reading's error); every reading is judged against the poses of
- * its component and kept within the graph bars; repeated, re-entry allowed, until the kept set settles. A bridge (a block
- * pair no cycle of the other block pairs tests) keeps a reading only with minSeamWeight cameras on
- * its weaker side and its verified pairs not against it. Each component of the readings left is a
- * model, its block poses the averaging's.
+ * its component and kept within the graph bars; repeated, re-entry allowed, until the kept set
+ * settles. Each component of the readings left is a model, its block poses the averaging's.
  *
  * Merge (MergeScenes): transform every block of the model merged (the one holding the most images, or
  * the one holding the anchor block: SceneBlocks::MergeInRounds anchors block 0, the merged model, from
@@ -119,11 +120,8 @@ struct SFM_API SeamCandidate
 	uint32_t sceneA{NO_ID}, sceneB{NO_ID}; // sceneA < sceneB
 	Transform T;                           // p_B = T * p_A
 	Source source{POINTS};
-	bool scaleObservable{true};
 	SeamScore score;                       // T scored on every correspondence of the pair, side 0 = A, side 1 = B
-	// what the averaging weighs T by: for a reading of the camera alignment the supporting cameras of
-	// its weaker side (at least one) times the share of the verified pairs' inlier weight it
-	// reproduces; for the reading of the 3D-3D alignment the supporting cameras of its weaker side
+	// what the averaging weighs T by: the share of the verified pairs' inlier weight it reproduces
 	float weight{0.f};
 	PairAgreement pairs;                   // the verified pairs across the seam, read against T
 	// what the averaged poses of its component make of T: rotation (degrees), scale ratio >= 1 and
@@ -178,23 +176,22 @@ struct SFM_API GlobalAlignmentConfig
 	unsigned minCommonTracks{25};      // weighted inliers of a cross pair the closure joins by construction; correspondences and inliers a direction needs
 	bool mergeTrackInliersOnly{true};  // seed union-find with only inlier observations (true) or all observations (false)
 	float maxReprojError{4.f};         // pixels; the camera alignment's reprojection threshold, the resection's own
-	// A camera supports a reading with this many inlier correspondences, and a reading standing alone
-	// in the block graph (a bridge) needs this many supporting cameras on its weaker side: a frame
-	// misplaced inside its own block that carries a whole seam on its side weighs one, and stands only
-	// where a cycle corroborates it
+	// A camera supports a reading with this many inlier correspondences, and a reading enters the
+	// block graph only with minSeamWeight supporting cameras on its weaker side: a frame misplaced
+	// inside its own block that carries a whole seam on its side is one camera
 	unsigned minCameraInliers{10};
 	unsigned minSeamWeight{2};
 	float minRigSpreadRatio{0.03f};    // rig spread over median depth for an observable scale
 	// The verified image pairs across a seam are read against each of its readings, together: under
 	// minPairInliers weighted inliers in total they say nothing; a pair agrees when the relative
 	// rotation and the baseline direction the reading gives its two images are within
-	// maxPairRotationResidual of what it measured. The share of the inlier weight that agrees weighs a
-	// reading of the camera alignment, and a bridge keeps a reading only where that weight does not hold
-	// against it. maxPairRotationResidual 0 disables it.
+	// maxPairRotationResidual of what it measured. A reading whose pairs weigh more against it than for
+	// it does not enter the block graph, and the share of the inlier weight that agrees is a reading's
+	// weight. maxPairRotationResidual 0 disables it.
 	unsigned minPairInliers{30};
 	float maxPairRotationResidual{5.f};     // degrees
 	// The graph bars: a reading stays in the block graph while the averaged poses of its component
-	// sit within these of it (a reading that observes no scale on its rotation alone). The right
+	// sit within these of it. The right
 	// readings of the two measured block sets reach 2.8 deg / 1.093 / 0.131 and 3.3 deg / 1.156 /
 	// 0.205 at their 99th percentile, and the copies of a repeated structure sit past 0.27 of the
 	// footprint
@@ -287,13 +284,20 @@ public:
 		std::vector<SeamCorrespondence>& correspondences) const;
 
 	/**
+	 * @brief The entry test of a reading into the block graph: minSeamWeight supporting cameras on its
+	 * weaker side, an observed scale, and its verified pairs not against it
+	 * @return NULL when the reading enters, otherwise what refuses it ("cameras", "no scale" or "pairs")
+	 */
+	static const char* RefusedReading(const SeamScore& score, bool scaleObservable, const PairAgreement& pairs,
+		const GlobalAlignmentConfig& config);
+
+	/**
 	 * @brief The one decision over the block graph: which readings stay, and where the blocks of
 	 * every model sit
 	 *
 	 * Every component of the kept readings is averaged; every reading is judged against the poses
 	 * of its component and kept within the graph bars; repeated, re-entry allowed, until the kept
-	 * set settles (kRobustRounds at most). A bridge then keeps a reading only with minSeamWeight
-	 * cameras on its weaker side and its verified pairs not against it, until none changes.
+	 * set settles (kRobustRounds at most).
 	 * @param footprints per block, its camera footprint in its own frame; its size is the number of blocks
 	 * @param candidates in/out: every reading, the residuals the last averaging leaves it written in
 	 * @param poses out: per block, state ADMITTED, its pose and model: the component of the readings
@@ -319,8 +323,8 @@ private:
 	 * blocks' camera centroids (BlockFootprint), so they do not depend on where the arbitrary origin
 	 * of a block's frame lies, every reading reweighted by the inverse of its error as the
 	 * estimators' row scale (their normal equations weigh its square, which settles on one reading
-	 * rather than the L1 median). A reading past the rotation bar or of weight 0 takes no part in the
-	 * scales, and one past the scale bar none in the translations
+	 * rather than the L1 median). A reading past the rotation bar takes no part in the scales, and one
+	 * past the scale bar none in the translations
 	 * @param fixedBlock the gauge: the frame every pose comes out in, when the readings reach it
 	 * @param footprints per block, its camera footprint; its size is the number of blocks
 	 * @param poses out: one entry per block; every block the rotation, scale and translation

@@ -85,7 +85,8 @@ and 8d do not run. Otherwise the pool resection runs, then the merge.
 
 **Merge.** `MergeInRounds` places the blocks in one frame by a robust averaging over the block graph (readings from
 generalized-camera pose estimation of one block's cameras against the other's tracks, or from 3D-3D similarity with
-`--cluster-alignment 0`), merges tracks of the placed blocks, adjusts the merged scene, resects the images that belong to
+`--cluster-alignment 0`; a reading enters only with two supporting cameras on its weaker side, an observed scale and
+the verified image pairs across it not against it), merges tracks of the placed blocks, adjusts the merged scene, resects the images that belong to
 no block against the merged model, and repeats until a round places no block and enters no image. Blocks not placed are
 kept whole between rounds and released to the final resection at the end. The merge internals are described in
 `HierarchicalSFM.md`; this document does not repeat them.

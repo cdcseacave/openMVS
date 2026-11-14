@@ -594,15 +594,11 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::SymmetricBridgePairsTest())
 				return false;
-			if (!SFM::OneCameraBridgeTest())
+			if (!SFM::OneCameraReadingTest())
 				return false;
 			if (!SFM::ReweightingStartTest())
 				return false;
-			if (!SFM::RotationOnlyReadingTest())
-				return false;
 			if (!SFM::BarsReEntryTest())
-				return false;
-			if (!SFM::WeightlessScaleReadingTest())
 				return false;
 			if (!SFM::RingPlacementTest())
 				return false;

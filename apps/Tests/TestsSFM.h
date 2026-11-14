@@ -700,11 +700,9 @@ bool SeamGraphConsensusTest();
 bool HeavyWrongChordTest();
 bool TwoDirectionBridgeTest();
 bool SymmetricBridgePairsTest();
-bool OneCameraBridgeTest();
+bool OneCameraReadingTest();
 bool ReweightingStartTest();
-bool RotationOnlyReadingTest();
 bool BarsReEntryTest();
-bool WeightlessScaleReadingTest();
 bool RingPlacementTest();
 // The cross-block track join: seam matches first, every match on the duplicate-image and length guards, the merged
 // model's adjustment keeping the right observations

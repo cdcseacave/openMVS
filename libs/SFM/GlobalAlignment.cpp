@@ -874,22 +874,20 @@ void GlobalAlignment::AverageBlockPoses(
 		if (frame != NO_ID)
 			numFrames = MAXF(numFrames, frame + 1);
 	DEBUG_EXTRA("Seam graph: component of %u blocks solved in %u frames", n, numFrames);
-	// scales: only the readings within the rotation bar that observe a scale and weigh something --
-	// a reading of weight 0 (every verified pair across it against it) gives the solves nothing, and
-	// is still judged against their poses
+	// scales: the readings within the rotation bar (every reading observes a scale and weighs something)
 	const REAL maxLogScaleResidual = std::log((REAL)config.maxGraphScaleResidual);
 	std::vector<uint32_t> scaleEdges; // positions in `edges`
 	std::vector<ScalePair> scalePairs;
 	FOREACH(k, edges) {
 		const SeamCandidate& c = candidates[edges[k]];
-		if (!c.scaleObservable || c.T.scale <= 0 || !(c.weight > 0.f) || rotationResiduals[k] > config.maxGraphRotationResidual)
+		ASSERT(c.T.scale > 0 && c.weight > 0.f);
+		if (rotationResiduals[k] > config.maxGraphRotationResidual)
 			continue;
 		scaleEdges.push_back(k);
 		scalePairs.emplace_back(nodeOfBlock[c.sceneA], nodeOfBlock[c.sceneB], REAL(1) / c.T.scale, c.weight);
 	}
 	// the scale and translation solves see fewer readings than the rotation one, so they can leave a
-	// block the rotations joined without any metric tie to the gauge; such a block gets no pose,
-	// and one whose readings observe no scale at all keeps the unit scale it cannot improve on
+	// block the rotations joined without any metric tie to the gauge; such a block gets no pose
 	std::vector<REAL> scales(n, REAL(1));
 	std::vector<Point3> translations(n, Point3::ZERO);
 	DisjointSet<uint32_t> metricSets(n);
@@ -1140,6 +1138,12 @@ PairAgreement GlobalAlignment::MeasureSeamPairs(
 }
 /*----------------------------------------------------------------*/
 
+const char* GlobalAlignment::RefusedReading(const SeamScore& score, bool scaleObservable, const PairAgreement& pairs,
+	const GlobalAlignmentConfig& config)
+{
+	return score.Weight() < config.minSeamWeight ? "cameras" : !scaleObservable ? "no scale" : !pairs.Holds() ? "pairs" : NULL;
+}
+
 void GlobalAlignment::EstimateSeamPair(
 	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
 	std::vector<SeamCandidate>& candidates) const
@@ -1175,22 +1179,21 @@ void GlobalAlignment::EstimateSeamPair(
 		SeamCandidate c;
 		ScoreSeam(observations, correspondences, reading.T, sideOf, c.score);
 		c.pairs = MeasureSeamPairs(subScenes, a, b, reading.T);
-		// a reading of the camera alignment always enters the block graph, weighing the supporting
-		// cameras of its weaker side (at least one) times the share of the
-		// verified pairs' inlier weight it reproduces; the 3D-3D reading enters only with supporting
-		// cameras on both sides and its verified pairs not against it, weighing its cameras
-		const bool enters = !pointAlignment || (c.score.Weight() > 0 && c.pairs.Holds());
+		// a reading enters the block graph only with minSeamWeight supporting cameras on its weaker
+		// side, an observed scale and its verified pairs not against it; one refused leaves its block
+		// pair to its other readings, or to the next round of the merge. It weighs the share of the
+		// verified pairs' inlier weight it reproduces
+		const char* const refused = RefusedReading(c.score, reading.scaleObservable, c.pairs, config);
 		DEBUG_EXTRA("Seam (%u, %u) %s: %u/%u inliers, cameras %u+%u, %u pairs weighing %.0f for / %.0f against%s%s",
 			a, b, SourceWord(reading.source), c.score.inliers, (unsigned)observations.size(), c.score.support[0], c.score.support[1],
-			c.pairs.numPairs, c.pairs.agree, c.pairs.disagree, reading.scaleObservable ? "" : ", observes no scale", enters ? "" : ", refused");
-		if (!enters)
+			c.pairs.numPairs, c.pairs.agree, c.pairs.disagree, refused ? ", refused by " : "", refused ? refused : "");
+		if (refused)
 			continue;
 		c.sceneA = a;
 		c.sceneB = b;
 		c.T = reading.T;
 		c.source = reading.source;
-		c.scaleObservable = reading.scaleObservable;
-		c.weight = pointAlignment ? (float)c.score.Weight() : (float)MAXF(c.score.Weight(), 1u) * c.pairs.Share();
+		c.weight = c.pairs.Share();
 		candidates.emplace_back(std::move(c));
 	}
 }
@@ -1206,10 +1209,8 @@ void GlobalAlignment::SelectSeamGraph(
 	const uint32_t numBlocks = (uint32_t)footprints.size();
 	// the view-graph filter's pattern over the block graph: every reading is a measurement of its
 	// block pair; every component of the readings kept is averaged; every reading is judged against
-	// the poses of its component (a reading without scale on its rotation alone) and kept within the
-	// bars; repeated until the kept set settles; then a reading on no cycle of the kept readings (the
-	// two directions of one block pair are the smallest cycle) is off unless its own witnesses hold,
-	// until none changes; the poses are the averaging of each component left
+	// the poses of its component and kept within the bars; repeated until the kept set settles; the
+	// poses are the averaging of each component left
 	std::vector<bool> kept(candidates.size(), true);
 	// every component of the kept readings averaged; poses per block, the model index its component's
 	const auto AverageKept = [&]() {
@@ -1231,18 +1232,15 @@ void GlobalAlignment::SelectSeamGraph(
 				blockWeights[candidates[i].sceneB] += candidates[i].weight;
 			}
 			const uint32_t gauge = (uint32_t)(std::max_element(blockWeights.begin(), blockWeights.end()) - blockWeights.begin());
-			// a component whose every reading has the verified pairs across it against it weighs
-			// nothing: the rotation averaging reads no reading of weight 0, so its blocks get no pose
-			if (blockWeights[gauge] > 0.f) {
-				std::vector<BlockPose> componentPoses;
-				AverageBlockPoses(candidates, readings, footprints, gauge, componentPoses);
-				FOREACH(blk, componentPoses)
-					if (componentPoses[blk].model != NO_ID) {
-						poses[blk].T = componentPoses[blk].T;
-						poses[blk].model = model;
-						poses[blk].state = BlockPose::ADMITTED;
-					}
-			}
+			ASSERT(blockWeights[gauge] > 0.f);
+			std::vector<BlockPose> componentPoses;
+			AverageBlockPoses(candidates, readings, footprints, gauge, componentPoses);
+			FOREACH(blk, componentPoses)
+				if (componentPoses[blk].model != NO_ID) {
+					poses[blk].T = componentPoses[blk].T;
+					poses[blk].model = model;
+					poses[blk].state = BlockPose::ADMITTED;
+				}
 			++model;
 		}
 	};
@@ -1261,9 +1259,9 @@ void GlobalAlignment::SelectSeamGraph(
 		transforms[c.sceneB] = pb.T;
 		const SeamResidual r(ComputeSeamResidual(c.sceneA, c.sceneB, c.T, transforms, footprints));
 		c.residualRotation = (float)r.rotation;
-		c.residualScale = c.scaleObservable ? (float)r.scale : 1.f;
-		c.residualTranslation = c.scaleObservable ? (float)r.translation : 0.f;
-		return r.rotation <= barR && (!c.scaleObservable || (r.scale <= barS && r.translation <= barT));
+		c.residualScale = (float)r.scale;
+		c.residualTranslation = (float)r.translation;
+		return r.rotation <= barR && r.scale <= barS && r.translation <= barT;
 	};
 	unsigned numRounds = 0;
 	for (bool settled = false; !settled; ) {
@@ -1279,62 +1277,17 @@ void GlobalAlignment::SelectSeamGraph(
 		settled = next == kept;
 		kept.swap(next);
 	}
-	// a block pair on no cycle of the other block pairs (a bridge: no other path tests it) keeps a
-	// reading only where two witnesses besides the reading's own consistency hold: its weaker side
-	// supported by minSeamWeight cameras and the verified image pairs across it not holding against
-	// it (PairAgreement::Holds); until none changes.
-	// A possible improvement, not implemented: read the bridge's witness over every verified cross pair
-	// of the cut the bridge makes (all block pairs between the two sides it separates, against the
-	// component's averaged placement) instead of over its own block pair against its reading, with the
-	// same Holds test. It would matter where the pairs crossing that cut disagree by weight: a light
-	// false tie between two blocks, its second camera on one side lent by a false pair, kept as the
-	// bridge while the true but heavier ties of one of its blocks to a third block were cut by the
-	// averaging (a known limit of the pooled readings, docs/design/HierarchicalSFM.md)
-	unsigned numBridgesOff = 0;
-	for (bool changed = true; changed; ) {
-		changed = false;
-		std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>> readingsOfPair;
-		FOREACH(i, candidates)
-			if (kept[i])
-				readingsOfPair[std::make_pair(candidates[i].sceneA, candidates[i].sceneB)].push_back((uint32_t)i);
-		for (const auto& [blockPair, readings] : readingsOfPair) {
-			DisjointSet<uint32_t> blockSets(numBlocks);
-			for (const auto& [other, otherReadings] : readingsOfPair)
-				if (other != blockPair)
-					blockSets.Union(other.first, other.second);
-			if (blockSets.Find(blockPair.first) == blockSets.Find(blockPair.second))
-				continue;
-			for (const uint32_t i : readings) {
-				const SeamCandidate& c = candidates[i];
-				if (c.score.Weight() >= config.minSeamWeight && c.pairs.Holds())
-					continue;
-				DEBUG_EXTRA("Seam (%u, %u) %s off: a bridge of %u cameras on its weaker side, its verified pairs %.0f for / %.0f against",
-					blockPair.first, blockPair.second, SourceWord(c.source), c.score.Weight(), c.pairs.agree, c.pairs.disagree);
-				kept[i] = false;
-				++numBridgesOff;
-				changed = true;
-			}
-		}
-	}
 	AverageKept();
 	edgeSeams.clear();
 	std::vector<bool> touched(numBlocks, false), onEdge(numBlocks, false);
-	// per block, its readings and those of them that observe a scale: a block whose readings observe
-	// none has no metric tie to any other, so the averaging places it nowhere
-	std::vector<unsigned> numReadings(numBlocks, 0), numScaled(numBlocks, 0);
 	FOREACH(i, candidates) {
 		const SeamCandidate& c = candidates[i];
 		touched[c.sceneA] = touched[c.sceneB] = true;
-		for (const uint32_t blk : {c.sceneA, c.sceneB}) {
-			++numReadings[blk];
-			numScaled[blk] += c.scaleObservable ? 1 : 0;
-		}
 		if (!kept[i]) {
 			// a reading whose two blocks the averaging did not place in one model was not judged
 			if (c.residualRotation == FLT_MAX) {
-				DEBUG_EXTRA("Seam (%u, %u) %s cut: not judged, block %u has no pose in the model of the other (the reading %s, weight %.2f)",
-					c.sceneA, c.sceneB, SourceWord(c.source), poses[c.sceneA].state != BlockPose::ADMITTED ? c.sceneA : c.sceneB,
-					c.scaleObservable ? "observes a scale" : "observes no scale", c.weight);
+				DEBUG_EXTRA("Seam (%u, %u) %s cut: not judged, block %u has no pose in the model of the other (weight %.2f)",
+					c.sceneA, c.sceneB, SourceWord(c.source), poses[c.sceneA].state != BlockPose::ADMITTED ? c.sceneA : c.sceneB, c.weight);
 			} else {
 				DEBUG_EXTRA("Seam (%u, %u) %s cut: %.2f deg, %.1f%%, %.2f%% from the solution (weight %.2f)", c.sceneA, c.sceneB,
 					SourceWord(c.source), c.residualRotation, (c.residualScale - 1) * 100, c.residualTranslation * 100, c.weight);
@@ -1355,13 +1308,12 @@ void GlobalAlignment::SelectSeamGraph(
 		pose.T = Transform();
 		pose.model = numModels++;
 		pose.state = BlockPose::ADMITTED;
-		pose.reason = !touched[blk] ? String("no seam") :
+		pose.reason = !touched[blk] ? String("no reading entered (no cross pairs, or every reading refused)") :
 			onEdge[blk] ? String("no pose from the averaging") :
-			numScaled[blk] == 0 ? String::FormatString("no scale: none of its %u readings observes one", numReadings[blk]) :
 			String("every reading off");
 	}
-	VERBOSE("Block graph: %u blocks, %u readings, %u kept after %u rounds, %u bridges off, %u models (%s)",
-		numBlocks, (unsigned)candidates.size(), (unsigned)edgeSeams.size(), numRounds, numBridgesOff, numModels, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("Block graph: %u blocks, %u readings, %u kept after %u rounds, %u models (%s)",
+		numBlocks, (unsigned)candidates.size(), (unsigned)edgeSeams.size(), numRounds, numModels, TD_TIMER_GET_FMT().c_str());
 }
 /*----------------------------------------------------------------*/
 
