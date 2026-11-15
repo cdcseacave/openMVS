@@ -141,7 +141,7 @@ The blocks of the merged model are transformed by their poses, a camera shared a
 
 ## 3. Parameters and defaults
 
-Every parameter is named with its default at the step of section 2 that reads it: the partition's in `ClusterConfig` (`SceneCluster.h`; `--max-views-per-cluster`, `--cluster-communities`), the block reconstruction's in `ReconstructionConfig` and `ResectionConfig` (`Scene.h`, `Resection.h`), the merge's in `GlobalAlignmentConfig` (`GlobalAlignment.h`; `--cluster-alignment`).
+Every parameter is named with its default at the step of section 2 that reads it: the partition's in `ClusterConfig` (`SceneCluster.h`; `--max-views-per-cluster`), the block reconstruction's in `ReconstructionConfig` and `ResectionConfig` (`Scene.h`, `Resection.h`), the merge's in `GlobalAlignmentConfig` (`GlobalAlignment.h`; `--cluster-alignment`).
 
 ## 4. Invariants and constraints
 

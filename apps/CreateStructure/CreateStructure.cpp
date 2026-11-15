@@ -97,7 +97,6 @@ bool bSiftGPUDarknessAdaptivity;
 float fSphericalBottomBand;
 bool bSiftGPUCUDA;
 unsigned maxViewsPerCluster;
-bool bClusterCommunities;
 unsigned clusterAlignment;
 bool bUseGlobalSolver;
 bool bExtractColors;
@@ -223,7 +222,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("k2", boost::program_options::value(&OPT::k2)->default_value(defaults.importCfg.k2), "force k2 distortion coefficient for specified images (0 = not used)")
 		("image-indices", boost::program_options::value<std::string>(&OPT::strImageIndices), "image indices to apply forced parameters (e.g., '0 5-10 15', empty = all images)")
 		("max-views-per-cluster", boost::program_options::value(&OPT::maxViewsPerCluster)->default_value(defaults.clusterCfg.maxViewsPerCluster), "maximum images per cluster for hierarchical reconstruction; clusters aim at two thirds of it (0 = disable clustering)")
-		("cluster-communities", boost::program_options::value<bool>(&OPT::bClusterCommunities)->default_value(defaults.clusterCfg.useCommunityDetection), "cluster by community detection + capacity packing instead of pure aggregative clustering")
 		("cluster-alignment", boost::program_options::value(&OPT::clusterAlignment)->default_value(defaults.globalAlignmentCfg.alignment), "how sub-scenes are aligned before merging: 0 = similarity from 3D-3D track correspondences, 1 = generalized-camera PnP of one sub-scene's cameras against the other's tracks")
 		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(defaults.useGlobalSolver), "reconstruct with the global solver (global rotation and position averaging) instead of the hierarchical one")
 		("extract-colors", boost::program_options::value<bool>(&OPT::bExtractColors)->default_value(defaults.extractColors), "extract colors for reconstructed points")
@@ -551,7 +549,6 @@ int main(int argc, LPCTSTR* argv)
 	cfg.estimatePoseUncertainty = !OPT::strExportPoseQuality.empty();
 	cfg.extractColors = OPT::bExtractColors;
 	cfg.clusterCfg.SetMaxViews(OPT::maxViewsPerCluster);
-	cfg.clusterCfg.useCommunityDetection = OPT::bClusterCommunities;
 	cfg.globalAlignmentCfg.alignment = OPT::clusterAlignment;
 
 	// known-poses mode: pose-guided pair selection unless the user chose a mode explicitly

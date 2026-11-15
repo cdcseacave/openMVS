@@ -291,9 +291,7 @@ ScenePartition SceneCluster::Partition()
 
 	BuildConnectivityGraph();
 
-	return config.useCommunityDetection ?
-		PartitionCommunityDetection() :
-		PartitionAggregativeClustering();
+	return PartitionAggregativeClustering();
 }
 
 void SceneCluster::BuildConnectivityGraph()
@@ -340,7 +338,7 @@ ScenePartition SceneCluster::PartitionAggregativeClustering()
 	for (IIndex i = 0; i < nViews; ++i)
 		clusters[i].push_back(i);
 
-	GreedyMergeClusters(clusters, true);
+	GreedyMergeClusters(clusters);
 
 	RefineClustersLocalSearch(clusters);
 	MergeSmallClusters(clusters);
@@ -369,7 +367,7 @@ ScenePartition SceneCluster::PartitionAggregativeClustering()
 // slips through — including one that only emerges as a cluster accretes from both
 // sides — is caught after the fact by RefineClustersSplitThinWaist. A refusal is
 // not permanent: the edge is re-pushed whenever either side changes.
-void SceneCluster::GreedyMergeClusters(std::vector<IIndexArr>& clusters, bool periodicRefine)
+void SceneCluster::GreedyMergeClusters(std::vector<IIndexArr>& clusters)
 {
 	const IIndex nViews = scene.images.size();
 	std::vector<int> nodeToCluster(nViews, -1);
@@ -460,197 +458,18 @@ void SceneCluster::GreedyMergeClusters(std::vector<IIndexArr>& clusters, bool pe
 		}
 		adj[v].clear();
 
-		if (periodicRefine) {
-			const unsigned mergesPerRefine = MAXF(10u, config.maxViewsPerCluster / 10);
-			if (numMergesSinceRefine >= mergesPerRefine) {
-				RefineClustersLocalSearch(clusters);
-				nodeToCluster.assign(nViews, -1);
-				for (size_t c = 0; c < clusters.size(); ++c)
-					for (IIndex n : clusters[c])
-						nodeToCluster[n] = (int)c;
-				adj.resize(clusters.size());
-				rebuildPQ();
-				numMergesSinceRefine = 0;
-			}
+		const unsigned mergesPerRefine = MAXF(10u, config.maxViewsPerCluster / 10);
+		if (numMergesSinceRefine >= mergesPerRefine) {
+			RefineClustersLocalSearch(clusters);
+			nodeToCluster.assign(nViews, -1);
+			for (size_t c = 0; c < clusters.size(); ++c)
+				for (IIndex n : clusters[c])
+					nodeToCluster[n] = (int)c;
+			adj.resize(clusters.size());
+			rebuildPQ();
+			numMergesSinceRefine = 0;
 		}
 	}
-}
-
-ScenePartition SceneCluster::PartitionCommunityDetection()
-{
-	const IIndex nViews = scene.images.size();
-	IIndexArr nodes(0u, nViews);
-	for (IIndex i = 0; i < nViews; ++i)
-		nodes.push_back(i);
-
-	// Detect natural communities, then bound each by the cluster capacity
-	const std::vector<IIndexArr> communities = DetectCommunities(nodes, 1.f);
-	std::vector<IIndexArr> clusters;
-	clusters.reserve(communities.size());
-	for (const IIndexArr& community : communities)
-		SplitOversizedCommunity(community, 2.f, clusters);
-	VERBOSE("Community detection: %u communities -> %u capacity-bounded atoms",
-		(unsigned)communities.size(), (unsigned)clusters.size());
-
-	// Pack communities into clusters up to capacity; the coupling acceptance test
-	// keeps weakly-coupled communities as separate sub-scenes
-	GreedyMergeClusters(clusters, false);
-
-	RefineClustersLocalSearch(clusters);
-	MergeSmallClusters(clusters);
-	RefineClustersBalance(clusters);
-	RefineClustersSplitDisconnected(clusters);
-	RefineClustersSplitThinWaist(clusters);
-	RefineClustersForSeams(clusters);
-
-	return FinishPartition(clusters);
-}
-
-std::vector<IIndexArr> SceneCluster::DetectCommunities(const IIndexArr& nodes, float gamma) const
-{
-	// Atom-level graph, one atom per node; selfw tracks 2x the internal weight of
-	// each aggregated atom so modularity stays exact across aggregation rounds
-	std::vector<IIndexArr> atoms;
-	atoms.reserve(nodes.size());
-	std::unordered_map<IIndex, int> nodeToAtom;
-	nodeToAtom.reserve(nodes.size());
-	for (IIndex u : nodes) {
-		nodeToAtom.emplace(u, (int)atoms.size());
-		IIndexArr atom;
-		atom.push_back(u);
-		atoms.emplace_back(std::move(atom));
-	}
-	std::vector<std::map<int, double>> adjw(atoms.size());
-	std::vector<double> selfw(atoms.size(), 0);
-	for (IIndex u : nodes) {
-		const int au = nodeToAtom[u];
-		for (int i = xadj[u]; i < xadj[u+1]; ++i) {
-			const auto it = nodeToAtom.find(adjncy[i]);
-			if (it != nodeToAtom.end() && it->second != au)
-				adjw[au][it->second] += adjwgt[i];
-		}
-	}
-
-	for (;;) {
-		const size_t nAtoms = atoms.size();
-		// weighted degree per atom (internal weight counts fully)
-		std::vector<double> k(nAtoms);
-		double twoM = 0;
-		for (size_t a = 0; a < nAtoms; ++a) {
-			double s = selfw[a];
-			for (const auto& p : adjw[a])
-				s += p.second;
-			k[a] = s;
-			twoM += s;
-		}
-		if (twoM <= 0)
-			break;
-
-		// local moving phase (deterministic: ascending atom order, ordered maps)
-		std::vector<int> comm(nAtoms);
-		for (size_t a = 0; a < nAtoms; ++a)
-			comm[a] = (int)a;
-		std::vector<double> sigma = k;
-		bool movedAny = false;
-		for (unsigned iter = 0; iter < 30; ++iter) {
-			bool moved = false;
-			for (size_t a = 0; a < nAtoms; ++a) {
-				std::map<int, double> wc;
-				for (const auto& p : adjw[a])
-					wc[comm[p.first]] += p.second;
-				const int ca = comm[a];
-				sigma[ca] -= k[a];
-				int bestC = ca;
-				const auto itSelf = wc.find(ca);
-				double bestGain = (itSelf != wc.end() ? itSelf->second : 0.0) - gamma * k[a] * sigma[ca] / twoM;
-				for (const auto& p : wc) {
-					if (p.first == ca) continue;
-					const double gain = p.second - gamma * k[a] * sigma[p.first] / twoM;
-					if (gain > bestGain + 1e-9) {
-						bestGain = gain;
-						bestC = p.first;
-					}
-				}
-				sigma[bestC] += k[a];
-				if (bestC != ca) {
-					comm[a] = bestC;
-					moved = movedAny = true;
-				}
-			}
-			if (!moved)
-				break;
-		}
-
-		std::map<int, std::vector<int>> groups;
-		for (size_t a = 0; a < nAtoms; ++a)
-			groups[comm[a]].push_back((int)a);
-		if (!movedAny || groups.size() == nAtoms)
-			break;
-
-		// aggregation phase
-		std::vector<int> remap(nAtoms);
-		{
-			int i = 0;
-			for (const auto& g : groups) {
-				for (int a : g.second)
-					remap[a] = i;
-				++i;
-			}
-		}
-		std::vector<IIndexArr> newAtoms(groups.size());
-		std::vector<std::map<int, double>> newAdjw(groups.size());
-		std::vector<double> newSelfw(groups.size(), 0);
-		{
-			int i = 0;
-			for (const auto& g : groups) {
-				for (int a : g.second) {
-					for (IIndex u : atoms[a])
-						newAtoms[i].push_back(u);
-					newSelfw[i] += selfw[a];
-					for (const auto& p : adjw[a]) {
-						const int j = remap[p.first];
-						if (j == i)
-							newSelfw[i] += p.second; // internal edge, seen from both sides
-						else
-							newAdjw[i][j] += p.second;
-					}
-				}
-				++i;
-			}
-		}
-		atoms = std::move(newAtoms);
-		adjw = std::move(newAdjw);
-		selfw = std::move(newSelfw);
-	}
-
-	for (IIndexArr& atom : atoms)
-		atom.Sort();
-	return atoms;
-}
-
-void SceneCluster::SplitOversizedCommunity(const IIndexArr& community, float gamma, std::vector<IIndexArr>& out) const
-{
-	if (community.size() <= config.maxViewsPerCluster) {
-		out.push_back(community);
-		return;
-	}
-	if (gamma <= 64.f) {
-		const std::vector<IIndexArr> parts = DetectCommunities(community, gamma);
-		if (parts.size() > 1) {
-			for (const IIndexArr& part : parts)
-				SplitOversizedCommunity(part, gamma * 2, out);
-			return;
-		}
-		SplitOversizedCommunity(community, gamma * 2, out);
-		return;
-	}
-	// fully dense community that resists splitting: any cut is acceptable, halve it
-	const IIndex half = community.size() / 2;
-	IIndexArr a, b;
-	FOREACH(i, community)
-		(i < half ? a : b).push_back(community[i]);
-	SplitOversizedCommunity(a, gamma, out);
-	SplitOversizedCommunity(b, gamma, out);
 }
 
 // A cluster under the floor that no neighbour is coupled to -- its heaviest interface carries less

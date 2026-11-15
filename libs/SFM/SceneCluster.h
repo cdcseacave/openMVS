@@ -164,7 +164,6 @@ struct SFM_API ClusterConfig
 	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled when the tracks are built here
 	float minClusterCoupling{0.05f};     // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, whatever either side's size, and split any final cluster with such an internal seam (0 = disabled)
 	unsigned minWaistSideViews{10};      // the fewest images either side of a prefix cut must hold for the coupling checks to weigh it: a smaller side's internal weight is a pair or two, too little for the ratio to judge (Playground's under-coupled stretches held 23 and 31)
-	bool useCommunityDetection{false};   // partition by community detection + capacity packing instead of pure aggregative clustering
 
 	// The ceiling and the two sizes that follow from it: a cluster aims at two thirds of the
 	// ceiling and is not kept below four fifteenths of it. The single place they are derived, so
@@ -284,22 +283,10 @@ private:
 	// Aggregative clustering (greedy max-weight)
 	ScenePartition PartitionAggregativeClustering();
 
-	// Community detection (Louvain) followed by capacity packing; same interface
-	// and refinement passes as the aggregative method, but clusters are built from
-	// detected communities instead of individual images
-	ScenePartition PartitionCommunityDetection();
-
 	// Greedy max-weight merging of the given initial clusters under the capacity
-	// limit and the minimum-coupling acceptance test (shared by both methods)
-	void GreedyMergeClusters(std::vector<IIndexArr>& clusters, bool periodicRefine);
-
-	// Deterministic Louvain community detection on a subset of the covisibility
-	// graph (standard modularity with resolution gamma)
-	std::vector<IIndexArr> DetectCommunities(const IIndexArr& nodes, float gamma) const;
-
-	// Recursively split a community larger than maxViewsPerCluster by escalating
-	// the detection resolution; falls back to halving for fully dense communities
-	void SplitOversizedCommunity(const IIndexArr& community, float gamma, std::vector<IIndexArr>& out) const;
+	// limit and the minimum-coupling acceptance test, refining the clusters by local
+	// search every few merges
+	void GreedyMergeClusters(std::vector<IIndexArr>& clusters);
 
 	// Helper: Merge small clusters with neighbors
 	void MergeSmallClusters(std::vector<IIndexArr>& clusters);

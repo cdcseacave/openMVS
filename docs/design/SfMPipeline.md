@@ -35,7 +35,7 @@ flags say are done (see "Saved-scene resume").
 | 6 | Pair weighting | verified pairs | the composite weight of each pair | `--export-pairs-csv` writes the pairs right after this step | `PairsWeighting.cpp:ComputePairsWeights`, called by `ExportMatchingCSVsAndFilterPairs` in `Scene.cpp` | `PairWeight.md` |
 | 7 | View-graph filtering and the contradiction cut | the weighted view graph | triplet scores per pair, the seed views, and a view graph with the contradicted pairs removed (or repaired) | `--filter-triplets` (1), `--triplet-cut` (0), `--triplet-min-score` (0.3), `--triplet-second-face-score` (0.75), `--max-pair-direction-residual` (45; 0 = rotation stage only), `--repair-contradicted-pairs` (1) | `ViewGraphTriplets.cpp:FilterPairsByTriplets`, then `GlobalRotationAveraging.cpp:FilterPairsByContradiction`; both from `ExportMatchingCSVsAndFilterPairs` | `TripletScores.md`, `ContradictionCut.md`; weights again in `PairWeight.md` |
 | 8 | Solver choice | the filtered view graph | a calibrated scene | known poses imported (modes 1 and 2) take `ReconstructKnownPoses`; else `--use-global-solver` takes `ReconstructGlobal`; else `ReconstructHierarchical` (default) | `Scene.cpp:Scene::Reconstruct`, the ternary after the `matchImagesOnly` return | this document |
-| 8a | Clustering into blocks | the view graph | a partition: blocks and the pool; or one whole block | `--max-views-per-cluster` (200; 0 = no clustering; a scene of at most that many images is one block), `--cluster-communities` (0) | `SceneCluster.cpp:SceneCluster::Partition`, `SceneBlocks.cpp:SceneBlocks::Extract` or `TakeWhole`; from `Scene::ReconstructHierarchical` | `HierarchicalSFM.md` |
+| 8a | Clustering into blocks | the view graph | a partition: blocks and the pool; or one whole block | `--max-views-per-cluster` (200; 0 = no clustering; a scene of at most that many images is one block) | `SceneCluster.cpp:SceneCluster::Partition`, `SceneBlocks.cpp:SceneBlocks::Extract` or `TakeWhole`; from `Scene::ReconstructHierarchical` | `HierarchicalSFM.md` |
 | 8b | Block start and incremental growth | one block's pairs | tracks, a star of registered images, then every image the block can register, with local and full bundle adjustment | `--max-link-direction-error` (5; 0 = off), `--refine-intrinsics`, `--ba-*` | `Track.cpp:BuildTracks`, `StarInitializer.cpp:StarInitializer::Initialize`, `Resection.cpp:Resection::RegisterImages`; blocks run in parallel on the scene's thread pool | `TrackBuilding.md`, `IncrementalReconstruction.md`, `BundleAdjustment.md` |
 | 8c | Pool resection | the images no block registered and the images in no block | those images registered into the block they connect to best | `--max-link-direction-error` | `SceneBlocks.cpp:SceneBlocks::ResectPool` | `HierarchicalSFM.md` |
 | 8d | Merge of the blocks | the blocks | one model | `--cluster-alignment` (1) | `SceneBlocks.cpp:SceneBlocks::MergeInRounds` | `HierarchicalSFM.md` |
@@ -157,13 +157,13 @@ Solver.
 
 | Combination | Behaviour | Where |
 |---|---|---|
-| hierarchical (default), spherical or perspective | supported | `Scene.cpp:843-846` |
-| `--use-global-solver 1`, spherical or perspective | supported; no check refuses spherical cameras | `Scene.cpp:844` |
-| `--use-global-solver 1` with `--max-views-per-cluster`, `--cluster-communities`, `--cluster-alignment` | ignored options: the global solver never clusters or merges | `Scene.cpp:1005-1062` |
-| `--use-global-solver 1`: the triplet seed views | ignored: only `ReconstructHierarchical` receives them | `Scene.cpp:843-846` |
-| known poses (import mode 1 or 2 with a poses file) with `--use-global-solver 1` | ignored option: `ReconstructKnownPoses` is chosen first | `Scene.cpp:843-845` |
-| known poses with the cluster options or the star initializer | ignored: the known-poses solver never clusters, merges or builds a star | `Scene.cpp:1064-1191` |
-| known poses with fewer than 20 percent of the images posed (at least 2) | refused with an error, after matching has run | `Scene.cpp:1079-1103` |
+| hierarchical (default), spherical or perspective | supported | `Scene.cpp:852-855` |
+| `--use-global-solver 1`, spherical or perspective | supported; no check refuses spherical cameras | `Scene.cpp:853` |
+| `--use-global-solver 1` with `--max-views-per-cluster`, `--cluster-alignment` | ignored options: the global solver never clusters or merges | `Scene.cpp:1014-1071` |
+| `--use-global-solver 1`: the triplet seed views | ignored: only `ReconstructHierarchical` receives them | `Scene.cpp:852-855` |
+| known poses (import mode 1 or 2 with a poses file) with `--use-global-solver 1` | ignored option: `ReconstructKnownPoses` is chosen first | `Scene.cpp:852-854` |
+| known poses with the cluster options or the star initializer | ignored: the known-poses solver never clusters, merges or builds a star | `Scene.cpp:1073-1200` |
+| known poses with fewer than 20 percent of the images posed (at least 2) | refused with an error, after matching has run | `Scene.cpp:1088-1112` |
 | known poses and `--match-mode` left at its default | the match mode becomes 3 KNOWN_POSES | `CreateStructure.cpp:528-531` |
 | known poses and an explicit `--match-mode` | supported, the explicit mode is used | `CreateStructure.cpp:528` |
 | import mode 3 (positions only) | not a known-poses reconstruction: the standard solver runs, the match mode stays at its default | `Scene.h:ReconstructionConfig::HasKnownPoses` |
