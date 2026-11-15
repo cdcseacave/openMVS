@@ -8315,6 +8315,28 @@ bool SphericalBottomBandTest()
 /*----------------------------------------------------------------*/
 
 
+// a positive GPS weight is refused with a spherical camera before any work: the scene is left without features
+bool GPSWeightSphericalTest()
+{
+	VERBOSE("\n=== GPSWeightSphericalTest: GPS prior weight with panoramas ===");
+	for (int axis = 0; axis < 2; ++axis) {
+		Scene scene;
+		scene.cameras.emplace_back(new SphericalCamera(cv::Size(64, 32)));
+		for (unsigned i = 0; i < 2; ++i)
+			scene.images.emplace_back(static_cast<IIndex>(i), String(), Pose3D(), 0, scene.cameras[0]);
+		ReconstructionConfig cfg;
+		(axis ? cfg.baConfig.gpsPositionWeightZ : cfg.baConfig.gpsPositionWeight) = 1.0;
+		if (scene.Reconstruct(String(), cfg) || scene.status.nState.isSet(Scene::Status::STATE::FEATURES_EXTRACTED)) {
+			VERBOSE("GPSWeightSphericalTest FAILED: the %s weight was not refused at the start", axis ? "vertical" : "horizontal");
+			return false;
+		}
+	}
+	VERBOSE("GPSWeightSphericalTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
 // the detector words: the four accepted ones in any letter case, any other word is NONE
 bool FeatureTypeNameTest()
 {

@@ -347,6 +347,9 @@ bool SphericalBottomBandTest();
 // The detector words of FeatureTypeFromString: AKAZE, ORB, SIFT and SIFTGPU in any letter case, any other word is NONE.
 bool FeatureTypeNameTest();
 
+// A positive --gps-position-weight or --gps-position-weight-z is refused by Scene::Reconstruct for a scene with a spherical camera, before feature extraction.
+bool GPSWeightSphericalTest();
+
 // Integration test for the PairsMatcher -> poselib::estimate_relative_pose_bearings
 // path on a full-sphere spherical scene. Validates RANSAC scoring with
 // cheirality disabled for spherical cameras, plus the Sampson-on-sphere

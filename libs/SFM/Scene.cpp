@@ -815,6 +815,13 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		}
 	}
 
+	// the GPS prior weighs its metric terms by a pinhole focal, which panoramas do not have
+	if (cfg.baConfig.IsRefiningGPS() && std::any_of(cameras.begin(), cameras.end(),
+			[](const Camera* camera) { return camera->GetType() == CameraType::SPHERICAL; })) {
+		VERBOSE("error: --gps-position-weight and --gps-position-weight-z do not apply to panoramas (spherical cameras): the GPS prior is weighed by a pinhole focal");
+		return false;
+	}
+
 	// Extract image features
 	if (!ExtractFeatures(cfg.featuresCfg))
 		return false;

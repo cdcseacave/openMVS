@@ -140,7 +140,8 @@ With `gpsPositionWeight` or `gpsPositionWeightZ` above 0 and a geo-aligned scene
 global solve adds `GPSPositionError` per image with GPS metadata: the camera centre against its ENU
 position, divided by the image's accuracy (10 m horizontal and 20 m vertical when the metadata has
 none), scaled by `sqrt(weight * scale * pixel_scale)` with `pixel_scale` the median track depth over
-the median focal length so that the metric terms balance the pixel terms; no robust loss. Local
+the median focal length so that the metric terms balance the pixel terms; no robust loss. A scene with a spherical
+camera refuses a positive weight at the start of `Scene::Reconstruct` (panoramas have no pinhole focal). Local
 solves add none. The priors anchor all seven degrees of freedom of the gauge (`PoseUncertainty.md`).
 
 ## The gauge
