@@ -216,7 +216,7 @@ The join guard at 48 px against the guard off, 12 and 24 px (eight captures, one
 
 ## 6. Rejected alternatives
 
-The final design — extra modes on camera evidence, free space, the evidence product, a consensus over spanning forests and an exclusive-evidence bridge rule — places the same blocks on every capture measured and is recorded as an alternative in `docs/design/ExperimentRecord.md`, section "The block merge as one decision over the block graph (the final design, not shipped)".
+The final design — extra modes on camera evidence, free space, the evidence product, a consensus over spanning forests and an exclusive-evidence bridge rule — places the same blocks on every capture measured; it is not shipped (first item below).
 
 - **The block-graph merge of that final design**: the verified pairs as an entry gate refused right readings (5992d620 block 1 wrong, F1 -0.155) where as a factor they remove alameda's wrong block 3 (+0.0076); a free-space conflict factor separates copies (62-66% against 15-17%); a camera trigger instead of the unexplained-share trigger (alameda merge 906 s -> 270 s, 5936fac3 -0.0051) needs an exclusive-evidence bridge rule (else b68e320e's 55-image block is lost, F1 -0.119); a consensus over spanning forests moved only Outdoor_004 (+0.1761); closing at the plain bar costs 0.0126 accuracy. Not shipped: the simple merge gives the same blocks on 17 of 17 captures with about 750 lines fewer (planted failure tests HeavyFalseChordTest, CopyOnDoorTriangleTest, BridgeEqualReadingsTest).
 - **The interleaving gate** (a placement vetoed when under 0.8 of the moved block's cameras keep an own nearest neighbour): it never refused a wrong placement on eight captures and refused right blocks (alameda, 4 of 14).

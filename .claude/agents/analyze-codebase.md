@@ -41,12 +41,10 @@ the sub-agent needs (e.g. key file paths, namespace conventions).
 ### Step 3 — Assemble Documentation
 
 Once sub-agents return, launch **@write-docs** with the combined outputs.
-It will create/update Markdown files in `docs/`:
-
-- `docs/features_catalog.md`
-- `docs/pipelines.md`
-- `docs/architecture.md`
-- `docs/suggestions.md`
+It will create/update the Markdown file `docs/pipeline_overview.md`
+(the stages of the pipelines in order, each linking the design document
+under `docs/design/` that describes it). The suggestions are returned in
+the final summary, not written to a file.
 
 ### Step 4 — Summary
 

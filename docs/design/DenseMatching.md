@@ -368,6 +368,8 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
   floods, which glue most keypoints into one component; every winner answers.
 - A band half-width adapted to the verdict's epipolar residual: cleaner but loses a fifth of the matches SIFT also has,
   costs time, and floods like the fixed width without the full reference.
+- A thinner dense fill where described matches exist: a smooth keep rate 1/(1+n/n0) in the number n of described matches is worse (F1 -0.029; one interior loses 31% of its images), and no dense samples in a 16 x 16 cell holding described matches ties.
+- Pooling the retrieval descriptor on the CPU: the pooling inside the ONNX graph replaced it.
 - Holding a dense correspondence to half a warp cell instead of the matcher's epipolar bar: it pollutes every track it
   enters.
 - Gate-and-supplement (a warp validating a pair before descriptor matching and supplementing a weak one afterwards): the

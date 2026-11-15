@@ -202,6 +202,8 @@ Rotation averaging:
 - The ADMM run to convergence: folds Palace and costs up to 100 times the iterations.
 - Weights replaced by their ranks: discards how much heavier a pair is.
 
+A spanning-tree rotation check of the pairs (a residual bar on the rotations of their maximum spanning tree): the rotation stage judges the same pairs against a robust averaging of all the usable pairs instead of their tree.
+
 Weighting:
 
 - The cut weighted without the triplet score: loses 78 right junction pairs of Palace (`PairWeight.md`).

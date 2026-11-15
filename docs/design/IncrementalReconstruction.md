@@ -337,3 +337,9 @@ registers from four pairs of 28-124 sparse matches whose relative rotations agre
 quorum or link-majority rule can tell it from right evidence. The dense fill made those same pairs'
 geometry better, not worse: the same pairs matched with SIFT alone land 7-29 degrees off the reference,
 and SIFT could not keep the image registered at all. Documented, not fixed.
+
+## Rejected alternatives
+
+- The strongest registered link as a gate (the ratio of an image's strongest pair to registered images over its strongest pair overall), and a model-against-pair contradiction count: neither separates wrong entries, since right images of four other captures hold strong pairs 20-50 degrees off a right model.
+- The resection on the described correspondences first, the dense ones only when those fail: catastrophic on the long indoor capture (600 of 1267 images wrong).
+- The absolute-pose polish at a dense weight of 0.003 on by default (`ResectionConfig::denseFitWeight`, 1 = off): a tie with it off (F1 +0.0015 [-0.006, +0.010]), better on Truck and one interior and worse on none.
