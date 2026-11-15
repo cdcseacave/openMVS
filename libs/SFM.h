@@ -55,7 +55,6 @@
 // Interface to external formats/tools
 #include "SFM/InterfaceMVS.h"
 #include "SFM/PoseIO.h"
-#include "SFM/ImportCOLMAP.h"
 
 // D E F I N E S ///////////////////////////////////////////////////
 

@@ -312,7 +312,6 @@ No command-line flag; `twinMinLoopGain` 0 turns it off.
 Joint refinement of focal length + distortion (k1, k2) with relative pose via Ceres.
 
 ## External Format Support
-- **COLMAP import** (`ImportCOLMAP.h`): Binary reconstruction, selective import
 - **frames.json import** (`PoseIO.h`): Polycam-style array of `{name, transform[16], params?}`;
   `transform` is a column-major 4x4 camera-to-world matrix, `params` an optional OPENCV intrinsics block
   (`w,h,fx,fy,cx,cy,k1,k2,p1,p2`) declared for its own resolution and rescaled to the image.

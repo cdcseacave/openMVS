@@ -536,7 +536,6 @@ The log line it emits -- median and maximum camera-center delta, median and maxi
 
 | Module | Format | Direction |
 |--------|--------|-----------|
-| `ImportCOLMAP.h` | COLMAP binary | Import cameras, poses, tracks |
 | `PoseIO.h` | OpenMVS pose CSV and Polycam-style frames.json | Import/export per-image intrinsics and poses |
 | `InterfaceMVS.h` | OpenMVS .mvs | Export to MVS pipeline |
 | Scene::ExportPLY | PLY | Export sparse point cloud |
@@ -671,7 +670,6 @@ libs/SFM/
 ├── KeyframeExtractor.h/cpp             # Keyframe selection from video
 │
 │ # External format support
-├── ImportCOLMAP.h/cpp                  # COLMAP import
 ├── PoseIO.h/cpp                        # CSV/frames.json pose I/O + convention detection
 └── InterfaceMVS.h/cpp                  # MVS format export
 ```

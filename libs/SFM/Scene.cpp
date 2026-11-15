@@ -22,7 +22,6 @@
 #include "GlobalPositioning.h"
 #include "SimilarityTransform.h"
 #include "InterfaceMVS.h"
-#include "ImportCOLMAP.h"
 #include "DenseMatcher.h"
 #include "LensFit.h"
 
