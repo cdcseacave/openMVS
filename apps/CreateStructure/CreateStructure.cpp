@@ -178,7 +178,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("export-mvs", boost::program_options::value<std::string>(&OPT::strOutputFileNameMVS), "output MVS file path (optional)")
 		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value(FeatureTypeToString(FeatureType::DEFAULT)), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU (any letter case)")
 		("import-poses-file", boost::program_options::value<std::string>(&OPT::strImportPosesFile)->default_value("poses.csv"), "import camera poses from file: .csv (OpenMVS pose CSV) or .json (frames.json)")
-		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional)")
+		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional; skipped by --match-images-only, which reconstructs no pose)")
 		("export-pose-quality", boost::program_options::value<std::string>(&OPT::strExportPoseQuality), "estimate the pose covariance during the final bundle adjustment and export the per-image quality report to CSV file (optional)")
 		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value((unsigned)defaults.importCfg.importPosesMode), "mode for importing camera poses: 0=none, 1=poses+intrinsics, 2=poses only, 3=positions only")
 		("known-poses-convention", boost::program_options::value<std::string>(&OPT::strKnownPosesConvention), "camera-axes convention of the poses in a frames.json: auto|arkit|opencv (default: auto, detect it from the poses)")
@@ -555,8 +555,11 @@ int main(int argc, LPCTSTR* argv)
 		if (!CompareScenes(scene, MAKE_PATH_SAFE(OPT::strCompareMVS)))
 			VERBOSE("warning: scene comparison against '%s' failed", OPT::strCompareMVS.c_str());
 	}
-	// Export camera poses to CSV file
-	if (!OPT::strExportPosesCSV.empty() && !ExportPosesCSV(OPT::strExportPosesCSV, scene.images)) {
+	// Export camera poses to CSV file; a match-images-only run leaves the scene uncalibrated, no image
+	// has a pose and there is nothing to export
+	if (!OPT::strExportPosesCSV.empty() && !scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED))
+		VERBOSE("--export-poses-csv skipped: no pose was reconstructed (--match-images-only)");
+	else if (!OPT::strExportPosesCSV.empty() && !ExportPosesCSV(OPT::strExportPosesCSV, scene.images)) {
 		VERBOSE("error: failed to export camera poses to CSV file %s", OPT::strExportPosesCSV.c_str());
 		return EXIT_FAILURE;
 	}
