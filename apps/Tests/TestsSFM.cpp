@@ -14820,6 +14820,7 @@ bool BAObservationCapTest()
 		BAConfig config;
 		config.minObservationsForCap = 0; // whatever this scene's size, the budget applies
 		config.maxObservationsPerImage = 0; // every observation
+		config.minTriangulationAngle = 1.f; // the bar the budget keeps every track at
 		if (!BundleAdjustment::Adjust(uncapped, config)) {
 			VERBOSE("BAObservationCapTest FAILED: the uncapped bundle adjustment did not solve the %s scene", kind);
 			return false;
@@ -14863,6 +14864,57 @@ bool BAObservationCapTest()
 		"%.5f on a described-only one, and a scene under the threshold keeps every observation (%s)",
 		CAP, maxRotationDeg[0], maxCenter[0], maxRotationDegUncapped[0], maxCenterUncapped[0],
 		maxRotationDeg[1], maxCenter[1], maxRotationDegUncapped[1], maxCenterUncapped[1], TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A track the per-image budget leaves with only views that lie close together gets back the dropped view
+// that spans the widest angle with one of them. Image 2 holds 100 observations against a budget of 95, all
+// in one cell of its frame, the 60 shortest tracks (seen by the images 0, 1 and 2, the first two 10 degrees
+// apart) being the only ones the budget can take from it: the 40 longer ones (images 2-5) come first in the cell.
+// Two views 10 degrees apart are under the 15-degree bar, and image 2 sees the point 20 degrees from image 0,
+// so a track that lost its view in image 2 is given it back and the image fits all of its 12 observations.
+bool BAObservationCapWideViewTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned CAP = 95, NUM_SHORT = 60, NUM_LONG = 40;
+	constexpr float BAR = 15.f;
+	constexpr IIndex WIDE = 2;
+	Scene scene;
+	BuildResectionArc(scene, 6);
+	// the points are drawn from the pixels of the wide image's frame, a few pixels around the middle of one
+	// cell of the budget's 10 x 10 grid (the cell [320,384) x [240,288)), at a depth near the arc's centre
+	std::mt19937 rng(20261114);
+	std::uniform_real_distribution<REAL> jitter(-5, 5), depth(4.8, 5.2);
+	const Image& wide = scene.images[WIDE];
+	for (unsigned i = 0; i < NUM_SHORT + NUM_LONG; ) {
+		const Point2 pixel(352 + jitter(rng), 264 + jitter(rng));
+		const Point3 X = wide.C + wide.R.t() * (wide.pCamera->UnprojectNormalized(pixel) * depth(rng));
+		const bool added = i < NUM_SHORT ? AddResectionTrack(scene, X, {0, 1, WIDE}) : AddResectionTrack(scene, X, {WIDE, 3, 4, 5});
+		if (added)
+			++i;
+	}
+	FilterTracks(scene, 4.f, 1.f);
+	BAConfig config;
+	config.maxObservationsPerImage = CAP;
+	config.minObservationsForCap = 0;
+	config.minTriangulationAngle = BAR;
+	BundleAdjustment ba(scene, config);
+	if (!ba.Adjust()) {
+		VERBOSE("BAObservationCapWideViewTest FAILED: the capped bundle adjustment did not solve the scene");
+		return false;
+	}
+	const UnsignedArr& fitted = ba.GetNumReprojResidualsPerImage();
+	const unsigned expected[6] = {NUM_SHORT, NUM_SHORT, NUM_SHORT + NUM_LONG, NUM_LONG, NUM_LONG, NUM_LONG};
+	for (IIndex id = 0; id < 6; ++id) {
+		if (fitted[id] != expected[id]) {
+			VERBOSE("BAObservationCapWideViewTest FAILED: image %u fits %u observations, expected %u (image %u holds %u against a budget of %u: the tracks that lose "
+				"a view there have their other two views about %.0f degrees apart, under the %.0f-degree bar, and take it back)",
+				id, fitted[id], expected[id], WIDE, NUM_SHORT + NUM_LONG, CAP, 10.0, (double)BAR);
+			return false;
+		}
+	}
+	VERBOSE("BAObservationCapWideViewTest PASSED: image %u fits all of its %u observations against a budget of %u, the %u it would lose each taken back for the "
+		"track whose other two views lie 10 degrees apart (%s)", WIDE, NUM_SHORT + NUM_LONG, CAP, NUM_SHORT + NUM_LONG - CAP, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

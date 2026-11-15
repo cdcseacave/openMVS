@@ -330,6 +330,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::BAObservationCapTest())
 				return false;
+			if (!SFM::BAObservationCapWideViewTest())
+				return false;
 			if (!SFM::BAInnerIterationOrderTest())
 				return false;
 			if (!SFM::BADenseWeightPerImageTest())

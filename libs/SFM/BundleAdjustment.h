@@ -118,6 +118,14 @@ struct SFM_API BAConfig
 	// costs allows (see BuildObservationCap).
 	unsigned maxObservationsPerImage = 1500;
 
+	// The widest angle, in degrees, the kept views of a track must span at the point for the budget
+	// above to leave the track in the solve (the caller's minimum triangulation angle). Two views
+	// closer than that fix the point's depth too weakly: the point slides along their rays and takes
+	// the views that see it wide with it. A track the budget leaves with such a narrow set gets back
+	// the dropped view that spans the widest angle with a kept one, and one no dropped view widens
+	// stays out of the solve. Must be positive wherever the budget can apply.
+	float minTriangulationAngle = 0.f;
+
 	// Observations the scene must hold -- every inlier track's observations in every registered
 	// image, summed once over the whole scene -- before the budget above applies to any solve,
 	// 0 = always. A scene small enough to be solved whole is solved whole: dropping observations

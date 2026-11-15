@@ -203,6 +203,9 @@ struct SFM_API ResectionConfig
 		extendedBAConfig = baseCfg;
 		extendedBAConfig.maxIterations = 40;
 		extendedBAConfig.robustThreshold = 2.f;
+
+		// the observation budget keeps every track as wide as the resection triangulates them
+		localBAConfig.minTriangulationAngle = fullBAConfig.minTriangulationAngle = extendedBAConfig.minTriangulationAngle = minAngleThreshold;
 	}
 };
 

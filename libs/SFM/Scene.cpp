@@ -76,6 +76,7 @@ void SFM::AdjustMergedScene(Scene& scene, const ReconstructionConfig& cfg)
 	scene.status.nState.set(Scene::Status::STATE::CALIBRATED);
 	BAConfig baCfg = cfg.baConfig;
 	SetBAIntrinsicFlags(baCfg, cfg.baIntrinsicFlags);
+	baCfg.minTriangulationAngle = cfg.minAngleThreshold;
 	BundleAdjustment::Adjust(scene, baCfg);
 	VERBOSE("Merged scene adjusted at the loose bar of %g px: %u images, %u tracks (%s)",
 		looseBar, scene.status.nCalibratedImages, scene.status.nTracks, TD_TIMER_GET_FMT().c_str());
@@ -779,6 +780,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// relative-pose sigma onto it here is what carries it to all of them: the star initializer's
 	// solves, the resection's local and full ones, and the global passes alike.
 	SetBAPairConstraints(cfg.baConfig, cfg.relativeRotationSigma);
+	cfg.baConfig.minTriangulationAngle = cfg.minAngleThreshold; // the budget of the observations keeps every track this wide
 	if (cfg.importCfg.focalLength > 0) {
 		cfg.initCfg.refineFocalLength = false;
 		VERBOSE("Focal length forced at %g px: kept by the star initializer, refined by bundle adjustment", cfg.importCfg.focalLength);
@@ -1059,6 +1061,7 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 
 	// 4. Bundle Adjustment for position and structure refinement only
 	BAConfig baCfg = config.baConfig;
+	baCfg.minTriangulationAngle = config.minAngleThreshold;
 	baCfg.refinePosesRotation = false;
 	baCfg.maxIterations = 12;
 	BundleAdjustment::Adjust(*this, baCfg);
@@ -1166,6 +1169,7 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 	// second pass - the same mini-BA -> re-triangulate -> BA convergence pattern the star
 	// initializer uses
 	BAConfig baCfg = config.baConfig;
+	baCfg.minTriangulationAngle = config.minAngleThreshold;
 	SetBAIntrinsicFlags(baCfg, config.baIntrinsicFlags);
 	bool trustedIntrinsics = true;
 	for (const Camera* cam: cameras) {

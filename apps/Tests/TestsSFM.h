@@ -303,6 +303,11 @@ bool BundleAdjustmentPairConstraintTest();
 // the solve fits every observation
 bool BAObservationCapTest();
 
+// A track the budget leaves with views that lie closer together than the bar (BAConfig::minTriangulationAngle)
+// gets back the dropped view that spans the widest angle with one of them: an image over the budget by five
+// observations, whose losses are views of tracks seen 10 degrees apart elsewhere, fits all it holds
+bool BAObservationCapWideViewTest();
+
 // A bundle adjustment large enough to be refined by inner iterations ends at the same bits when it is
 // solved twice from the same start, the second time with the small blocks it allocates laid out in
 // the reverse order

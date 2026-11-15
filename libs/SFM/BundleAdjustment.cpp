@@ -653,7 +653,7 @@ std::atomic<uint32_t> observationCapSeed{0};
 // loop, whose filtering this pre-pass reproduces.
 template <typename TVisitTracks, typename TInSolve>
 ObservationCapStats BuildObservationCap(const Scene& scene, unsigned cap, unsigned minObservations,
-	uint32_t sceneObservations, const TVisitTracks& visitTracks, const TInSolve& inSolve, ObservationCap& obsCap)
+	uint32_t sceneObservations, const TVisitTracks& visitTracks, const TInSolve& inSolve, ObservationCap& obsCap, float minAngleDeg)
 {
 	obsCap.keep.clear();
 	ObservationCapStats stats;
@@ -784,6 +784,59 @@ ObservationCapStats BuildObservationCap(const Scene& scene, unsigned cap, unsign
 			}
 		}
 	});
+
+	// A track whose kept views all lie closer than minAngleDeg to one another is not determined in
+	// depth: the point slides along their rays and drags every view that sees it wide, the ones the
+	// budget dropped included, off by many pixels. It gets back the dropped view that spans the
+	// widest angle with a kept one when that angle reaches the bar, and stays out of the solve when
+	// no dropped view does, as a track the budget left with no view does.
+	{
+		ASSERT(minAngleDeg > 0.f);
+		const REAL minCos = COS(D2R(REAL(minAngleDeg)));
+		std::vector<const Observation*> keptObs, droppedObs;
+		visitTracks([&](const Track& track) {
+			keptObs.clear();
+			droppedObs.clear();
+			for (const Observation& obs : track) {
+				if (!inSolve(obs.imageID))
+					continue;
+				(obsCap.Keeps(obs.imageID, obs.featureID) ? keptObs : droppedObs).push_back(&obs);
+			}
+			if (keptObs.size() < 2)
+				return; // one view or none: settled by the pass above
+			const auto Ray = [&](const Observation* obs) { return scene.images[obs->imageID].C - track.position; };
+			// the widest angle two kept views span is the smallest cosine
+			REAL keptCos = REAL(1);
+			for (size_t i = 0; i < keptObs.size(); ++i) {
+				const Point3 ray1 = Ray(keptObs[i]);
+				for (size_t j = i + 1; j < keptObs.size(); ++j) {
+					const Point3 ray2 = Ray(keptObs[j]);
+					keptCos = MINF(keptCos, ComputeAngle(ray1.ptr(), ray2.ptr()));
+				}
+			}
+			if (keptCos <= minCos)
+				return; // the kept views reach the bar
+			const Observation* widest = NULL;
+			REAL widestCos = REAL(1);
+			for (const Observation* dropped : droppedObs) {
+				const Point3 ray1 = Ray(dropped);
+				for (const Observation* kept : keptObs) {
+					const Point3 ray2 = Ray(kept);
+					const REAL cosAngle = ComputeAngle(ray1.ptr(), ray2.ptr());
+					if (cosAngle < widestCos) {
+						widestCos = cosAngle;
+						widest = dropped;
+					}
+				}
+			}
+			if (widest != NULL && widestCos <= minCos) {
+				obsCap.keep[widest->imageID][widest->featureID] = true;
+			} else {
+				for (const Observation* kept : keptObs)
+					obsCap.keep[kept->imageID][kept->featureID] = false;
+			}
+		});
+	}
 
 	// what the solve is left with, counted on the flags every pass above settled
 	stats.numKept = 0;
@@ -1211,7 +1264,7 @@ bool BundleAdjustment::Adjust()
 				if (track.IsInlier())
 					fn(track);
 		},
-		[this](IIndex imgID) { return scene.images[imgID].IsValid(); }, obsCap);
+		[this](IIndex imgID) { return scene.images[imgID].IsValid(); }, obsCap, config.minTriangulationAngle);
 	if (capStats.applied)
 		DEBUG("Bundle adjustment: %s", FormatObservationCapReport(capStats).c_str());
 
@@ -1710,7 +1763,7 @@ bool BundleAdjustment::AdjustLocal(
 			for (const uint32_t pointID : activePoints)
 				fn(scene.tracks[pointID]);
 		},
-		inWindow, obsCap);
+		inWindow, obsCap, config.minTriangulationAngle);
 	if (capStats.applied)
 		DEBUG("Local bundle adjustment: %s", FormatObservationCapReport(capStats).c_str());
 
