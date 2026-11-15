@@ -101,8 +101,11 @@ struct PoseLink
 		d.rayAngle = rayAngle > 0.f ? REAL(rayAngle) : REAL(0);
 		Point3 modelDirection(image.C - neighbor.C), linkDirection;
 		const REAL baseline = norm(modelDirection);
-		if (!IsNearDuplicate() && baseline > ZEROTOLERANCE<REAL>() && PredictedDirection(neighbor, linkDirection))
-			d.direction = R2D(ACOS(MINF(MAXF(linkDirection.dot(modelDirection / baseline), REAL(-1)), REAL(1))));
+		if (!IsNearDuplicate() && baseline > ZEROTOLERANCE<REAL>() && PredictedDirection(neighbor, linkDirection)) {
+			const REAL cosDirection = linkDirection.dot(modelDirection / baseline);
+			ASSERT(ABS(cosDirection) <= REAL(1) + REAL(1e-6)); // a dot product of two unit directions, up to rounding
+			d.direction = R2D(ACOS(MINF(MAXF(cosDirection, REAL(-1)), REAL(1)))); // the clamp is rounding only
+		}
 		return d;
 	}
 };

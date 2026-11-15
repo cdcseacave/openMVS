@@ -1472,9 +1472,9 @@ bool BundleAdjustment::Adjust()
 				focals.push_back((pc->fx + pc->fy) / 2.0);
 			}
 		}
-		double median_focal = 1.0; // default fallback
-		if (!focals.empty())
-			median_focal = focals.GetMedian();
+		// the GPS prior is refused with panoramas at the start of Scene::Reconstruct, so a valid image has a pinhole camera
+		ASSERT(!focals.empty());
+		const double median_focal = focals.GetMedian();
 		// Compute pixel-to-meter scale
 		const double pixel_scale = median_depth / median_focal;
 		const double weight_h_scaled = SQRT(config.gpsPositionWeight * config.gpsWeightScaleFactor * pixel_scale);

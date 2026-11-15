@@ -63,7 +63,9 @@ bool GlobalDescriptors::Build(const Scene& scene)
 			return false;
 		}
 		const Eigen::Map<const Eigen::RowVectorXf> row(img.globalDescriptor.ptr<float>(), dim);
-		descriptors.row(i) = row.normalized(); // defensive re-normalization: the graph already emits unit vectors
+		// the retrieval graph emits unit vectors (DenseMatcher::DescribeImage), and the cosine ranking relies on it
+		ASSERT(ABS(row.norm() - 1.f) < 1e-3f);
+		descriptors.row(i) = row;
 		imageIDs[i] = img.ID;
 	}
 	return true;

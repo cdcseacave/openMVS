@@ -1002,7 +1002,9 @@ bool SFM::PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, c
 	const Matrix3x3 R0(pair.relativePose->R);
 	const Point3 t0 = pair.relativePose->GetT();
 	const auto DirectionDeg = [](const Point3& a, const Point3& b) {
-		return R2D(ACOS(CLAMP(a.dot(b)/(norm(a)*norm(b)), REAL(-1), REAL(1))));
+		const REAL cosAngle = a.dot(b)/(norm(a)*norm(b));
+		ASSERT(ABS(cosAngle) <= REAL(1) + REAL(1e-6)); // a dot product over the two norms, up to rounding
+		return R2D(ACOS(CLAMP(cosAngle, REAL(-1), REAL(1)))); // the clamp is rounding only
 	};
 	std::vector<Pose3D> valid;
 	int nearest = -1;
@@ -1231,13 +1233,15 @@ unsigned SFM::SwitchPlanarTwinsDense(PairsMatcher& pairsMatcher, const DenseMatc
 		const Point3 t0 = pair.relativePose->GetT(), t1 = twin.relativePose->GetT();
 		const unsigned numSparseBefore = pair.GetNumFilteredInliers(), numDenseBefore = pair.GetNumDenseInliers();
 		const REAL rotationDeg = R2D(ACOS(ComputeAngle(Matrix3x3(pair.relativePose->R), Matrix3x3(twin.relativePose->R))));
+		const REAL cosDirection = t0.dot(t1)/(norm(t0)*norm(t1));
+		ASSERT(ABS(cosDirection) <= REAL(1) + REAL(1e-6)); // a dot product over the two norms, up to rounding
 		pair.relativePose = twin.relativePose;
 		pair.E = twin.E;
 		pair.F = twin.F;
 		ReverifyPairDense(pairsMatcher, scene.images[pair.ID1], scene.images[pair.ID2], config, pair, false);
 		VERBOSE("Pair %u-%u switched to its planar twin: loops %d -> %d of %u within %g deg, rotation change %.2f deg, direction change %.1f deg; sparse inliers %u -> %u, dense %u -> %u",
 			pair.ID1, pair.ID2, loopsStored, loopsTwin, (unsigned)trianglesOf[ci].size(), config.twinMaxLoopAngle, rotationDeg,
-			R2D(ACOS(CLAMP(t0.dot(t1)/(norm(t0)*norm(t1)), REAL(-1), REAL(1)))),
+			R2D(ACOS(CLAMP(cosDirection, REAL(-1), REAL(1)))), // the clamp is rounding only
 			numSparseBefore, pair.GetNumFilteredInliers(), numDenseBefore, pair.GetNumDenseInliers());
 		++numSwitched;
 	}

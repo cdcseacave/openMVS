@@ -639,7 +639,9 @@ struct CentresSolve { std::vector<bool> placed; std::vector<Point3> centres; };
 REAL DirectionAngle(const Point3& baseline, const Point3& centresOffset)
 {
 	ASSERT(norm(baseline) > ZEROTOLERANCE<REAL>() && norm(centresOffset) > ZEROTOLERANCE<REAL>());
-	return R2D(ACOS(MINF(MAXF(baseline.dot(centresOffset) / (norm(baseline) * norm(centresOffset)), REAL(-1)), REAL(1))));
+	const REAL cosAngle = baseline.dot(centresOffset) / (norm(baseline) * norm(centresOffset));
+	ASSERT(ABS(cosAngle) <= REAL(1) + REAL(1e-6)); // a dot product over the two norms, up to rounding
+	return R2D(ACOS(MINF(MAXF(cosAngle, REAL(-1)), REAL(1)))); // the clamp is rounding only
 }
 
 unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<Point3>& rotations,

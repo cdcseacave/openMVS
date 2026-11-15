@@ -987,7 +987,9 @@ struct PosePairScorer {
 	Score operator()(const Image& imgA, const Point3& directionA, const Image& imgB) const {
 		Score s;
 		s.distance = norm(imgA.C - imgB.C);
-		s.viewAngle = ACOS(CLAMP(directionA.dot(imgB.Direction()), REAL(-1), REAL(1)));
+		const REAL cosViewAngle = directionA.dot(imgB.Direction());
+		ASSERT(ABS(cosViewAngle) <= REAL(1) + REAL(1e-6)); // a dot product of two unit optical axes, up to rounding
+		s.viewAngle = ACOS(CLAMP(cosViewAngle, REAL(-1), REAL(1))); // the clamp is rounding only
 		s.score = s.viewAngle > maxViewAngle ?
 			REAL(-1) : ScoreBaseline(s.distance) * (REAL(1) - s.viewAngle/maxViewAngle);
 		return s;
