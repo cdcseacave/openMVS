@@ -191,7 +191,7 @@ ties to the rest of the model a few pixels past the bar at its old pose.
    fits the observations within 12 px.
 2. The solve runs. The model is then filtered at `maxReprojError` and its tracks left without a
    position are triangulated again.
-3. Another solve follows, up to `fullBARepeats` (4) after the first, only while some camera that
+3. Another solve follows, up to `fullBARepeats` (2) after the first, three solves in all,, only while some camera that
    held at least `fullBARepeatMinObservations` (100) observations in the input has at least
    `fullBARepeatMinChange` (0.05) of them added or removed by the input of the next solve.
 4. After the last solve allowed the model is filtered and its pointless tracks triangulated again, so
@@ -246,10 +246,11 @@ triangulated and adjusted once (`AdjustMergedScene`).
 The per-image dense weight, on the eleven captures with verified reference poses, against the same
 dense weight for every image:
 
-| per-image dense weight | outcome |
+| setting | outcome |
 |---|---|
-| half weight at 300 described observations, no ceiling | 55 wrong images against 39, a 46-image tail left out in every run |
-| half weight at 300 and a ceiling of 0.01 (shipped) | completeness/accuracy F1 +0.009 [+0.002, +0.017] (three runs of each; 95%, paired bootstrap over images and runs), the gain in accuracy, no capture worse; an interior's real failure (15 images) avoided in 4 of 6 runs against none of 9 |
+| per-image dense weight, half weight at 300 described observations, no ceiling | 55 wrong images against 39, a 46-image tail left out in every run |
+| per-image dense weight, half weight at 300 and a ceiling of 0.01 (shipped) | completeness/accuracy F1 +0.009 [+0.002, +0.017] (three runs of each; 95%, paired bootstrap over images and runs), the gain in accuracy, no capture worse; an interior's real failure (15 images) avoided in 4 of 6 runs against none of 9 |
+| `fullBARepeats` 2 (shipped) against 4, seven captures, one run each | solves 133 -> 123, 94 -> 87, 110 -> 99, 226 -> 208 on the four that ran more than three; wall time -23%, -10%, -15%, -21% and CPU -25%, -14%, -14%, -26% there; alameda (209 against 210 solves) and Outdoor_004 (113 against 113) unchanged within the machine's +-6% wall noise; F1 .6087 -> .5917 (17ac94cc), .8228 -> .8226 (Palace), .9878 -> .9879 (5936fac3), .7426 -> .7388 (6DCA1E8E); on 4e5c6f6d the final weak-image filter dropped 5 images at a median triangulation angle of 1.50 against its 1.50 bar in one run and not the other, 25 -> 32 wrong images, one capture's knife-edge decision rather than a block that needed more solves; not measured: large captures, LaMAR, a second run of 17ac94cc and 5936fac3 |
 
 ## Rejected alternatives
 

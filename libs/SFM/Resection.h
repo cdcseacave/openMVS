@@ -84,12 +84,13 @@ struct SFM_API ResectionConfig
 	unsigned triangulateEvery{0};       // Run triangulation every N registered images (0 = disabled)
 	unsigned localBAEvery{10};          // Run local BA every N registered images (0 = disabled)
 	std::array<unsigned, 3> fullBAEvery{25, 50, 100}; // Run full BA every N registered images (0 = disabled)
-	unsigned fullBARepeats{4};          // Solves a full BA may run after its first (AdjustRepeated), each one only while the
+	unsigned fullBARepeats{2};          // Solves a full BA may run after its first (AdjustRepeated), each one only while the
 	                                    // observations the next solve would fit differ enough from the ones the last one
 	                                    // fitted; 0 = one solve of the observations within fullBAInputErrorFactor x
 	                                    // maxReprojError. Playground's pinhole-verified matching needs them (F1 +0.017
-	                                    // over one solve, which leaves two images off in every run), and its first full
-	                                    // adjustments and 2678a364's relocating cameras take all five solves
+	                                    // over one solve, which leaves two images off in every run); two repeats (three
+	                                    // solves in all) against four cut the wall time 4-23% on the captures that ran
+	                                    // more than three, see docs/design/BundleAdjustment.md
 	// constant: the observations a full BA fits are the ones within this multiple of maxReprojError of the model,
 	// filtered just before each solve, the filter after it holding the model to maxReprojError again: a camera placed
 	// a few degrees off has its ties to the rest of the model a few pixels past the bar at its current pose, outside
