@@ -196,9 +196,11 @@ Options read only for a fresh scene (they act in `Scene::Import` on a new image 
 (`--filter-triplets` and the other view-graph options, track building, clustering, solver choice,
 bundle adjustment, resection, GPS, exports; the track weight bar `ReconstructionConfig::minPairWeight` has no option).
 
-One further behaviour of the detector option on resume: `main` derives the match defaults (`minMatches`, `matchRatio`,
-`matchDistance`, `maxDescriptorsPerImage`) from `--detector-type` before it knows whether the scene already holds features
-of another type (`CreateStructure.cpp:467`); a resumed scene's stored `nFeaturesType` is not consulted there.
+On resume `main` warns for each given option the saved scene does not read: `--camera-type` (its cameras are kept),
+`--detector-type` and `--spherical-bottom-band` (when it already holds features). `main` derives the match defaults
+(`minMatches`, `matchRatio`, `matchDistance`, `maxDescriptorsPerImage`) from `--detector-type`; `Scene::Reconstruct`
+replaces them with the defaults of the stored `nFeaturesType` when a resumed scene holds features of another type (a
+scene whose features were imported without a type keeps the configured ones), with a warning.
 
 ## Parameters and defaults
 

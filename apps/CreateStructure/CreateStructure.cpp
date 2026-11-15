@@ -441,6 +441,16 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		}
 	}
 
+	// a saved scene is resumed from what it holds: say which of the given options it does not read
+	if (Util::getFileExt(OPT::strSource) == ".sfm" && File::isFile(MAKE_PATH_SAFE(OPT::strSource))) {
+		if (given("camera-type"))
+			LOG("warning: --camera-type is ignored, the saved scene's cameras are kept");
+		if (given("detector-type"))
+			LOG("warning: --detector-type is ignored if the saved scene already holds features; its own detector then sets the matching thresholds");
+		if (given("spherical-bottom-band"))
+			LOG("warning: --spherical-bottom-band is ignored if the saved scene already holds features");
+	}
+
 	// Use max threads option if provided
 	SEACAVE::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;

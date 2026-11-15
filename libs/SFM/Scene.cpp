@@ -794,6 +794,14 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 			VERBOSE("warning: scene already calibrated after import");
 			return false;
 		}
+		// the matching thresholds belong to the descriptors the scene holds, not to the detector the configuration names
+		// (features imported from another tool carry no type: NONE, the configured thresholds stay)
+		if (status.nState.isSet(Status::STATE::FEATURES_EXTRACTED) && status.nFeaturesType != FeatureType::NONE &&
+			status.nFeaturesType != cfg.featuresCfg.detectorType) {
+			VERBOSE("warning: the saved scene holds %s features, not the configured %s: the matching thresholds follow the saved ones",
+				FeatureTypeToString(status.nFeaturesType).c_str(), FeatureTypeToString(cfg.featuresCfg.detectorType).c_str());
+			cfg.matchCfg.DefaultsForFeatureType(status.nFeaturesType);
+		}
 		if (cfg.matchImagesOnly && status.nState.isSet(Status::STATE::MATCHED)) {
 			// the requested work is already done; still resolve an AUTO frames.json
 			// convention before the caller re-persists the scene (the loaded pairs are
