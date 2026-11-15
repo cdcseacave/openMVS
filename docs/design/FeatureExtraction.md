@@ -69,7 +69,7 @@ keypoints of every extracted image in the same layout.
 
 | option | default | meaning |
 |---|---|---|
-| `--detector-type`, `-t` | `SIFTGPU` | AKAZE, ORB, SIFT or SIFTGPU |
+| `--detector-type`, `-t` | `SIFTGPU` | AKAZE, ORB, SIFT or SIFTGPU, in any letter case; any other word is refused at start naming these |
 | `--max-features-per-cell` | 3000 | features per cell of the 3 x 3 grid; times 9 is the per-image budget |
 | `--min-features-per-cell` | 500 | below this a cell is detected again with a more sensitive setting |
 | `--siftgpu-cuda` | true | SiftGPU backend: CUDA (if available) or OpenGL/GLSL; also the backend of the SiftGPU matcher |

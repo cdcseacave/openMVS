@@ -434,6 +434,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::SphericalBottomBandTest())
 				return false;
+			if (!SFM::FeatureTypeNameTest())
+				return false;
 			if (!SFM::PairsMatcherSphericalTest())
 				return false;
 			if (!SFM::MatchGeometricSphericalTest())

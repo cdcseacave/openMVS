@@ -344,6 +344,9 @@ bool ReconstructSphericalSyntheticTest();
 // keypoints and descriptors with the band at 0.2 or at 0.
 bool SphericalBottomBandTest();
 
+// The detector words of FeatureTypeFromString: AKAZE, ORB, SIFT and SIFTGPU in any letter case, any other word is NONE.
+bool FeatureTypeNameTest();
+
 // Integration test for the PairsMatcher -> poselib::estimate_relative_pose_bearings
 // path on a full-sphere spherical scene. Validates RANSAC scoring with
 // cheirality disabled for spherical cameras, plus the Sampson-on-sphere

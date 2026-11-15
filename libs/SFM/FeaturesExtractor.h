@@ -60,7 +60,9 @@ inline String FeatureTypeToString(FeatureType type) {
 	}
 }
 
-inline FeatureType FeatureTypeFromString(const String& str) {
+// the words are matched in any letter case
+inline FeatureType FeatureTypeFromString(const String& name) {
+	const String str(name.ToUpper());
 	if (str == "AKAZE") return FeatureType::AKAZE;
 	if (str == "ORB") return FeatureType::ORB;
 	if (str == "SIFT") return FeatureType::SIFT;

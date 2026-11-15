@@ -176,7 +176,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("source,s", boost::program_options::value<std::string>(&OPT::strSource), "source folder or semicolon-separated list of images")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output scene file path")
 		("export-mvs", boost::program_options::value<std::string>(&OPT::strOutputFileNameMVS), "output MVS file path (optional)")
-		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value(FeatureTypeToString(FeatureType::DEFAULT)), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
+		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value(FeatureTypeToString(FeatureType::DEFAULT)), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU (any letter case)")
 		("import-poses-file", boost::program_options::value<std::string>(&OPT::strImportPosesFile)->default_value("poses.csv"), "import camera poses from file: .csv (OpenMVS pose CSV) or .json (frames.json)")
 		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional)")
 		("export-pose-quality", boost::program_options::value<std::string>(&OPT::strExportPoseQuality), "estimate the pose covariance during the final bundle adjustment and export the per-image quality report to CSV file (optional)")
@@ -289,6 +289,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::matchMode < static_cast<int>(MatchConfig::SKIP) ||
 		OPT::matchMode > static_cast<int>(MatchConfig::RETRIEVAL)) {
 		LOG("error: unknown match mode %d (accepted: -1, 0, 1, 2, 3, 4)", OPT::matchMode);
+		return false;
+	}
+	if (FeatureTypeFromString(OPT::strDetectorType) == FeatureType::NONE) {
+		LOG("error: unknown detector type '%s' (accepted: AKAZE, ORB, SIFT, SIFTGPU, in any letter case)", OPT::strDetectorType.c_str());
 		return false;
 	}
 	if (OPT::nCameraType < -1 || OPT::nCameraType > 1) {

@@ -8315,6 +8315,31 @@ bool SphericalBottomBandTest()
 /*----------------------------------------------------------------*/
 
 
+// the detector words: the four accepted ones in any letter case, any other word is NONE
+bool FeatureTypeNameTest()
+{
+	VERBOSE("\n=== FeatureTypeNameTest: detector words in any letter case ===");
+	const std::pair<const char*, FeatureType> accepted[] = {
+		{"AKAZE", FeatureType::AKAZE}, {"akaze", FeatureType::AKAZE},
+		{"ORB", FeatureType::ORB}, {"Orb", FeatureType::ORB},
+		{"SIFT", FeatureType::SIFT}, {"sift", FeatureType::SIFT},
+		{"SIFTGPU", FeatureType::SIFTGPU}, {"SiftGpu", FeatureType::SIFTGPU}};
+	for (const auto& a : accepted)
+		if (FeatureTypeFromString(a.first) != a.second) {
+			VERBOSE("FeatureTypeNameTest FAILED: '%s' is not read as %s", a.first, FeatureTypeToString(a.second).c_str());
+			return false;
+		}
+	for (const char* word : {"", "SURF", "SIFT GPU", "siftgpu2"})
+		if (FeatureTypeFromString(word) != FeatureType::NONE) {
+			VERBOSE("FeatureTypeNameTest FAILED: '%s' is accepted", word);
+			return false;
+		}
+	VERBOSE("FeatureTypeNameTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
 // ===============================================================================
 // Spherical camera full-hemisphere reconstruction test
 // Exercises the triangulation + BA pipeline on a spherical scene where 3D points
