@@ -17415,7 +17415,7 @@ bool ViewGraphCalibratorTest()
 	// Apply view graph calibrator
 	cam.trustIntrinsics = false; // the synthetic scene generator marks intrinsics trusted; the test exercises focal refinement
 	ViewGraphCalibratorConfig vgConfig;
-	vgConfig.minPairWeight = 0.f; // use all pairs
+	vgConfig.minPairWeight = -1.f; // use all pairs, the synthetic ones carry no weight
 	ViewGraphCalibrator calibrator(vgConfig);
 	if (!calibrator.Solve(scene)) {
 		VERBOSE("error: ViewGraphCalibratorTest failed! Calibrator.Solve() returned false");

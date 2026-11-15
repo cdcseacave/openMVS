@@ -661,7 +661,7 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 		if (norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
 			continue;
 		judged.push_back((IIndex)idxPair);
-		if (pair.GetCompositeWeight() > minPairWeight && scores[idxPair] != 0.f)
+		if (pair.ExceedsWeightBar(minPairWeight) && scores[idxPair] != 0.f)
 			solved.push_back((IIndex)idxPair);
 	}
 	const auto weightOf = [&](IIndex idxPair) {
@@ -990,7 +990,7 @@ unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>&
 	std::vector<RotationPair> rotationPairs;
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
-		if (!pair.relativePose.has_value() || pair.GetCompositeWeight() <= minPairWeight)
+		if (!pair.relativePose.has_value() || !pair.ExceedsWeightBar(minPairWeight))
 			continue;
 		const float weight = pair.GetCompositeWeight() * (scores[idxPair] < 0.f ? 1.f : scores[idxPair]);
 		if (weight > 0.f)

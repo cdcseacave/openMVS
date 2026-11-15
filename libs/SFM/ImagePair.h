@@ -286,6 +286,11 @@ public:
 		const unsigned nCappedInliers = MINF(GetNumWeightedInliers(), 1000u); // cap inliers to avoid excessive weight
 		return nCappedInliers * CBRT(weightSpatial * SQUARE(overlapArea) * weightConnectivity) * (0.25f + weightTriplet);
 	}
+	// The one comparison of a pair-weight bar (ReconstructionConfig, ClusterConfig and ViewGraphCalibratorConfig minPairWeight):
+	// a pair is used only when it exceeds the bar, so a bar of 0 drops exactly the pairs without weight
+	inline bool ExceedsWeightBar(float bar) const {
+		return GetCompositeWeight() > bar;
+	}
 	inline bool HasValidWeight() const {
 		return GetCompositeWeight() > 0.f;
 	}

@@ -153,9 +153,9 @@ void BucketClusterEdges(const Scene& scene, float minPairWeight,
 	std::vector<std::vector<std::pair<uint32_t, uint32_t>>>& edges, std::vector<std::vector<double>>& weights)
 {
 	for (const ImagePair& pair : scene.pairs) {
-		const float weight(pair.GetCompositeWeight());
-		if (weight < minPairWeight)
+		if (!pair.ExceedsWeightBar(minPairWeight))
 			continue;
+		const float weight(pair.GetCompositeWeight());
 		const int c = clusterOf[pair.ID1];
 		if (c < 0 || c != clusterOf[pair.ID2])
 			continue;
@@ -301,7 +301,7 @@ void SceneCluster::BuildConnectivityGraph()
 
 	std::vector<int> degrees(nViews, 0);
 	for (const ImagePair& pair : scene.pairs) {
-		if (pair.GetCompositeWeight() < config.minPairWeight)
+		if (!pair.ExceedsWeightBar(config.minPairWeight))
 			continue;
 		degrees[pair.ID1]++;
 		degrees[pair.ID2]++;
@@ -315,9 +315,9 @@ void SceneCluster::BuildConnectivityGraph()
 	std::vector<int> offsets = xadj;
 
 	for (const ImagePair& pair : scene.pairs) {
-		const float weight = pair.GetCompositeWeight();
-		if (weight < config.minPairWeight)
+		if (!pair.ExceedsWeightBar(config.minPairWeight))
 			continue;
+		const float weight = pair.GetCompositeWeight();
 		const int w = cvRound(weight * WEIGHT_MULTIPLIER);
 
 		int idx1 = offsets[pair.ID1]++;
@@ -1017,9 +1017,9 @@ void SceneCluster::RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters
 		// cc.side lookup, since cc.side is indexed by c's local index, not the image's global one)
 		std::unordered_map<int, double> interfaces;
 		for (const ImagePair& pair : scene.pairs) {
-			const float weight(pair.GetCompositeWeight());
-			if (weight < config.minPairWeight)
+			if (!pair.ExceedsWeightBar(config.minPairWeight))
 				continue;
+			const float weight(pair.GetCompositeWeight());
 			const int c1 = clusterOf[pair.ID1], c2 = clusterOf[pair.ID2];
 			if (c1 == (int)c && c2 >= 0 && c2 != (int)c && cc.side[localIndex[pair.ID1]])
 				interfaces[c2] += weight;

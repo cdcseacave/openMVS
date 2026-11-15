@@ -340,7 +340,7 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight, const TrackConflictConf
 		const ImagePair& pair = scene.pairs[p];
 		if (!pair.HasMatches())
 			continue;
-		if (minPairWeight >= 0 && pair.GetCompositeWeight() <= minPairWeight) {
+		if (!pair.ExceedsWeightBar(minPairWeight)) {
 			++(pair.GetNumDenseInliers() > 0 ? numPairsSkippedWeightSupplemented : numPairsSkippedWeightNotSupplemented);
 			continue;
 		}

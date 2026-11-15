@@ -129,7 +129,7 @@ log reports the inliers before and after and how many pairs that formed tracks w
 For the cameras still untrusted, the focal is estimated globally across all pairs with the Fetzer method (direct focal
 length calibration from two views): each pair's F, decomposed with the principal points, gives two residuals on the
 focals of its two cameras (one parameter when both images share a camera). A pair gives a residual only if it has an F,
-at least 15 weighted inliers and a composite weight of at least `minPairWeight` (0.9, `PairWeight.md`), and both
+at least 15 weighted inliers and a composite weight above `minPairWeight` (0.9, `PairWeight.md`), and both
 cameras are pinhole. The problem is solved with Ceres under an arctan loss (`lossThreshold` 0.1), at most 100
 iterations, trusted cameras held constant, focals bounded below by 1e-3. An estimate outside `minFocalRatio` (0.1) to
 `maxFocalRatio` (10) times the starting focal is rejected as degenerate; an accepted one sets `fx = fy` and marks the camera

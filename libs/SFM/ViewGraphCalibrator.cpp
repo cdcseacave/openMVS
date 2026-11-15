@@ -288,7 +288,7 @@ void ViewGraphCalibrator::AddImagePairsToProblem(const Scene& scene) {
 		if (pair.GetNumWeightedInliers() < 15)
 			continue;
 		// Skip pairs with small weight
-		if (pair.GetCompositeWeight() < config_.minPairWeight)
+		if (!pair.ExceedsWeightBar(config_.minPairWeight))
 			continue;
 
 		ASSERT(pair.ID1 < scene.images.size());

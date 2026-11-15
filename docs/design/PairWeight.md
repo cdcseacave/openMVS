@@ -43,11 +43,13 @@ geometric mean, so neither weak term alone annihilates a pair of hundreds of inl
 
 ## The three bars
 
+Every bar is one comparison, `ImagePair::ExceedsWeightBar`: a pair is used only when its composite weight is strictly above the bar, so a bar of 0 drops exactly the pairs without weight and a negative bar drops none.
+
 | bar | default | gates |
 |---|---|---|
-| `ReconstructionConfig::minPairWeight` | 1.22 | the pairs that form tracks (`BuildTracks`, strict >, in the scene, in every block and in a block's rebuild after the pool inserts images) and the pairs the contradiction cut averages (its rotation and translation stages, `FilterPairsByContradiction`) |
-| `ClusterConfig::minPairWeight` | 0.9 | the edges of the clustering graph and its interface sums (`SceneCluster`, >=), and the tracks the clustering measures its seams on when the scene arrives without tracks |
-| `ViewGraphCalibratorConfig::minPairWeight` | 0.9 | the pairs that give a focal residual to the view-graph calibration (>=; it runs during matching, for pinhole cameras left untrusted after the lens fit) |
+| `ReconstructionConfig::minPairWeight` | 1.22 | the pairs that form tracks (`BuildTracks`, in the scene, in every block and in a block's rebuild after the pool inserts images) and the pairs the contradiction cut averages (its rotation and translation stages, `FilterPairsByContradiction`) |
+| `ClusterConfig::minPairWeight` | 0.9 | the edges of the clustering graph and its interface sums (`SceneCluster`), and the tracks the clustering measures its seams on when the scene arrives without tracks |
+| `ViewGraphCalibratorConfig::minPairWeight` | 0.9 | the pairs that give a focal residual to the view-graph calibration (it runs during matching, for pinhole cameras left untrusted after the lens fit) |
 
 The track/cut bar is 1.22. A bar of 0.9, the value of the other two, is the more aggressive
 setting: it lets more pairs form tracks and enter the cut. On the normal-camera captures the two
