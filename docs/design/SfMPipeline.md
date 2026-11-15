@@ -127,8 +127,9 @@ Dense matcher and match mode.
 | `--roma2 1 --roma2-match 1`, modes 0, 1, 2, 3, 4 | supported: the dense pass is the matching round of each candidate list | `PairsMatcher.cpp:2205` |
 | `--dense-matcher flexglue` without `--roma2 1` | refused | `CreateStructure.cpp:345` |
 | `--flexglue-model` with `--dense-matcher roma2` | refused | `CreateStructure.cpp:349` |
-| `--roma2-model` with `--dense-matcher flexglue` | ignored option (the FlexGlue folder is resolved from `--flexglue-model`) | `MatchROMA2.h:ROMA2Config::ResolveModelPath` |
-| `--dense-min-covisibility` with RoMa v2 | ignored option: RoMa v2 gives no covisibility score and is never gated | `MatchROMA2.h:ROMA2Config::minCovisibility` |
+| `--roma2-model` given with `--dense-matcher flexglue` | refused naming the option (the FlexGlue folder is `--flexglue-model`) | `CreateStructure.cpp:Application::Initialize` |
+| `--dense-min-covisibility` given with `--dense-matcher roma2` or with `--roma2 0` | refused naming the option (only FlexGlue gives a covisibility score; RoMa v2 is never gated) | `CreateStructure.cpp:Application::Initialize` |
+| `--roma2-model`, `--roma2-setting`, `--roma2-slots`, `--roma2-min-confidence`, `--roma2-min-overlap`, `--roma2-dense-matches` or `--roma2-provider` given with `--roma2 0` | refused naming the option (the dense matcher is off, nothing reads it) | `CreateStructure.cpp:Application::Initialize` |
 | `--roma2 1` in a build without ONNX Runtime | refused | `CreateStructure.cpp:357` |
 | `--roma2-match 1` with no model folder resolvable | refused before any work | `CreateStructure.cpp:417` |
 | `--roma2 1 --roma2-match 1` on a scene already `MATCHED` | the model is not loaded and the dense options are ignored, but a missing model path is still refused | `Scene.cpp:618-627` |

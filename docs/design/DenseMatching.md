@@ -44,7 +44,7 @@ ordinary SIFT/AKAZE/ORB flow; `--roma2-match` composes with any match mode.
 | `--roma2-match B` | `useMatching` | false | one-pass pair matching |
 | `--dense-matcher roma2\|flexglue` | `matcher` | `roma2` | the model behind `--roma2 true`, for both services |
 | `--flexglue-model DIR` | `flexglueModelPath` | `$OPENMVS_FLEXGLUE_MODEL_PATH`, else `<prefix>/share/openMVS/flexglue` if present | folder of the FlexGlue bundle (manifest and graphs) |
-| `--dense-min-covisibility F` | `minCovisibility` | 0.2 | covisibility gate before the verdict, in [0,1]; 0 = off; a matcher that gives no score (RoMa2) is never gated |
+| `--dense-min-covisibility F` | `minCovisibility` | 0.2 | covisibility gate before the verdict, in [0,1]; 0 = off; a matcher that gives no score (RoMa2) is never gated, and the option is refused when given with RoMa2 or with the dense matcher off |
 | `--roma2-slots N` | `slotBudget` | 64 | image descriptor tensors resident on the device during pair matching; at least 2 |
 | `--roma2-min-confidence F` | `minConfidence` | 0.1 | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the fill |
 | `--roma2-min-overlap F` | `minOverlap` | 0.10 | the verdict's bar on the smaller inlier area (see Verdict); 0 admits every pair |

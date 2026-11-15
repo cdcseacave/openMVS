@@ -353,6 +353,24 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --flexglue-model given with --dense-matcher %s (it belongs to --dense-matcher flexglue)", OPT::strDenseMatcher.c_str());
 		return false;
 	}
+	// an option given on the command line (or the config file) that the chosen dense matcher does not read is
+	// refused naming it: a defaulted option does not count as given
+	const auto given = [](const char* name) { return OPT::vm.count(name) && !OPT::vm[name].defaulted(); };
+	if (OPT::strDenseMatcher == "flexglue" && given("roma2-model")) {
+		LOG("error: --roma2-model given with --dense-matcher flexglue (it belongs to --dense-matcher roma2; the FlexGlue model is --flexglue-model)");
+		return false;
+	}
+	if (OPT::strDenseMatcher != "flexglue" && given("dense-min-covisibility")) {
+		LOG("error: --dense-min-covisibility given with %s (it gates FlexGlue pairs, RoMa2 gives no covisibility score)", OPT::bROMA2 ? "--dense-matcher roma2" : "--roma2 false");
+		return false;
+	}
+	if (!OPT::bROMA2) {
+		for (const char* name: {"roma2-model", "roma2-setting", "roma2-slots", "roma2-min-confidence", "roma2-min-overlap", "roma2-dense-matches", "roma2-provider"})
+			if (given(name)) {
+				LOG("error: --%s given with --roma2 false (the dense matcher is off, nothing reads it)", name);
+				return false;
+			}
+	}
 	if (!(OPT::fDenseMinCovisibility >= 0.f && OPT::fDenseMinCovisibility <= 1.f)) {
 		LOG("error: --dense-min-covisibility is a covisibility score, it must be in [0,1] (got %g)", OPT::fDenseMinCovisibility);
 		return false;
