@@ -16,8 +16,8 @@ selected, only the FlexGlue bundle is loaded, required or looked for.
 | option / environment | `--roma2-model DIR` / `$OPENMVS_ROMA2_MODEL_PATH` | `--flexglue-model DIR` / `$OPENMVS_FLEXGLUE_MODEL_PATH` |
 | install copy | `<prefix>/share/openMVS/roma2` | `<prefix>/share/openMVS/flexglue` |
 | CMake target | `roma2-model` | `flexglue-model` |
-| Hugging Face | `cDcSeacave/openmvs-roma2-onnx` | `cDcSeacave/openmvs-flexglue-onnx` |
-| GitHub mirror | release `roma2-model` of `cdcseacave/openMVS` | release `flexglue-model` of `cdcseacave/openMVS` |
+| Hugging Face (canonical, fetched at the commit the script pins) | `cDcSeacave/openmvs-roma2-onnx` at `ea2b04648ba0` | `cDcSeacave/openmvs-flexglue-onnx` at `f635c84532db` |
+| GitHub mirror (the same files, flat) | release `roma2-model` of `cdcseacave/openMVS` | release `flexglue-model` of `cdcseacave/openMVS` |
 
 `ROMA2Config::ResolveModelPath()` finds the selected matcher's folder the same way for both: the explicit option, else the
 environment variable, else the install copy (`OPENMVS_MODEL_INSTALL_DIR/<matcher>`, checked with `File::isFolder`, so an
@@ -119,5 +119,5 @@ gh release upload flexglue-model publish/base-fp16/* --repo cdcseacave/openMVS
 GitHub release assets cannot carry a subdirectory, so the mirror upload is flat, and the fetch script maps the mirror's bare names
 to its flat local names. The mirror tags (`roma2-model`, `flexglue-model`) are what the script's default mirror URLs name. A new
 export's checksums can be pinned as soon as the export exists (they hash file content), with the `<setting>-<precision>/` prefix
-added; the script's default `--revision` waits for the upload: it moves to the commit SHA the upload prints (FlexGlue's is `main`
-until its Hub upload exists), so a fetch pins exactly the bytes the checksums describe.
+added; the script's default `--revision` waits for the upload: it moves to the commit SHA the upload prints (for both bundles), so a
+fetch pins exactly the bytes the checksums describe.
