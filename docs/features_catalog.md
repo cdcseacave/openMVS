@@ -391,7 +391,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - `ONLY_POINTS` constraint type: reprojection residuals
   - Optional per-image scale variables
   - GPU solver (GLOMAP-style) when `images >= 50` and CUDA available
-- **Configuration:** `GlobalPositionerOptions` — `constraintType`, `maxNumIterations` (200), `minNumViewPerTrack` (3), `useGpu`
+- **Configuration:** `GlobalPositionerOptions` — `constraintType`, `maxNumIterations` (200), `minNumViewPerTrack` (3), `useGpu`, the switches `generateRandomPoints`, `generateScales`, `optimizePositions`, `optimizePoints`, `optimizeScales` (all true)
 - **GPU Support:** Yes (CUDA solver for large scenes)
 - **Threading:** Ceres internal parallelism; GPU path when available
 - **Dependencies:** Ceres Solver, CUDA (optional)
