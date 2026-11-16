@@ -68,7 +68,7 @@ endif()
 # Link its dependencies
 TARGET_LINK_LIBRARIES(SFM PUBLIC Common Math IO ${SFM_EXTRA_LIBS})
 
-# Where `cmake --build . --target roma2-model` / `flexglue-model` install the model bundles (share/openMVS/<matcher>), so --roma2
+# Where `cmake --build . --target roma2-model` / `flexglue-model` install the model bundles (share/openMVS/<matcher>), so --dense
 # finds them without an environment variable (ROMA2Config::ResolveModelPath in MatchROMA2.h). PUBLIC so every
 # target linking SFM compiles that inline function with the same definition (ODR). The IF() guard
 # only matters for a configure that explicitly clears CMAKE_INSTALL_PREFIX, since CMake seeds it to

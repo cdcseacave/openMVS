@@ -354,7 +354,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const Pai
 	for (OrtTensor& layers : slotLayers) {
 		layers = roma2.MakeCode();
 		if (!layers.IsValid()) {
-			VERBOSE("error: ROMA2 slot pool: could not allocate the %u descriptor slots the plan needs (lower --roma2-slots)", plan.numSlots);
+			VERBOSE("error: ROMA2 slot pool: could not allocate the %u descriptor slots the plan needs (lower --dense-slots)", plan.numSlots);
 			return false;
 		}
 	}

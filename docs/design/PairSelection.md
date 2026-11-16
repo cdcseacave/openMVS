@@ -17,7 +17,7 @@ Source: `PairsMatcher.h/cpp` (`Match`, `CollectVocabularyPairs`, `CollectRetriev
 
 | `--match-mode` | `MatchConfig::MatchMode` | candidates |
 |---|---|---|
-| -1 | SKIP | no matching: the saved scene's own matches are used; valid only when the loaded input is a saved scene (`.sfm`) whose pairs hold matches (a `--match-images-only` run or ExtractKeyframes stores them): `CreateStructure` refuses it at start for any other source or with `--roma2 true`, `Scene::Reconstruct` refuses a scene in which no pair holds a match before any work, and `Scene::MatchPairs` then only refits the missing relative poses and marks the scene matched |
+| -1 | SKIP | no matching: the saved scene's own matches are used; valid only when the loaded input is a saved scene (`.sfm`) whose pairs hold matches (a `--match-images-only` run or ExtractKeyframes stores them): `CreateStructure` refuses it at start for any other source or with `--dense true`, `Scene::Reconstruct` refuses a scene in which no pair holds a match before any work, and `Scene::MatchPairs` then only refits the missing relative poses and marks the scene matched |
 | 0 | EXHAUSTIVE | every pair |
 | 1 (default) | VOCABULARY | pairs ranked by a vocabulary tree over the local descriptors |
 | 2 | SEQUENTIAL | consecutive images |
@@ -116,7 +116,7 @@ The second round runs the same matching round as the first (the descriptor round
 
 ## What happens to a selected pair
 
-With the descriptor flow (when `--roma2-match` is off), `MatchPairsBatch` orders the pairs to group those sharing a first
+With the descriptor flow (when `--dense-match` is off), `MatchPairsBatch` orders the pairs to group those sharing a first
 image, matches descriptors, and verifies:
 
 - Matching is a k-NN (k = 2) search on FLANN (LSH for binary, KD-tree for float descriptors) or brute force when
@@ -126,7 +126,7 @@ image, matches descriptors, and verifies:
   `sqrt(matchRatio)`; the guided matching of the dense flow applies the ratio to true norms.
 - An image with fewer descriptors than `minMatches` matches nothing, and a pair with fewer matches than `minMatches` is
   dropped before verification.
-- `GeometricFilter` verifies the pair (`TwoViewVerificationAndLens.md`). With `--roma2-match`, the whole round is
+- `GeometricFilter` verifies the pair (`TwoViewVerificationAndLens.md`). With `--dense-match`, the whole round is
   instead the dense one pass of `DenseMatching.md`.
 - Afterwards the descriptors are released (`releaseDescriptors`), redundant keypoints within 0.1 px are filtered (this is
   where a dense keypoint appended by two pairs of one image becomes one point and a track can exceed two views), and the

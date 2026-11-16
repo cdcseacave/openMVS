@@ -2087,7 +2087,7 @@ bool ROMA2DenseFillCeilingTest()
 		return false;
 	}
 	// the two sides are symmetric -- it is min(), not "A's area" -- and the density is linear in the
-	// knob, which is what makes --roma2-dense-matches readable as matches per frame of overlap
+	// knob, which is what makes --dense-matches readable as matches per frame of overlap
 	config.denseMatchesPerFrame = 500;
 	verdict.inlierAreaA = 0.50f; verdict.inlierAreaB = 0.50f;
 	if (DenseFillCeiling(config, verdict) != 250) {
@@ -6242,7 +6242,7 @@ bool FlexGlueManifestTest()
 // flexglueModelPath and $OPENMVS_FLEXGLUE_MODEL_PATH): the explicit path wins over everything (even a set environment variable);
 // with it empty, the matcher's environment variable wins; with both absent, the result falls back to the install prefix's own
 // copy (OPENMVS_MODEL_INSTALL_DIR/<matcher>) when that directory actually exists on disk, else it is empty. And a matcher never
-// resolves to the other one's explicit path or environment variable. This is the precedence the whole --roma2 pipeline depends on
+// resolves to the other one's explicit path or environment variable. This is the precedence the whole --dense pipeline depends on
 // -- it decides whether the CLI's own "needs a model" error fires -- so it is checked here directly rather than only indirectly
 // through CreateStructure. The fallback case must not create that directory, so it reads the same File::isFolder check the
 // implementation uses and asserts against whichever outcome is already true on this machine.
@@ -6853,7 +6853,7 @@ static bool ROMA2ReconstructScene(Scene& scene, ROMA2Config roma2Cfg,
 // ROMA2 reconstruct test: runs the whole import/AKAZE/RETRIEVAL pipeline of ReconstructTest
 // with the in-process ROMAv2 model attached, and checks both of its passes -- the describe pass
 // (per-image global retrieval descriptors, 2048-D, the graph's own on-device pooling) and the ONE
-// PASS that replaces the descriptor batch outright when --roma2-match is on: every candidate pair
+// PASS that replaces the descriptor batch outright when --dense-match is on: every candidate pair
 // judged on its bidirectional warp, the admitted ones guided, filled densely and stored. The one
 // pass is measured against a baseline run of the very same configuration with it switched off, so
 // what is asserted is what the warps actually produced; the run is then repeated on a fresh scene
@@ -6995,7 +6995,7 @@ bool ROMA2ReconstructTest()
 		// bundled images (the star initializer asks for three views per track), so it only runs in
 		// a build that can decode the two HEIC ones.
 		// ReconstructTest's expectations, at two bounds this path has to set for itself:
-		//  - THE TRACK COUNT. The dense fill draws --roma2-dense-matches correspondences per full
+		//  - THE TRACK COUNT. The dense fill draws --dense-matches correspondences per full
 		//    frame of the overlap its guided matches did not already cover, each one a keypoint in
 		//    both images, so the pass hands the track builder several times what the descriptor
 		//    batch does: ~7.7k inlier tracks (turbo, CUDA) against the ~2.2k of the descriptor-only

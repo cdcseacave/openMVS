@@ -473,7 +473,7 @@ double SFM::EstimateDenseObservationWeight(const Scene& scene, const BAConfig& c
 		*sigmas = DenseObservationSigmas();
 	if (config.denseObservationWeight >= 0.0)
 		return config.denseObservationWeight;
-	// nothing to weight means nothing to measure, and this is the shipped default: --roma2-match is
+	// nothing to weight means nothing to measure, and this is the shipped default: --dense-match is
 	// off, so a descriptor-only reconstruction carries no dense keypoint and SelectReprojectionLoss
 	// never multiplies by the weight. The test is O(1) per image, against the full reprojection of
 	// every observation of every inlier track it saves -- once per Adjust(), and once per local BA,

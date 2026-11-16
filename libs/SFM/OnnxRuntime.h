@@ -61,7 +61,7 @@ enum class OnnxProvider : uint8_t {
 	CPU = 4
 };
 
-// Parse the --roma2-provider option ("auto"|"cuda"|"coreml"|"dml"|"cpu"); anything else maps to AUTO
+// Parse the --dense-provider option ("auto"|"cuda"|"coreml"|"dml"|"cpu"); anything else maps to AUTO
 SFM_API OnnxProvider OnnxProviderFromString(const String& name);
 
 // Human-readable name of a provider ("CUDA"|"CoreML"|"DirectML"|"CPU"|"AUTO"), for log messages only

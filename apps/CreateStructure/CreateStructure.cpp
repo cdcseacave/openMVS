@@ -206,16 +206,16 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 
 	boost::program_options::options_description dense("Dense matching options");
 	dense.add_options()
-		("roma2", boost::program_options::value<bool>(&OPT::bROMA2)->default_value(defaults.roma2Cfg.enabled), "enable the in-process RoMa v2 model: DINOv3/GeM pair retrieval and dense matching (needs an exported model, see --roma2-model)")
-		("dense-matcher", boost::program_options::value<std::string>(&OPT::strDenseMatcher)->default_value(defaults.roma2Cfg.matcher), "the dense matcher behind --roma2 true (retrieval descriptors and --roma2-match warps): roma2 or flexglue (flexglue needs its model, see --flexglue-model; the --roma2-* matching options then apply to its warps)")
+		("dense", boost::program_options::value<bool>(&OPT::bROMA2)->default_value(defaults.roma2Cfg.enabled), "enable the in-process dense matcher (RoMa v2 or FlexGlue, see --dense-matcher): pair retrieval descriptors and dense matching (needs an exported model, see --roma2-model and --flexglue-model)")
+		("dense-matcher", boost::program_options::value<std::string>(&OPT::strDenseMatcher)->default_value(defaults.roma2Cfg.matcher), "the dense matcher behind --dense true (retrieval descriptors and --dense-match warps): roma2 or flexglue (flexglue needs its model, see --flexglue-model; the --dense-* matching options then apply to its warps)")
 		("roma2-model", boost::program_options::value<std::string>(&OPT::strROMA2Model), "directory with the RoMa v2 ONNX graphs + manifest (default: $OPENMVS_ROMA2_MODEL_PATH, else the installed share/openMVS/roma2)")
 		("flexglue-model", boost::program_options::value<std::string>(&OPT::strFlexGlueModel), "directory of the FlexGlue model bundle: flexglue_<setting>.json and the two graphs it names (default: $OPENMVS_FLEXGLUE_MODEL_PATH, else the install prefix's share/openMVS/flexglue, as `--target flexglue-model` fetches it)")
-		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value(defaults.roma2Cfg.provider), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
-		("roma2-match", boost::program_options::value<bool>(&OPT::bROMA2Match)->default_value(defaults.roma2Cfg.useMatching), "one-pass dense pair matching: judge every candidate pair on its bidirectional warp alone, then guide its sparse matching and fill the rest of the overlap densely (a rejected pair is dropped, never descriptor-matched)")
-		("roma2-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(defaults.roma2Cfg.slotBudget), "images kept resident on the device while dense matching (12.5 MB each at base)")
-		("roma2-min-confidence", boost::program_options::value(&OPT::fROMA2MinConfidence)->default_value(defaults.roma2Cfg.minConfidence), "dense matching: confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill")
-		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(defaults.roma2Cfg.minOverlap), "dense matching: the verdict, as the smaller of the two inlier areas one fitted geometry explains -- of the first image's confident cells and of the second's (0.10 is about 0.15-0.17 of true overlap, 0.15 about 0.25; 0 admits every pair)")
-		("roma2-dense-matches", boost::program_options::value(&OPT::nROMA2DenseMatches)->default_value(defaults.roma2Cfg.denseMatchesPerFrame), "dense matching: correspondences the dense fill adds per FULL FRAME of overlap; a pair draws that density over the part of its overlap its guided sparse matches did not already cover, capped by the smaller of the two inlier areas the verdict measured, so the dense keypoint density is bounded in both images; each costs a keypoint in both images plus a track")
+		("dense-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value(defaults.roma2Cfg.provider), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
+		("dense-match", boost::program_options::value<bool>(&OPT::bROMA2Match)->default_value(defaults.roma2Cfg.useMatching), "one-pass dense pair matching: judge every candidate pair on its bidirectional warp alone, then guide its sparse matching and fill the rest of the overlap densely (a rejected pair is dropped, never descriptor-matched)")
+		("dense-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(defaults.roma2Cfg.slotBudget), "images kept resident on the device while dense matching (12.5 MB each at base)")
+		("dense-min-confidence", boost::program_options::value(&OPT::fROMA2MinConfidence)->default_value(defaults.roma2Cfg.minConfidence), "dense matching: confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill")
+		("dense-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(defaults.roma2Cfg.minOverlap), "dense matching: the verdict, as the smaller of the two inlier areas one fitted geometry explains -- of the first image's confident cells and of the second's (0.10 is about 0.15-0.17 of true overlap, 0.15 about 0.25; 0 admits every pair)")
+		("dense-matches", boost::program_options::value(&OPT::nROMA2DenseMatches)->default_value(defaults.roma2Cfg.denseMatchesPerFrame), "dense matching: correspondences the dense fill adds per FULL FRAME of overlap; a pair draws that density over the part of its overlap its guided sparse matches did not already cover, capped by the smaller of the two inlier areas the verdict measured, so the dense keypoint density is bounded in both images; each costs a keypoint in both images plus a track")
 		("dense-min-covisibility", boost::program_options::value(&OPT::fDenseMinCovisibility)->default_value(defaults.roma2Cfg.minCovisibility), "gate before the pair's verdict: a pair whose dense matcher gives a covisibility score (FlexGlue; RoMa2 gives none and is never gated) below this is dropped (0 = off)")
 		;
 
@@ -325,7 +325,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	if (OPT::matchMode == static_cast<int>(MatchConfig::SKIP) && OPT::bROMA2) {
-		LOG("error: --roma2 true with --match-mode -1 (SKIP): no matching runs, the dense matcher has nothing to do");
+		LOG("error: --dense true with --match-mode -1 (SKIP): no matching runs, the dense matcher has nothing to do");
 		return false;
 	}
 	if (FeatureTypeFromString(OPT::strDetectorType) == FeatureType::NONE) {
@@ -383,7 +383,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	if (OPT::strDenseMatcher == "flexglue" && !OPT::bROMA2) {
-		LOG("error: --dense-matcher flexglue selects the model behind --roma2 true, it does nothing without it");
+		LOG("error: --dense-matcher flexglue selects the model behind --dense true, it does nothing without it");
 		return false;
 	}
 	if (OPT::strDenseMatcher != "flexglue" && !OPT::strFlexGlueModel.empty()) {
@@ -411,13 +411,13 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	if (OPT::strDenseMatcher != "flexglue" && given("dense-min-covisibility")) {
-		LOG("error: --dense-min-covisibility given with %s (it gates FlexGlue pairs, RoMa2 gives no covisibility score)", OPT::bROMA2 ? "--dense-matcher roma2" : "--roma2 false");
+		LOG("error: --dense-min-covisibility given with %s (it gates FlexGlue pairs, RoMa2 gives no covisibility score)", OPT::bROMA2 ? "--dense-matcher roma2" : "--dense false");
 		return false;
 	}
 	if (!OPT::bROMA2) {
-		for (const char* name: {"roma2-model", "roma2-slots", "roma2-min-confidence", "roma2-min-overlap", "roma2-dense-matches", "roma2-provider"})
+		for (const char* name: {"roma2-model", "dense-slots", "dense-min-confidence", "dense-min-overlap", "dense-matches", "dense-provider"})
 			if (given(name)) {
-				LOG("error: --%s given with --roma2 false (the dense matcher is off, nothing reads it)", name);
+				LOG("error: --%s given with --dense false (the dense matcher is off, nothing reads it)", name);
 				return false;
 			}
 	}
@@ -426,7 +426,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	if (OPT::bROMA2 && !DenseMatcher::IsAvailable()) {
-		LOG("error: --roma2 needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
+		LOG("error: --dense needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
 		return false;
 	}
 	if (OPT::strROMA2Provider != "auto" && OPT::strROMA2Provider != "cuda" && OPT::strROMA2Provider != "coreml" &&
@@ -435,42 +435,42 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	if (OPT::fROMA2MinConfidence < 0.f || OPT::fROMA2MinConfidence > 1.f) {
-		LOG("error: --roma2-min-confidence is a confidence, it must be in [0,1] (got %g)", OPT::fROMA2MinConfidence);
+		LOG("error: --dense-min-confidence is a confidence, it must be in [0,1] (got %g)", OPT::fROMA2MinConfidence);
 		return false;
 	}
 	if (OPT::fROMA2MinOverlap < 0.f || OPT::fROMA2MinOverlap > 1.f) {
-		LOG("error: --roma2-min-overlap is a fraction of the warp grid, it must be in [0,1] (got %g)", OPT::fROMA2MinOverlap);
+		LOG("error: --dense-min-overlap is a fraction of the warp grid, it must be in [0,1] (got %g)", OPT::fROMA2MinOverlap);
 		return false;
 	}
 	if (OPT::nROMA2Slots < 2) {
-		LOG("error: --roma2-slots must be at least the 2 slots a pair needs (got %u)", OPT::nROMA2Slots);
+		LOG("error: --dense-slots must be at least the 2 slots a pair needs (got %u)", OPT::nROMA2Slots);
 		return false;
 	}
 	if (OPT::nROMA2DenseMatches < 1) {
-		LOG("error: --roma2-dense-matches is the dense fill's draw per full frame of overlap and the frame the pair evidence is anchored to, it must be at least 1 (got %u)", OPT::nROMA2DenseMatches);
+		LOG("error: --dense-matches is the dense fill's draw per full frame of overlap and the frame the pair evidence is anchored to, it must be at least 1 (got %u)", OPT::nROMA2DenseMatches);
 		return false;
 	}
 	if (OPT::bROMA2Match && !OPT::bROMA2) {
 		// a requested-but-unavailable backend never silently degrades: the one
-		// pass IS the matching round when it runs, and without --roma2 the enabled flag
+		// pass IS the matching round when it runs, and without --dense the enabled flag
 		// Scene::MatchPairs gates on (enabled && (needsDescriptors || needsWarps)) is false regardless
 		// of useMatching, so the descriptor round would quietly run the whole matching stage in its
 		// place with nothing in the log naming ROMA2
-		LOG("error: --roma2-match needs --roma2 true (the one pass is the ROMAv2 warp)");
+		LOG("error: --dense-match needs --dense true (the one pass is the ROMAv2 warp)");
 		return false;
 	}
 	if (OPT::bROMA2 && !OPT::bROMA2Match && OPT::matchMode != static_cast<int>(MatchConfig::RETRIEVAL)) {
 		// the match mode decides whether the scene needs describing (Scene::MatchPairs' own
-		// wantsDescriptors), and --roma2-match is the only other consumer of the model -- with
-		// neither, --roma2 has nothing to load a model for. Deliberately not checked here: the
-		// converse, --match-mode 4 without --roma2 -- a scene loaded from an .sfm may already carry global descriptors, and this parser cannot
+		// wantsDescriptors), and --dense-match is the only other consumer of the model -- with
+		// neither, --dense has nothing to load a model for. Deliberately not checked here: the
+		// converse, --match-mode 4 without --dense -- a scene loaded from an .sfm may already carry global descriptors, and this parser cannot
 		// see what the source will import, only the flags (GlobalDescriptors::Build fails loudly
 		// and by name if it does not)
-		LOG("error: --roma2 has nothing to do without --roma2-match true or --match-mode 4 (RETRIEVAL)");
+		LOG("error: --dense has nothing to do without --dense-match true or --match-mode 4 (RETRIEVAL)");
 		return false;
 	}
 	if (OPT::bROMA2Match) {
-		// --roma2-match unconditionally needs the model to run the warp, unlike the descriptor-only
+		// --dense-match unconditionally needs the model to run the warp, unlike the descriptor-only
 		// case above (--match-mode 4): whether that needs a model depends on
 		// whether the scene already carries global descriptors, which this parser cannot see, so --
 		// same precedent as the converse case in the check above -- it is deliberately left to
@@ -482,7 +482,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		roma2Cfg.modelPath = OPT::strROMA2Model;
 		roma2Cfg.flexglueModelPath = OPT::strFlexGlueModel;
 		if (roma2Cfg.ResolveModelPath().empty()) {
-			LOG("error: --roma2-match needs a model (set %s, or install the model into the install prefix)", OPT::strDenseMatcher == "flexglue" ? "--flexglue-model or $OPENMVS_FLEXGLUE_MODEL_PATH" : "--roma2-model or $OPENMVS_ROMA2_MODEL_PATH");
+			LOG("error: --dense-match needs a model (set %s, or install the model into the install prefix)", OPT::strDenseMatcher == "flexglue" ? "--flexglue-model or $OPENMVS_FLEXGLUE_MODEL_PATH" : "--roma2-model or $OPENMVS_ROMA2_MODEL_PATH");
 			return false;
 		}
 	}

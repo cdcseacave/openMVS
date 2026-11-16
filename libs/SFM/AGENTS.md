@@ -175,10 +175,10 @@ GPS. Clustering is never involved.
   weakest verified connectivity refill any leftover budget (2 pairs/image) from their next
   best-ranked first-round candidates
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
-- **ROMAv2 one-pass dense matching** (`MatchROMA2.h`, `ROMA2Warp.h` helpers, `--roma2-match`): the
+- **ROMAv2 one-pass dense matching** (`MatchROMA2.h`, `ROMA2Warp.h` helpers, `--dense-match`): the
   bidirectional dense warps are computed in-process (no external files) and, when enabled, ARE the
   matching round - `JudgePairROMA2` admits a pair on the smaller of the two inlier areas one fitted
-  geometry explains (`--roma2-min-overlap`), `TrackKeypointsByWarp` + `MatchFeaturesGuided` select
+  geometry explains (`--dense-min-overlap`), `TrackKeypointsByWarp` + `MatchFeaturesGuided` select
   its sparse matches in an epipolar band centred on each warp prediction, `AssemblePairROMA2` fills the rest
   of the overlap densely and fits the pair's geometry, `StorePairROMA2` stores it. A rejected pair
   is dropped, never descriptor-matched

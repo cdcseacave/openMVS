@@ -7,7 +7,7 @@ offers two independent services to the classical SfM front end:
 
 - **Retrieval descriptors**: one global descriptor per image, from which `--match-mode 4` (RETRIEVAL, see
   `PairSelection.md`) ranks candidate pairs.
-- **One-pass pair matching** (`--roma2-match`): the matcher's *warp* of a candidate pair (for every cell of a coarse
+- **One-pass pair matching** (`--dense-match`): the matcher's *warp* of a candidate pair (for every cell of a coarse
   grid on image A, where that cell lands in B and how confident the model is, in both directions) decides whether the
   pair is real (the verdict), guides the descriptor matching of the pair's SIFT/AKAZE keypoints, and fills the rest of
   the overlap with dense correspondences. A pair the verdict rejects is dropped; there is no descriptor-matching
@@ -29,25 +29,25 @@ Source files: `OnnxRuntime.h/cpp` (session and tensor wrapper), `DenseMatcher.h`
 
 ## Options and where they act
 
-`--roma2` is the master switch for the model; it does nothing alone. `CreateStructure` rejects `--roma2` unless
-`--roma2-match true` or `--match-mode 4` asks for something the model produces, rejects `--roma2-match` without
-`--roma2`, rejects `--dense-matcher flexglue` without `--roma2`, and rejects `--flexglue-model` with another matcher.
+`--dense` is the master switch for the model; it does nothing alone. `CreateStructure` rejects `--dense` unless
+`--dense-match true` or `--match-mode 4` asks for something the model produces, rejects `--dense-match` without
+`--dense`, rejects `--dense-matcher flexglue` without `--dense`, and rejects `--flexglue-model` with another matcher.
 The two services are independent: `--match-mode 4` alone ranks pairs by the descriptors and matches them with the
-ordinary SIFT/AKAZE/ORB flow; `--roma2-match` composes with any match mode.
+ordinary SIFT/AKAZE/ORB flow; `--dense-match` composes with any match mode.
 
 | option | `ROMA2Config` field | default | effect |
 |---|---|---|---|
-| `--roma2 B` | `enabled` | false | load the in-process model |
+| `--dense B` | `enabled` | false | load the in-process model |
 | `--roma2-model DIR` | `modelPath` | `$OPENMVS_ROMA2_MODEL_PATH`, else `<prefix>/share/openMVS/roma2` if present | folder of the RoMa2 bundle (manifest and graphs) |
-| `--roma2-provider auto\|cuda\|coreml\|dml\|cpu` | `provider` | `auto` | ONNX Runtime execution provider (see Providers) |
-| `--roma2-match B` | `useMatching` | false | one-pass pair matching |
-| `--dense-matcher roma2\|flexglue` | `matcher` | `roma2` | the model behind `--roma2 true`, for both services |
+| `--dense-provider auto\|cuda\|coreml\|dml\|cpu` | `provider` | `auto` | ONNX Runtime execution provider (see Providers) |
+| `--dense-match B` | `useMatching` | false | one-pass pair matching |
+| `--dense-matcher roma2\|flexglue` | `matcher` | `roma2` | the model behind `--dense true`, for both services |
 | `--flexglue-model DIR` | `flexglueModelPath` | `$OPENMVS_FLEXGLUE_MODEL_PATH`, else `<prefix>/share/openMVS/flexglue` if present | folder of the FlexGlue bundle (manifest and graphs) |
 | `--dense-min-covisibility F` | `minCovisibility` | 0.2 | covisibility gate before the verdict, in [0,1]; 0 = off; a matcher that gives no score (RoMa2) is never gated, and the option is refused when given with RoMa2 or with the dense matcher off |
-| `--roma2-slots N` | `slotBudget` | 64 | image descriptor tensors resident on the device during pair matching; at least 2 |
-| `--roma2-min-confidence F` | `minConfidence` | 0.1 | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the fill |
-| `--roma2-min-overlap F` | `minOverlap` | 0.10 | the verdict's bar on the smaller inlier area (see Verdict); 0 admits every pair |
-| `--roma2-dense-matches N` | `denseMatchesPerFrame` | 2000 | dense correspondences per full frame of overlap, a density and not a per-pair count; also the frame target of the view graph's dense pseudo-count, so the same value reaches `PairsWeightingConfig::denseMatchesPerFrame` |
+| `--dense-slots N` | `slotBudget` | 64 | image descriptor tensors resident on the device during pair matching; at least 2 |
+| `--dense-min-confidence F` | `minConfidence` | 0.1 | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the fill |
+| `--dense-min-overlap F` | `minOverlap` | 0.10 | the verdict's bar on the smaller inlier area (see Verdict); 0 admits every pair |
+| `--dense-matches N` | `denseMatchesPerFrame` | 2000 | dense correspondences per full frame of overlap, a density and not a per-pair count; also the frame target of the view graph's dense pseudo-count, so the same value reaches `PairsWeightingConfig::denseMatchesPerFrame` |
 
 `ROMA2Config` fields with no command-line option, all used by the one pass:
 
@@ -173,7 +173,7 @@ not MIT). The bundle is read from a folder the user names or the fetch target in
 
 `OnnxModel::Load` tries providers in order CUDA, CoreML, DirectML, CPU, each only if the ONNX Runtime build lists it,
 and keeps the first that constructs a session; a failed candidate logs a warning and the next is tried. A provider
-named explicitly by `--roma2-provider` is a requirement: if unavailable or failing, the load fails and the run stops
+named explicitly by `--dense-provider` is a requirement: if unavailable or failing, the load fails and the run stops
 instead of finishing on the CPU. With `auto`, `--gpu-device` selecting the CPU (`-2`) forces CPU, and the CUDA provider
 uses the device `SEACAVE::CUDA` selected. Each session logs its provider when loaded.
 
@@ -185,7 +185,7 @@ causes apart). One graph call states both directions of a pair, so only the pair
 
 `MakeSlotPlan` schedules which image descriptor tensors stay resident while the pairs are warped one at a time: Belady's
 optimal replacement (evict the resident image whose next use is furthest away, or never needed again) over the pairs
-sorted by `(ID1, ID2)`, at most `--roma2-slots` slots. Consecutive pairs share their first image, so every use of an
+sorted by `(ID1, ID2)`, at most `--dense-slots` slots. Consecutive pairs share their first image, so every use of an
 image falls in a short window and a modest budget rarely reloads. The plan is computed once and replayed: the
 describe-and-load of a slot runs on the calling thread (a session is driven by one thread; the image load and
 preprocessing are prefetched on the pool in a ring keyed by submission order), while each pair's verdict, guided
@@ -397,5 +397,5 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
   `PairsMatcher` has no homography branch. The planar twin switch resolves the pairs whose loops decide.
 - CoreML and DirectML latency is unmeasured.
 - FlexGlue's coarser warp grid (128 cells against 160) is the candidate cause of its lower F1 on Palace.
-- `--roma2` help text names DINOv3/GeM retrieval; with `--dense-matcher flexglue` the retrieval is FlexGlue's pooled
+- `--dense` help text names DINOv3/GeM retrieval; with `--dense-matcher flexglue` the retrieval is FlexGlue's pooled
   256-D descriptor.
