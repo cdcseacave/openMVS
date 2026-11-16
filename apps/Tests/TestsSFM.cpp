@@ -13977,6 +13977,7 @@ bool RepeatedFullAdjustmentTest()
 		cfg.fullBARepeats = repeats;
 		BAConfig baConfig = cfg.fullBAConfig;
 		baConfig.maxIterations = maxIterations;
+		baConfig.numThreads = 1; // the solver's own threads sum in the order they finish, and two of these solves are compared to the last digit
 		FilterTracks(scene, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 		if (mode == REPEATED) {
 			out.solves = AdjustRepeated(scene, baConfig, cfg);
