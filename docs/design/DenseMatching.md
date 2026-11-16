@@ -43,7 +43,7 @@ ordinary SIFT/AKAZE/ORB flow; `--dense-match` composes with any match mode.
 | `--dense-match B` | `useMatching` | false | one-pass pair matching |
 | `--dense-matcher roma2\|flexglue` | `matcher` | `roma2` | the model behind `--dense true`, for both services |
 | `--flexglue-model DIR` | `flexglueModelPath` | `$OPENMVS_FLEXGLUE_MODEL_PATH`, else `<prefix>/share/openMVS/flexglue` if present | folder of the FlexGlue bundle (manifest and graphs) |
-| `--dense-min-covisibility F` | `minCovisibility` | 0.2 | covisibility gate before the verdict, in [0,1]; 0 = off; a matcher that gives no score (RoMa2) is never gated, and the option is refused when given with RoMa2 or with the dense matcher off |
+| `--dense-min-covisibility F` | `minCovisibility` | 0.5 | covisibility gate before the verdict, in [0,1]; 0 = off; a matcher that gives no score (RoMa2) is never gated, and the option is refused when given with RoMa2 or with the dense matcher off |
 | `--dense-slots N` | `slotBudget` | 64 | image descriptor tensors resident on the device during pair matching; at least 2 |
 | `--dense-min-confidence F` | `minConfidence` | 0.1 | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the fill |
 | `--dense-min-overlap F` | `minOverlap` | 0.10 | the verdict's bar on the smaller inlier area (see Verdict); 0 admits every pair |
@@ -320,7 +320,7 @@ that ends at its twin takes the twin's pose, E and F and re-classifies its candi
 
 Both matchers at 8 threads (right / wrong = images registered right or wrong against the capture's reference; F1 =
 the pose score; describe and matching passes in seconds; GPU peak = the process's memory). FlexGlue runs from images
-with the bundle and the gate at 0.2. The RoMa2 rows of 4e5c6f6d, 1c65aab4, 5ada248e and Palace run from images; the RoMa2
+with the bundle and the gate at 0.2 (the table is measured at 0.2; the shipped gate is 0.5, see below). The RoMa2 rows of 4e5c6f6d, 1c65aab4, 5ada248e and Palace run from images; the RoMa2
 rows of the LaMAR sequences reconstruct a scene RoMa2 matched in an earlier run, so they carry no matching times.
 
 | capture | matcher | right / wrong | F1 | describe pass | matching passes | GPU peak MiB |
@@ -342,9 +342,11 @@ rows of the LaMAR sequences reconstruct a scene RoMa2 matched in an earlier run,
 | LaMAR HGE_0118 | RoMa2 | 40 / 0 | .1455 | - | - | - |
 | LaMAR HGE_0118 | FlexGlue | 44 / 0 | .1633 | 6 | 526 | 4400 |
 
-The covisibility gate trades look-alike pairs against true ones: at 0.5 instead of 0.2, CAB_0120 registers 79 right and 0
-wrong images (F1 .3073) and Palace keeps 353 wrong verified pairs instead of 1742 at the same F1 (.8056), while 4e5c6f6d
-loses 3 registered images (F1 .9638); the matching passes take as long, because the warp is computed before the gate.
+The covisibility gate trades look-alike pairs against true ones. Over seven captures the gate at 0.5 (instead of 0.2)
+removes wrong images where look-alike pairs reach the reconstruction: CAB_0120 17 -> 0 wrong images, CAB_0112 98 -> 75
+wrong with 18 more right ones, and four fifths of Palace's wrong verified pairs (1742 -> 353) at the same F1 (.8056);
+four captures do not move; the cost is 3 of 278 images on
+4e5c6f6d (F1 .9638). The matching passes take as long, because the warp is computed before the gate.
 
 The FlexGlue bundle matches PyTorch on 12 real pairs of four captures (ONNX Runtime 1.23.2, CPU provider): descriptor
 features to 3.3e-5, retrieval cosine 1.0000000; the H1 head inside the match graph agrees with the source's
@@ -389,7 +391,7 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
   its disagreement with the verified pose flags most look-alike pairs (60% of the wrong verified poses at 10 / 30 deg,
   13.7% of the right ones). As a weight inside the contradiction cut's rotation averaging it changes at most 3 pairs per
   capture; as a factor on the pair weight it is unmeasured.
-- The covisibility gate's value: 0.2 lets through look-alike pairs that 0.5 removes (see Validation).
+- The covisibility gate at 0.2: it lets through look-alike pairs that 0.5 removes (see Validation).
 - The verdict does not tell apart two images of different instances of a repeated structure (both give a consistent
   correspondence set); the triplet scores and the contradiction cut downstream do (`TripletScores.md`,
   `ContradictionCut.md`).

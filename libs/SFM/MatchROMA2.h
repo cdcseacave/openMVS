@@ -60,7 +60,7 @@ struct SFM_API ROMA2Config {
 	String flexglueModelPath;      // folder of FlexGlue's graphs (empty = $OPENMVS_FLEXGLUE_MODEL_PATH, else the installed share/openMVS/flexglue), for matcher == "flexglue"
 	// Gate before the verdict: a pair whose matcher gives a covisibility score ("do the two images show the same place", 0..1)
 	// below this is dropped without a verdict. 0 = off. A matcher that gives no score (RoMa2) is not gated.
-	float minCovisibility = 0.2f;
+	float minCovisibility = 0.5f;
 	// Dense correspondences the fill may draw per FULL FRAME of overlap: a density, not a count per
 	// pair. A pair's draw is that density over the part of its overlap its guided matches did not
 	// already cover (DenseFillGridSide sets the pitch that makes it so), capped by DenseFillCeiling.
