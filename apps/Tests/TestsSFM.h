@@ -436,6 +436,9 @@ bool ReconstructTest(bool verbose = false);
 // .sfm given back as source), before any reconstruction step can drop pairs
 bool ReconstructExportCSVTest();
 
+// --match-mode -1 (SKIP): reconstructs a saved scene from its own matches, refuses a scene that holds none
+bool SkipMatchModeTest();
+
 // The camera-triplet view-graph filter of Manam & Govindu (CVPR 2024): the scores, the yield
 // rule and both modes on hand-computed graphs.
 bool TripletFilterTest();

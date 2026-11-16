@@ -54,7 +54,7 @@ enum class FeatureType : uint8_t;
 struct SFM_API MatchConfig
 {
 	enum MatchMode {
-		SKIP = -1,
+		SKIP = -1,       // No matching: the scene's own matches are used; Scene::Reconstruct refuses it for a scene whose pairs hold no match (a --match-images-only run or ExtractKeyframes stores them)
 		EXHAUSTIVE = 0,  // Match all O(N²) pairs (small scenes only)
 		VOCABULARY = 1,  // Use vocabulary tree retrieval over the local descriptors (recommended)
 		SEQUENTIAL = 2,  // Match consecutive images only (ordered sequences)

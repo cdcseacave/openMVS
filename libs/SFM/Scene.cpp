@@ -610,6 +610,10 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 		}
 	}
 
+	// SKIP runs no matching, so no dense matcher has anything to do, and the scene holds the matches (Scene::Reconstruct)
+	ASSERT(config.mode != MatchConfig::SKIP || !roma2Cfg.enabled);
+	ASSERT(config.mode != MatchConfig::SKIP || std::any_of(pairs.begin(), pairs.end(), [](const ImagePair& pair) { return pair.GetNumMatches() > 0; }));
+
 	// Which passes this run needs: RETRIEVAL is what makes the global descriptors necessary
 	const bool needsDescriptors = config.mode == MatchConfig::RETRIEVAL && !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS);
 	const bool needsWarps = roma2Cfg.useMatching;
@@ -647,11 +651,11 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	}
 	pairsMatcher.SetROMA2(useROMA2 && needsWarps ? roma2.get() : NULL, roma2Cfg);
 
-	if (status.nState.isSet(Status::STATE::MATCHED)) {
-		VERBOSE("warning: pairs already matched, skipping");
+	if (status.nState.isSet(Status::STATE::MATCHED) || config.mode == MatchConfig::SKIP) {
+		VERBOSE(config.mode == MatchConfig::SKIP ? "Matching skipped: the scene's own matches are used" : "warning: pairs already matched, skipping");
 		pairsMatcher.ComputeRelativePoses();
+		status.nState.set(Status::STATE::MATCHED);
 	} else {
-		// Convert lightweight config to typed MatchConfig
 		bool bFatal = false;
 		pairsMatcher.Match(bFatal);
 		// A matching round that exited on an error instead of finishing its candidates says so,
@@ -815,6 +819,14 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 				return false;
 			return true;
 		}
+	}
+
+	// SKIP runs no matching: it can only use the matches the scene already holds, a pair with at least one match
+	// (a --match-images-only run or ExtractKeyframes stores them)
+	if (cfg.matchCfg.mode == MatchConfig::SKIP &&
+		std::none_of(pairs.begin(), pairs.end(), [](const ImagePair& pair) { return pair.GetNumMatches() > 0; })) {
+		VERBOSE("error: --match-mode -1 (SKIP) runs no matching, it needs a saved scene (.sfm) that already holds matches (after ExtractKeyframes or a --match-images-only run)");
+		return false;
 	}
 
 	// the GPS prior weighs its metric terms by a pinhole focal, which panoramas do not have

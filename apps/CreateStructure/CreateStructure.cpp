@@ -197,7 +197,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("siftgpu-darkness-adaptivity", boost::program_options::value(&OPT::bSiftGPUDarknessAdaptivity)->default_value(defaults.featuresCfg.siftgpuDarknessAdaptivity), "SiftGPU: lower the DoG threshold and curvature floor in dark areas")
 		("spherical-bottom-band", boost::program_options::value(&OPT::fSphericalBottomBand)->default_value(defaults.featuresCfg.sphericalBottomBand), "spherical images: the fraction of the image height, counted from the bottom, whose features are discarded (the operator and the tripod are there), in [0,1); 0 = keep every feature; perspective images are not affected")
 		("siftgpu-cuda", boost::program_options::value(&OPT::bSiftGPUCUDA)->default_value(defaults.featuresCfg.useCUDA), "SiftGPU feature extraction and matching backend: 1 = CUDA (if available), 0 = OpenGL/GLSL")
-		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value((int)defaults.matchCfg.mode), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
+		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value((int)defaults.matchCfg.mode), "match mode: -1=SKIP (no matching: only for a saved .sfm scene that already holds matches),0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
 		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(defaults.matchCfg.matchSequenceOverlap), "consecutive images each image is matched with: the whole candidate set of the sequential mode, and a prior added to the vocabulary and retrieval candidates (0 = no prior)")
 		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(defaults.matchCfg.maxPairsPerImage), "target pairs per image for vocabulary and pose-guided matching")
 		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(defaults.matchCfg.verificationFeedback), "hold back part of the matching budget and re-invest it in pairs suggested by the geometrically verified matches (vocabulary and pose-guided matching)")
@@ -287,6 +287,15 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::matchMode < static_cast<int>(MatchConfig::SKIP) ||
 		OPT::matchMode > static_cast<int>(MatchConfig::RETRIEVAL)) {
 		LOG("error: unknown match mode %d (accepted: -1, 0, 1, 2, 3, 4)", OPT::matchMode);
+		return false;
+	}
+	if (OPT::matchMode == static_cast<int>(MatchConfig::SKIP) &&
+		!(Util::getFileExt(OPT::strSource) == ".sfm" && File::isFile(MAKE_PATH_SAFE(OPT::strSource)))) {
+		LOG("error: --match-mode -1 (SKIP) runs no matching, the source must be a saved scene (.sfm) that already holds matches (after ExtractKeyframes or a --match-images-only run)");
+		return false;
+	}
+	if (OPT::matchMode == static_cast<int>(MatchConfig::SKIP) && OPT::bROMA2) {
+		LOG("error: --roma2 true with --match-mode -1 (SKIP): no matching runs, the dense matcher has nothing to do");
 		return false;
 	}
 	if (FeatureTypeFromString(OPT::strDetectorType) == FeatureType::NONE) {

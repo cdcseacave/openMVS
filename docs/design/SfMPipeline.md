@@ -120,7 +120,7 @@ Dense matcher and match mode.
 |---|---|---|
 | no dense matcher, match modes 0, 1, 2, 3 | supported | `PairsMatcher.cpp:2088-2178` |
 | no dense matcher, mode 4 RETRIEVAL | supported only when every image already carries a global descriptor (a saved scene from an earlier `--roma2` run); otherwise the matching fails with "RETRIEVAL matching needs a global descriptor on every image" | `PairsMatcher.cpp:741` |
-| no dense matcher, mode -1 SKIP | accepted by the option parser, then fails in matching ("matching failed"); it works only on a scene already marked `MATCHED`, where matching is skipped | `CreateStructure.cpp:291`, `PairsMatcher.cpp:2177`, `Scene.cpp:650` |
+| mode -1 SKIP | supported only for a saved scene (`.sfm`) whose pairs hold matches (after `--match-images-only` or ExtractKeyframes): no matching runs and the scene's own matches are used; refused at start for any other source and with `--roma2 1`, and refused by `Scene::Reconstruct` for a scene in which no pair holds a match | `CreateStructure.cpp:Application::Initialize`, `Scene.cpp:Scene::Reconstruct`, `Scene.cpp:Scene::MatchPairs` |
 | `--roma2 1` without `--roma2-match` and with mode other than 4 | refused: "--roma2 has nothing to do without --roma2-match true or --match-mode 4" | `CreateStructure.cpp:401` |
 | `--roma2 1`, mode 4, no `--roma2-match` | supported: dense descriptors rank the pairs, ordinary descriptor matching verifies them | `Scene.cpp:596-647` |
 | `--roma2-match 1` without `--roma2 1` | refused | `CreateStructure.cpp:391` |
@@ -242,5 +242,4 @@ filtering of the view-graph focal calibration.
 ## Open items
 
 - The global solver (`ReconstructGlobal`, `GlobalRotationAveraging`, `GlobalPositioning`) has no design document.
-- `--match-mode -1` (SKIP) is accepted by the parser but has no matching code; it works only on a matched scene.
 - When `Reconstruct` fails after a calibrated state, `main` exports but does not save the `.sfm`.

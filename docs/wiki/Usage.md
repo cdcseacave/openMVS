@@ -48,7 +48,7 @@ When the input is a `.sfm` produced by `ExtractKeyframes` or `CreateStructure` w
 Notable options:
 
 - `--detector-type` (default `SIFTGPU`) — feature detector; same choices as above.
-- `--match-mode` (`-1` skip, `0` exhaustive, `1` vocabulary, `2` sequential, `3` known-poses; default `1`) — pairwise-matching strategy.
+- `--match-mode` (`-1` skip: no matching, only for a saved `.sfm` that already holds matches; `0` exhaustive, `1` vocabulary, `2` sequential, `3` known-poses; default `1`) — pairwise-matching strategy.
 - `--match-sequence-overlap` (default `3`) — sequence overlap when using sequential matching.
 - `--vocab-max-pairs` (default `50`) — target pairs per image for vocabulary-tree and known-poses matching (with `--match-verification-feedback`, the default, part of this budget is re-invested in pairs suggested by the verified matches).
 - `--import-poses-file` (default `poses.csv`) with `--import-poses-mode` (`0` none, `1` poses+intrinsics, `2` poses only, `3` positions only) — import camera data from an OpenMVS pose `.csv` or a Polycam-style `frames.json`; modes `1` and `2` select the known-poses workflow described below.

@@ -17,7 +17,7 @@ Source: `PairsMatcher.h/cpp` (`Match`, `CollectVocabularyPairs`, `CollectRetriev
 
 | `--match-mode` | `MatchConfig::MatchMode` | candidates |
 |---|---|---|
-| -1 | SKIP | accepted by the command line but not implemented: `PairsMatcher::Match` asserts and the matching stage fails (see open items) |
+| -1 | SKIP | no matching: the saved scene's own matches are used; valid only when the loaded input is a saved scene (`.sfm`) whose pairs hold matches (a `--match-images-only` run or ExtractKeyframes stores them): `CreateStructure` refuses it at start for any other source or with `--roma2 true`, `Scene::Reconstruct` refuses a scene in which no pair holds a match before any work, and `Scene::MatchPairs` then only refits the missing relative poses and marks the scene matched |
 | 0 | EXHAUSTIVE | every pair |
 | 1 (default) | VOCABULARY | pairs ranked by a vocabulary tree over the local descriptors |
 | 2 | SEQUENTIAL | consecutive images |
@@ -165,6 +165,4 @@ image, matches descriptors, and verifies:
 
 ## Open items
 
-- `--match-mode -1` (SKIP) is accepted and validated by `CreateStructure` but has no implementation: `Match` reaches its
-  invalid-mode branch and fails.
 - `preMatchThreshold` and `PreMatch` are reachable only from the library, not from the command line.

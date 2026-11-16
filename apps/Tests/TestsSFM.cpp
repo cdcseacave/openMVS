@@ -11090,6 +11090,90 @@ bool ReconstructExportCSVTest()
 	return true;
 }
 
+// --match-mode -1 (SKIP) runs no matching: a scene whose pairs hold matches (here the saved result of a
+// match-images-only run) is reconstructed from them, with the pair list untouched, and a scene without matches is
+// refused before any work (no feature extracted)
+bool SkipMatchModeTest()
+{
+	VERBOSE("\n=== SkipMatchModeTest: --match-mode -1 needs the scene's own matches ===");
+	const ScopedTempDir tmpDir(_T("SkipMatchModeTest"));
+	if (!tmpDir.IsValid())
+		return false;
+
+	// a scene without matches is refused at the start
+	{
+		Scene scene;
+		scene.cameras.emplace_back(new PinholeCamera(cv::Size(64, 48), REAL(60), REAL(60), REAL(32), REAL(24)));
+		for (unsigned i = 0; i < 2; ++i)
+			scene.images.emplace_back(static_cast<IIndex>(i), String(), Pose3D(), 0, scene.cameras[0]);
+		ReconstructionConfig cfg;
+		cfg.matchCfg.mode = MatchConfig::SKIP;
+		if (scene.Reconstruct(String(), cfg) || scene.status.nState.isSet(Scene::Status::STATE::FEATURES_EXTRACTED)) {
+			VERBOSE("SkipMatchModeTest FAILED: a scene without matches was not refused at the start");
+			return false;
+		}
+	}
+
+	// the matches of a match-images-only run
+	ReconstructionConfig cfg;
+	cfg.featuresCfg.detectorType = FeatureType::AKAZE;
+	cfg.featuresCfg.maxFeaturesPerCell = 900;
+	cfg.featuresCfg.minFeaturesPerCell = 400;
+	cfg.matchCfg.mode = MatchConfig::EXHAUSTIVE;
+	cfg.matchCfg.DefaultsForFeatureType(cfg.featuresCfg.detectorType);
+	cfg.matchImagesOnly = true;
+	Scene matched(2);
+	if (!matched.Reconstruct(MAKE_PATH("images"), cfg) || matched.pairs.empty()) {
+		VERBOSE("SkipMatchModeTest FAILED: the match-images-only run produced no pairs");
+		return false;
+	}
+	const String sfmPath = tmpDir(_T("matched.sfm"));
+	if (!matched.Save(sfmPath)) {
+		VERBOSE("SkipMatchModeTest FAILED: cannot save the matched scene");
+		return false;
+	}
+
+	// the saved scene reconstructs from its own matches
+	cfg.matchImagesOnly = false;
+	cfg.matchCfg.mode = MatchConfig::SKIP;
+	Scene scene(2);
+	if (!scene.Reconstruct(sfmPath, cfg)) {
+		VERBOSE("SkipMatchModeTest FAILED: the saved scene did not reconstruct with SKIP");
+		return false;
+	}
+	if (scene.pairs.size() != matched.pairs.size() || scene.status.nCalibratedImages < 2) {
+		VERBOSE("SkipMatchModeTest FAILED: %u pairs (expected the saved %u), %u images registered",
+			(unsigned)scene.pairs.size(), (unsigned)matched.pairs.size(), (unsigned)scene.status.nCalibratedImages);
+		return false;
+	}
+
+	// a saved scene holding features but no matches is refused
+	Scene unmatched(2);
+	{
+		Scene featured(2);
+		cfg.matchImagesOnly = true;
+		cfg.matchCfg.mode = MatchConfig::EXHAUSTIVE;
+		if (!featured.Import(MAKE_PATH("images"), cfg.importCfg) || !featured.ExtractFeatures(cfg.featuresCfg)) {
+			VERBOSE("SkipMatchModeTest FAILED: cannot extract the features of the images");
+			return false;
+		}
+		if (!featured.Save(tmpDir(_T("featured.sfm")))) {
+			VERBOSE("SkipMatchModeTest FAILED: cannot save the scene with features");
+			return false;
+		}
+	}
+	cfg.matchImagesOnly = false;
+	cfg.matchCfg.mode = MatchConfig::SKIP;
+	if (unmatched.Reconstruct(tmpDir(_T("featured.sfm")), cfg)) {
+		VERBOSE("SkipMatchModeTest FAILED: a saved scene without matches was not refused");
+		return false;
+	}
+
+	VERBOSE("SkipMatchModeTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 namespace {
 
 // Scenes for the view-graph tests (TripletFilterTest, StarReferenceViewTest): a pair carries an
