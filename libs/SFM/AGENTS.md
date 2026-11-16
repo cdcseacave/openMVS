@@ -298,7 +298,7 @@ no lens (refused, under the pair minimum, or matched by an older build), so a ca
 one fitted the first time, now held, can be kept.
 
 ### Planar Twin Switch (`MatchROMA2.h`)
-Right after the lens fit, in `Scene::MatchPairs` (fresh run and reload), `SwitchPlanarTwinsROMA2`: a posed
+Right after the lens fit, in `Scene::MatchPairs` (fresh run and reload of a scene not yet at `PAIRS_FILTERED`), `SwitchPlanarTwinsROMA2`: a posed
 RoMa2 pair whose track-forming matches a homography explains at >= `ROMA2Config::twinMinPlaneShare` (0.75,
 4 px on the normalized planes) gets its planar twin (`PlanarTwinROMA2`: the other valid decomposition,
 polished as the union fit is; one within 0.5 deg / 10 deg of the stored pose is no twin). Triangles through
@@ -355,12 +355,14 @@ resuming from the post-matching scene — **pass the matched `.sfm` as the input
 instead of the images folder**. No code change needed:
 
 - A normal `-v 3` run writes `scene_pre_reconstruction.sfm` to the working folder (the
-  post-matching scene, carrying the `FEATURES_EXTRACTED` + `MATCHED` state flags).
+  matched and filtered scene, carrying the `FEATURES_EXTRACTED` + `MATCHED` + `PAIRS_FILTERED`
+  state flags); a `--match-images-only` run saves the same scene as its output.
 - **Rename it first** (e.g. to `matches.sfm`) so the new run cannot overwrite it.
 - Feed it as the source: `CreateStructure matches.sfm -o scene.sfm -v 3`. `Scene::Import`
-  detects the single `.sfm` and `Load`s it; `ExtractFeatures` and `MatchPairs` then
-  early-return on the `FEATURES_EXTRACTED` / `MATCHED` flags, so reconstruction starts
-  immediately.
+  detects the single `.sfm` and `Load`s it; on the `PAIRS_FILTERED` flag `Reconstruct` skips
+  feature extraction, matching and the view-graph filters (the pairs are only weighed with the
+  run's configuration), so reconstruction starts immediately. The view-graph options
+  (`--filter-triplets`, `--max-pair-direction-residual`, ...) therefore do not act on such a scene.
 - For pure reconstruction debugging, omit `--export-mvs` and `--extract-colors` to skip
   the slow undistortion / MVS export / color-sampling tail.
 - This turns a ~full pipeline run into just the reconstruction (e.g. on Tanks&Temples

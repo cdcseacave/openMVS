@@ -11,10 +11,12 @@ own matches support a corrected relative pose. `FilterPairsByContradiction`,
 It runs in `Scene::Reconstruct` right after the triplet scores (`TripletScores.md`), on the pairs
 that hold a relative pose, in every mode: with the triplet filter off the pairs are simply unscored
 and weigh 1 times their composite weight. The pair weights (`PairWeight.md`) are recomputed after
-it when it removed or repaired anything. A matched scene is saved after the cut, so the removed
-pairs are not in the saved scene, and the cut re-applies on every reload of a matched scene,
-against the graph its earlier run already thinned: it is not idempotent. With geometric
-verification off no pair carries a pose and nothing is removed.
+it when it removed or repaired anything. It runs once on a scene's pairs: the scene then reaches
+`PAIRS_FILTERED` (`Scene::Status::STATE`), and a scene saved after it (`--match-images-only`) carries
+the kept pairs, each with its repair mark, and is not cut again when a reconstruction loads it; the
+cut is not idempotent (a second run would judge the graph the first already thinned). A matched
+scene saved before it (`MATCHED` without `PAIRS_FILTERED`) is cut once when it is loaded. With
+geometric verification off no pair carries a pose and nothing is removed.
 
 ## The weights it reads
 
@@ -114,7 +116,8 @@ For a removed pair the repair
 The bars do not depend on the pair's parallax angle. A repaired pair carries the new relative pose
 (E, and F between pinholes), its agreeing matches as its sparse and dense segments (the other sparse
 matches become outliers, the other dense ones are dropped), a ray angle measured again, and counts
-as kept (`ImagePair::returnedByRepair`). Its weighted inliers are recomputed from its new counts.
+as kept (`ImagePair::returnedByRepair`, serialized with the pair). Its weighted inliers are recomputed
+from its new counts.
 
 In the pair weights a repaired pair forms no triangle (`ComputePairsWeights`): it carries the
 averaged rotation, so every triangle it closes with kept pairs closes by construction and says

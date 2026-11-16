@@ -201,7 +201,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(defaults.matchCfg.maxPairsPerImage), "target pairs per image for vocabulary and pose-guided matching")
 		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(defaults.matchCfg.verificationFeedback), "hold back part of the matching budget and re-invest it in pairs suggested by the geometrically verified matches (vocabulary and pose-guided matching)")
 		("release-descriptors", boost::program_options::value(&OPT::releaseDescriptors)->default_value(defaults.matchCfg.releaseDescriptors), "release descriptors after matching to save memory")
-		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(defaults.matchImagesOnly), "match only the image pairs and save the scene without reconstruction")
+		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(defaults.matchImagesOnly), "match the image pairs and filter their view graph (triplet filter, contradiction cut and its repair), then save the scene without reconstruction; a reconstruction given that scene as source starts from it without matching or filtering again")
 		;
 
 	boost::program_options::options_description dense("Dense matching options");

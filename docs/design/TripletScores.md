@@ -121,9 +121,11 @@ filtering it. Its `min_score` defaults to 0.
 
 `Scene::Reconstruct` applies the filter right after the diagnostics export (`--export-pairs-csv`,
 whose `TripletScore` column carries every pair's score, so the CSV lists the whole matched graph),
-then the contradiction cut, both before `--match-images-only` returns. A matched scene that is
-loaded again passes through both again. With geometric verification off no pair carries a
-two-view geometry, so no pair is scored.
+then the contradiction cut, both before `--match-images-only` returns, once on a scene's pairs: the
+seed views are stored with the scene (`Scene::seedViews`) and the scene reaches `PAIRS_FILTERED`, so a
+scene saved after the filters is not filtered again when it is loaded, and one saved before them is
+filtered once on load. With geometric verification off no pair carries a two-view geometry, so no pair
+is scored.
 
 Use the default for a scene without repeated structure (orbits, interiors). Use `--triplet-cut` to
 unfold a symmetric building, or a symmetric object orbited by a video, at the price of halving the

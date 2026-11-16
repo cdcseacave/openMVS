@@ -32,8 +32,8 @@ flags say are done (see "Saved-scene resume").
 | 3 | Retrieval and pair selection | features (and, for RETRIEVAL, global descriptors) | the candidate pairs to match | `--match-mode` (default 1 VOCABULARY), `--vocab-max-pairs` (50), `--match-sequence-overlap` (3), `--match-verification-feedback` (1), `--dense` with `--match-mode 4` | `PairsMatcher.cpp:PairsMatcher::Match` (`CollectVocabularyPairs`, `CollectRetrievalPairs`, `CollectKnownPosePairs`, `CollectVerificationFeedbackPairs`) | `PairSelection.md` |
 | 4 | Matching | the candidate pairs | for each pair, matches between keypoints | `--dense-match` (default 0) selects the dense pass; otherwise descriptor matching. The dense pass is sized by `--dense-*` (`--roma2-model` for RoMa2 only), `--dense-matcher`, `--flexglue-model`, `--dense-min-covisibility` | descriptors: `PairsMatcher.cpp:PairsMatcher::MatchPairsBatch`; dense: `MatchROMA2.cpp:MatchPairsROMA2`; both from `Scene.cpp:Scene::MatchPairs` | `PairSelection.md`, `DenseMatching.md` |
 | 5 | Pair verification, lens fit, focal calibration | matched pairs | inlier matches and a relative pose per verified pair; the radial lens of every pinhole camera without one; focals of cameras that do not trust theirs | `--release-descriptors`; the lens fit has no option | `PairsMatcher.cpp:PairsMatcher::GeometricFilter` (inside stage 4), then `LensFit.cpp:CalibrateFocalsAndFitLenses` and `MatchROMA2.cpp:SwitchPlanarTwinsROMA2` (both from `Scene::MatchPairs`) | `TwoViewVerificationAndLens.md`, `DenseMatching.md` (planar twin switch) |
-| 6 | Pair weighting | verified pairs | the composite weight of each pair | `--export-pairs-csv` writes the pairs right after this step | `PairsWeighting.cpp:ComputePairsWeights`, called by `ExportMatchingCSVsAndFilterPairs` in `Scene.cpp` | `PairWeight.md` |
-| 7 | View-graph filtering and the contradiction cut | the weighted view graph | triplet scores per pair, the seed views, and a view graph with the contradicted pairs removed (or repaired) | `--filter-triplets` (1), `--triplet-cut` (0), `--triplet-min-score` (0.3), `--triplet-second-face-score` (0.75), `--max-pair-direction-residual` (45; 0 = rotation stage only), `--repair-contradicted-pairs` (1) | `ViewGraphTriplets.cpp:FilterPairsByTriplets`, then `GlobalRotationAveraging.cpp:FilterPairsByContradiction`; both from `ExportMatchingCSVsAndFilterPairs` | `TripletScores.md`, `ContradictionCut.md`; weights again in `PairWeight.md` |
+| 6 | Pair weighting | verified pairs | the composite weight of each pair | `--export-pairs-csv` writes the pairs right after this step | `PairsWeighting.cpp:ComputePairsWeights`, called by `WeighAndExportPairs` in `Scene.cpp` (from `FilterViewGraph`, or alone for a scene loaded at `PAIRS_FILTERED`) | `PairWeight.md` |
+| 7 | View-graph filtering and the contradiction cut | the weighted view graph | triplet scores per pair, the seed views (`Scene::seedViews`), a view graph with the contradicted pairs removed (or repaired, `ImagePair::returnedByRepair`), and the `PAIRS_FILTERED` state | `--filter-triplets` (1), `--triplet-cut` (0), `--triplet-min-score` (0.3), `--triplet-second-face-score` (0.75), `--max-pair-direction-residual` (45; 0 = rotation stage only), `--repair-contradicted-pairs` (1) | `ViewGraphTriplets.cpp:FilterPairsByTriplets`, then `GlobalRotationAveraging.cpp:FilterPairsByContradiction`; both from `FilterViewGraph` in `Scene.cpp` | `TripletScores.md`, `ContradictionCut.md`; weights again in `PairWeight.md` |
 | 8 | Solver choice | the filtered view graph | a calibrated scene | known poses imported (modes 1 and 2) take `ReconstructKnownPoses`; else `--use-global-solver` takes `ReconstructGlobal`; else `ReconstructHierarchical` (default) | `Scene.cpp:Scene::Reconstruct`, the ternary after the `matchImagesOnly` return | this document; `GlobalSolver.md` for `ReconstructGlobal` |
 | 8a | Clustering into blocks | the view graph | a partition: blocks and the pool; or one whole block | `--max-views-per-cluster` (200; 0 = no clustering; a scene of at most that many images is one block) | `SceneCluster.cpp:SceneCluster::Partition`, `SceneBlocks.cpp:SceneBlocks::Extract` or `TakeWhole`; from `Scene::ReconstructHierarchical` | `HierarchicalSFM.md` |
 | 8b | Block start and incremental growth | one block's pairs | tracks, a star of registered images, then every image the block can register, with local and full bundle adjustment | `--max-link-direction-error` (5; 0 = off), `--refine-intrinsics`, `--ba-*` | `Track.cpp:BuildTracks`, `StarInitializer.cpp:StarInitializer::Initialize`, `Resection.cpp:Resection::RegisterImages`; blocks run in parallel on the scene's thread pool | `TrackBuilding.md`, `IncrementalReconstruction.md`, `BundleAdjustment.md` |
@@ -70,12 +70,15 @@ essential matrix on bearings (both cameras trust their intrinsics), else the sev
 After all pairs are verified, `CalibrateFocalsAndFitLenses` and `SwitchPlanarTwinsROMA2` run once on the whole graph,
 before anything reads the pairs' geometry.
 
-**View-graph filtering.** Scene::Reconstruct runs this step after matching, for a fresh scene and for a resumed one
-(both paths call `ExportMatchingCSVsAndFilterPairs`). The weights are computed first, then the pairs CSV is written, then
-the triplet filter, then the contradiction cut. The triplet filter removes nothing by default: it scores the pairs, and
-the scores weigh the contradiction cut and select the seed views. With `--filter-triplets 0` the contradiction cut still
-runs, unweighted. `--match-images-only` returns after this step; it first resolves an automatic `frames.json` camera-axes
-convention when known poses were imported, so the saved scene carries resolved poses.
+**View-graph filtering.** Scene::Reconstruct runs this step (`FilterViewGraph`) once on a scene's pairs, after
+matching, for a fresh scene and for a resumed one not yet at `PAIRS_FILTERED`. The weights are computed first, then the
+pairs CSV is written, then the triplet filter, then the contradiction cut; the scene keeps the seed views and reaches
+`PAIRS_FILTERED`. The triplet filter removes nothing by default: it scores the pairs, and the scores weigh the
+contradiction cut and select the seed views. With `--filter-triplets 0` the contradiction cut still runs, unweighted.
+A scene loaded at `PAIRS_FILTERED` skips stages 2 to 7: its pairs are weighed with the run's configuration and the pairs
+CSV describes them (`WeighAndExportPairs`), nothing is matched or filtered again. `--match-images-only` returns after
+this step; it first resolves an automatic `frames.json` camera-axes convention when known poses were imported, so the
+saved scene carries resolved poses. The scene it saves is the one a reconstruction starts from.
 
 **Hierarchical solver.** `ReconstructHierarchical` extracts the blocks, then reconstructs every block in parallel (build
 tracks at `ReconstructionConfig::minPairWeight` 1.22, which has no option; star initializer; incremental resection with its closing full
@@ -169,31 +172,34 @@ Solver.
 | import mode 3 (positions only) | not a known-poses reconstruction: the standard solver runs, the match mode stays at its default | `Scene.h:ReconstructionConfig::HasKnownPoses` |
 | known poses with `--dense` | supported | no check |
 | known poses on a resumed scene with import mode 1 | the intrinsics in the file are ignored (warning), poses only | `Scene.cpp:458-468` |
-| `--match-images-only` | returns after stage 7; no solver runs | `Scene.cpp:824-834` |
+| `--match-images-only` | returns after stage 7, the scene at `PAIRS_FILTERED`; no solver runs | `Scene.cpp:Scene::Reconstruct`, the `matchImagesOnly` return |
 | a `.sfm` already `CALIBRATED` | `Reconstruct` returns false at once; `main` treats it as a partial result, writes the optional exports and does not rewrite the `.sfm` | `Scene.cpp:793-796`, `CreateStructure.cpp:535-545` |
 
 ### Saved-scene resume
 
 `--source` can be a single `.sfm` file. `Scene::Import` then calls `Scene::Load` instead of reading images, and the stages
-whose flags are set are skipped. The `.sfm` stream carries a layout version (`SFM_PROJECT_VERSION`); `Load` refuses any
-other (`Scene.cpp:Scene::Load`). The serialized members are `cameras`, `images`, `pairs`, `tracks`, `colors`,
-`poseUncertainty`, `transform`, `obb` and `status` (`Scene.h:Scene::serialize`). `Scene::priorPoses` is not serialized.
+whose flags are set are skipped. The `.sfm` stream carries a layout version (`SFM_PROJECT_VERSION`, 2); `Load` refuses
+any other (`Scene.cpp:Scene::Load`). The serialized members are `cameras`, `images`, `pairs`, `seedViews`, `tracks`,
+`colors`, `poseUncertainty`, `transform`, `obb` and `status` (`Scene.h:Scene::serialize`); a pair carries everything
+matching and the view-graph filters gave it, its repair mark (`returnedByRepair`) and the dense matcher's covisibility
+score and pose prior included (`ImagePair.h:ImagePair::save`). `Scene::priorPoses` is not serialized.
 
 The state flags (`Scene::Status::STATE`) and what they decide:
 
 | Flag | Value | Set by | Effect when set on a loaded scene |
 |---|---|---|---|
 | `FEATURES_EXTRACTED` | 1 | `ExtractFeatures` | feature extraction is skipped ("features already extracted"); `--detector-type`, `--max-features-per-cell`, `--min-features-per-cell`, `--siftgpu-*`, `--spherical-bottom-band` are not read for this scene |
-| `MATCHED` | 2 | `MatchPairs` | pair selection and matching are skipped; `--match-mode`, `--vocab-max-pairs`, `--match-sequence-overlap`, `--match-verification-feedback`, `--dense-*` (`--roma2-model` for RoMa2 only) matching options, `--dense-matcher` are not read (but a missing model path is still refused, see the table above); relative poses are recomputed and the lens fit, focal calibration and planar twin switch run again; stage 6 and 7 run again |
+| `MATCHED` | 2 | `MatchPairs` | pair selection and matching are skipped; `--match-mode`, `--vocab-max-pairs`, `--match-sequence-overlap`, `--match-verification-feedback`, `--dense-*` (`--roma2-model` for RoMa2 only) matching options, `--dense-matcher` are not read (but a missing model path is still refused, see the table above); missing relative poses are computed and the lens fit, focal calibration and planar twin switch run again; without `PAIRS_FILTERED`, stages 6 and 7 run (once) |
 | `CALIBRATED` | 4 | the end of the solver, after `Reconstruct` filters and triangulates | `Reconstruct` returns false at once; see the table above |
 | `GEO_ALIGN` | 8 | `AlignToGPS` | GPS-prior refinement runs only when this is set and `--gps-position-weight` is positive |
 | `GLOBAL_DESCRIPTORS` | 16 | `ComputeGlobalDescriptors` | RETRIEVAL does not describe the images again, unless the stored descriptors have the size of another dense matcher |
+| `PAIRS_FILTERED` | 32 | `FilterViewGraph` (stage 7), so every `--match-images-only` output and `scene_pre_reconstruction.sfm` | stages 2 to 7 are skipped: no extraction, matching, lens fit or view-graph filter runs; the pairs are only weighed with the run's configuration (stage 6) and exported; the stored seed views reach the star initializer. The view-graph options (`--filter-triplets`, `--triplet-*`, `--max-pair-direction-residual`, `--repair-contradicted-pairs`) are not read for this scene |
 
 Options read only for a fresh scene (they act in `Scene::Import` on a new image list): the image source list, `--camera-type`,
 `--default-focal-ratio`, the camera merge. Options applied to a resumed scene too: `-f`, `--k1`, `--k2`,
 `--image-indices` (applied to the loaded cameras, cloning a camera shared with unselected images), and the poses file
 (poses only; intrinsics are dropped). Options read in every run, resumed or not: everything from stage 6 onward
-(`--filter-triplets` and the other view-graph options, track building, clustering, solver choice,
+(`--filter-triplets` and the other view-graph options unless the scene is at `PAIRS_FILTERED`, track building, clustering, solver choice,
 bundle adjustment, resection, GPS, exports; the track weight bar `ReconstructionConfig::minPairWeight` has no option).
 
 On resume `main` warns for each given option the saved scene does not read: `--camera-type` (its cameras are kept),
@@ -229,6 +235,8 @@ filtering of the view-graph focal calibration.
 - The order of stages 1 to 7 is the same for every solver; the solver choice (stage 8) is made once, after the view graph
   is final.
 - Pair weights are recomputed at the start of stage 6, so a saved scene's weights never reach a reconstruction.
+- The view-graph filters run once on a scene's pairs: `PAIRS_FILTERED` is set by them and only by them, and a scene in
+  that state is neither matched nor filtered again (`FilterViewGraph` asserts it).
 - Every consumer of pair geometry runs after the lens fit and the planar twin switch (`Scene::MatchPairs`).
 - Stages 8c and 8d run only when stage 8a produced more than one block (`SceneBlocks::IsSplit`).
 - `CALIBRATED` is set by the tail of `Reconstruct` whenever the solver returned true, whatever number of images it

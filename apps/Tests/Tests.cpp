@@ -346,6 +346,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::TranslationCutTest())
 				return false;
+			if (!SFM::FilteredSceneReloadTest())
+				return false;
 			if (!SFM::ScaleEstimatorTest())
 				return false;
 			if (!SFM::TranslationEstimatorTest())

@@ -11008,9 +11008,9 @@ bool ReconstructTest(bool verbose)
 // or leave images unregistered. Runs match-images-only mode on the bundled 4-image scene (fast,
 // and it is exactly the scenario the two Scene::Reconstruct() export call sites cover):
 // (a) fresh import + match, right after MatchPairs() succeeds and before the matchImagesOnly
-//     early return;
-// (b) an already-matched .sfm given back as source, which takes the "scene already matched
-//     after import" early return that never calls MatchPairs() again.
+//     return;
+// (b) the matched and filtered .sfm given back as source, which is neither matched nor filtered
+//     again (PAIRS_FILTERED): its pairs are only weighed and exported.
 // This tiny scene never triggers SceneCluster::Partition (well under the default
 // 200-image cluster threshold) and match-images-only mode stops before any reconstruction step
 // runs, so scene.pairs is never touched after matching -- the exported CSV row count is checked
@@ -11060,8 +11060,8 @@ bool ReconstructExportCSVTest()
 		return false;
 	}
 
-	// (b) an already-matched .sfm given as source must still export, from the early-return
-	// branch that never calls MatchPairs() again
+	// (b) an already matched and filtered .sfm given as source must still export, from the
+	// branch that neither matches nor filters it again
 	const String sfmPath = tmpDir(_T("matched.sfm"));
 	if (!scene.Save(sfmPath)) {
 		VERBOSE("ReconstructExportCSVTest FAILED: cannot save matched scene '%s'", sfmPath.c_str());
@@ -15961,6 +15961,133 @@ bool TranslationCutTest()
 		}
 	}
 	VERBOSE("TranslationCutTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A matched scene goes through the view-graph filters (the triplet filter, the contradiction cut and its repair)
+// once, and a scene saved after them is where the reconstruction starts. On the ring of TranslationCutTest saved as
+// matched, three pairs planted the repair brings back: (1) a match-images-only run that loads it filters it once,
+// to the pairs, repair marks and seed views of the two filters applied once by hand, and leaves it PAIRS_FILTERED;
+// (2) saved so and given back as source, it is not filtered again: the reloaded scene holds the very pairs, marks,
+// weights and seed views it was saved with, a pair flipped after the filters (which they remove when they run)
+// included.
+bool FilteredSceneReloadTest()
+{
+	TD_TIMER_START();
+	const ScopedTempDir tmpDir(_T("FilteredSceneReloadTest"));
+	if (!tmpDir.IsValid())
+		return false;
+	const auto findPair = [](Scene& scene, IIndex a, IIndex b) -> ImagePair* {
+		for (ImagePair& pair : scene.pairs)
+			if (pair.ID1 == a && pair.ID2 == b)
+				return &pair;
+		return NULL;
+	};
+	const auto flip = [](ImagePair& pair) { pair.relativePose->C = -pair.relativePose->C; };
+	// the pairs, their matches, poses, weights and repair marks, and the seed views, equal
+	const auto sameGraph = [](const Scene& a, const Scene& b, const char* what) {
+		bool same = a.pairs.size() == b.pairs.size() && a.seedViews.size() == b.seedViews.size() &&
+			std::equal(a.seedViews.begin(), a.seedViews.end(), b.seedViews.begin());
+		for (IIndex i = 0; same && i < a.pairs.size(); ++i) {
+			const ImagePair& p = a.pairs[i];
+			const ImagePair& q = b.pairs[i];
+			same = p.ID1 == q.ID1 && p.ID2 == q.ID2 && p.matches.size() == q.matches.size() &&
+				p.numFilteredInliers == q.numFilteredInliers && p.numDenseInliers == q.numDenseInliers &&
+				p.returnedByRepair == q.returnedByRepair && p.relativePose.has_value() == q.relativePose.has_value() &&
+				(!p.relativePose.has_value() || (ComputeAngle(p.relativePose->R, q.relativePose->R) > 1 - 1e-12 &&
+					norm(p.relativePose->C - q.relativePose->C) < 1e-12)) &&
+				ISEQUAL(p.GetCompositeWeight(), q.GetCompositeWeight());
+		}
+		if (!same)
+			VERBOSE("ERROR: FilteredSceneReloadTest: %s: %u pairs and %u seed views, expected %u pairs and %u seed views, each the same",
+				what, (unsigned)b.pairs.size(), (unsigned)b.seedViews.size(), (unsigned)a.pairs.size(), (unsigned)a.seedViews.size());
+		return same;
+	};
+	ReconstructionConfig cfg;
+	cfg.matchImagesOnly = true;
+	cfg.matchCfg.lensFitEnabled = false; // the ring's cameras are exact: no lens to fit
+	using STATE = Scene::Status::STATE;
+
+	// the ring saved as matched, three pairs planted that the cut removes and its repair brings back
+	Scene matched;
+	{
+		Scene sceneGT;
+		SceneConfig sceneCfg;
+		sceneCfg.numImages = 16;
+		sceneCfg.numPoints = 300;
+		sceneCfg.rotationAngleStep = 16.0;
+		sceneCfg.generatePairs = true;
+		GenerateTestScene(sceneGT, sceneCfg, &matched);
+	}
+	for (ImagePair& pair : matched.pairs)
+		pair.meanRayAngle = D2R(10.f);
+	ImagePair* pFlipped = findPair(matched, 3, 9);
+	ImagePair* pRotated = findPair(matched, 6, 14);
+	if (pFlipped == NULL || pRotated == NULL || findPair(matched, 5, 13) == NULL) {
+		VERBOSE("ERROR: FilteredSceneReloadTest: the ring has no pair (3,9), (6,14) or (5,13)");
+		return false;
+	}
+	flip(*pFlipped);
+	pRotated->relativePose->R = RMatrix(Point3(0, D2R(REAL(30)), 0)) * pRotated->relativePose->R;
+	if (!matched.status.nState.isSet(STATE::MATCHED) || matched.status.nState.isSet(STATE::PAIRS_FILTERED)) {
+		VERBOSE("ERROR: FilteredSceneReloadTest: the generated ring is not a matched scene before the filters");
+		return false;
+	}
+	const String matchedPath = tmpDir(_T("matched.sfm"));
+	if (!matched.Save(matchedPath)) {
+		VERBOSE("ERROR: FilteredSceneReloadTest: cannot save the matched scene '%s'", matchedPath.c_str());
+		return false;
+	}
+
+	// (1) the filters run once on the loaded matched scene: the two filters applied once by hand to the same scene
+	Scene filtered(2);
+	if (!filtered.Reconstruct(matchedPath, cfg) || !filtered.status.nState.isSet(STATE::PAIRS_FILTERED)) {
+		VERBOSE("ERROR: FilteredSceneReloadTest: the match-images-only run of the matched scene failed or left it unfiltered");
+		return false;
+	}
+	Scene once(2);
+	if (!once.Load(matchedPath)) {
+		VERBOSE("ERROR: FilteredSceneReloadTest: cannot load the matched scene");
+		return false;
+	}
+	ComputePairsWeights(once, cfg.matchCfg.weightingCfg);
+	std::vector<float> scores;
+	FilterPairsByTriplets(once, cfg.tripletFilterCfg, cfg.matchCfg.weightingCfg, &once.seedViews, &scores);
+	FilterPairsByContradiction(once, scores, cfg.minPairWeight, cfg.maxPairDirectionResidual, cfg.matchCfg.weightingCfg, cfg.repairContradictedPairs);
+	if (!sameGraph(once, filtered, "the matched scene loaded and filtered"))
+		return false;
+	const unsigned numReturned = (unsigned)std::count_if(filtered.pairs.begin(), filtered.pairs.end(), [](const ImagePair& pair) { return pair.returnedByRepair; });
+	if (numReturned == 0 || filtered.seedViews.empty()) {
+		VERBOSE("ERROR: FilteredSceneReloadTest: premise not met: the filters repaired %u pairs and named %u seed views, expected some of each",
+			numReturned, (unsigned)filtered.seedViews.size());
+		return false;
+	}
+
+	// (2) a pair flipped after the filters, which they remove when they run, then the scene saved and given back
+	flip(*findPair(filtered, 5, 13));
+	{
+		Scene again(filtered);
+		const std::vector<float> unscored(again.pairs.size(), TripletScores::unscored);
+		if (FilterPairsByContradiction(again, unscored, cfg.minPairWeight, cfg.maxPairDirectionResidual, cfg.matchCfg.weightingCfg) == 0) {
+			VERBOSE("ERROR: FilteredSceneReloadTest: premise not met: the contradiction cut does not remove the pair (5,13) flipped");
+			return false;
+		}
+	}
+	const String filteredPath = tmpDir(_T("filtered.sfm"));
+	if (!filtered.Save(filteredPath)) {
+		VERBOSE("ERROR: FilteredSceneReloadTest: cannot save the filtered scene '%s'", filteredPath.c_str());
+		return false;
+	}
+	Scene reloaded(2);
+	if (!reloaded.Reconstruct(filteredPath, cfg) || !reloaded.status.nState.isSet(STATE::PAIRS_FILTERED)) {
+		VERBOSE("ERROR: FilteredSceneReloadTest: the match-images-only run of the filtered scene failed or left it unfiltered");
+		return false;
+	}
+	ComputePairsWeights(filtered, cfg.matchCfg.weightingCfg); // the weights of the graph with (5,13) flipped, as the run weighs them
+	if (!sameGraph(filtered, reloaded, "the filtered scene reloaded"))
+		return false;
+	VERBOSE("FilteredSceneReloadTest passed: %u pairs, %u repaired, %u seed views (%s)",
+		(unsigned)reloaded.pairs.size(), numReturned, (unsigned)reloaded.seedViews.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

@@ -612,6 +612,10 @@ bool ContradictionCutTest();
 // stage alone, and a graph under a scale component's pairs removes nothing
 bool TranslationCutTest();
 
+// A matched scene is filtered once (the triplet filter, the contradiction cut and its repair), on load as on a fresh
+// run, and a scene saved after the filters is reloaded with its pairs, repair marks and seed views and not filtered again
+bool FilteredSceneReloadTest();
+
 // The flat pair-scale build equals the node-map one it replaced
 bool PairScalesTest();
 

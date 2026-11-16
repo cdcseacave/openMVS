@@ -53,6 +53,15 @@ struct SFM_API DMatch
 struct SFM_API PosePrior {
 	Matrix3x3f R;
 	Point3f t;
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & R;
+		ar & t;
+	}
+	#endif
 };
 
 // ImagePair stores data for two images: matches, relative pose, etc.
@@ -98,12 +107,12 @@ public:
 	std::optional<Matrix3x3> H;
 	// What the dense matcher that matched the pair says about it besides its warps (FlexGlue; RoMa2 gives neither):
 	// the covisibility score in [0,1] ("do the two images show the same place") and a coarse relative pose.
-	// Not serialized (the archive layout is read by tools built before them) and not geometry: no Reset clears them
+	// Not geometry: no Reset clears them
 	std::optional<float> covisibility;
 	std::optional<PosePrior> posePrior;
 	// The contradiction cut's repair brought this pair back (RepairContradictedPairs): it carries the averaged rotation, so
-	// its triangles close by construction and say nothing; ComputePairsWeights lets it form none. Not serialized: the weights
-	// are, and a loaded scene keeps those it was saved with; one reconstructed again weighs its pairs afresh
+	// its triangles close by construction and say nothing; ComputePairsWeights lets it form none. Serialized with the pair,
+	// so a scene saved after the view-graph filters weighs its repaired pairs as the run that filtered it did
 	bool returnedByRepair{false};
 
 	// Overlap metrics
@@ -393,6 +402,7 @@ public:
 		ar & numFilteredInliers & numDenseInliers;
 		ar & overlapRatio & overlapArea & meanRayAngle;
 		ar & weightSpatial & weightConnectivity & weightTriplet & weightedInliers;
+		ar & returnedByRepair;
 
 		// Serialize std::optional fields
 		const bool hasRelativePose = relativePose.has_value();
@@ -414,6 +424,16 @@ public:
 		ar & hasHomography;
 		if (hasHomography)
 			ar & H.value();
+
+		const bool hasCovisibility = covisibility.has_value();
+		ar & hasCovisibility;
+		if (hasCovisibility)
+			ar & covisibility.value();
+
+		const bool hasPosePrior = posePrior.has_value();
+		ar & hasPosePrior;
+		if (hasPosePrior)
+			ar & posePrior.value();
 	}
 
 	template<class Archive>
@@ -425,8 +445,9 @@ public:
 		// weightedInliers travels with the three weights it belongs to, so a loaded scene is complete
 		// as it was matched: they reflect the weighting config it was matched with, and the
 		// reconstruction does not trust them, it computes them again with its own config before
-		// anything reads them (ExportMatchingCSVsAndFilterPairs)
+		// anything reads them (WeighAndExportPairs in Scene.cpp)
 		ar & weightSpatial & weightConnectivity & weightTriplet & weightedInliers;
+		ar & returnedByRepair;
 
 		// Deserialize std::optional fields
 		bool hasRelativePose;
@@ -459,6 +480,22 @@ public:
 			Matrix3x3 mat;
 			ar & mat;
 			H = mat;
+		}
+
+		bool hasCovisibility;
+		ar & hasCovisibility;
+		if (hasCovisibility) {
+			float score;
+			ar & score;
+			covisibility = score;
+		}
+
+		bool hasPosePrior;
+		ar & hasPosePrior;
+		if (hasPosePrior) {
+			PosePrior prior;
+			ar & prior;
+			posePrior = prior;
 		}
 	}
 

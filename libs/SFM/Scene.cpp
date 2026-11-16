@@ -40,7 +40,7 @@ using namespace SFM;
 #endif
 
 #define SFM_PROJECT_ID "SFM\0" // identifies the SFM project stream
-#define SFM_PROJECT_VERSION 1  // SFM project stream layout version (bump on any breaking header/serialization change)
+#define SFM_PROJECT_VERSION 2  // SFM project stream layout version (bump on any breaking header/serialization change)
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -120,6 +120,7 @@ Scene& Scene::operator=(const Scene& scene) {
 	}
 	// Copy pairs
 	pairs = scene.pairs;
+	seedViews = scene.seedViews;
 	// Copy tracks
 	for (const Track& track : scene.tracks)
 		tracks.emplace_back(track);
@@ -140,6 +141,7 @@ Scene& Scene::operator=(Scene&& scene) noexcept {
 	cameras = std::move(scene.cameras);
 	images = std::move(scene.images);
 	pairs = std::move(scene.pairs);
+	seedViews = std::move(scene.seedViews);
 	tracks = std::move(scene.tracks);
 	colors = std::move(scene.colors);
 	poseUncertainty = std::move(scene.poseUncertainty);
@@ -155,6 +157,7 @@ void Scene::Release() {
 	cameras.ReleaseDelete();
 	images.Release();
 	pairs.Release();
+	seedViews.Release();
 	tracks.Release();
 	colors.clear();
 	poseUncertainty.Release();
@@ -685,7 +688,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 		return false;
 
 	// a plane-dominated RoMa2 pair keeps the planar twin its rotation loops prefer (SwitchPlanarTwinsROMA2): after the
-	// last refit of the pairs (the lens fit's), before anything reads their poses (ExportMatchingCSVsAndFilterPairs
+	// last refit of the pairs (the lens fit's), before anything reads their poses (FilterViewGraph
 	// recomputes the pair weights first)
 	SwitchPlanarTwinsROMA2(pairsMatcher, roma2Cfg);
 
@@ -727,28 +730,35 @@ void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 		VERBOSE("warning: failed to export image pairs to CSV file '%s'", config.exportPairsCSV.c_str());
 }
 
-// Export the pairs CSV of a freshly matched scene, then disambiguate its view graph: the
-// camera-triplet filter (ViewGraphTriplets.h) scores every pair and, by default, removes nothing,
-// and the contradiction cut (FilterPairsByContradiction), weighted by those scores, removes the
-// pairs the global rotation and translation averaging contradict. The CSV describes the whole
-// matched graph, each pair with its triplet score, the pairs the filters remove included. Returns
-// the images of the largest piece the triplet filter's ceiling leaves, the reconstruction's seed
-// views; empty without the filter.
-IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionConfig& config)
+// Weigh the pairs of a matched scene and export its pairs CSV: a saved scene's pair weights reflect
+// the config it was matched with (the dense frame weight among them); the reconstruction weighs with
+// its own, so they are computed again before anything reads them. The CSV describes the graph the
+// scene holds: the whole matched graph before the view-graph filters, the filtered one after.
+void WeighAndExportPairs(Scene& scene, const ReconstructionConfig& config)
 {
-	// a saved scene's pair weights reflect the config it was matched with (the dense frame weight
-	// among them); the reconstruction weighs with its own, so they are computed again before
-	// anything reads them
 	ComputePairsWeights(scene, config.matchCfg.weightingCfg);
 	ExportMatchingCSVs(scene, config);
-	IIndexArr seedViews;
+}
+
+// Export the pairs CSV of a matched scene, then disambiguate its view graph: the camera-triplet
+// filter (ViewGraphTriplets.h) scores every pair and, by default, removes nothing, and the
+// contradiction cut (FilterPairsByContradiction), weighted by those scores, removes the pairs the
+// global rotation and translation averaging contradict. The CSV describes the whole matched graph,
+// each pair with its triplet score, the pairs the filters remove included. The scene keeps the
+// images of the largest piece the triplet filter's ceiling leaves as its seed views (empty without
+// the filter) and reaches PAIRS_FILTERED: the filters run once on a scene's pairs.
+void FilterViewGraph(Scene& scene, const ReconstructionConfig& config)
+{
+	ASSERT(scene.status.nState.isSet(Scene::Status::STATE::MATCHED));
+	ASSERT(!scene.status.nState.isSet(Scene::Status::STATE::PAIRS_FILTERED));
+	WeighAndExportPairs(scene, config);
 	std::vector<float> scores;
-	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &seedViews, &scores);
+	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &scene.seedViews, &scores);
 	// the repair confirms a refitted direction against the centres of the translation stage, so
 	// without that stage (a bar of 0) there is nothing for it to act on
 	FilterPairsByContradiction(scene, scores, config.minPairWeight, config.maxPairDirectionResidual, config.matchCfg.weightingCfg,
 		config.repairContradictedPairs && config.maxPairDirectionResidual > 0.f);
-	return seedViews;
+	scene.status.nState.set(Scene::Status::STATE::PAIRS_FILTERED);
 }
 
 // The seed views of one sub-scene: the images of `seedViews` (indices of the whole scene) it holds,
@@ -771,10 +781,6 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 {
 	TD_TIMER_START();
 	VERBOSE("Starting reconstruction from '%s'", source.c_str());
-
-	// the images the star initializer chooses its reference view among (the triplet filter's
-	// largest ceiling piece), filled in below; empty, every image
-	IIndexArr seedViews;
 
 	// A forced focal length (--focal-length) is a value the star initializer keeps: a star of a
 	// few views cannot improve it and can bend it. The global bundle adjustments refine it like
@@ -808,17 +814,6 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 				FeatureTypeToString(status.nFeaturesType).c_str(), FeatureTypeToString(cfg.featuresCfg.detectorType).c_str());
 			cfg.matchCfg.DefaultsForFeatureType(status.nFeaturesType);
 		}
-		if (cfg.matchImagesOnly && status.nState.isSet(Status::STATE::MATCHED)) {
-			// the requested work is already done; still resolve an AUTO frames.json
-			// convention before the caller re-persists the scene (the loaded pairs are
-			// already matched, so the detection can run)
-			VERBOSE("warning: scene already matched after import");
-			ExportMatchingCSVsAndFilterPairs(*this, cfg);
-			if (cfg.HasKnownPoses() && !ResolveFramesConvention(*this,
-					cfg.importCfg.framesConvention, cfg.importCfg.importPosesFile))
-				return false;
-			return true;
-		}
 	}
 
 	// SKIP runs no matching: it can only use the matches the scene already holds, a pair with at least one match
@@ -836,19 +831,27 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		return false;
 	}
 
-	// Extract image features
-	if (!ExtractFeatures(cfg.featuresCfg))
-		return false;
+	if (status.nState.isSet(Status::STATE::PAIRS_FILTERED)) {
+		// a scene saved after the view-graph filters (a match-images-only run) holds the pairs, their repair
+		// marks and the seed views the reconstruction starts from: it is neither matched nor filtered again,
+		// its pairs are only weighed with this configuration and exported
+		VERBOSE("The scene's %u pairs are matched and filtered already: the reconstruction starts from them", pairs.size());
+		WeighAndExportPairs(*this, cfg);
+	} else {
+		// Extract image features
+		if (!ExtractFeatures(cfg.featuresCfg))
+			return false;
 
-	// Match image pairs
-	if (!MatchPairs(cfg.matchCfg, cfg.roma2Cfg, cfg.viewgraphCfg))
-		return false;
+		// Match image pairs
+		if (!MatchPairs(cfg.matchCfg, cfg.roma2Cfg, cfg.viewgraphCfg))
+			return false;
 
-	// export the pairs CSV right after matching, before any reconstruction step (clustering,
-	// weak-image filtering, resection) can drop pairs or leave images unregistered; covers both
-	// the match-images-only run and a full reconstruction, and is immediately followed by the
-	// triplet disambiguation of the view graph
-	seedViews = ExportMatchingCSVsAndFilterPairs(*this, cfg);
+		// export the pairs CSV right after matching, before any reconstruction step (clustering,
+		// weak-image filtering, resection) can drop pairs or leave images unregistered; covers both
+		// the match-images-only run and a full reconstruction, and is immediately followed by the
+		// view-graph filters, which run once on a scene's pairs
+		FilterViewGraph(*this, cfg);
+	}
 
 	if (cfg.matchImagesOnly) {
 		// a frames.json imported with an AUTO convention must be resolved before the scene
@@ -857,21 +860,22 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		if (cfg.HasKnownPoses() && !ResolveFramesConvention(*this,
 				cfg.importCfg.framesConvention, cfg.importCfg.importPosesFile))
 			return false;
-		VERBOSE("Image pairs matched only as per configuration, reconstruction skipped");
+		VERBOSE("Image pairs matched and filtered only as per configuration, reconstruction skipped");
 		return true;
 	}
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
-		// Save intermediate scene after matching for debugging
+		// Save the scene the reconstruction starts from (matched and filtered) for debugging
 		Save(MAKE_PATH("scene_pre_reconstruction.sfm"), cfg.importCfg.archiveType);
 	}
 	#endif
 
-	// Run reconstruction method
+	// Run reconstruction method; the hierarchical one takes a copy of the seed views, since its
+	// blocks take the scene's data over
 	if (cfg.HasKnownPoses() ? !ReconstructKnownPoses(cfg)
 	    : cfg.useGlobalSolver ? !ReconstructGlobal(cfg)
-	                             : !ReconstructHierarchical(cfg, seedViews))
+	                             : !ReconstructHierarchical(cfg, IIndexArr(seedViews)))
 		return false;
 
 
@@ -954,7 +958,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	return true;
 }
 
-bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const IIndexArr& seedViews)
+bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const IIndexArr& seeds)
 {
 	if (status.nState.isSet(Status::STATE::CALIBRATED)) {
 		VERBOSE("warning: scene already calibrated");
@@ -994,7 +998,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		// mini bundle adjustments instead of using the compiled-in BAConfig defaults
 		StarInitConfig initCfg = config.initCfg;
 		initCfg.baConfig = config.baConfig;
-		initCfg.seedViews = SubSceneSeedViews(seedViews, localToGlobals, i);
+		initCfg.seedViews = SubSceneSeedViews(seeds, localToGlobals, i);
 		initCfg.evidenceMinAngle = config.minAngleThreshold;
 		initCfg.pairsWeighting = config.matchCfg.weightingCfg; // the near-duplicates the pairs were weighted with
 		if (!StarInitializer::Initialize(subScene, initCfg)) {

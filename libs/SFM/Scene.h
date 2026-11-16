@@ -76,7 +76,10 @@ struct SFM_API ReconstructionConfig {
 
 	// Matching parameters (will be translated to MatchConfig)
 	MatchConfig matchCfg;
-	bool matchImagesOnly{false}; // only match image pairs and save scene without reconstruction
+	// only match the image pairs and filter their view graph (the triplet filter and the contradiction
+	// cut below), then stop: the scene is left at PAIRS_FILTERED, the state a reconstruction that loads
+	// it starts from without matching or filtering again
+	bool matchImagesOnly{false};
 
 	// The pairs CSV written right after pair matching, before any reconstruction step can drop
 	// images or pairs (empty = no export)
@@ -189,6 +192,11 @@ public:
 	// Image pair array (relationships between images)
 	ImagePairArr pairs;
 
+	// The images the star initializer chooses its reference view among: the largest piece the triplet
+	// filter's ceiling leaves (FilterPairsByTriplets), written by the view-graph filters with the
+	// PAIRS_FILTERED state; empty, every image (the triplet filter off, or the filters not run yet)
+	IIndexArr seedViews;
+
 	// 3D point tracks (observations + triangulated positions)
 	TrackArr tracks;
 
@@ -219,7 +227,11 @@ public:
 			MATCHED = 2,
 			CALIBRATED = 4,
 			GEO_ALIGN = 8,
-			GLOBAL_DESCRIPTORS = 16
+			GLOBAL_DESCRIPTORS = 16,
+			// the view-graph filters (the triplet filter, the contradiction cut and its repair) ran on the matched
+			// pairs: the pairs, their repair marks and the seed views are the ones the reconstruction starts from,
+			// and a scene loaded in this state is neither matched nor filtered again
+			PAIRS_FILTERED = 32
 		};
 		Flags nState{STATE::EMPTY}; // current state (now type-safe with STATE enum)
 		FeatureType nFeaturesType{FeatureType::NONE}; // type of features extracted (0=none,1=AKAZE,2=ORB,3=SIFT)
@@ -337,7 +349,7 @@ public:
 	/**
 	 * @brief Run hierarchical reconstruction
 	 * @param config Reconstruction configuration
-	 * @param seedViews the images the star initializer chooses its reference view among, in this
+	 * @param seeds the images the star initializer chooses its reference view among, in this
 	 * scene's indices; empty, every image
 	 * @return true if reconstruction completed
 	 *
@@ -346,7 +358,7 @@ public:
 	 * 2. Reconstruct each cluster
 	 * 3. Merge/align sub-scenes
 	 */
-	bool ReconstructHierarchical(const ReconstructionConfig& config, const IIndexArr& seedViews);
+	bool ReconstructHierarchical(const ReconstructionConfig& config, const IIndexArr& seeds);
 
 	/**
 	 * @brief Run global reconstruction
@@ -475,6 +487,7 @@ public:
 		ar & cameras;
 		ar & images;
 		ar & pairs;
+		ar & seedViews;
 		ar & tracks;
 		ar & colors;
 		ar & poseUncertainty;
