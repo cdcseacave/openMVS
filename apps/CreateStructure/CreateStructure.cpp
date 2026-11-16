@@ -361,6 +361,19 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	// an option given on the command line (or the config file) that the chosen dense matcher does not read is
 	// refused naming it: a defaulted option does not count as given
 	const auto given = [](const char* name) { return OPT::vm.count(name) && !OPT::vm[name].defaulted(); };
+	// the global solver neither clusters nor merges, and known poses take the known-poses solver before it is
+	// reached: an option it ignores, given together with it, is refused naming it
+	if (OPT::bUseGlobalSolver) {
+		for (const char* name: {"max-views-per-cluster", "cluster-alignment"})
+			if (given(name)) {
+				LOG("error: --%s given with --use-global-solver 1 (the global solver never clusters or merges the images)", name);
+				return false;
+			}
+		if (OPT::importPosesMode == static_cast<unsigned>(PoseImportMode::POSES_INTRINSICS) || OPT::importPosesMode == static_cast<unsigned>(PoseImportMode::POSES)) {
+			LOG("error: --use-global-solver 1 with --import-poses-mode %u (known poses take the known-poses solver, never the global one)", OPT::importPosesMode);
+			return false;
+		}
+	}
 	if (OPT::strDenseMatcher == "flexglue" && given("roma2-model")) {
 		LOG("error: --roma2-model given with --dense-matcher flexglue (it belongs to --dense-matcher roma2; the FlexGlue model is --flexglue-model)");
 		return false;

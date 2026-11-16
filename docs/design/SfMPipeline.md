@@ -158,10 +158,10 @@ Solver.
 | Combination | Behaviour | Where |
 |---|---|---|
 | hierarchical (default), spherical or perspective | supported | `Scene.cpp:852-855` |
-| `--use-global-solver 1`, spherical or perspective | supported; no check refuses spherical cameras | `Scene.cpp:853` |
-| `--use-global-solver 1` with `--max-views-per-cluster`, `--cluster-alignment` | ignored options: the global solver never clusters or merges | `Scene.cpp:1014-1071` |
-| `--use-global-solver 1`: the triplet seed views | ignored: only `ReconstructHierarchical` receives them | `Scene.cpp:852-855` |
-| known poses (import mode 1 or 2 with a poses file) with `--use-global-solver 1` | ignored option: `ReconstructKnownPoses` is chosen first | `Scene.cpp:852-854` |
+| `--use-global-solver 1`, spherical or perspective | supported; no check refuses spherical cameras | `Scene.cpp:Scene::Reconstruct` (the solver choice) |
+| `--use-global-solver 1` with `--max-views-per-cluster` or `--cluster-alignment` given | refused naming the option: the global solver never clusters or merges | `CreateStructure.cpp:Application::Initialize` (`Scene.cpp:Scene::ReconstructGlobal` reads neither) |
+| `--use-global-solver 1`: the triplet seed views | ignored, and not refused (the triplet filter's options still act on the view graph before the solver): only `ReconstructHierarchical` receives the seed views | `Scene.cpp:Scene::Reconstruct` (the solver choice) |
+| known poses (import mode 1 or 2 with a poses file) with `--use-global-solver 1` | refused: `ReconstructKnownPoses` is chosen first, so the global solver would never run | `CreateStructure.cpp:Application::Initialize`, `Scene.cpp:Scene::Reconstruct` (the solver choice) |
 | known poses with the cluster options or the star initializer | ignored: the known-poses solver never clusters, merges or builds a star | `Scene.cpp:1073-1200` |
 | known poses with fewer than 20 percent of the images posed (at least 2) | refused with an error, after matching has run | `Scene.cpp:1088-1112` |
 | known poses and `--match-mode` left at its default | the match mode becomes 3 KNOWN_POSES | `CreateStructure.cpp:528-531` |
