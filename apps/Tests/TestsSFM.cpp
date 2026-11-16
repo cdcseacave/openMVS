@@ -6860,7 +6860,7 @@ static bool ROMA2ReconstructScene(Scene& scene, ROMA2Config roma2Cfg,
 // to prove determinism (design decision 11), round-tripped through Scene::Save/Load, and finished
 // with ReconstructTest's own reconstruction stage. Configured by the environment like
 // RoMa2OnnxParityTest: OPENMVS_ROMA2_MODEL_PATH (unset => skipped), OPENMVS_ROMA2_SETTING
-// (default "base", matching --roma2-setting's own default and the published model bundle),
+// (default "base", matching ROMA2Config::setting's own default and the published model bundle),
 // OPENMVS_ROMA2_PROVIDER (default "auto")
 bool ROMA2ReconstructTest()
 {

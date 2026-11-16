@@ -71,7 +71,6 @@ String strROMA2Model;
 String strDenseMatcher;
 String strFlexGlueModel;
 float fDenseMinCovisibility;
-String strROMA2Setting;
 bool bROMA2Match;
 unsigned nROMA2Slots;
 float fROMA2MinConfidence;
@@ -205,7 +204,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(defaults.matchImagesOnly), "match only the image pairs and save the scene without reconstruction")
 		("roma2", boost::program_options::value<bool>(&OPT::bROMA2)->default_value(defaults.roma2Cfg.enabled), "enable the in-process RoMa v2 model: DINOv3/GeM pair retrieval and dense matching (needs an exported model, see --roma2-model)")
 		("roma2-model", boost::program_options::value<std::string>(&OPT::strROMA2Model), "directory with the RoMa v2 ONNX graphs + manifest (default: $OPENMVS_ROMA2_MODEL_PATH, else the installed share/openMVS/roma2)")
-		("roma2-setting", boost::program_options::value<std::string>(&OPT::strROMA2Setting)->default_value(defaults.roma2Cfg.setting), "RoMa v2 export preset: turbo (320px), fast (512px) or base (640px)")
 		("roma2-match", boost::program_options::value<bool>(&OPT::bROMA2Match)->default_value(defaults.roma2Cfg.useMatching), "one-pass dense pair matching: judge every candidate pair on its bidirectional warp alone, then guide its sparse matching and fill the rest of the overlap densely (a rejected pair is dropped, never descriptor-matched)")
 		("roma2-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(defaults.roma2Cfg.slotBudget), "images kept resident on the device while dense matching (12.5 MB each at base)")
 		("roma2-min-confidence", boost::program_options::value(&OPT::fROMA2MinConfidence)->default_value(defaults.roma2Cfg.minConfidence), "dense matching: confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill")
@@ -372,7 +370,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	if (!OPT::bROMA2) {
-		for (const char* name: {"roma2-model", "roma2-setting", "roma2-slots", "roma2-min-confidence", "roma2-min-overlap", "roma2-dense-matches", "roma2-provider"})
+		for (const char* name: {"roma2-model", "roma2-slots", "roma2-min-confidence", "roma2-min-overlap", "roma2-dense-matches", "roma2-provider"})
 			if (given(name)) {
 				LOG("error: --%s given with --roma2 false (the dense matcher is off, nothing reads it)", name);
 				return false;
@@ -384,10 +382,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::bROMA2 && !DenseMatcher::IsAvailable()) {
 		LOG("error: --roma2 needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
-		return false;
-	}
-	if (OPT::strROMA2Setting != "turbo" && OPT::strROMA2Setting != "fast" && OPT::strROMA2Setting != "base") {
-		LOG("error: unknown ROMA2 export preset '%s' (accepted: turbo, fast, base)", OPT::strROMA2Setting.c_str());
 		return false;
 	}
 	if (OPT::strROMA2Provider != "auto" && OPT::strROMA2Provider != "cuda" && OPT::strROMA2Provider != "coreml" &&
@@ -511,7 +505,6 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchCfg.releaseDescriptors = OPT::releaseDescriptors;
 	cfg.roma2Cfg.enabled = OPT::bROMA2;
 	cfg.roma2Cfg.modelPath = OPT::strROMA2Model;
-	cfg.roma2Cfg.setting = OPT::strROMA2Setting;
 	cfg.roma2Cfg.useMatching = OPT::bROMA2Match;
 	cfg.roma2Cfg.minConfidence = OPT::fROMA2MinConfidence;
 	cfg.roma2Cfg.minOverlap = OPT::fROMA2MinOverlap;

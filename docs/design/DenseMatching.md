@@ -39,7 +39,6 @@ ordinary SIFT/AKAZE/ORB flow; `--roma2-match` composes with any match mode.
 |---|---|---|---|
 | `--roma2 B` | `enabled` | false | load the in-process model |
 | `--roma2-model DIR` | `modelPath` | `$OPENMVS_ROMA2_MODEL_PATH`, else `<prefix>/share/openMVS/roma2` if present | folder of the RoMa2 bundle (manifest and graphs) |
-| `--roma2-setting turbo\|fast\|base` | `setting` | `base` | preset: the image side is 320, 512 or 640 px and the warp grid is a quarter of it (160 cells at `base`) |
 | `--roma2-provider auto\|cuda\|coreml\|dml\|cpu` | `provider` | `auto` | ONNX Runtime execution provider (see Providers) |
 | `--roma2-match B` | `useMatching` | false | one-pass pair matching |
 | `--dense-matcher roma2\|flexglue` | `matcher` | `roma2` | the model behind `--roma2 true`, for both services |
@@ -54,6 +53,7 @@ ordinary SIFT/AKAZE/ORB flow; `--roma2-match` composes with any match mode.
 
 | field | default | meaning |
 |---|---|---|
+| `setting` | `base` | the model preset the bundle's manifest names (`roma_<setting>.json`): the image side is 320 (`turbo`), 512 (`fast`) or 640 px (`base`) and the warp grid is a quarter of it (160 cells at `base`); the published bundles hold `base` only |
 | `useGPU` | true | false (`--gpu-device` asking for the CPU) forces the CPU provider |
 | `denseEpipolarErrorFactor` | 1 | multiple of the matcher's epipolar bar (`MatchConfig::maxEpipolarError`) a dense correspondence is held to when the pair's geometry classifies it |
 | `denseFitWeight` | 0.003 | weight of a dense correspondence against a sparse one's 1 in the refinement that closes the pair's relative pose; 0 drops the dense matches from the polish |
