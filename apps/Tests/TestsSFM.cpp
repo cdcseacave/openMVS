@@ -1353,7 +1353,7 @@ bool ROMA2CoverageSampleTest()
 	// full overlap: every cell eligible, so the bucket grid is ceil(sqrt(budget)) = 45 on a side and
 	// the sample lands at the budget, spread over the whole frame
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
-	const size_t numFull = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB);
+	const size_t numFull = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, sampledA, sampledB);
 	if (numFull < budget*9/10 || numFull > budget*11/10) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: full overlap drew %u samples, expected about the %u budgeted",
 			(unsigned)numFull, budget);
@@ -1378,7 +1378,7 @@ bool ROMA2CoverageSampleTest()
 	// a fraction of the frame.
 	overlap.setTo(0.f);
 	overlap(cv::Rect(2, 2, 100, 100)).setTo(0.6f);
-	const size_t numPartial = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB);
+	const size_t numPartial = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, sampledA, sampledB);
 	if (numPartial < budget*3/4 || numPartial > budget*5/4) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: a 39%%-overlap warp drew %u samples, expected near the %u budgeted",
 			(unsigned)numPartial, budget);
@@ -1460,7 +1460,7 @@ bool ROMA2CoverageSampleTest()
 	const std::vector<Point2f> partialA(sampledA), partialB(sampledB);
 	overlap(cv::Rect(2, 2, 20, 20)).setTo(1.f);
 	std::vector<Point2f> skewA, skewB;
-	const size_t numSkew = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, skewA, skewB);
+	const size_t numSkew = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, skewA, skewB);
 	const float skewCoverageA = SampleCoverage(skewA, imgA.GetSize()), skewCoverageB = SampleCoverage(skewB, imgB.GetSize());
 	if (numSkew != numPartial || skewA != partialA || skewB != partialB ||
 		skewCoverageA != coverageA || skewCoverageB != coverageB) {
@@ -1482,7 +1482,7 @@ bool ROMA2CoverageSampleTest()
 	// nothing here exercises that. Re-drawing from a pre-filled output pair as well, since a
 	// caller reusing its buffers must get the same answer as one passing empty ones.
 	std::vector<Point2f> repeatA(7, Point2f(1.f, 2.f)), repeatB(3, Point2f(3.f, 4.f));
-	SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, repeatA, repeatB);
+	SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, repeatA, repeatB);
 	if (repeatA != skewA || repeatB != skewB ||
 		SampleCoverage(repeatA, imgA.GetSize()) != skewCoverageA || SampleCoverage(repeatB, imgB.GetSize()) != skewCoverageB) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: the draw is not a pure function of its inputs");
@@ -1493,14 +1493,14 @@ bool ROMA2CoverageSampleTest()
 	// minimum. maxSamples is a target rather than a cap here (there is no fill-up to trim against),
 	// and at a budget this small the bucket grid is only a few cells on a side, so quantisation
 	// dominates: what must hold is that the draw stays small, stays non-empty, and terminates
-	const size_t numTiny = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 8, sampledA, sampledB);
+	const size_t numTiny = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, 8, sampledA, sampledB);
 	if (numTiny == 0 || numTiny > 64 || sampledA.size() != numTiny) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: a budget of 8 drew %u samples", (unsigned)numTiny);
 		return false;
 	}
 	// and a budget of 1 degenerates to a 2x2 bucket grid over the whole warp (n is still scaled by
 	// the inverse overlap fraction), not to a division by zero or an empty draw
-	const size_t numOne = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 1, sampledA, sampledB);
+	const size_t numOne = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, 1, sampledA, sampledB);
 	if (numOne == 0 || numOne > 8) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: a budget of 1 drew %u samples", (unsigned)numOne);
 		return false;
@@ -1513,7 +1513,7 @@ bool ROMA2CoverageSampleTest()
 	// show that it really does sit in that corner
 	overlap.setTo(0.f);
 	overlap(cv::Rect(2, 2, 40, 40)).setTo(1.f);
-	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB) != 40*40) {
+	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, sampledA, sampledB) != 40*40) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: %u samples drawn of the 1600 confident cells", (unsigned)sampledA.size());
 		return false;
 	}
@@ -1526,7 +1526,7 @@ bool ROMA2CoverageSampleTest()
 
 	// a warp confident nowhere: no sample, no occupancy, and no estimator ever sees the pair
 	overlap.setTo(0.f);
-	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB) != 0 ||
+	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, sampledA, sampledB) != 0 ||
 		!sampledA.empty() || SampleCoverage(sampledA, imgA.GetSize()) != 0.f || SampleCoverage(sampledB, imgB.GetSize()) != 0.f) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: an unconfident warp still produced a sample");
 		return false;
@@ -1609,7 +1609,7 @@ bool ROMA2ComplementaryDrawTest()
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
 	std::vector<Point2f> denseA, denseB;
 	std::vector<float> confidences;
-	const size_t numDense = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, numBuckets, denseBudget,
+	const size_t numDense = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0.f, numBuckets, denseBudget,
 		sparseA, denseA, denseB, confidences);
 	if (numDense == 0 || denseB.size() != numDense || confidences.size() != numDense) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the draw returned %u points with %u/%u index-parallel arrays",
@@ -1669,7 +1669,7 @@ bool ROMA2ComplementaryDrawTest()
 	// budget went to its guided matches gets no dense segment rather than a stale one
 	std::vector<Point2f> zeroA(3, Point2f(1.f, 2.f)), zeroB(5, Point2f(3.f, 4.f));
 	std::vector<float> zeroC(7, 0.5f);
-	if (SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, numBuckets, 0, sparseA, zeroA, zeroB, zeroC) != 0 ||
+	if (SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0.f, numBuckets, 0, sparseA, zeroA, zeroB, zeroC) != 0 ||
 		!zeroA.empty() || !zeroB.empty() || !zeroC.empty()) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: a zero dense budget still drew %u points", (unsigned)zeroA.size());
 		return false;
@@ -1688,7 +1688,7 @@ bool ROMA2ComplementaryDrawTest()
 			overlap(y, x) = 0.4f + 0.5f*(float)(x + y)/(float)(2*cells);
 	const unsigned smallBudget = 400;
 	const int numSmallBuckets = cells/2;
-	const size_t numSmall = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, numSmallBuckets, smallBudget,
+	const size_t numSmall = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0.f, numSmallBuckets, smallBudget,
 		sparseA, denseA, denseB, confidences);
 	if (numSmall != smallBudget || denseB.size() != numSmall || confidences.size() != numSmall) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: an over-budget draw kept %u points of a %u budget",
@@ -1725,7 +1725,7 @@ bool ROMA2ComplementaryDrawTest()
 	// ones gets -- which is what makes the appended keypoint indices reproducible.
 	std::vector<Point2f> repeatA(11, Point2f(5.f, 6.f)), repeatB(2, Point2f(7.f, 8.f));
 	std::vector<float> repeatC(4, 0.25f);
-	SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, numSmallBuckets, smallBudget, sparseA, repeatA, repeatB, repeatC);
+	SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0.f, numSmallBuckets, smallBudget, sparseA, repeatA, repeatB, repeatC);
 	if (repeatA != denseA || repeatB != denseB || repeatC != confidences) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the draw is not a pure function of its inputs");
 		return false;
@@ -1745,8 +1745,8 @@ bool ROMA2ComplementaryDrawTest()
 	std::vector<float> upC, downC;
 	const std::vector<Point2f> noneOccupied;
 	const int gridSide900 = DenseFillGridSide(900, cells);
-	SampleWarpComplementary(imgA, imgB, warp, rampUp, 0.3f, gridSide900, 900, noneOccupied, upA, upB, upC);
-	SampleWarpComplementary(imgA, imgB, warp, rampDown, 0.3f, gridSide900, 900, noneOccupied, downA, downB, downC);
+	SampleWarpComplementary(imgA, imgB, warp, rampUp, 0.3f, 0.f, gridSide900, 900, noneOccupied, upA, upB, upC);
+	SampleWarpComplementary(imgA, imgB, warp, rampDown, 0.3f, 0.f, gridSide900, 900, noneOccupied, downA, downB, downC);
 	if (upA.empty() || upA != downA || upB != downB) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: opposite confidence ramps over one region drew %u and %u points "
 			"at different positions -- confidence is still ranking the bucket winners",
@@ -1776,8 +1776,8 @@ bool ROMA2ComplementaryDrawTest()
 	const int numBucketsAC = DenseFillGridSide(1500, cells);
 	std::vector<Point2f> abA, abB, acA, acB;
 	std::vector<float> abC, acC;
-	const size_t numAB = SampleWarpComplementary(imgA, imgB, warp, overlapAB, 0.3f, numBucketsAB, 900, noneOccupied, abA, abB, abC);
-	const size_t numAC = SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, numBucketsAC, 1500, noneOccupied, acA, acB, acC);
+	const size_t numAB = SampleWarpComplementary(imgA, imgB, warp, overlapAB, 0.3f, 0.f, numBucketsAB, 900, noneOccupied, abA, abB, abC);
+	const size_t numAC = SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, 0.f, numBucketsAC, 1500, noneOccupied, acA, acB, acC);
 	if (numAB == 0 || numAC == 0 || numBucketsAB == numBucketsAC) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the two pairs drew %u/%u points on %dx%d and %dx%d grids -- "
 			"the fixture must give them different grids for the coincidence to mean anything",
@@ -1831,7 +1831,7 @@ bool ROMA2ComplementaryDrawTest()
 		}
 	std::vector<Point2f> repeatAC_A, repeatAC_B;
 	std::vector<float> repeatAC_C;
-	SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, numBucketsAC, 1500, noneOccupied, repeatAC_A, repeatAC_B, repeatAC_C);
+	SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, 0.f, numBucketsAC, 1500, noneOccupied, repeatAC_A, repeatAC_B, repeatAC_C);
 	if (repeatAC_A != acA || repeatAC_B != acB || repeatAC_C != acC) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the lattice draw is not a pure function of its inputs");
 		return false;
@@ -1949,7 +1949,7 @@ bool ROMA2DenseFillDensityTest()
 		for (int y = 0; y < cellsHigh; ++y)
 			for (int x = 0; x < cellsWide; ++x)
 				confidence(y, x) = 0.9f;
-		return SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, grid, density,
+		return SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, 0.f, grid, density,
 			occupied, outA, outB, outC);
 	};
 	const size_t numBig = DrawOver(80, 80, none, bigA, bigB, bigC);      // a quarter of the frame
@@ -2034,9 +2034,9 @@ bool ROMA2DenseFillDensityTest()
 	confidence.setTo(0.9f);
 	std::vector<Point2f> wideBA, wideBB, narrowBA, narrowBB;
 	std::vector<float> wideBC, narrowBC;
-	const size_t numWideB = SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, grid, capWideB,
+	const size_t numWideB = SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, 0.f, grid, capWideB,
 		none, wideBA, wideBB, wideBC);
-	const size_t numNarrowB = SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, grid, capNarrowB,
+	const size_t numNarrowB = SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, 0.f, grid, capNarrowB,
 		none, narrowBA, narrowBB, narrowBC);
 	if (numWideB != capWideB || numNarrowB != capNarrowB) {
 		VERBOSE("ROMA2DenseFillDensityTest FAILED: ceilings %u/%u drew %u/%u points -- the fixture must put both "
@@ -2352,7 +2352,7 @@ bool ROMA2WarpGridConventionTest()
 		// taken, in raster order, and each one's A end must sit at the cell's centre, its B end at the
 		// cell centre's target
 		std::vector<Point2f> sampledA, sampledB;
-		if (SampleWarpByCoverage(imgA, imgB, warp, confidence, 0.1f, (unsigned)(cells*cells), sampledA, sampledB) != (size_t)(cells*cells)) {
+		if (SampleWarpByCoverage(imgA, imgB, warp, confidence, 0.1f, 0.f, (unsigned)(cells*cells), sampledA, sampledB) != (size_t)(cells*cells)) {
 			VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: the draw did not take every cell of a fully confident warp",
 				size.width, size.height);
 			return false;
@@ -2381,7 +2381,7 @@ bool ROMA2WarpGridConventionTest()
 		}
 		const size_t numStruck = (size_t)std::count(struck.begin(), struck.end(), true);
 		std::vector<float> sampledConfidences;
-		SampleWarpComplementary(imgA, imgB, warp, confidence, 0.1f, cells, (unsigned)(cells*cells), occupiedA,
+		SampleWarpComplementary(imgA, imgB, warp, confidence, 0.1f, 0.f, cells, (unsigned)(cells*cells), occupiedA,
 			sampledA, sampledB, sampledConfidences);
 		bool bStruckDrawn = false;
 		for (const Point2f& pt : sampledA) {
@@ -8310,6 +8310,152 @@ bool SphericalBottomBandTest()
 			return false;
 		}
 	VERBOSE("SphericalBottomBandTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
+// Spherical bottom band of the dense matching (ROMA2Config::sphericalBottomBand, the value of
+// FeatureExtractionConfig::sphericalBottomBand): the dense correspondences both warp draws take
+// (the verdict's SampleWarpByCoverage and the fill's SampleWarpComplementary, hence both matchers) have no
+// end in the bottom band of a spherical image, whichever image it is. With an identity warp the rows
+// above the band keep exactly the samples they have without the band; with a warp that sends rows above
+// A's band into B's band, the survivors still hold none in the band and every sample of the band-0 draw
+// with both ends outside it. A perspective pair is unaffected by the option.
+// ===============================================================================
+bool SphericalBottomBandDenseTest()
+{
+	VERBOSE("\n=== SphericalBottomBandDenseTest: dense samples in the bottom rows of a spherical image ===");
+	constexpr int width = 2048, height = 1024, cells = 40;
+	constexpr float band = 0.2f;
+	const cv::Size size(width, height), grid(cells, cells);
+	Scene scene;
+	scene.cameras.emplace_back(new SphericalCamera(size));
+	scene.cameras.emplace_back(new PinholeCamera(size, REAL(1000), REAL(1000), REAL(width)/2, REAL(height)/2));
+	for (IIndex i = 0; i < 4; ++i) {
+		scene.images.emplace_back(i, String("i.jpg"));
+		scene.images[i].cameraID = i < 2 ? 0 : 1; // 0, 1 spherical, 2, 3 perspective
+		scene.images[i].pCamera = scene.cameras[scene.images[i].cameraID];
+	}
+	const Image& sphA = scene.images[0];
+	const Image& sphB = scene.images[1];
+	const Image& perA = scene.images[2];
+	const Image& perB = scene.images[3];
+	const float bandRow = (1.f - band) * (float)height;
+	const auto InBand = [&](const Point2f& pt) { return pt.y > bandRow; };
+	// the identity warp, and a warp sending every cell rows 8 lower (cells 24..31 above A's band land in B's band)
+	Image32F2 identity(grid), shifted(grid);
+	for (int y = 0; y < cells; ++y)
+		for (int x = 0; x < cells; ++x) {
+			const Point2f px(CellToPixel(Point2f((float)x, (float)y), grid, size));
+			identity(y, x) = NormCoord(px, size);
+			shifted(y, x) = NormCoord(CellToPixel(Point2f((float)x, (float)(y+8)), grid, size), size);
+		}
+	const Image32F confidence(grid, 1.f);
+	// the buckets of the fill, 20 x 20: the band's edge (row 32 of 40) is a bucket edge, so a bucket never straddles it
+	constexpr int numBuckets = 20;
+	const std::vector<Point2f> noneOccupied;
+
+	// the same draw with the band off and on, through both draws
+	struct Draw { std::vector<Point2f> a, b; std::vector<float> c; };
+	const auto Fill = [&](const Image& imgA, const Image& imgB, const Image32F2& warp, float bandValue) {
+		Draw d;
+		SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, bandValue, numBuckets, cells*cells, noneOccupied, d.a, d.b, d.c);
+		return d;
+	};
+	const auto Coverage = [&](const Image& imgA, const Image& imgB, const Image32F2& warp, float bandValue) {
+		Draw d;
+		SampleWarpByCoverage(imgA, imgB, warp, confidence, 0.3f, bandValue, cells*cells, d.a, d.b);
+		return d;
+	};
+	const auto SameDraw = [](const Draw& x, const Draw& y) { return x.a == y.a && x.b == y.b; };
+	const auto Survivors = [&](const Draw& off, const Draw& on) {
+		// every sample of `off` with both ends out of the band is in `on`
+		size_t j = 0;
+		for (size_t i = 0; i < off.a.size(); ++i) {
+			if (InBand(off.a[i]) || InBand(off.b[i]))
+				continue;
+			while (j < on.a.size() && !(on.a[j] == off.a[i] && on.b[j] == off.b[i]))
+				++j;
+			if (j == on.a.size())
+				return false;
+		}
+		return true;
+	};
+	const auto NoneInBand = [&](const Draw& d) {
+		for (size_t i = 0; i < d.a.size(); ++i)
+			if (InBand(d.a[i]) || InBand(d.b[i]))
+				return false;
+		return true;
+	};
+	const auto CountInBand = [&](const Draw& d) {
+		size_t n = 0;
+		for (size_t i = 0; i < d.a.size(); ++i)
+			n += InBand(d.a[i]) || InBand(d.b[i]);
+		return n;
+	};
+	const std::vector<std::pair<const char*, bool>> draws{{"fill", true}, {"verdict sample", false}};
+	for (const auto& [name, bFill] : draws) {
+		const auto Run = [&](const Image& a, const Image& b, const Image32F2& warp, float bandValue) {
+			return bFill ? Fill(a, b, warp, bandValue) : Coverage(a, b, warp, bandValue);
+		};
+		for (const Image32F2* warp : {&identity, &shifted}) {
+			const bool bIdentity = warp == &identity;
+			const Draw off = Run(sphA, sphB, *warp, 0.f), on = Run(sphA, sphB, *warp, band);
+			VERBOSE("  %s, %s warp: band 0 %u samples (%u with an end in the band), band %g %u samples", name,
+				bIdentity ? "identity" : "shifted", (unsigned)off.a.size(), (unsigned)CountInBand(off), band, (unsigned)on.a.size());
+			if (CountInBand(off) < 40) {
+				VERBOSE("SphericalBottomBandDenseTest FAILED: the band-0 %s has only %u samples in the band, the setup does not exercise it", name, (unsigned)CountInBand(off));
+				return false;
+			}
+			if (!NoneInBand(on) || on.a.empty()) {
+				VERBOSE("SphericalBottomBandDenseTest FAILED: the %s keeps %u samples with an end in the band (%u samples)", name, (unsigned)CountInBand(on), (unsigned)on.a.size());
+				return false;
+			}
+			if (!Survivors(off, on)) {
+				VERBOSE("SphericalBottomBandDenseTest FAILED: the band removed a %s sample of the rows above the band", name);
+				return false;
+			}
+			if (bIdentity && bFill) {
+				// the identity warp puts both ends in the same row: the fill's samples above the band are exactly the band-0 ones
+				Draw offAbove;
+				for (size_t i = 0; i < off.a.size(); ++i)
+					if (!InBand(off.a[i])) {
+						offAbove.a.push_back(off.a[i]);
+						offAbove.b.push_back(off.b[i]);
+					}
+				if (!SameDraw(offAbove, on)) {
+					VERBOSE("SphericalBottomBandDenseTest FAILED: the rows above the band hold %u fill samples, %u without the band", (unsigned)on.a.size(), (unsigned)offAbove.a.size());
+					return false;
+				}
+			}
+		}
+		// a spherical image in either role: the band holds for the end in the spherical image, the perspective end is free
+		const Draw sphPerOff = Run(sphA, perB, identity, 0.f), sphPerOn = Run(sphA, perB, identity, band);
+		const Draw perSphOff = Run(perA, sphB, identity, 0.f), perSphOn = Run(perA, sphB, identity, band);
+		if (sphPerOn.a.empty() || perSphOn.a.empty() || sphPerOn.a.size() >= sphPerOff.a.size() || perSphOn.a.size() >= perSphOff.a.size()) {
+			VERBOSE("SphericalBottomBandDenseTest FAILED: the %s of a spherical and a perspective image holds %u/%u samples with the band, %u/%u without", name,
+				(unsigned)sphPerOn.a.size(), (unsigned)perSphOn.a.size(), (unsigned)sphPerOff.a.size(), (unsigned)perSphOff.a.size());
+			return false;
+		}
+		for (const Point2f& pt : sphPerOn.a)
+			if (InBand(pt)) {
+				VERBOSE("SphericalBottomBandDenseTest FAILED: the %s keeps a sample in the band of the spherical image A", name);
+				return false;
+			}
+		for (const Point2f& pt : perSphOn.b)
+			if (InBand(pt)) {
+				VERBOSE("SphericalBottomBandDenseTest FAILED: the %s keeps a sample in the band of the spherical image B", name);
+				return false;
+			}
+		// a perspective pair is untouched by the option
+		if (!SameDraw(Run(perA, perB, identity, 0.f), Run(perA, perB, identity, band)) || Run(perA, perB, identity, band).a.empty()) {
+			VERBOSE("SphericalBottomBandDenseTest FAILED: the band changed the %s of a perspective pair", name);
+			return false;
+		}
+	}
+	VERBOSE("SphericalBottomBandDenseTest PASSED");
 	return true;
 }
 /*----------------------------------------------------------------*/

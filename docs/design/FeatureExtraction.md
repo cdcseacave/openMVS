@@ -76,7 +76,7 @@ keypoints of every extracted image in the same layout.
 | `--siftgpu-darkness-adaptivity` | false | SiftGPU: lower the DoG threshold and curvature floor in dark areas |
 | `--gpu-device` | -1 | (CUDA builds) GPU selection; -2, `cpu` or empty selects the CPU path (and OpenGL/GLSL for SiftGPU) |
 | `--release-descriptors` | true | release descriptors after matching |
-| `--spherical-bottom-band` | 0.2 | spherical images only (`SphericalCameras.md`) |
+| `--spherical-bottom-band` | 0.2 | spherical images only; also keeps the dense matching out of the band (`SphericalCameras.md`) |
 
 ## Invariants
 

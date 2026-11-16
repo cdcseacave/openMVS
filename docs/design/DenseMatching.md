@@ -57,6 +57,7 @@ ordinary SIFT/AKAZE/ORB flow; `--dense-match` composes with any match mode.
 | `useGPU` | true | false (`--gpu-device` asking for the CPU) forces the CPU provider |
 | `denseEpipolarErrorFactor` | 1 | multiple of the matcher's epipolar bar (`MatchConfig::maxEpipolarError`) a dense correspondence is held to when the pair's geometry classifies it |
 | `denseFitWeight` | 0.003 | weight of a dense correspondence against a sparse one's 1 in the refinement that closes the pair's relative pose; 0 drops the dense matches from the polish |
+| `sphericalBottomBand` | 0 (`Scene::Reconstruct` sets it to `--spherical-bottom-band`, default 0.2) | fraction of the height, from the bottom, of a spherical image where no dense correspondence has an end; perspective images are never filtered |
 | `guidedBandLengthCells` | 2 | guided search: warp cells either way along the epipolar line from the warp's prediction |
 | `guidedBandHalfWidthCells` | 0.5 | guided search: warp cells either way across the line; 0 searches the disc of the length's radius |
 | `guidedSameFeatureDistance` | 3 px | a rival this close to the winner is the same feature described twice and is no rival |
@@ -203,8 +204,10 @@ candidate pair:
 1. **Warp** (`MatchPair`): both directions in one call. The covisibility gate acts here.
 2. **Verdict** (`JudgePairROMA2`). One geometry is fitted through `PairsMatcher::GeometricFilter` on a
    coverage-uniform sample of A's eligible cells (`SampleWarpByCoverage`, target 4000; fewer than 8 rejects the pair).
-   A cell is eligible when its confidence reaches `minConfidence` and the point it warps to lies inside the other image
-   (`IsWarpCellEligible`, the one predicate every scan of a warp uses). The tolerance of the fit and of every test on
+   A cell is eligible when its confidence reaches `minConfidence`, the point it warps to lies inside the other image,
+   and neither end lies in the bottom band of a spherical image (`sphericalBottomBand`, `SphericalCameras.md`)
+   (`IsWarpCellEligible`, the one predicate every scan of a warp uses, so the verdict, its fit sample and the dense fill
+   all keep out of the band, with either matcher; band cells therefore count in no area of the verdict). The tolerance of the fit and of every test on
    warp cells is half a warp cell in pixels (`WarpTolerance`, a function of the image sizes and the grid, not a
    setting). The inlier area of A is the share of the whole warp grid whose eligible cells the geometry explains
    (Sampson distance within the tolerance); the inlier area of B is measured against the same geometry on B's

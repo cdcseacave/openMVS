@@ -190,7 +190,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(defaults.featuresCfg.maxFeaturesPerCell), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(defaults.featuresCfg.minFeaturesPerCell), "minimum features per cell before adjusting sensitivity")
 		("siftgpu-darkness-adaptivity", boost::program_options::value(&OPT::bSiftGPUDarknessAdaptivity)->default_value(defaults.featuresCfg.siftgpuDarknessAdaptivity), "SiftGPU: lower the DoG threshold and curvature floor in dark areas")
-		("spherical-bottom-band", boost::program_options::value(&OPT::fSphericalBottomBand)->default_value(defaults.featuresCfg.sphericalBottomBand), "spherical images: the fraction of the image height, counted from the bottom, whose features are discarded (the operator and the tripod are there), in [0,1); 0 = keep every feature; perspective images are not affected")
+		("spherical-bottom-band", boost::program_options::value(&OPT::fSphericalBottomBand)->default_value(defaults.featuresCfg.sphericalBottomBand), "spherical images: the fraction of the image height, counted from the bottom, whose features and dense matches are discarded (the operator and the tripod are there), in [0,1); 0 = keep every feature; perspective images are not affected")
 		("siftgpu-cuda", boost::program_options::value(&OPT::bSiftGPUCUDA)->default_value(defaults.featuresCfg.useCUDA), "SiftGPU feature extraction and matching backend: 1 = CUDA (if available), 0 = OpenGL/GLSL")
 		;
 
@@ -494,7 +494,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		if (given("detector-type"))
 			LOG("warning: --detector-type is ignored if the saved scene already holds features; its own detector then sets the matching thresholds");
 		if (given("spherical-bottom-band"))
-			LOG("warning: --spherical-bottom-band is ignored if the saved scene already holds features");
+			LOG("warning: --spherical-bottom-band does not filter the features a saved scene already holds (it still keeps the dense matching out of the band)");
 	}
 
 	// Use max threads option if provided

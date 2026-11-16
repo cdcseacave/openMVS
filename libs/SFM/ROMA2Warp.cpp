@@ -208,20 +208,20 @@ inline bool WarpCandidateBeats(const WarpCandidate& candidate, const WarpCandida
 // stratifies. SampleWarpByCoverage still sizes its grid from their count (WarpBucketGridSide);
 // SampleWarpComplementary's grid is the caller's pitch instead, but needs this same pass to know
 // which cells there are to put in it.
-void CollectWarpCandidates(const cv::Size& sizeA, const cv::Size& sizeB, const Image32F2& warp,
-	const Image32F& confidence, float minConfidence, std::vector<WarpCandidate>& candidates)
+void CollectWarpCandidates(const Image& imgA, const Image& imgB, const Image32F2& warp,
+	const Image32F& confidence, float minConfidence, float sphericalBottomBand, std::vector<WarpCandidate>& candidates)
 {
 	candidates.clear();
 	candidates.reserve((size_t)confidence.rows*confidence.cols/4);
 	for (int y = 0; y < confidence.rows; ++y) {
 		for (int x = 0; x < confidence.cols; ++x) {
 			const float conf = confidence(y, x);
+			const Point2f ptA(CellToPixel(Point2f((float)x, (float)y), confidence.size(), imgA.GetSize()));
 			Point2f ptB;
-			if (!IsWarpCellEligible(conf, warp(y, x), minConfidence, sizeB, ptB))
+			if (!IsWarpCellEligible(conf, warp(y, x), minConfidence, imgB, ptA, imgA, sphericalBottomBand, ptB))
 				continue;
 			candidates.push_back(WarpCandidate{conf, y*confidence.cols + x,
-				WarpCellLatticePriority(x, y),
-				CellToPixel(Point2f((float)x, (float)y), confidence.size(), sizeA), ptB});
+				WarpCellLatticePriority(x, y), ptA, ptB});
 		}
 	}
 }
@@ -259,6 +259,7 @@ size_t SFM::SampleWarpByCoverage(
 	const Image32F2& warp,
 	const Image32F& confidence,
 	float minConfidence,
+	float sphericalBottomBand,
 	unsigned maxSamples,
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB)
@@ -268,9 +269,8 @@ size_t SFM::SampleWarpByCoverage(
 	sampledB.clear();
 	if (maxSamples == 0)
 		return 0;
-	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
 	std::vector<WarpCandidate> candidates;
-	CollectWarpCandidates(sizeA, sizeB, warp, confidence, minConfidence, candidates);
+	CollectWarpCandidates(imgA, imgB, warp, confidence, minConfidence, sphericalBottomBand, candidates);
 	if (candidates.empty())
 		return 0;
 
@@ -374,6 +374,7 @@ size_t SFM::SampleWarpComplementary(
 	const Image32F2& warp,
 	const Image32F& confidence,
 	float minConfidence,
+	float sphericalBottomBand,
 	int bucketGridSide,
 	unsigned maxSamples,
 	const std::vector<Point2f>& occupiedA,
@@ -389,9 +390,9 @@ size_t SFM::SampleWarpComplementary(
 	confidences.clear();
 	if (maxSamples == 0)
 		return 0;
-	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
+	const cv::Size sizeA(imgA.GetSize());
 	std::vector<WarpCandidate> candidates;
-	CollectWarpCandidates(sizeA, sizeB, warp, confidence, minConfidence, candidates);
+	CollectWarpCandidates(imgA, imgB, warp, confidence, minConfidence, sphericalBottomBand, candidates);
 	if (candidates.empty())
 		return 0;
 	// the caller's pitch, the same for every pair (DenseFillGridSide): the draw is a density over

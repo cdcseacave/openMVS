@@ -447,8 +447,8 @@ constexpr unsigned VERDICT_SAMPLE = 4000;
 // pixels of the working orientation of the source image, `ptsDst` the warped points in the target
 // image, index-parallel with `confidences`.
 // Returns the number of eligible cells.
-size_t CollectEligibleCells(const WarpMaps& maps, const cv::Size& sizeSrc, const cv::Size& sizeDst,
-	float minConfidence, std::vector<Point2f>& ptsSrc, std::vector<Point2f>& ptsDst, std::vector<float>& confidences)
+size_t CollectEligibleCells(const WarpMaps& maps, const Image& imgSrc, const Image& imgDst,
+	float minConfidence, float sphericalBottomBand, std::vector<Point2f>& ptsSrc, std::vector<Point2f>& ptsDst, std::vector<float>& confidences)
 {
 	ASSERT(maps.IsValid());
 	ptsSrc.clear();
@@ -457,10 +457,11 @@ size_t CollectEligibleCells(const WarpMaps& maps, const cv::Size& sizeSrc, const
 	for (int y = 0; y < maps.confidence.rows; ++y) {
 		for (int x = 0; x < maps.confidence.cols; ++x) {
 			const float conf = maps.confidence(y, x);
+			const Point2f ptSrc(CellToPixel(Point2f((float)x, (float)y), maps.confidence.size(), imgSrc.GetSize()));
 			Point2f ptDst;
-			if (!IsWarpCellEligible(conf, maps.warp(y, x), minConfidence, sizeDst, ptDst))
+			if (!IsWarpCellEligible(conf, maps.warp(y, x), minConfidence, imgDst, ptSrc, imgSrc, sphericalBottomBand, ptDst))
 				continue;
-			ptsSrc.push_back(CellToPixel(Point2f((float)x, (float)y), maps.confidence.size(), sizeSrc));
+			ptsSrc.push_back(ptSrc);
 			ptsDst.push_back(ptDst);
 			confidences.push_back(conf);
 		}
@@ -676,8 +677,8 @@ void SFM::JudgePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, co
 	// it is what rejects the pairs that put the whole of A on a few pixels of B.
 	std::vector<Point2f> cellsAinA, cellsAinB, cellsBinA, cellsBinB;
 	std::vector<float> confidencesA, confidencesB;
-	CollectEligibleCells(warps.ab, sizeA, sizeB, config.minConfidence, cellsAinA, cellsAinB, confidencesA);
-	CollectEligibleCells(warps.ba, sizeB, sizeA, config.minConfidence, cellsBinB, cellsBinA, confidencesB);
+	CollectEligibleCells(warps.ab, imgA, imgB, config.minConfidence, config.sphericalBottomBand, cellsAinA, cellsAinB, confidencesA);
+	CollectEligibleCells(warps.ba, imgB, imgA, config.minConfidence, config.sphericalBottomBand, cellsBinB, cellsBinA, confidencesB);
 	verdict.confidentAreaA = (float)cellsAinA.size()/numCells;
 	verdict.confidentAreaB = (float)cellsBinB.size()/numCells;
 
@@ -687,7 +688,7 @@ void SFM::JudgePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, co
 	// chosen for spread and confidence only, and one geometry either explains it or does not.
 	std::vector<Point2f> sampledA, sampledB;
 	SampleWarpByCoverage(imgA, imgB, warps.ab.warp, warps.ab.confidence, config.minConfidence,
-		VERDICT_SAMPLE, sampledA, sampledB);
+		config.sphericalBottomBand, VERDICT_SAMPLE, sampledA, sampledB);
 	if (sampledA.size() < 8) {
 		// the estimator needs 8 correspondences of its own; a warp that cannot offer that many
 		// confident, spread-out cells is no evidence about the pair
@@ -780,7 +781,7 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 		Image32F inlierConfidence;
 		RebuildInlierWarp(verdict, sizeA, sizeB, warpSize, inlierWarp, inlierConfidence);
 		SampleWarpComplementary(imgA, imgB, inlierWarp, inlierConfidence, config.minConfidence,
-			DenseFillGridSide(config.denseMatchesPerFrame, warpSize), DenseFillCeiling(config, verdict),
+			config.sphericalBottomBand, DenseFillGridSide(config.denseMatchesPerFrame, warpSize), DenseFillCeiling(config, verdict),
 			occupiedA, dense.pointsA, dense.pointsB, dense.confidences);
 	}
 

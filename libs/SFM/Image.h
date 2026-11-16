@@ -100,6 +100,16 @@ public:
 		ASSERT(idx < keypoints.size());
 		return numDescribedKeypoints != NO_ID && idx >= numDescribedKeypoints;
 	}
+	// Whether pixel pt of this spherical (equirectangular) image lies in the bottom `band` fraction of its
+	// height, where the operator or the tripod shows and no keypoint may live. The one predicate of the
+	// band: the feature extraction (FeaturesExtractor::IsMasked) and the dense matching (IsWarpCellEligible)
+	// both decide through it. pt is a pixel position of the image (within half a pixel of its frame).
+	inline bool IsInSphericalBottomBand(const cv::Point2f& pt, float band) const {
+		ASSERT(HasCamera() && pCamera->GetType() == CameraType::SPHERICAL);
+		ASSERT(band >= 0.f && band < 1.f);
+		ASSERT(pt.y >= -0.5f && pt.y <= (float)GetHeight());
+		return pt.y > (1.f - band) * (float)GetHeight();
+	}
 	// Close the described prefix at the current keypoint count, before dense keypoints are appended
 	// past it. Idempotent: a second supplemented pair appending to the same image must not move a
 	// boundary the first one already set.

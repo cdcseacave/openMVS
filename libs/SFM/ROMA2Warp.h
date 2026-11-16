@@ -96,19 +96,28 @@ SFM_API Point2f NormCoord(const Point2f& coord, const cv::Size& size);
 
 // The ONE eligibility predicate every scan of a warp uses (CollectWarpCandidates here, the verdict's
 // CollectEligibleCells in MatchROMA2.cpp): a cell is eligible when the model is at least
-// minConfidence confident about it AND the point it warps to lands inside the target image. `conf`
-// and `normCoord` are the cell's own values in the confidence and warp maps; on success `ptDst`
-// receives the warped point in the pixels of the target image.
+// minConfidence confident about it AND the point it warps to lands inside the target image AND
+// neither end lies in the bottom band of a spherical image (Image::IsInSphericalBottomBand; 0 = off).
+// `conf` and `normCoord` are the cell's own values in the confidence and warp maps, `ptSrc` its
+// centre in the pixels of the source image; on success `ptDst` receives the warped point in the
+// pixels of the target image.
 // One implementation, because the population the verdict measures and the population the dense fill
 // draws from must not be able to drift apart.
 inline bool IsWarpCellEligible(float conf, const Point2f& normCoord, float minConfidence,
-	const cv::Size& sizeDst, Point2f& ptDst)
+	const Image& imgDst, const Point2f& ptSrc, const Image& imgSrc, float sphericalBottomBand, Point2f& ptDst)
 {
 	if (conf < minConfidence)
 		return false;
-	ptDst = DenormCoord(normCoord, sizeDst);
+	ptDst = DenormCoord(normCoord, imgDst.GetSize());
 	// false here means the warp sends this cell outside the target image
-	return Image8U::isInside(ptDst, sizeDst);
+	if (!Image8U::isInside(ptDst, imgDst.GetSize()))
+		return false;
+	// the bottom band of a spherical image (FeatureExtractionConfig::sphericalBottomBand, the operator and
+	// the tripod): no correspondence has an end in it, in either image, whatever the matcher. Perspective
+	// images and a band of 0 are never touched.
+	return !(sphericalBottomBand > 0.f &&
+		((imgSrc.pCamera->GetType() == CameraType::SPHERICAL && imgSrc.IsInSphericalBottomBand(ptSrc, sphericalBottomBand)) ||
+		 (imgDst.pCamera->GetType() == CameraType::SPHERICAL && imgDst.IsInSphericalBottomBand(ptDst, sphericalBottomBand))));
 }
 
 // Half a warp cell in image pixels: the accuracy a coarse-warp correspondence can claim, and the
@@ -207,6 +216,7 @@ SFM_API size_t SampleWarpByCoverage(
 	const Image32F2& warp,
 	const Image32F& confidence,
 	float minConfidence,
+	float sphericalBottomBand,
 	unsigned maxSamples,
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB);
@@ -272,6 +282,7 @@ SFM_API size_t SampleWarpComplementary(
 	const Image32F2& warp,
 	const Image32F& confidence,
 	float minConfidence,
+	float sphericalBottomBand,
 	int bucketGridSide,
 	unsigned maxSamples,
 	const std::vector<Point2f>& occupiedA,

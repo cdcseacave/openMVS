@@ -791,6 +791,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// solves, the resection's local and full ones, and the global passes alike.
 	SetBAPairConstraints(cfg.baConfig, cfg.relativeRotationSigma);
 	cfg.baConfig.minTriangulationAngle = cfg.minAngleThreshold; // the budget of the observations keeps every track this wide
+	cfg.roma2Cfg.sphericalBottomBand = cfg.featuresCfg.sphericalBottomBand; // the dense matching keeps out of the band the features keep out of
 	if (cfg.importCfg.focalLength > 0) {
 		cfg.initCfg.refineFocalLength = false;
 		VERBOSE("Focal length forced at %g px: kept by the star initializer, refined by bundle adjustment", cfg.importCfg.focalLength);

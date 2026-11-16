@@ -53,6 +53,10 @@ struct SFM_API ROMA2Config {
 	String provider = "auto";      // execution provider: auto|cuda|coreml|dml|cpu
 	bool useMatching = false;      // one-pass dense pair matching (verdict, guided, fill, store)
 	float minConfidence = 0.1f;    // a warp cell takes part (verdict, tracking, fill) at this confidence or above
+	// Bottom band of the spherical images (FeatureExtractionConfig::sphericalBottomBand), where no dense correspondence
+	// has an end: the one value the feature extraction and the dense matching share, copied from it by Scene::Reconstruct
+	// (direct callers of Scene::MatchPairs set it themselves). 0 = off, which perspective images are always.
+	float sphericalBottomBand = 0.f;
 	float minOverlap = 0.10f;      // verdict: min(inlier area A, inlier area B) >= minOverlap
 	// The dense matcher behind the retrieval descriptors and the warps: "roma2" or "flexglue" (docs/design/DenseMatching.md).
 	// Everything above and below (the verdict, the guided matching, the fill, the lens fit) reads the same warps whichever it is.

@@ -797,9 +797,8 @@ cv::Mat FeaturesExtractor::ConvertToRootSIFT(const cv::Mat& siftDesc)
 
 bool FeaturesExtractor::IsMasked(const Image& image, const cv::Point2f& pt) const
 {
-	ASSERT(image.pCamera && image.pCamera->GetType() == CameraType::SPHERICAL);
-	ASSERT(!image.pixels.empty() && pt.y >= 0 && pt.y <= (float)image.pixels.rows);
-	return pt.y > (1.f - config.sphericalBottomBand) * (float)image.pixels.rows;
+	ASSERT(!image.pixels.empty() && image.pixels.rows == image.GetHeight());
+	return image.IsInSphericalBottomBand(pt, config.sphericalBottomBand);
 }
 /*----------------------------------------------------------------*/
 

@@ -349,6 +349,11 @@ bool ReconstructSphericalSyntheticTest();
 // keypoints and descriptors with the band at 0.2 or at 0.
 bool SphericalBottomBandTest();
 
+// Spherical bottom band of the dense matching: with ROMA2Config::sphericalBottomBand at 0.2 neither warp draw
+// (the verdict's sample and the fill) has an end of a sample in the bottom 20% of rows of a spherical image,
+// the rows above keep the samples they have without the band, and a perspective pair is unaffected.
+bool SphericalBottomBandDenseTest();
+
 // The detector words of FeatureTypeFromString: AKAZE, ORB, SIFT and SIFTGPU in any letter case, any other word is NONE.
 bool FeatureTypeNameTest();
 
