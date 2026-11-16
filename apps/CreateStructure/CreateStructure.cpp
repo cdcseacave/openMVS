@@ -495,6 +495,9 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 			LOG("warning: --detector-type is ignored if the saved scene already holds features; its own detector then sets the matching thresholds");
 		if (given("spherical-bottom-band"))
 			LOG("warning: --spherical-bottom-band does not filter the features a saved scene already holds (it still keeps the dense matching out of the band)");
+		for (const char* name: {"filter-triplets", "triplet-cut", "triplet-min-score", "triplet-second-face-score", "max-pair-direction-residual", "repair-contradicted-pairs"})
+			if (given(name))
+				LOG("warning: --%s is ignored if the saved scene's view graph is already filtered (a --match-images-only scene)", name);
 	}
 
 	// Use max threads option if provided
