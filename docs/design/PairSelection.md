@@ -141,6 +141,7 @@ image, matches descriptors, and verifies:
 | `--vocab-max-pairs` | 50 | target pairs per image (VOCABULARY, RETRIEVAL, KNOWN_POSES) |
 | `--match-verification-feedback` | true | two-round matching, active when `--vocab-max-pairs >= 10` |
 | `maxDescriptorsPerImage` | 1000 SIFT/SIFTGPU, 2000 AKAZE/ORB | descriptors per image the vocabulary tree uses |
+| `minFeatureDistance` | 0 (off) | `MatchConfig` only, no command-line option: the minimum pixel distance between the two keypoints of a match; above 0 `GeometricFilter` refuses the pair by name, because skipping matches there desynchronises the RANSAC inlier mask from the match list |
 | `preMatchThreshold` | 0 (off) | `MatchConfig` only: a pre-matching filter on the vocabulary tree's top descriptors, with no command-line option |
 | reciprocal-rank constant | 10 | fusion damping, constant |
 | view-angle gate, preferred baseline | 75 deg, 2 scene units | KNOWN_POSES score, constants |
