@@ -92,11 +92,11 @@ pairs that carry a capture the descriptor matcher cannot match.
 
 What a solve costs is the number of residuals it fits, and one image can bring thousands: warp
 samples where it was matched densely, detections where it was not. A few hundred spread over the
-frame already fix its pose, so each image contributes at most `maxObservationsPerImage` (1500,
+frame already fix its pose, so each image contributes at most `maxObservationsPerImage` (2000,
 `--ba-max-obs`, 0 = no cap) observations of any kind to a solve (`BuildObservationCap`).
 
 - The budget runs only once the scene's observations (every inlier track's observations in every
-  posed image, summed over the whole scene) reach `minObservationsForCap` (1,000,000,
+  posed image, summed over the whole scene) reach `minObservationsForCap` (1,500,000,
   `--ba-cap-min-obs`, 0 = always): a scene small enough to be solved whole is solved whole, and once
   it is not, every solve of it is budgeted, a local window included.
 - An over-budget image keeps its described observations first, since a detected position is the
@@ -232,8 +232,8 @@ triangulated and adjusted once (`AdjustMergedScene`).
 | `denseObservationWeight` | `--ba-dense-weight` | -1 (measure) |
 | `denseHalfWeightObservations` | none | 300 |
 | `maxDenseObservationWeight` | none | 0.01 |
-| `maxObservationsPerImage` | `--ba-max-obs` | 1500 |
-| `minObservationsForCap` | `--ba-cap-min-obs` | 1,000,000 |
+| `maxObservationsPerImage` | `--ba-max-obs` | 2000 |
+| `minObservationsForCap` | `--ba-cap-min-obs` | 1,500,000 |
 | `relativeRotationSigma`, `relativeTranslationSigma` | `--ba-pair-sigma` | 1 degree, 2 degrees |
 | intrinsic flags | `--refine-intrinsics` | 1 |
 | `gpsPositionWeight`, `gpsPositionWeightZ` | `--gps-position-weight`, `--gps-position-weight-z` | 0 (off) |
@@ -249,6 +249,10 @@ triangulated and adjusted once (`AdjustMergedScene`).
 - A local solve changes only the poses in `viewIDs`; it never changes an intrinsic.
 
 ## Validation
+
+Every row below was measured with the observation cap at 1500 observations per image (`maxObservationsPerImage`) applying from
+1,000,000 scene observations (`minObservationsForCap`). The shipped defaults, 2000 and 1,500,000, are not yet measured on the
+evaluation set.
 
 The per-image dense weight, on the eleven captures with verified reference poses, against the same
 dense weight for every image:
