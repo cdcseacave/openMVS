@@ -340,7 +340,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Optional GPS position constraints via Ceres cost function
   - Analytic Jacobian option (`DerivePinholeReprojectionErrorAnalytic.py` generates coefficients)
   - `baIntrinsicFlags`: bitmask controlling which intrinsic parameters to optimize
-- **Configuration:** `BAConfig` — `maxIterations` (100), `robustThreshold` (Huber, 2 px), `refinePosesRotation`, `refinePosesPosition`, `refinePoints`, the `refine*` intrinsic switches (set from `ReconstructionConfig::baIntrinsicFlags`, default `INTRINSIC_MAIN`, `--refine-intrinsics`), `relativeRotationSigma` (1 degree, `--ba-pair-sigma`), `denseObservationWeight` (`--ba-dense-weight`), `maxObservationsPerImage` (2000, `--ba-max-obs`), `minObservationsForCap` (1500000, `--ba-cap-min-obs`)
+- **Configuration:** `BAConfig` — `maxIterations` (100), `robustThreshold` (Huber, 2 px), `refinePosesRotation`, `refinePosesPosition`, `refinePoints`, the `refine*` intrinsic switches (set from `ReconstructionConfig::baIntrinsicFlags`, default `INTRINSIC_MAIN`, `--refine-intrinsics`), `relativeRotationSigma` (1 degree, `--ba-pair-sigma`), `denseObservationWeight` (`--ba-dense-weight`), `maxObservationsPerImage` (1500, `--ba-max-obs`), `minObservationsForCap` (1500000, `--ba-cap-min-obs`)
 - **GPU Support:** No (Ceres uses OpenMP for parallelism)
 - **Threading:** Ceres internal parallelism (OpenMP)
 - **Dependencies:** Ceres Solver, Eigen3

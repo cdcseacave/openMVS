@@ -92,7 +92,7 @@ pairs that carry a capture the descriptor matcher cannot match.
 
 What a solve costs is the number of residuals it fits, and one image can bring thousands: warp
 samples where it was matched densely, detections where it was not. A few hundred spread over the
-frame already fix its pose, so each image contributes at most `maxObservationsPerImage` (2000,
+frame already fix its pose, so each image contributes at most `maxObservationsPerImage` (1500,
 `--ba-max-obs`, 0 = no cap) observations of any kind to a solve (`BuildObservationCap`).
 
 - The budget runs only once the scene's observations (every inlier track's observations in every
@@ -232,7 +232,7 @@ triangulated and adjusted once (`AdjustMergedScene`).
 | `denseObservationWeight` | `--ba-dense-weight` | -1 (measure) |
 | `denseHalfWeightObservations` | none | 300 |
 | `maxDenseObservationWeight` | none | 0.01 |
-| `maxObservationsPerImage` | `--ba-max-obs` | 2000 |
+| `maxObservationsPerImage` | `--ba-max-obs` | 1500 |
 | `minObservationsForCap` | `--ba-cap-min-obs` | 1,500,000 |
 | `relativeRotationSigma`, `relativeTranslationSigma` | `--ba-pair-sigma` | 1 degree, 2 degrees |
 | intrinsic flags | `--refine-intrinsics` | 1 |
@@ -251,8 +251,11 @@ triangulated and adjusted once (`AdjustMergedScene`).
 ## Validation
 
 Every row below was measured with the observation cap at 1500 observations per image (`maxObservationsPerImage`) applying from
-1,000,000 scene observations (`minObservationsForCap`). The shipped defaults, 2000 and 1,500,000, are not yet measured on the
-evaluation set.
+1,000,000 scene observations (`minObservationsForCap`); the shipped threshold is 1,500,000. A budget of 2000 per image is not
+shipped: on one capture of 540 images (1.87 million observations once merged) three runs of three ended worse than the four runs at
+1500, two with 81 and 82 wrong images against 2 or 3, one at the same images and 0.05 less of pose score; the wrong registrations
+appear right after a merge, where the outcome depends on which observations the budget keeps. On the same capture 1500 with the
+threshold at 1,000,000 and at 1,500,000 ends alike (518 right, 2 wrong).
 
 The per-image dense weight, on the eleven captures with verified reference poses, against the same
 dense weight for every image:

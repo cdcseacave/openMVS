@@ -250,7 +250,7 @@ loss (2 px in the resection's own solves); a dense (warp-sampled) keypoint's res
 relative to a described one's (measured, or pinned with `--ba-dense-weight`; see `BundleAdjustment.md`).
 What a solve costs is the number of observations it fits, and one image can bring thousands of them
 -- warp samples where it was matched densely, detections where it was not -- so each image
-contributes at most `maxObservationsPerImage` (2000, `--ba-max-obs`) of any kind. The budget goes to
+contributes at most `maxObservationsPerImage` (1500, `--ba-max-obs`) of any kind. The budget goes to
 the described observations first -- a detected position is the precise measurement, so an image keeps
 all of its own unless they alone exceed the budget -- and the warp samples fill what is left of it,
 so that an image with few detections spends most of the budget on warp samples and one with many

@@ -116,7 +116,7 @@ struct SFM_API BAConfig
 	// densest. Most of the budget then goes to warp samples on an image with few detections and
 	// little on one with many, and the scene stays as well constrained as the residual count it
 	// costs allows (see BuildObservationCap).
-	unsigned maxObservationsPerImage = 2000;
+	unsigned maxObservationsPerImage = 1500;
 
 	// The widest angle, in degrees, the kept views of a track must span at the point for the budget
 	// above to leave the track in the solve (the caller's minimum triangulation angle). Two views
