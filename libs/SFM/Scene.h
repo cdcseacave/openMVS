@@ -108,7 +108,7 @@ struct SFM_API ReconstructionConfig {
 	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled
 	float maxReprojError{4.f}; // Reprojection error for coarse triangulation and filtering
 	float maxFineReprojError{2.f}; // Reprojection error for fine triangulation and filtering
-	float minAngleThreshold{1.5f}; // Minimum triangulation angle (degrees)
+	float minAngleThreshold{1.5f}; // Minimum triangulation angle (degrees) of the merged scene's and the final triangulations and filters; a block starts and grows at the 1.0 of StarInitConfig and ResectionConfig
 	// constant: near and far depth threshold multipliers of the track filter, the resection's (one value
 	// for the reconstruction's filtering and the resection's)
 	static constexpr float multDepthNear = ResectionConfig::multDepthNear;

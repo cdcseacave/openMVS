@@ -44,7 +44,7 @@ struct SFM_API StarInitConfig
 	unsigned maxViews{36};          // Maximum connected views
 	float ratioInliersFilter{0.2f}; // Floor of a neighbour's evidence: this share (at most 1) of the mean evidence of the three strongest candidates that are not near-duplicates (pairsWeighting; all candidates when every one is) (optional, 0 to disable)
 	float maxReprojError{6.f};      // Maximum reprojection error (pixels)
-	float minAngleThreshold{1.f};   // Minimum angle between cameras (degrees)
+	float minAngleThreshold{1.f};   // Minimum triangulation angle (degrees) of the star's first triangulation; the later passes raise it by 0.5 and 1
 	float evidenceMinAngle{1.5f};   // Ray angle a pair's inlier must reach to count as star evidence (degrees): the reconstruction's minAngleThreshold, which Scene sets it from
 	bool globalRotations{false};    // Use global rotation averaging to initialize rotations (optional)
 

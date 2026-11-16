@@ -140,7 +140,7 @@ struct SFM_API ResectionConfig
 	                                    // the triangulation and the filtering: the dense measurement is the less
 	                                    // precise one (its error grows with the image size, the warp being computed
 	                                    // at a fixed resolution), so it may answer to a looser bar (1 = the same bar)
-	float minAngleThreshold{1.f};       // Minimum triangulation angle (degrees)
+	float minAngleThreshold{1.f};       // Minimum triangulation angle (degrees) while a block grows: below the reconstruction's 1.5, so that the left-over images and the seams of the merge find more points; the reconstruction's filters apply its own bar afterwards
 	// constant: near and far depth threshold multipliers of the track filter: a track nearer than
 	// multDepthNear times the median distance of the tracks to their cameras, or farther than
 	// multDepthFar times it, is removed (ReconstructionConfig has the same two values)

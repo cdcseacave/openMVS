@@ -171,13 +171,14 @@ under the two policies (median 2, 90th percentile 8, 99th percentile 31 to 33, m
   keypoint kept.
 - A looser reprojection bar for dense observations: a factor on the bar that nothing ever set; one
   bar serves described and dense observations.
+- One minimum triangulation angle of 1.5 degrees for the whole reconstruction: level on ten of eleven
+  captures, but on the eleventh the blocks triangulate fewer points while they grow, the step that
+  offers the left-over images to the blocks registers 17 images instead of 63 and the first merge
+  round joins 8 of 15 blocks instead of 11; two blocks then join a round later through a chain of
+  images registered one at a time, whose drift places them 13% too small.
 
 ## Open items
 
-- The minimum triangulation angle is 1.5 degrees in `ReconstructionConfig` (the reconstruction's
-  final filters) and 1.0 degrees in `ResectionConfig` and `StarInitConfig` (triangulation and
-  filtering inside the resection, the star and the sub-scenes' block rebuild); the resection's value
-  is never overridden by the reconstruction.
 - `TriangulateDLT`, a pinhole-only DLT triangulation, exists and is used only by the tests; the
   reconstruction uses `TriangulateSkewLLS`.
 - `TriangulateSkewLLS` keeps the first two rows of `[d]_x R`; they are linearly dependent for a

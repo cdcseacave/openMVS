@@ -219,7 +219,7 @@ structs of `libs/SFM`:
 | minimum composite weight for a pair to be an edge of the clustering graph | 0.9 | `SceneCluster.h:ClusterConfig::minPairWeight` |
 | minimum composite weight for a pair to give a focal residual | 0.9 | `ViewGraphCalibrator.h:ViewGraphCalibratorConfig::minPairWeight` |
 | triangulation reprojection bar, coarse and fine | 4 px and 2 px | `Scene.h:ReconstructionConfig::maxReprojError`, `maxFineReprojError` |
-| minimum triangulation angle | 1.5 degrees | `Scene.h:ReconstructionConfig::minAngleThreshold` |
+| minimum triangulation angle | 1.5 degrees in the merged scene's and the final filters, 1.0 while a block starts and grows | `Scene.h:ReconstructionConfig::minAngleThreshold`, `Resection.h:ResectionConfig::minAngleThreshold`, `StarInitializer.h:StarInitConfig::minAngleThreshold` |
 | clusters aim at | 133 images (two thirds of 200), floor 53 | `SceneCluster.h:ClusterConfig` |
 | star size | 4 to 36 views | `StarInitializer.h:StarInitConfig` |
 | resection RANSAC bar | 8 px | `Resection.h:ResectionConfig::ransac` |
