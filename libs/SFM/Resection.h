@@ -57,7 +57,13 @@ struct SFM_API ResectionConfig
 	                                    // quorum of the verified pairs to already registered images composes -- the
 	                                    // largest group of those pairs agreeing on a rotation within this same angle,
 	                                    // so that one pair among several cannot speak for the image;
-	                                    // checked for every pose, however large its inlier share (0 = disabled)
+	                                    // checked for every pose unless wellSupportedInlierRatio is lowered, which
+	                                    // exempts a pose whose inlier share is above it, trusting it over its pairs
+	                                    // (0 = disabled)
+	float wellSupportedInlierRatio{1.f}; // Inlier share above which a pose is trusted over its verified pairs; 1 = no pose
+	                                    // is. On alameda a 54% share (87/162) put a pose 1.9 degrees off, taking the 15
+	                                    // images it seeded with it, and every right registration there passes the rotation
+	                                    // check (its quorum within 7.7 of the 15-degree bar)
 	float maxLinkRotationDisagreement{8.f}; // Maximum angle (degrees) between the estimated rotation and the ones the
 	                                    // verified pairs to already registered images predict from their neighbours'
 	                                    // poses, averaged over EVERY such link weighted by its pair weight (the weighted

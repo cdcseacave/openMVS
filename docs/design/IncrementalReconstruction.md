@@ -147,7 +147,7 @@ inliers weighing `minInliers` (12) at least, and `minInlierRatio` (0.25) of the 
 inliers weigh `minInliersAbsolute` (100) -- a small consensus inside a large set can agree on a pose the image
 never had. The inliers are weighed as a pair weighs its matches (`PairsWeightingConfig::DenseScale`, 1/40 for a
 dense one against 1 for a described one), the same count the direction check below gives the pose's own vote:
-twenty dense correspondences agreeing on a pose weigh half a described one. Every pose, however well supported, is cross-checked against the rotation its
+twenty dense correspondences agreeing on a pose weigh half a described one. Every pose (`wellSupportedInlierRatio` 1; lowering it exempts a well-supported pose) is cross-checked against the rotation its
 verified pairs to registered images predict -- not the single strongest pair, misleading if that
 neighbour is misplaced, but the quorum: the largest group,
 among the strongest few links, agreeing within `maxRelativeRotationError` (15 degrees) of one another
@@ -318,7 +318,7 @@ scene the tier verdicts and the peel do not separate.
 | `--max-link-direction-error F` | `5` | the resection's direction check, in degrees, in [0,90] (`maxLinkDirectionError`, read by every resection: the sub-scenes' and the whole-scene pass); 0 = no direction check at all, the inlier-share and rotation checks stay |
 
 The resection's other acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
-`maxRelativeRotationError`, `maxLinkRotationDisagreement`) have no flags; their defaults live in `ResectionConfig`.
+`maxRelativeRotationError`, `wellSupportedInlierRatio`, `maxLinkRotationDisagreement`) have no flags; their defaults live in `ResectionConfig`.
 
 ## Limitations
 

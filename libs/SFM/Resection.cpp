@@ -187,15 +187,16 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	pose.R = camPose.R();
 	pose.SetT(camPose.t);
 
-	// Every pose is cross-checked against the image's verified pairs to already registered images,
-	// however large its inlier share: on alameda a 54% share (87/162) put a pose 1.9 degrees off,
-	// taking the 15 images it seeded with it, and every right registration there passes the rotation
-	// check (its quorum within 7.7 of the 15-degree bar). The witness is the quorum of those pairs --
+	// Every pose is cross-checked against the image's verified pairs to already registered images
+	// unless its inlier share is above wellSupportedInlierRatio, which the default (1) never allows
+	// (on alameda a 54% share, 87/162, put a pose 1.9 degrees off, taking the 15 images it seeded
+	// with it). The witness is the quorum of those pairs --
 	// the largest group agreeing on a rotation -- not the strongest one of them, which speaks falsely
 	// whenever that single neighbor is itself misplaced. When the pairs contradict one another they
 	// are no witness at all, so the pose is left to the other acceptance rules and the disagreement
 	// is reported.
-	if (config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f || config.maxLinkRotationDisagreement > 0.f) {
+	if (inlierRatio <= config.wellSupportedInlierRatio &&
+		(config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f || config.maxLinkRotationDisagreement > 0.f)) {
 		std::vector<PoseLink> links;
 		CollectPoseLinks(scene.pairs, imageID, IsRegistered(scene), links);
 		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, config.maxRelativeRotationError, NeighborPose(scene));

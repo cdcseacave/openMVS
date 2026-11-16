@@ -246,7 +246,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - New tracks triangulated after each registration
   - Local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25)
   - Full BA every `fullBAEvery` (25, 50, 100 images)
-- **Configuration:** `ResectionConfig` — `minCorrespondences`, `minInliers`, `minInlierRatio`, `minInliersAbsolute`, `maxRelativeRotationError`, `maxLinkRotationDisagreement`, `maxLinkDirectionError`, `localBAEvery`, `fullBAEvery`, `triangulateEvery`
+- **Configuration:** `ResectionConfig` — `minCorrespondences`, `minInliers`, `minInlierRatio`, `minInliersAbsolute`, `maxRelativeRotationError`, `wellSupportedInlierRatio`, `maxLinkRotationDisagreement`, `maxLinkDirectionError`, `localBAEvery`, `fullBAEvery`, `triangulateEvery`
 - **GPU Support:** No
 - **Threading:** Single (sequential registration); BA uses Ceres parallelism
 - **Dependencies:** PoseLib, Ceres Solver
