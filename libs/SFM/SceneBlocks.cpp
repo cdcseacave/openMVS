@@ -212,7 +212,7 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 		{
 			Resection resection(scene, resectionCfg);
 			if (resection.RegisterImages(false))
-				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, resectionCfg.denseReprojErrorFactor);
 		}
 		const uint32_t numAfterPool = scene.RecomputeCalibratedImages();
 		ASSERT(numAfterPool >= numModelImages);
@@ -549,8 +549,8 @@ void SceneBlocks::RebuildTracks(IIndex block, const ReconstructionConfig& config
 		unchanged.emplace_back((uint32_t)t, it->second);
 	}
 	const unsigned numChanged = (unsigned)(blk.tracks.size() - unchanged.size());
-	TriangulateTracks(blk, true, resectionCfg.maxReprojError, resectionCfg.minAngleThreshold);
-	FilterTracks(blk, resectionCfg.maxReprojError, resectionCfg.minAngleThreshold, resectionCfg.multDepthNear, resectionCfg.multDepthFar);
+	TriangulateTracks(blk, true, resectionCfg.maxReprojError, resectionCfg.minAngleThreshold, resectionCfg.denseReprojErrorFactor);
+	FilterTracks(blk, resectionCfg.maxReprojError, resectionCfg.minAngleThreshold, resectionCfg.multDepthNear, resectionCfg.multDepthFar, resectionCfg.denseReprojErrorFactor);
 	for (const auto& [t, o] : unchanged)
 		blk.tracks[t] = before[o];
 	DEBUG_EXTRA("Block %u tracks rebuilt: %u tracks (%u before), %u unchanged, %u new or changed",
@@ -653,7 +653,7 @@ void SceneBlocks::ResectPool(const ResectionConfig& resectionCfg, const Reconstr
 				blk.nMaxThreads = nThreads;
 				Resection resection(blk, resectionCfg);
 				if (resection.RegisterImages(false))
-					FilterTracks(blk, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+					FilterTracks(blk, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, resectionCfg.denseReprojErrorFactor);
 			});
 			scene.threadPool.wait();
 

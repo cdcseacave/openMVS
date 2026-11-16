@@ -225,8 +225,9 @@ share; after every solve the model is filtered at the bar and its pointless trac
 allowed solve included, so a capped adjustment ends as a converged one does.
 
 Between the adjustments, the tracks are triangulated and filtered against `maxReprojError` (4 px) and
-`minAngleThreshold`. Described and dense (warp-sampled) observations answer to the same bar
-(`TrackBuilding.md`).
+`minAngleThreshold`. `FilterTracks` and `TriangulateTracks` hold a dense (warp-sampled) observation to
+`ResectionConfig::denseReprojErrorFactor` times that bar (1 by default, so described and dense observations answer
+to the same bar, `TrackBuilding.md`); the reconstruction passes the factor in every call it makes.
 
 A track seen by fewer than two posed images has no position that two posed views determine, so the triangulation
 leaves it out and the filter does not judge it: it either was never triangulated and still holds the default

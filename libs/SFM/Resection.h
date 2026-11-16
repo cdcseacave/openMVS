@@ -130,6 +130,10 @@ struct SFM_API ResectionConfig
 	                                    // [-0.006, +0.010], better on two, worse on none) before the dense weight ceiling
 	                                    // of the bundle adjustment shipped, and was not measured with it
 	float maxReprojError{4.f};          // Reprojection error for triangulation and filtering
+	float denseReprojErrorFactor{1.f};  // Multiple of maxReprojError a dense (warp-sampled) observation is held to by
+	                                    // the triangulation and the filtering: the dense measurement is the less
+	                                    // precise one (its error grows with the image size, the warp being computed
+	                                    // at a fixed resolution), so it may answer to a looser bar (1 = the same bar)
 	float minAngleThreshold{1.f};       // Minimum triangulation angle (degrees)
 	// constant: near and far depth threshold multipliers of the track filter: a track nearer than
 	// multDepthNear times the median distance of the tracks to their cameras, or farther than

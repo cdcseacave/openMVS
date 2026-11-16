@@ -561,6 +561,11 @@ bool CappedAdjustmentTriangulationTest();
 // tracks the cap left out of it are still where their observations see them after it
 bool CappedSolveScaleTest();
 
+// A dense (warp-sampled) observation is the less precise measurement, so the track filter and the
+// triangulation hold it to its own multiple of the reprojection bar a described one answers to
+// (FilterTracks / TriangulateTracks denseReprojErrorFactor).
+bool DenseReprojectionBarTest();
+
 // The track filter judges only a track that can have a position, one with two posed views (the rule the
 // triangulation applies): a track with a single posed view was never triangulated and holds the default
 // position (a scene saved before the default was improbable stores (0,0,0), the star reference camera's centre), so

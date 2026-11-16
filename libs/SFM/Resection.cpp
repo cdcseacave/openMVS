@@ -339,7 +339,7 @@ unsigned SFM::AdjustRepeated(Scene& scene, const BAConfig& baConfig, const Resec
 	ASSERT(config.maxReprojError > 0.f);
 	const float inputErrorPixels = config.maxReprojError * ResectionConfig::fullBAInputErrorFactor;
 	const auto Filter = [&](float bar) {
-		FilterTracks(scene, bar, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		FilterTracks(scene, bar, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
 	};
 	// per image and keypoint: bit 1 = in the input of the solve that ran, bit 2 = in the input of the next one
 	std::vector<std::vector<uint8_t>> input(config.fullBARepeats > 0 ? scene.images.size() : 0);
@@ -367,7 +367,7 @@ unsigned SFM::AdjustRepeated(Scene& scene, const BAConfig& baConfig, const Resec
 		Filter(config.maxReprojError);
 		// the tracks left without a point triangulated again: what the next solve would fit from the model, or,
 		// when no solve is left, what the model holds at the bar as a converged adjustment leaves it
-		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
 		if (solves > config.fullBARepeats) {
 			Filter(config.maxReprojError);
 			break;
@@ -421,8 +421,8 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 	// valid view keeps the position the previous BA refined instead of being reset to a linear solve. The
 	// adjustment fits a wider bar than the model is held to and repeats while what it fits keeps changing
 	const auto AdjustFull = [&]() {
-		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
+		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
 		const bool refineExtended = config.minRefineExtIntrs > 0 &&
 			scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs;
 		AdjustRepeated(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig, config);
@@ -444,11 +444,11 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 		}
 		if (config.localBAEvery > 0 && lastRegistered.size() >= config.localBAEvery) {
 			// Local BA every N registered images
-			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
 			const IIndexArr fixedViewIDs = BuildLocalWindow(lastRegistered);
 			ASSERT(!fixedViewIDs.empty());
 			BundleAdjustment::AdjustLocal(scene, lastRegistered, fixedViewIDs, config.localBAConfig);
-			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
 			lastRegistered.clear();
 			return true;
 		}
@@ -490,8 +490,8 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 				// untried: the trigger is kept from the batch loop as it was measured (it read "the batch is
 				// almost exhausted"); with one registration per round it fires only when exactly one untried
 				// candidate is left after the registered image
-				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
-				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
+				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
 			}
 			break; // restart selection of next images
 		}
@@ -528,7 +528,7 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 	// tighter bar, re-admitting the observations that bar dropped and the resection's own bar keeps;
 	// a caller that asked to keep a model that took nothing as it was gets no closing then
 	if (registeredCount > 0 || closeWhenNothingRegistered) {
-		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
+		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
 		config.extendedBAConfig.maxIterations = 100;
 		AdjustRepeated(scene, config.extendedBAConfig, config);
 	}
