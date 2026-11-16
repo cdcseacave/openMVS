@@ -119,6 +119,7 @@ Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/
 [Match + build tracks] -> Compute relative poses
 -> Global rotation averaging -> Global positioning (translations + points)
 ```
+Design: `docs/design/GlobalSolver.md`.
 
 ### Known-Poses / Finetune Reconstruction (`Scene::ReconstructKnownPoses`)
 Selected by `ReconstructionConfig::HasKnownPoses()` (a poses file is configured with

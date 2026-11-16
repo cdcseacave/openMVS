@@ -23,7 +23,7 @@ These are **different classes in different namespaces**. `SFM::Scene` stores fea
 `Scene::Reconstruct` is the entry point: it imports, extracts features, matches, filters the view graph, then calls one of three solvers and runs the shared tail. There is no stand-alone incremental solver; incremental registration runs inside each block of the hierarchical one.
 
 1. **Hierarchical** (`Scene::ReconstructHierarchical`, the default): Splits into clusters, reconstructs each independently by star initialization and incremental resection, then merges. Handles small scenes (one cluster) and large ones (1000+ images).
-2. **Global** (`Scene::ReconstructGlobal`): Solves all rotations and translations simultaneously. Fastest when it works, but less robust to outliers.
+2. **Global** (`Scene::ReconstructGlobal`): Solves all rotations and translations simultaneously. Fastest when it works, but less robust to outliers (design: `docs/design/GlobalSolver.md`).
 3. **Known-poses finetune** (`Scene::ReconstructKnownPoses`): Starts from camera poses that are already known (AR capture, drone flight log, another SfM), triangulates with them and refines. Not a way to reconstruct an unknown scene -- it *requires* the poses.
 
 ## Architecture

@@ -11174,6 +11174,38 @@ bool SkipMatchModeTest()
 }
 /*----------------------------------------------------------------*/
 
+// --use-global-solver: Scene::ReconstructGlobal (rotation averaging, positioning, two adjustments) run on the bundled
+// images, matched and filtered by a match-images-only Reconstruct, registers every image with points
+bool GlobalSolverTest()
+{
+	VERBOSE("\n=== GlobalSolverTest: Scene::ReconstructGlobal on the bundled images ===");
+	ReconstructionConfig cfg;
+	cfg.featuresCfg.detectorType = FeatureType::AKAZE;
+	cfg.featuresCfg.maxFeaturesPerCell = 900;
+	cfg.featuresCfg.minFeaturesPerCell = 400;
+	cfg.matchCfg.mode = MatchConfig::EXHAUSTIVE;
+	cfg.matchCfg.DefaultsForFeatureType(cfg.featuresCfg.detectorType);
+	cfg.matchImagesOnly = true;
+	Scene scene(2);
+	if (!scene.Reconstruct(MAKE_PATH("images"), cfg) || scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED)) {
+		VERBOSE("GlobalSolverTest FAILED: the images were not matched");
+		return false;
+	}
+	if (!scene.ReconstructGlobal(cfg)) {
+		VERBOSE("GlobalSolverTest FAILED: the global solver failed");
+		return false;
+	}
+	if (!scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED) || scene.status.nCalibratedImages != scene.images.size() || scene.status.nTracks < 100) {
+		VERBOSE("GlobalSolverTest FAILED: %u of %u images registered, %u points",
+			(unsigned)scene.status.nCalibratedImages, (unsigned)scene.images.size(), (unsigned)scene.status.nTracks);
+		return false;
+	}
+	VERBOSE("GlobalSolverTest PASSED: %u of %u images registered, %u points",
+		(unsigned)scene.status.nCalibratedImages, (unsigned)scene.images.size(), (unsigned)scene.status.nTracks);
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 namespace {
 
 // Scenes for the view-graph tests (TripletFilterTest, StarReferenceViewTest): a pair carries an

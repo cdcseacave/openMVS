@@ -439,6 +439,9 @@ bool ReconstructExportCSVTest();
 // --match-mode -1 (SKIP): reconstructs a saved scene from its own matches, refuses a scene that holds none
 bool SkipMatchModeTest();
 
+// --use-global-solver: Scene::ReconstructGlobal registers the images of the bundled scene
+bool GlobalSolverTest();
+
 // The camera-triplet view-graph filter of Manam & Govindu (CVPR 2024): the scores, the yield
 // rule and both modes on hand-computed graphs.
 bool TripletFilterTest();
