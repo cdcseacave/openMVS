@@ -332,6 +332,14 @@ public:
 	// The cosine of the triangulation angle of each track-forming match that triangulates at the
 	// pair's relative pose (empty without one): what the median above is taken over.
 	FloatArr ComputeRayAngleCosines(const Image& img1, const Image& img2) const;
+	// The uncertainty of the pair's baseline direction, in radians: the matching noise (noiseAngle, radians of one match's
+	// position) over the square root of the weaker eigenvalue of the parallax energy of the track-forming matches across the
+	// baseline. The energy of a match is the squared sensitivity of its epipolar residual to a rotation of the baseline
+	// direction (the pair's rotation taken as known); it is the sum over the matches in the plane across the baseline, so it
+	// folds in the parallax of every match, how many there are and how they are spread, and the weaker eigenvalue is the
+	// direction the matches fix worst. Infinite when the matches fix no direction at all (no match, or a zero energy).
+	// Requires the pair's relative pose.
+	REAL ComputeBaselineDirectionSigma(const Image& img1, const Image& img2, REAL noiseAngle) const;
 	// The share of the track-forming matches that triangulate at the pair's relative pose with a ray
 	// angle of at least minAngle degrees: the share of the pair's inliers that measure a distance.
 	float ComputeShareAboveAngle(const Image& img1, const Image& img2, float minAngle) const;

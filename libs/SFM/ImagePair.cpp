@@ -244,6 +244,45 @@ FloatArr ImagePair::ComputeRayAngleCosines(const Image& img1, const Image& img2)
 	return cosAngles;
 }
 
+REAL ImagePair::ComputeBaselineDirectionSigma(const Image& img1, const Image& img2, REAL noiseAngle) const
+{
+	ASSERT(relativePose.has_value());
+	ASSERT(noiseAngle > 0);
+	const Pose3D& relPose = relativePose.value();
+	const REAL baselineLength = norm(relPose.C);
+	ASSERT(baselineLength > 0); // a relative pose has a baseline
+	const Camera& cam1 = *img1.pCamera;
+	const Camera& cam2 = *img2.pCamera;
+	const Point3 t(relPose.C * (REAL(1) / baselineLength));
+	// an orthonormal basis of the plane across the baseline
+	Point3 e1(t.cross(ABS(t.x) < REAL(0.9) ? Point3(1, 0, 0) : Point3(0, 1, 0)));
+	e1 *= REAL(1) / norm(e1);
+	const Point3 e2(t.cross(e1));
+	const Matrix3x3 Rt(relPose.R.t());
+	REAL a11 = 0, a12 = 0, a22 = 0;
+	const unsigned numTrackForming = MINF(GetNumTrackFormingMatches(), (unsigned)matches.size());
+	for (unsigned i = 0; i < numTrackForming; ++i) {
+		const DMatch& m = matches[i];
+		// the same bearings and the same set ComputeRayAngleCosines takes, the second one in the frame of the first camera
+		Point3 b1(cam1.UnprojectNormalized(Cast<REAL>(img1.keypoints[m.queryIdx].pt)));
+		Point3 b2(Rt * cam2.UnprojectNormalized(Cast<REAL>(img2.keypoints[m.trainIdx].pt)));
+		b1 *= REAL(1) / norm(b1);
+		b2 *= REAL(1) / norm(b2);
+		Point3 n(t.cross(b1)); // the normal of the epipolar plane of the match
+		const REAL sinBaseline = norm(n);
+		if (sinBaseline <= REAL(1e-9))
+			continue; // the match lies on the baseline: the epipolar plane is undefined
+		n *= REAL(1) / sinBaseline;
+		const Point3 j(b1.cross(b2 - n * n.dot(b2)) * (REAL(1) / sinBaseline));
+		const REAL j1 = j.dot(e1), j2 = j.dot(e2);
+		a11 += j1 * j1;
+		a12 += j1 * j2;
+		a22 += j2 * j2;
+	}
+	const REAL lambdaMin = REAL(0.5) * ((a11 + a22) - SQRT((a11 - a22) * (a11 - a22) + REAL(4) * a12 * a12));
+	return lambdaMin > 0 ? noiseAngle / SQRT(lambdaMin) : std::numeric_limits<REAL>::infinity();
+}
+
 float ImagePair::ComputeMeanRayAngle(const Image& img1, const Image& img2) const
 {
 	FloatArr cosAngles(ComputeRayAngleCosines(img1, img2));

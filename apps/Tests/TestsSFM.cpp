@@ -11785,18 +11785,20 @@ bool StarEvidenceTest()
 		REAL minDepth, maxDepth;
 		std::function<bool(IIndex)> seenBy;
 	};
+	REAL cameraScale = 1; // the camera's pixels per unit: 2 is the same field of view on twice the pixels
+	REAL lateralShare = 0.3; // the views' offset along y, as a share of their offset along x, on odd views
 	const auto buildScene = [&](Scene& scene, const std::vector<REAL>& sides, const std::vector<PointGroup>& groups) {
-		PinholeCamera* pCamera = new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240));
+		PinholeCamera* pCamera = new PinholeCamera(cv::Size(ROUND2INT(640 * cameraScale), ROUND2INT(480 * cameraScale)), 400 * cameraScale, 400 * cameraScale, 320 * cameraScale, 240 * cameraScale);
 		pCamera->trustIntrinsics = true;
 		scene.cameras.emplace_back(pCamera);
 		FOREACH(i, sides) {
 			Pose3D pose;
 			pose.R = Matrix3x3::IDENTITY;
-			pose.C = Point3(sides[i], (i % 2) * sides[i] * 0.3, 0);
+			pose.C = Point3(sides[i], (i % 2) * sides[i] * lateralShare, 0);
 			scene.images.emplace_back(i, "", pose, 0, scene.cameras[0]);
 		}
 		std::mt19937 rng(7);
-		std::uniform_int_distribution<int> pixelX(40, 600), pixelY(40, 440);
+		std::uniform_int_distribution<int> pixelX(ROUND2INT(40 * cameraScale), ROUND2INT(600 * cameraScale)), pixelY(ROUND2INT(40 * cameraScale), ROUND2INT(440 * cameraScale));
 		for (const PointGroup& group : groups) {
 			std::uniform_real_distribution<REAL> depth(group.minDepth, group.maxDepth);
 			for (unsigned p = 0; p < group.count; ++p) {
@@ -11970,68 +11972,104 @@ bool StarEvidenceTest()
 				return false;
 			}
 	}
-	// the arms of pairs under the star's parallax bar (16 pixels of their cameras) are not placed: their baseline direction is noise, so
-	// near views 1 and 2 (pairs of 1 degree) stay out of the star and views 3 to 5 (10 degrees) are in it
-	{
-		Scene noisy;
-		buildScene(noisy, sides, {nearPoints, farPoints});
-		for (Image& img : noisy.images)
+	// The arms of pairs whose baseline direction is less sure than the bar of the block start (kMaxArmDirectionSigma, 0.09 degrees:
+	// the matching noise over the parallax energy of the pair's matches in their weakest direction) are not placed. Views 1 to
+	// 4 sit at the same distance and see points of the same depths (25 to 35 units, ray angles of 1.6 to 2.3 degrees, all of them
+	// evidence), so their pairs have the same median parallax; they differ in the number of matches, 12 and 30 against 400 and
+	// 800: the direction of the first two is not fixed, that of the others is. A pure parallax bar could not tell them apart. The
+	// same field of view on twice the pixels drops the same arms.
+	const auto armScene = [&](Scene& scene, const std::vector<unsigned>& counts, REAL minDepth, REAL maxDepth, unsigned numShared = 0) {
+		std::vector<REAL> armSides(counts.size() + 1, REAL(1));
+		armSides[0] = 0;
+		std::vector<PointGroup> armGroups;
+		FOREACH(i, counts)
+			armGroups.push_back({counts[i], minDepth, maxDepth, [i](IIndex v) { return v == i + 1; }});
+		if (numShared > 0) // points every view sees: the scale of the arms is fixed on them
+			armGroups.push_back({numShared, minDepth, maxDepth, [](IIndex) { return true; }});
+		buildScene(scene, armSides, armGroups);
+		for (Image& img : scene.images)
 			img.InvalidatePose();
-		for (ImagePair& pair : noisy.pairs)
-			pair.meanRayAngle = D2R(pair.ID2 <= 2 ? 1.f : 10.f);
+		for (ImagePair& pair : scene.pairs)
+			pair.meanRayAngle = pair.ComputeMeanRayAngle(scene.images[pair.ID1], scene.images[pair.ID2]);
+	};
+	StarInitConfig armCfg(keyframeCfg);
+	armCfg.ratioInliersFilter = 0; // no floor: the arms the bar removes are the only ones left out
+	lateralShare = 0;
+	for (const REAL scale : {REAL(1), REAL(2)}) {
+		cameraScale = scale;
+		Scene noisy;
+		armScene(noisy, {12, 30, 800, 1600}, 15, 21, 20);
+		const REAL medianAngle = R2D(noisy.pairs[0].meanRayAngle);
+		for (const ImagePair& pair : noisy.pairs)
+			if (ABS(R2D(pair.meanRayAngle) - medianAngle) > 0.1 * medianAngle) {
+				VERBOSE("StarEvidenceTest FAILED: the pairs of the same distance have different median ray angles (%g and %g degrees, camera scale %g)", medianAngle, R2D(pair.meanRayAngle), scale);
+				return false;
+			}
 		LogCapture log;
-		if (!StarInitializer::Initialize(noisy, keyframeCfg)) {
-			VERBOSE("StarEvidenceTest FAILED: the star beside two pairs of 1 degree of ray angle was refused:\n%s", log.text.c_str());
+		if (!StarInitializer::Initialize(noisy, armCfg)) {
+			VERBOSE("StarEvidenceTest FAILED: the star beside two pairs of 12 and 30 matches was refused (camera scale %g):\n%s", scale, log.text.c_str());
 			return false;
 		}
-		for (IIndex v = 1; v <= numNear; ++v)
+		for (IIndex v = 1; v < noisy.images.size(); ++v)
 			if (noisy.images[v].HasPose() != (v > 2)) {
-				VERBOSE("StarEvidenceTest FAILED: near view %u %s the star beside two pairs of 1 degree of ray angle", v, v > 2 ? "is not in" : "is in");
+				VERBOSE("StarEvidenceTest FAILED: view %u %s the star beside two pairs of 12 and 30 matches (camera scale %g)", v, v > 2 ? "is not in" : "is in", scale);
 				return false;
 			}
 	}
-	// the arms the floor and the cap chose are the arms the star would have without the rule: with the cap at 3 the star holds
-	// three of the near views; one of them has a pair of 1 degree, and it leaves a gap, no fourth view takes its place
+	// the direction sigma of a pair (ImagePair::ComputeBaselineDirectionSigma) is the noise over the square root of the energy of
+	// its matches: it falls as 1 / sqrt(number of matches) and grows with the distance of the points, as 1 / parallax. The points
+	// of the smaller count are the first of the larger (same generator) and the farther points are the near ones at twice the
+	// depth, so the ratios are those of the formula up to the small-angle approximation (ray angles under 4 degrees, under 1%)
+	// and the sampling of the 300 extra points, whose energy is not exactly that of the first 100 (5% observed): the tolerance
+	// is 10%
 	{
-		StarInitConfig cappedCfg(keyframeCfg);
+		cameraScale = 1;
+		const auto sigmaOf = [&](unsigned count, REAL minDepth, REAL maxDepth) {
+			Scene scene;
+			armScene(scene, {count}, minDepth, maxDepth);
+			return scene.pairs[0].ComputeBaselineDirectionSigma(scene.images[0], scene.images[1], REAL(0.0005));
+		};
+		const REAL sigma100 = sigmaOf(100, 25, 35), sigma400 = sigmaOf(400, 25, 35), sigmaFar = sigmaOf(100, 50, 70);
+		if (ABS(sigma100 / sigma400 - 2) > 0.1) {
+			VERBOSE("StarEvidenceTest FAILED: the direction sigma of 100 matches is %g times that of 400, expected 2", sigma100 / sigma400);
+			return false;
+		}
+		if (ABS(sigmaFar / sigma100 - 2) > 0.1) {
+			VERBOSE("StarEvidenceTest FAILED: the direction sigma at twice the distance is %g times that at the distance, expected 2", sigmaFar / sigma100);
+			return false;
+		}
+		Scene empty;
+		armScene(empty, {100}, 25, 35);
+		empty.pairs[0].numFilteredInliers = 0; // no track-forming match: no direction is fixed
+		if (!std::isinf(empty.pairs[0].ComputeBaselineDirectionSigma(empty.images[0], empty.images[1], REAL(0.0005)))) {
+			VERBOSE("StarEvidenceTest FAILED: a pair without track-forming matches has a finite direction sigma");
+			return false;
+		}
+	}
+	// the arms the floor and the cap chose are the arms the star would have without the rule: with the cap at 3 the star holds
+	// the three views of the most evidence; the first of them has 12 matches only (its weighted inliers are those of a dense
+	// supplement, 2000), so its direction is not fixed, and it leaves a gap, the fourth view does not take its place
+	{
+		cameraScale = 1;
+		StarInitConfig cappedCfg(armCfg);
 		cappedCfg.maxViews = 3;
-		Scene chosen;
-		buildScene(chosen, sides, {nearPoints, farPoints});
-		for (Image& img : chosen.images)
-			img.InvalidatePose();
-		for (ImagePair& pair : chosen.pairs)
-			pair.meanRayAngle = D2R(10.f);
-		if (!StarInitializer::Initialize(chosen, cappedCfg)) {
-			VERBOSE("StarEvidenceTest FAILED: the star of the cap of 3 was refused");
-			return false;
-		}
-		std::vector<IIndex> arms;
-		for (IIndex v = 1; v < chosen.images.size(); ++v)
-			if (chosen.images[v].HasPose())
-				arms.push_back(v);
-		if (arms.size() != 3) {
-			VERBOSE("StarEvidenceTest FAILED: the star of the cap of 3 has %zu arms", arms.size());
-			return false;
-		}
 		Scene gap;
-		buildScene(gap, sides, {nearPoints, farPoints});
-		for (Image& img : gap.images)
-			img.InvalidatePose();
-		for (ImagePair& pair : gap.pairs)
-			pair.meanRayAngle = D2R(pair.ID2 == arms[0] ? 1.f : 10.f);
+		armScene(gap, {12, 1200, 900, 800}, 15, 21, 20);
+		gap.pairs[0].weightedInliers = 2000.f;
 		if (!StarInitializer::Initialize(gap, cappedCfg)) {
-			VERBOSE("StarEvidenceTest FAILED: the star of the cap of 3 with a pair of 1 degree was refused");
+			VERBOSE("StarEvidenceTest FAILED: the star of the cap of 3 with a pair of 12 matches was refused");
 			return false;
 		}
 		for (IIndex v = 1; v < gap.images.size(); ++v)
-			if (gap.images[v].HasPose() != (v == arms[1] || v == arms[2])) {
-				VERBOSE("StarEvidenceTest FAILED: view %u %s the star of the cap of 3 with a pair of 1 degree (arms without it: %u, %u, %u)", v,
-					gap.images[v].HasPose() ? "is in" : "is not in", arms[0], arms[1], arms[2]);
+			if (gap.images[v].HasPose() != (v == 2 || v == 3)) {
+				VERBOSE("StarEvidenceTest FAILED: view %u %s the star of the cap of 3 with a pair of 12 matches", v, gap.images[v].HasPose() ? "is in" : "is not in");
 				return false;
 			}
 	}
+	cameraScale = 1;
+	lateralShare = 0.3;
 	VERBOSE("StarEvidenceTest PASSED: %u far views left out of the star by evidence, near distances within %.3f%%, no star without evidence, "
-		"the keyframe configuration initializes, the star goes on with the neighbours the floor keeps, the star beside a burst of %u near-duplicate frames starts with the wider views, no arm is placed from a pair under the parallax bar (%s)",
+		"the keyframe configuration initializes, the star goes on with the neighbours the floor keeps, the star beside a burst of %u near-duplicate frames starts with the wider views, no arm is placed from a pair whose baseline direction is under the bar, at either resolution (%s)",
 		numFar, (maxRatio / minRatio - 1) * 100, numBurst, TD_TIMER_GET_FMT().c_str());
 	return true;
 }

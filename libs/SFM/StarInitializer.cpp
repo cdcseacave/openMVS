@@ -18,19 +18,31 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// The parallax, in pixels of the pair's cameras, under which a pair's baseline direction is noise: the median ray
-// angle of its matches is within the measurement noise of the matches, so the direction the pair gives is random and
-// an arm placed from it lands anywhere. 16 pixels are the 2 degrees of a spherical image of 2880 pixels, where the
-// arms under it are wrong one time in four (21 of 85 on the block starts of two captures), against 0.75 degrees on a
-// perspective image of 1229 pixels of focal, where the arms under 2 degrees are wrong one time in 70
-constexpr float kMinArmParallaxPixels = 16.f;
+// The matching noise of a pair's matches: 0.65 pixels on an image of 2880 pixels on its longer side, kept as a share of the
+// image, so that it does not change when an image is resized
+constexpr float kArmMatchNoisePixels = 0.65f;
+constexpr float kArmMatchNoiseImageSide = 2880.f;
+// The bar on a pair's baseline direction, in degrees: the matching noise over the parallax energy of the pair's matches in
+// their weakest direction (ImagePair::ComputeBaselineDirectionSigma); it folds in the parallax of every match, how many there
+// are and how they are spread. A pair whose direction is less sure than this places an arm at a random direction
+constexpr float kMaxArmDirectionSigma = 0.09f;
 
 // Does the pair fix no baseline direction of its own, so that its arm would be placed at a random direction?
 static bool FixesNoBaselineDirection(const ImagePair& pair, const Scene& scene)
 {
 	ASSERT(pair.meanRayAngle >= 0.f); // measured by ComputePairsWeights
-	const REAL pixelAngle = REAL(0.5) * (scene.images[pair.ID1].pCamera->PixelErrorToAngular(1) + scene.images[pair.ID2].pCamera->PixelErrorToAngular(1));
-	return pair.meanRayAngle > 0.f && pair.meanRayAngle < kMinArmParallaxPixels * pixelAngle;
+	ASSERT(pair.relativePose.has_value()); // the candidates of the star are pose-link pairs
+	if (pair.meanRayAngle <= 0.f)
+		return false; // no measured parallax: not decided by the bar
+	const Image& img1 = scene.images[pair.ID1];
+	const Image& img2 = scene.images[pair.ID2];
+	const cv::Size& size1 = img1.pCamera->GetSize();
+	const cv::Size& size2 = img2.pCamera->GetSize();
+	ASSERT(size1.area() > 0 && size2.area() > 0);
+	const REAL pixelAngle = REAL(0.5) * (img1.pCamera->PixelErrorToAngular(1) + img2.pCamera->PixelErrorToAngular(1));
+	const REAL longerSide = REAL(0.5) * (MAXF(size1.width, size1.height) + MAXF(size2.width, size2.height));
+	const REAL noiseAngle = kArmMatchNoisePixels * (longerSide / kArmMatchNoiseImageSide) * pixelAngle;
+	return pair.ComputeBaselineDirectionSigma(img1, img2, noiseAngle) > D2R(REAL(kMaxArmDirectionSigma));
 }
 
 // The star evidence of the pairs that join the reference view to another view: the pair's weighted
