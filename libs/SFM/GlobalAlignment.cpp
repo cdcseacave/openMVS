@@ -46,9 +46,11 @@ using namespace SFM;
 DEFINE_LOG_NAME(lt, _T("GlbAlign"));
 
 
-GlobalAlignment::GlobalAlignment(Scene& _scene, const GlobalAlignmentConfig& _config)
-	: scene(_scene), config(_config)
+GlobalAlignment::GlobalAlignment(Scene& _scene, const GlobalAlignmentConfig& _config, const std::unordered_set<IIndex>& _poolImages)
+	: scene(_scene), config(_config), poolImages(_poolImages)
 {
+	for (const IIndex image : poolImages)
+		ASSERT(image < scene.images.size());
 }
 
 void GlobalAlignment::BuildGlobalToLocalMap(const std::vector<IIndexArr>& localToGlobals)
@@ -1086,8 +1088,11 @@ void GlobalAlignment::ScoreSeam(
 		++inliersOf[observations[i].rigImage];
 		++inliersOf[observations[i].pointImage];
 	}
+	// an image a pool step registered on the merged model is no supporting camera: its pose was fitted to the
+	// model and says nothing of the block's seam, so a block reaching the model only through such images has
+	// no support that tests the scale of its reading
 	for (const auto& [image, numInliers] : inliersOf)
-		if (numInliers >= config.minCameraInliers) {
+		if (numInliers >= config.minCameraInliers && poolImages.count(image) == 0) {
 			const int side = sideOf(image);
 			ASSERT(side == 0 || side == 1);
 			++score.support[side];

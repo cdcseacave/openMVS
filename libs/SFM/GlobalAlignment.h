@@ -12,6 +12,7 @@
 
 #include "Camera.h"
 #include "Pose.h"
+#include <unordered_set>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -222,8 +223,11 @@ public:
 	 * @brief Constructor - initializes with scene and config
 	 * @param scene Global reference scene to align to (modified in-place)
 	 * @param config Global alignment configuration
+	 * @param poolImages global IDs of the images a pool step registered on the merged model (the rounds of
+	 *        SceneBlocks::MergeInRounds): they hold poses the reading under test did not constrain, so they
+	 *        support no reading (ScoreSeam); empty for a merge without a pool step
 	 */
-	GlobalAlignment(Scene& scene, const GlobalAlignmentConfig& config);
+	GlobalAlignment(Scene& scene, const GlobalAlignmentConfig& config, const std::unordered_set<IIndex>& poolImages = {});
 
 	/**
 	 * @brief Merge the blocks into the global scene
@@ -445,6 +449,7 @@ private:
 
 	Scene& scene; // Reference to input scene
 	const GlobalAlignmentConfig& config; // Global alignment configuration
+	const std::unordered_set<IIndex> poolImages; // images registered by a pool step on the merged model: supporting cameras of no reading
 };
 /*----------------------------------------------------------------*/
 

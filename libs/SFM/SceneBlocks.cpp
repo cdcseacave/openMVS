@@ -196,8 +196,11 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 	MergeReport report;
 	bool release = false;
 	unsigned round = 1;
+	// the images the pool steps registered on the merged model, over the rounds: they support no reading of
+	// the next merges (GlobalAlignment::ScoreSeam)
+	std::unordered_set<IIndex> poolImages;
 	for (; ; ++round) {
-		GlobalAlignment globalAlign(scene, config.globalAlignmentCfg);
+		GlobalAlignment globalAlign(scene, config.globalAlignmentCfg, poolImages);
 		globalAlign.MergeScenes(blocks, localToGlobal, report, release, round == 1 ? NO_ID : 0u);
 		ASSERT(round == 1 || report.poses[0].state == BlockPose::ADMITTED);
 		VERBOSE("Hierarchical merge round %u: %u/%u blocks placed, %u images placed, %u images of unplaced blocks %s",
@@ -209,11 +212,17 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 			break;
 		// the pool step on the merged model: the images in no block (the kept blocks' images hold no features in
 		// the global scene, so they are no candidates), closing only when it registered one
+		std::vector<bool> posedBefore(scene.images.size());
+		FOREACH(g, scene.images)
+			posedBefore[g] = scene.images[g].HasPose();
 		{
 			Resection resection(scene, resectionCfg);
 			if (resection.RegisterImages(false))
 				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, resectionCfg.denseReprojErrorFactor);
 		}
+		FOREACH(g, scene.images)
+			if (!posedBefore[g] && scene.images[g].HasPose())
+				poolImages.insert((IIndex)g);
 		const uint32_t numAfterPool = scene.RecomputeCalibratedImages();
 		ASSERT(numAfterPool >= numModelImages);
 		const uint32_t numEntered = numAfterPool - numModelImages;

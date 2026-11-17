@@ -747,6 +747,8 @@ bool PooledSeamReadingTest();
 bool MergeRoundsTest();
 // The merge's own loop (SceneBlocks::MergeInRounds): a block no seam reaches is kept, read again and released at the fixed point
 bool MergeInRoundsTest();
+// A block whose only link to the merged model goes through images a pool step registered is not placed through them
+bool MergePoolCamerasTest();
 // From round 2 on the merged model is the one holding block 0, whatever the other models weigh
 bool MergeAnchorTest();
 bool UnobservableScaleTest();

@@ -21461,6 +21461,55 @@ bool MergeInRoundsTest()
 }
 /*----------------------------------------------------------------*/
 
+// A round of the merge on the merged model, block 0, with the images a pool step registered on it (the images
+// of block 0, global IDs `poolImages`): block 1 links to the model by one seam, which lands on block 0's cameras
+// only. When all of them are pool images no camera supports the reading on the model's side, the entry test
+// refuses it ("cameras"), block 1 stays unplaced and the releasing round leaves its images to the resection
+// (features, no pose). When only one of them is a pool image, the others support the seam and block 1 is placed.
+bool MergePoolCamerasTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{4, 10};
+	struct Outcome { bool placed, released; unsigned numPlaced; };
+	const auto Run = [&](bool allPool) {
+		Scene scene;
+		std::vector<IIndexArr> blocks;
+		std::vector<Pose3D> gtPoses;
+		GenerateRingScene(cfg, scene, blocks, gtPoses);
+		ThinSeam(scene, blocks, 1, 2, 0, cfg.camsPerBlock);
+		ThinSeam(scene, blocks, 3, 0, 0, cfg.camsPerBlock);
+		std::vector<Scene> subScenes;
+		std::vector<IIndexArr> localToGlobals;
+		std::vector<SEACAVE::Transform> applied;
+		BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+		std::unordered_set<IIndex> poolImages;
+		if (allPool)
+			poolImages.insert(blocks[0].begin(), blocks[0].end());
+		else
+			poolImages.insert(blocks[0][0]);
+		const GlobalAlignmentConfig alignCfg;
+		MergeReport rep;
+		GlobalAlignment ga(scene, alignCfg, poolImages);
+		ga.MergeScenes(subScenes, localToGlobals, rep, true, 0u);
+		Outcome out{rep.poses[1].state == BlockPose::ADMITTED, true, rep.numPlaced};
+		for (const IIndex g : blocks[1])
+			out.released = out.released && scene.images[g].HasFeatures() && !scene.images[g].HasPose();
+		return out;
+	};
+	const Outcome refused = Run(true), supported = Run(false);
+	if (refused.placed || !refused.released || refused.numPlaced != 1 || !supported.placed || supported.numPlaced != 2) {
+		VERBOSE("MergePoolCamerasTest FAILED: with every camera of the model a pool image block 1 is %s, %s, %u blocks placed "
+			"(unplaced, released, 1 expected); with one pool image it is %s, %u blocks placed (placed, 2 expected)",
+			refused.placed ? "placed" : "unplaced", refused.released ? "released" : "not released", refused.numPlaced,
+			supported.placed ? "placed" : "unplaced", supported.numPlaced);
+		return false;
+	}
+	VERBOSE("MergePoolCamerasTest PASSED: a seam resting on pool-registered cameras is refused and its block released, "
+		"one a camera of the model also supports places its block (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // From round 2 on the merged model is the one holding block 0 (the previous rounds' merged model), whatever the other
 // models weigh: a ring of four blocks of 10 where block 0 has no cross match to any other, so the averaging gives it a
 // model of its own and blocks 1-3 one model of 30 images. Anchored at block 0 the merge places block 0 alone and keeps
