@@ -33,11 +33,29 @@
     "libjxl",
     "libpng",
     {
-      "name": "opencv",
+      "name": "opencv4",
+      "default-features": false,
       "features": [
+        "calib3d",
         "eigen",
+        "fs",
+        "highgui",
+        "intrinsics",
+        "jpeg",
         "jpegxl",
-        "openexr"
+        {
+          "name": "msmf",
+          "platform": "windows & !uwp & !mingw"
+        },
+        "openexr",
+        "png",
+        "thread",
+        "tiff",
+        "webp",
+        {
+          "name": "win32ui",
+          "platform": "windows & !uwp"
+        }
       ]
     },
     "nanoflann",

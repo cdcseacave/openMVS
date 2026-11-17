@@ -100,7 +100,7 @@ endif()
 set(SIFTGPU_CORE_SRCS
   src/FrameBufferObject.h src/FrameBufferObject.cpp
   src/GlobalUtil.h        src/GlobalUtil.cpp
-  src/LiteWindow.h        src/LiteWindowGLFW.cpp src/LiteWindowEGL.cpp
+  src/LiteWindow.h        src/LiteWindowGLFW.cpp src/LiteWindowEGL.cpp src/LiteWindowCGL.cpp
   src/GLTexImage.h        src/GLTexImage.cpp
   src/ProgramGLSL.h       src/ProgramGLSL.cpp
   src/ProgramGPU.h
