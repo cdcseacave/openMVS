@@ -1004,7 +1004,7 @@ void UI::ShowPointObservations(Window& window) {
 		const auto drawFeature = [&](const ImVec2& center) {
 			drawList->AddCircle(center, 5.f, colorFeature, 0, 1.5f);
 		};
-		if (pointObservations.HasFeatures()) {
+		{
 			const ImVec2 markerSize(ImGui::GetTextLineHeight(), ImGui::GetTextLineHeight());
 			const auto legend = [&](const auto& draw, const char* label) {
 				ImGui::Dummy(markerSize);
@@ -1015,13 +1015,21 @@ void UI::ShowPointObservations(Window& window) {
 			};
 			legend(drawReprojection, "reprojection");
 			ImGui::SameLine();
-			legend(drawFeature, "feature");
-			ImGui::SameLine();
-			ImGui::TextDisabled("(?)");
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Cross: the 3D point projected in the view (patch center)\n"
-					"Circle: the feature observed in the view\n"
-					"The number in the patch is the reprojection error (image file pixels)");
+			if (pointObservations.HasFeatures()) {
+				legend(drawFeature, "feature");
+				ImGui::SameLine();
+				ImGui::TextDisabled("(?)");
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Cross: the 3D point projected in the view (patch center)\n"
+						"Circle: the feature observed in the view\n"
+						"The number in the patch is the reprojection error (image file pixels)");
+			} else {
+				ImGui::TextDisabled("no features (?)");
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Cross: the 3D point projected in the view (patch center)\n"
+						"The scene stores no feature observations, so the features and the\n"
+						"reprojection errors cannot be shown (the point-cloud has no pointObservations)");
+			}
 		}
 		ImGui::Separator();
 

@@ -123,8 +123,6 @@ private:
 	struct CameraLayerRange
 	{
 		uint32_t layerID{NO_ID};
-		size_t offset{0}; // first camera slot (indexes the image-overlay quads)
-		size_t count{0};
 		size_t pointIndexOffset{0}; // sub-range in the point block of the camera EBO
 		size_t pointIndexCount{0};
 		size_t lineIndexOffset{0}; // sub-range in the line block of the camera EBO
@@ -141,17 +139,18 @@ private:
 	std::vector<uint32_t> ellipsoidLayerIDs; // owning layer per accepted ellipsoid, aligned with ellipsoidCenters
 	std::vector<uint32_t> ellipsoidDrawOrder; // reused scratch for the per-frame back-to-front sort
 
-	// 3D image overlay rendering (pre-computed for all images with valid textures)
+	// Image overlay rendering: the photo of a camera is a static unit mesh placed at the camera by the
+	// shader's model matrix; the pinhole image is the unit quad, the spherical one the unit sphere of its rays.
+	// Vertices are 3D position + texture coordinate (5 floats), drawn with the image overlay shader.
+	struct OverlayMesh {
+		std::unique_ptr<VAO> vao;
+		std::unique_ptr<VBO> vbo;
+		std::unique_ptr<VBO> ebo;
+		size_t indexCount = 0;
+	};
 	std::unique_ptr<Shader> imageOverlayShader;
-	std::unique_ptr<VAO> imageOverlayVAO;
-	std::unique_ptr<VBO> imageOverlayVBO;
-	std::unique_ptr<VBO> imageOverlayEBO;
-	size_t imageOverlayIndexCount;
-	// the overlay of a spherical image: the unit sphere of its rays, placed at the image by the shader
-	std::unique_ptr<VAO> panoramaOverlayVAO;
-	std::unique_ptr<VBO> panoramaOverlayVBO;
-	std::unique_ptr<VBO> panoramaOverlayEBO;
-	size_t panoramaOverlayIndexCount = 0;
+	OverlayMesh imageOverlayQuad; // (u,v,1) with texture coordinate (u,v), the image plane at unit depth
+	OverlayMesh imageOverlaySphere;
 
 	// Selection rendering
 	std::unique_ptr<Shader> selectionShader;
@@ -306,7 +305,6 @@ private:
 	void ReleasePickerBuffers();
 
 	const LayerIndexRange* FindPointLayerRange(uint32_t layerID) const;
-	const CameraLayerRange* FindCameraLayerRange(uint32_t layerID) const;
 	const LayerFaceMap* FindMeshLayerMap(uint32_t layerID) const;
 	bool MapGlobalPoint(size_t globalIndex, uint32_t& layerID, uint32_t& localIndex) const;
 	bool MapGlobalFace(size_t globalIndex, uint32_t& layerID, uint32_t& localIndex) const;

@@ -172,7 +172,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
 		GET_LOG() << _T("\n"
-			"Import/export 3D reconstruction from COLMAP (TXT/BIN format) and to COLMAP (TXT format).\n"
+			"Import/export 3D reconstruction from/to COLMAP (TXT/BIN format).\n"
 			"The SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL, RADIAL, OPENCV and FULL_OPENCV camera models are\n"
 			"supported (the distorted ones as Brown cameras, undistorted when the images are read),\n"
 			"together with the feature observations of the sparse points."

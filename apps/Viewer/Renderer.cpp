@@ -54,7 +54,6 @@ Renderer::Renderer()
 	, cameraPointIndexCount(0)
 	, cameraLineIndexCount(0)
 	, ellipsoidIndexCount(0)
-	, imageOverlayIndexCount(0)
 	, selectionPrimitiveCount(0)
 	, neighborSelectionPrimitiveCount(0)
 	, selectionOverlayVertexCount(0)
@@ -120,7 +119,6 @@ void Renderer::Reset() {
 	cameraPointIndexCount = 0;
 	cameraLineIndexCount = 0;
 	ellipsoidIndexCount = 0;
-	imageOverlayIndexCount = 0;
 	selectionPrimitiveCount = 0;
 	neighborSelectionPrimitiveCount = 0;
 	boundsPrimitiveCount = 0;
@@ -166,11 +164,6 @@ void Renderer::Reset() {
 	if (cameraColorVBO)
 		cameraColorVBO->AllocateBuffer(0);
 
-	if (imageOverlayVBO)
-		imageOverlayVBO->AllocateBuffer(0);
-	if (imageOverlayEBO)
-		imageOverlayEBO->AllocateBuffer(0);
-
 	if (selectionVBO)
 		selectionVBO->AllocateBuffer(0);
 
@@ -181,14 +174,6 @@ void Renderer::Reset() {
 const Renderer::LayerIndexRange* Renderer::FindPointLayerRange(uint32_t layerID) const
 {
 	for (const LayerIndexRange& range : pointLayerRanges)
-		if (range.layerID == layerID)
-			return &range;
-	return nullptr;
-}
-
-const Renderer::CameraLayerRange* Renderer::FindCameraLayerRange(uint32_t layerID) const
-{
-	for (const CameraLayerRange& range : cameraLayerRanges)
 		if (range.layerID == layerID)
 			return &range;
 	return nullptr;
@@ -825,23 +810,34 @@ void Renderer::SetupAxesBuffers() {
 	axesVAO->Unbind();
 }
 
+// Uploads a static overlay mesh of 5-float vertices (position, texture coordinate); a template because
+// Renderer::OverlayMesh is private to the class
+template <typename OverlayMesh>
+static void SetupOverlayMesh(OverlayMesh& mesh, const std::vector<float>& vertices, const std::vector<uint32_t>& indices) {
+	ASSERT(!vertices.empty() && vertices.size() % 5 == 0 && !indices.empty());
+	mesh.indexCount = indices.size();
+	mesh.vao = std::make_unique<VAO>();
+	mesh.vbo = std::make_unique<VBO>(GL_ARRAY_BUFFER);
+	mesh.ebo = std::make_unique<VBO>(GL_ELEMENT_ARRAY_BUFFER);
+	mesh.vao->Bind();
+	mesh.vbo->Bind();
+	mesh.vbo->SetData(vertices);
+	mesh.vao->EnableAttribute(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+	mesh.vao->EnableAttribute(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+	mesh.ebo->Bind();
+	mesh.ebo->SetData(indices);
+	mesh.vao->Unbind();
+}
+
 void Renderer::SetupImageOverlayBuffers() {
-	// Setup 3D image overlay buffers
-	imageOverlayVAO = std::make_unique<VAO>();
-	imageOverlayVBO = std::make_unique<VBO>(GL_ARRAY_BUFFER);
-	imageOverlayEBO = std::make_unique<VBO>(GL_ELEMENT_ARRAY_BUFFER);
-
-	imageOverlayVAO->Bind();
-
-	// Bind the VBO before setting up attributes
-	imageOverlayVBO->Bind();
-
-	// Position attribute (location 0) - 3D world space coordinates
-	imageOverlayVAO->EnableAttribute(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
-	// Texture coordinate attribute (location 1)
-	imageOverlayVAO->EnableAttribute(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
-
-	imageOverlayVAO->Unbind();
+	// The overlay of a pinhole image: the image plane at unit depth in the camera frame, each vertex
+	// the position (u,v,1) of an image corner in units of the image size, with (u,v) as texture coordinate
+	SetupOverlayMesh(imageOverlayQuad,
+		{0.f, 0.f, 1.f, 0.f, 0.f,
+		 1.f, 0.f, 1.f, 1.f, 0.f,
+		 1.f, 1.f, 1.f, 1.f, 1.f,
+		 0.f, 1.f, 1.f, 0.f, 1.f},
+		{0, 1, 2, 0, 2, 3});
 
 	// The overlay of an equirectangular image: the unit sphere of its rays in the camera frame, each
 	// vertex the ray of an image position (Spherical::Ray) with that position as texture coordinate.
@@ -876,18 +872,7 @@ void Renderer::SetupImageOverlayBuffers() {
 			addTriangle(b, d, c);
 		}
 	}
-	panoramaOverlayIndexCount = indices.size();
-	panoramaOverlayVAO = std::make_unique<VAO>();
-	panoramaOverlayVBO = std::make_unique<VBO>(GL_ARRAY_BUFFER);
-	panoramaOverlayEBO = std::make_unique<VBO>(GL_ELEMENT_ARRAY_BUFFER);
-	panoramaOverlayVAO->Bind();
-	panoramaOverlayVBO->Bind();
-	panoramaOverlayVBO->SetData(vertices);
-	panoramaOverlayVAO->EnableAttribute(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
-	panoramaOverlayVAO->EnableAttribute(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
-	panoramaOverlayEBO->Bind();
-	panoramaOverlayEBO->SetData(indices);
-	panoramaOverlayVAO->Unbind();
+	SetupOverlayMesh(imageOverlaySphere, vertices, indices);
 }
 
 // Reusable circle line-segment builder (see Renderer.h for contract).
@@ -1100,7 +1085,7 @@ static uint32_t CreateCameraFrustumGeometry(
 }
 
 void Renderer::UploadCameras(const Window& window) {
-	cameraPointIndexCount = cameraLineIndexCount = imageOverlayIndexCount = 0;
+	cameraPointIndexCount = cameraLineIndexCount = 0;
 	cameraLayerRanges.clear();
 
 	const Scene& sceneController = window.GetScene();
@@ -1121,17 +1106,12 @@ void Renderer::UploadCameras(const Window& window) {
 	std::vector<float> cameraColors;
 	std::vector<uint32_t> cameraPointIndices;
 	std::vector<uint32_t> cameraLineIndices;
-	std::vector<float> allVertices;
-	std::vector<uint32_t> allIndices;
 
-	size_t globalCameraOffset = 0;
 	for (const Scene::Layer& layer : sceneController.GetLayers()) {
 		if (!layer.visible || layer.images.empty())
 			continue;
 		CameraLayerRange range;
 		range.layerID = layer.id;
-		range.offset = globalCameraOffset;
-		range.count = layer.images.size();
 		range.pointIndexOffset = cameraPointIndices.size();
 		range.lineIndexOffset = cameraLineIndices.size();
 		size_t layerCameraIdx = 0;
@@ -1173,44 +1153,11 @@ void Renderer::UploadCameras(const Window& window) {
 				    baseIndex);
 			}
 
-			std::array<Point3f, 4> worldCorners = ComputeCameraFrustumCorners(imageData, depth);
-			const uint32_t baseVertex = (uint32_t)(allVertices.size() / 5);
-			for (int i = 0; i < 4; ++i) {
-				const Point3f& worldCorner = worldCorners[i];
-				allVertices.push_back(worldCorner.x);
-				allVertices.push_back(worldCorner.y);
-				allVertices.push_back(worldCorner.z);
-				switch (i) {
-				case 0:
-					allVertices.push_back(0.f);
-					allVertices.push_back(0.f);
-					break;
-				case 1:
-					allVertices.push_back(1.f);
-					allVertices.push_back(0.f);
-					break;
-				case 2:
-					allVertices.push_back(1.f);
-					allVertices.push_back(1.f);
-					break;
-				default:
-					allVertices.push_back(0.f);
-					allVertices.push_back(1.f);
-					break;
-				}
-			}
-			allIndices.push_back(baseVertex + 0);
-			allIndices.push_back(baseVertex + 1);
-			allIndices.push_back(baseVertex + 2);
-			allIndices.push_back(baseVertex + 0);
-			allIndices.push_back(baseVertex + 2);
-			allIndices.push_back(baseVertex + 3);
 			++layerCameraIdx;
 		}
 		range.pointIndexCount = cameraPointIndices.size() - range.pointIndexOffset;
 		range.lineIndexCount = cameraLineIndices.size() - range.lineIndexOffset;
 		cameraLayerRanges.push_back(range);
-		globalCameraOffset += layer.images.size();
 	}
 
 	std::vector<uint32_t> cameraIndices;
@@ -1222,12 +1169,6 @@ void Renderer::UploadCameras(const Window& window) {
 		cameraVBO->SetData(cameraVertices);
 		cameraColorVBO->SetData(cameraColors);
 		cameraEBO->SetData(cameraIndices);
-	}
-
-	if (!allIndices.empty()) {
-		imageOverlayIndexCount = allIndices.size();
-		imageOverlayVBO->SetData(allVertices);
-		imageOverlayEBO->SetData(allIndices);
 	}
 }
 
@@ -1727,22 +1668,44 @@ void Renderer::RenderImageOverlays(const Window& window, bool bActiveLayerPass) 
 	imageOverlayShader->SetInt("overlayTexture", 0);
 	GL_CHECK(glActiveTexture(GL_TEXTURE0));
 
+	// the photo of a camera on the unit mesh placed by the given camera-to-world model matrix
+	const auto DrawOverlay = [&](const OverlayMesh& mesh, Image& image, const Eigen::Matrix4d& model) {
+		image.Bind();
+		imageOverlayShader->SetMatrix4("model", model.cast<float>());
+		mesh.vao->Bind();
+		mesh.ebo->Bind();
+		GL_CHECK(glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mesh.indexCount), GL_UNSIGNED_INT, 0));
+		mesh.vao->Unbind();
+	};
+
 	// a panorama on the sphere of the given radius around its camera center (far side only)
 	const auto DrawPanorama = [&](const MVS::Image& imageData, Image& image, double sphereRadius) {
-		image.Bind();
 		Eigen::Matrix4d model(Eigen::Matrix4d::Identity()); // camera to world: X = R^T * x * radius + C
 		model.topLeftCorner<3,3>() = Eigen::Matrix3d(imageData.camera.R).transpose() * sphereRadius;
 		model.topRightCorner<3,1>() = Eigen::Vector3d(imageData.camera.C);
-		imageOverlayShader->SetMatrix4("model", model.cast<float>());
 		GL_CHECK(glEnable(GL_CULL_FACE));
 		GL_CHECK(glCullFace(GL_BACK));
 		GL_CHECK(glDepthMask(GL_FALSE));
-		panoramaOverlayVAO->Bind();
-		panoramaOverlayEBO->Bind();
-		GL_CHECK(glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(panoramaOverlayIndexCount), GL_UNSIGNED_INT, 0));
-		panoramaOverlayVAO->Unbind();
+		DrawOverlay(imageOverlaySphere, image, model);
 		GL_CHECK(glDepthMask(GL_TRUE));
 		GL_CHECK(glDisable(GL_CULL_FACE));
+	};
+
+	// a pinhole photo on the image plane at the given depth: the unit quad (u,v,1) scaled to the image
+	// size by the intrinsics (the world corners of TransformPointI2W at that depth), then to the world
+	const auto DrawPhoto = [&](const MVS::Image& imageData, Image& image, double depth) {
+		ASSERT(!imageData.IsSpherical() && imageData.width > 0 && imageData.height > 0 && depth > 0);
+		const Eigen::Matrix3d K(imageData.camera.K);
+		Eigen::Matrix4d imageToCamera(Eigen::Matrix4d::Identity());
+		imageToCamera(0,0) = imageData.width * depth / K(0,0);
+		imageToCamera(1,1) = imageData.height * depth / K(1,1);
+		imageToCamera(0,2) = -K(0,2) * depth / K(0,0);
+		imageToCamera(1,2) = -K(1,2) * depth / K(1,1);
+		imageToCamera(2,2) = depth;
+		Eigen::Matrix4d cameraToWorld(Eigen::Matrix4d::Identity());
+		cameraToWorld.topLeftCorner<3,3>() = Eigen::Matrix3d(imageData.camera.R).transpose();
+		cameraToWorld.topRightCorner<3,1>() = Eigen::Vector3d(imageData.camera.C);
+		DrawOverlay(imageOverlayQuad, image, cameraToWorld * imageToCamera);
 	};
 
 	// the panoramas of the other cameras on their globes, part of the scene
@@ -1767,21 +1730,12 @@ void Renderer::RenderImageOverlays(const Window& window, bool bActiveLayerPass) 
 	// a pinhole photo on the base of its frustum
 	if (viewCameraID != NO_ID && viewCameraID < activeLayer->images.size()) {
 		const MVS::Image& imageData = activeLayer->scene.images[activeLayer->images[viewCameraID].idx];
-		const CameraLayerRange* range(imageData.IsSpherical() || imageOverlayIndexCount == 0 ? nullptr : FindCameraLayerRange(activeLayer->id));
-		Image* const pImage(imageData.IsSpherical() || range != nullptr ? GetTexture(activeLayer->images[viewCameraID]) : nullptr);
-		if (pImage != nullptr) {
+		if (Image* const pImage = GetTexture(activeLayer->images[viewCameraID])) {
 			GL_CHECK(glDisable(GL_DEPTH_TEST));
-			if (imageData.IsSpherical()) {
+			if (imageData.IsSpherical())
 				DrawPanorama(imageData, *pImage, SQRT(camera.GetNearPlane()*camera.GetFarPlane()));
-			} else {
-				pImage->Bind();
-				imageOverlayShader->SetMatrix4("model", Eigen::Matrix4f::Identity());
-				imageOverlayVAO->Bind();
-				imageOverlayEBO->Bind();
-				const void* indexOffset = reinterpret_cast<const void*>((range->offset + viewCameraID) * 6 * sizeof(uint32_t));
-				GL_CHECK(glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, indexOffset));
-				imageOverlayVAO->Unbind();
-			}
+			else
+				DrawPhoto(imageData, *pImage, camera.GetSceneDistance() * window.cameraSize);
 			GL_CHECK(glEnable(GL_DEPTH_TEST));
 		}
 	}
