@@ -305,8 +305,8 @@ void RenderFaceKernel(
 		for (int u = 0; u < faceSize; ++u) {
 			const Point3 b_body = R_face_T * Point3((REAL(u) - cx) / f, (REAL(v) - cy) / f, REAL(1));
 			Eigen::Vector2d x;
-			if (!sphere.Project(b_body, x))
-				ASSERT("face rays are never zero" == NULL);
+			[[maybe_unused]] const bool bProjected = sphere.Project(b_body, x);
+			ASSERT(bProjected, "face rays are never zero");
 			// the projection spans [-0.5, srcW-0.5] horizontally: wrap the left half-pixel onto
 			// the extra column, and clamp vertically to the first/last row centers
 			REAL px = x.x();

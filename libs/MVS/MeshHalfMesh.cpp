@@ -99,9 +99,9 @@ static halfmesh::Mesh ImportGeometry(const Mesh& mesh)
 	halfMesh.vertices.resize(mesh.vertices.size());
 	halfMesh.faces.resize(mesh.faces.size());
 	if (!mesh.vertices.empty())
-		memcpy(halfMesh.vertices.data(), mesh.vertices.data(), sizeof(Mesh::Vertex)*mesh.vertices.size());
+		memcpy((void*)halfMesh.vertices.data(), mesh.vertices.data(), sizeof(Mesh::Vertex)*mesh.vertices.size());
 	if (!mesh.faces.empty())
-		memcpy(halfMesh.faces.data(), mesh.faces.data(), sizeof(Mesh::Face)*mesh.faces.size());
+		memcpy((void*)halfMesh.faces.data(), mesh.faces.data(), sizeof(Mesh::Face)*mesh.faces.size());
 	return halfMesh;
 }
 
@@ -280,11 +280,11 @@ void Mesh::SamplePoints(REAL samplingDensity, unsigned numPointsExpected, PointC
 	pointcloud.points.resize((PointCloud::Index)points.size());
 	static_assert(sizeof(PointCloud::Point) == sizeof(halfmesh::Mesh::Vertex), "point layouts must match");
 	if (!points.empty())
-		memcpy(pointcloud.points.data(), points.data(), sizeof(PointCloud::Point)*points.size());
+		memcpy((void*)pointcloud.points.data(), points.data(), sizeof(PointCloud::Point)*points.size());
 	if (!colors.empty()) {
 		pointcloud.colors.resize((PointCloud::Index)colors.size());
 		static_assert(sizeof(PointCloud::Color) == sizeof(halfmesh::Pixel), "color layouts must match");
-		memcpy(pointcloud.colors.data(), colors.data(), sizeof(PointCloud::Color)*colors.size());
+		memcpy((void*)pointcloud.colors.data(), colors.data(), sizeof(PointCloud::Color)*colors.size());
 	}
 }
 

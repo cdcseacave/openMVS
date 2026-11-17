@@ -400,7 +400,7 @@ inline void ComputeSphericalTrig(const Spherical<double>& camera, const cv::Size
 	ASSERT(ISEQUAL(camera.fx*TWO_PI, (double)size.width) && ISEQUAL(camera.fy*PI, (double)size.height));
 	const auto Store = [](double angle, SINCOS& sinCos) {
 		const float sc[2] = {(float)std::sin(angle), (float)std::cos(angle)};
-		memcpy(&sinCos, sc, sizeof(sc));
+		memcpy((void*)&sinCos, sc, sizeof(sc));
 	};
 	for (int c=0; c<size.width; ++c)
 		Store(camera.Angles(Eigen::Vector2d(c, 0)).x(), lonSinCos[c]);

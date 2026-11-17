@@ -1974,7 +1974,7 @@ bool MVS::BrownUndistortOnLoadTest()
 			EVec2 x;
 			const EVec3 X(points[j].first.x, points[j].first.y, points[j].first.z);
 			pinhole.camera.Project(EMat3(pinhole.camera.R) * (X - EVec3(pinhole.camera.C)), x);
-			const PointCloud::ViewArr& pointViews = scene.pointcloud.pointViews[(uint32_t)j];
+			[[maybe_unused]] const PointCloud::ViewArr& pointViews = scene.pointcloud.pointViews[(uint32_t)j];
 			const PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations[(uint32_t)j];
 			ASSERT(pointViews.size() == 2 && pointViews[0] == i && pointViews[1] == i+1);
 			for (const Point2f& o: observations)
