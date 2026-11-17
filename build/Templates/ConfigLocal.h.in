@@ -57,6 +57,9 @@
 // NVidia Cuda Runtime API
 #cmakedefine _USE_CUDA
 
+// SiftGPU feature extraction and matching
+#cmakedefine _USE_SIFTGPU
+
 // ONNX Runtime inference (RoMa v2 dense matching, DINOv3 retrieval)
 #cmakedefine _USE_ONNXRUNTIME
 

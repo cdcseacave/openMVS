@@ -444,6 +444,9 @@ bool ReconstructExportCSVTest();
 // --match-mode -1 (SKIP): reconstructs a saved scene from its own matches, refuses a scene that holds none
 bool SkipMatchModeTest();
 
+// one default detector: every configuration starts from FeatureType::DEFAULT, MatchConfig's thresholds included
+bool DefaultDetectorTest();
+
 // --use-global-solver: Scene::ReconstructGlobal registers the images of the bundled scene
 bool GlobalSolverTest();
 

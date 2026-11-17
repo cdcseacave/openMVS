@@ -46,7 +46,13 @@ enum class FeatureType : uint8_t {
 	ORB = 2,
 	SIFT = 3,
 	SIFTGPU = 4,
+	// the detector every configuration starts with (FeatureExtractionConfig, KeyframeConfig, MatchConfig's thresholds,
+	// the --detector-type option): SiftGPU where it is built in, the CPU SIFT otherwise
+	#ifdef _USE_SIFTGPU
 	DEFAULT = SIFTGPU
+	#else
+	DEFAULT = SIFT
+	#endif
 };
 
 
@@ -76,7 +82,7 @@ inline FeatureType FeatureTypeFromString(const String& name) {
  * @brief Configuration for feature extraction
  */
 struct SFM_API FeatureExtractionConfig {
-	FeatureType detectorType = FeatureType::AKAZE; // feature detector: AKAZE/ORB/SIFT/SIFTGPU
+	FeatureType detectorType = FeatureType::DEFAULT; // feature detector: AKAZE/ORB/SIFT/SIFTGPU
 	int maxFeaturesPerCell = 3000; // maximum features per grid cell (3x3 grid; SiftGPU selects GetMaxNumFeatures() on a finer adaptive grid)
 	int minFeaturesPerCell = 500;  // minimum features per cell before adjusting sensitivity
 	bool releaseImagePixels = true; // release image pixel data after feature extraction to save memory

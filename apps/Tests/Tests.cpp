@@ -486,6 +486,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::SkipMatchModeTest())
 				return false;
+			if (!SFM::DefaultDetectorTest())
+				return false;
 			if (!SFM::GlobalSolverTest())
 				return false;
 			if (!SFM::TripletFilterTest())

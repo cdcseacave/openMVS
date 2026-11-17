@@ -236,6 +236,10 @@ private:
 #endif // _USE_SIFTGPU
 
 
+MatchConfig::MatchConfig() {
+	DefaultsForFeatureType(FeatureType::DEFAULT);
+}
+
 MatchConfig& MatchConfig::DefaultsForFeatureType(FeatureType type) {
 	switch (type) {
 	case FeatureType::AKAZE:

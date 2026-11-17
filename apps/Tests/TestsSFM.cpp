@@ -11320,6 +11320,48 @@ bool SkipMatchModeTest()
 }
 /*----------------------------------------------------------------*/
 
+
+// FeatureType::DEFAULT is the detector of a default-constructed FeatureExtractionConfig and KeyframeConfig, and a
+// default-constructed MatchConfig carries the descriptor kind and the thresholds DefaultsForFeatureType gives that
+// detector (the ones the command line applies for it), so a library or Python caller that sets nothing gets the
+// pipeline the application runs; the thresholds of each detector are the documented ones
+bool DefaultDetectorTest()
+{
+	VERBOSE("\n=== DefaultDetectorTest: one default detector for the library and the application ===");
+	if (FeatureType::DEFAULT != FeatureType::SIFTGPU && FeatureType::DEFAULT != FeatureType::SIFT) {
+		VERBOSE("DefaultDetectorTest FAILED: the default detector is neither SIFTGPU nor SIFT");
+		return false;
+	}
+	if (FeatureExtractionConfig().detectorType != FeatureType::DEFAULT || KeyframeConfig().detectorType != FeatureType::DEFAULT) {
+		VERBOSE("DefaultDetectorTest FAILED: a configuration does not start from the default detector");
+		return false;
+	}
+	const MatchConfig defaults;
+	const MatchConfig expected(MatchConfig().DefaultsForFeatureType(FeatureType::DEFAULT));
+	if (defaults.descriptorsAreBinary != expected.descriptorsAreBinary || defaults.maxDescriptorsPerImage != expected.maxDescriptorsPerImage ||
+		defaults.matchDistance != expected.matchDistance || defaults.matchRatio != expected.matchRatio || defaults.minMatches != expected.minMatches ||
+		defaults.descriptorsAreBinary || defaults.maxDescriptorsPerImage != 1000 || defaults.matchRatio != 0.8f || defaults.minMatches != 15) {
+		VERBOSE("DefaultDetectorTest FAILED: the default MatchConfig does not carry the SIFT thresholds of the default detector");
+		return false;
+	}
+	// the thresholds of every detector, named
+	struct Expected { FeatureType type; bool binary; unsigned maxDescriptors; float distance; float ratio; unsigned minMatches; };
+	const Expected table[] = {
+		{FeatureType::AKAZE, true, 2000, 100.f, 0.9f, 50}, {FeatureType::ORB, true, 2000, 64.f, 0.9f, 50},
+		{FeatureType::SIFT, false, 1000, FLT_MAX, 0.8f, 15}, {FeatureType::SIFTGPU, false, 1000, FLT_MAX, 0.8f, 15}};
+	for (const Expected& e: table) {
+		const MatchConfig cfg(MatchConfig().DefaultsForFeatureType(e.type));
+		if (cfg.descriptorsAreBinary != e.binary || cfg.maxDescriptorsPerImage != e.maxDescriptors || cfg.matchDistance != e.distance ||
+			cfg.matchRatio != e.ratio || cfg.minMatches != e.minMatches) {
+			VERBOSE("DefaultDetectorTest FAILED: wrong thresholds for %s", FeatureTypeToString(e.type).c_str());
+			return false;
+		}
+	}
+	VERBOSE("DefaultDetectorTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // --use-global-solver: Scene::ReconstructGlobal (rotation averaging, positioning, two adjustments) run on the bundled
 // images, matched and filtered by a match-images-only Reconstruct, registers every image with points
 bool GlobalSolverTest()

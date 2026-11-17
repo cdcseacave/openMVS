@@ -31,10 +31,12 @@ ELSE()
 ENDIF()
 
 # Optional SiftGPU support via vcpkg manifest feature
+# _USE_SIFTGPU reaches ConfigLocal.h through this cache entry, so the library, the applications and the tests agree on FeatureType::DEFAULT
+set(_USE_SIFTGPU FALSE CACHE INTERNAL "SiftGPU is built in")
 if(OpenMVS_USE_SIFTGPU)
 	find_exported_dependency(siftgpu CONFIG QUIET)
 	if(siftgpu_FOUND)
-		ADD_DEFINITIONS(-D_USE_SIFTGPU)
+		set(_USE_SIFTGPU TRUE CACHE INTERNAL "SiftGPU is built in")
 		LIST(APPEND SFM_EXTRA_LIBS siftgpu::siftgpu)
 		message(STATUS "SiftGPU found and linked")
 	else()

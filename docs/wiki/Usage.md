@@ -14,7 +14,7 @@ ExtractKeyframes -i input.mp4 -o scene_keyframes.sfm -d keyframes
 Notable options:
 
 - `--overlap-threshold` (default `0.85`) — minimum feature-overlap kept between two consecutive keyframes.
-- `--detector-type` (`SIFT` | `AKAZE` | `ORB` | `SIFTGPU`, default `SIFT`) — feature detector used for the overlap estimation.
+- `--detector-type` (`SIFT` | `AKAZE` | `ORB` | `SIFTGPU`, default `SIFTGPU`, or `SIFT` in a build without SiftGPU) — feature detector used for the overlap estimation.
 - `--focal-length` (default `0`, auto-calibrate) — known focal length in pixels; the module will auto-calibrate from the fundamental matrices when left at `0`.
 - `--camera-type` (`0` pinhole, `1` spherical, default `0`) — set to `1` for equirectangular 360° video.
 - `--cubemap-faces` (`4`, `6`, `8`, `12` or `20`, default `6`) — number of tangent-pinhole faces used internally for feature extraction on spherical frames.

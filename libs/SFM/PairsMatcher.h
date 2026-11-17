@@ -66,23 +66,23 @@ struct SFM_API MatchConfig
 	};
 
 	MatchMode mode = VOCABULARY;
-	unsigned maxDescriptorsPerImage = 2000; // Max descriptors per image for vocabulary tree
+	unsigned maxDescriptorsPerImage;    // Max descriptors per image for vocabulary tree (set by DefaultsForFeatureType: 1000 SIFT/SIFTGPU, 2000 AKAZE/ORB)
 	unsigned maxPairsPerImage = 50;     // Target pairs per image (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	bool verificationFeedback = true;   // Two-round matching: hold back part of the pair budget and re-invest it in pairs suggested by the geometrically verified matches (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	unsigned matchSequenceOverlap = 3;  // Consecutive images each image is matched with: the whole candidate set of SEQUENTIAL mode, and a prior added to the VOCABULARY/RETRIEVAL candidates (0 = no prior)
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
 	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled; above 0 the geometric verification refuses, see GeometricFilter)
-	float matchDistance = 100.f;        // Absolute distance test threshold (100 - AKAZE 486bit, 64 - ORB 256bit, FLT_MAX - SIFT)
-	// Lowe's ratio test threshold (0.9 - AKAZE/ORB, 0.8 - SIFT). The two matching paths range it over
+	float matchDistance;                // Absolute distance test threshold (set by DefaultsForFeatureType: 100 - AKAZE 486bit, 64 - ORB 256bit, FLT_MAX - SIFT)
+	// Lowe's ratio test threshold (set by DefaultsForFeatureType: 0.9 - AKAZE/ORB, 0.8 - SIFT). The two matching paths range it over
 	// different quantities, so the same constant is not the same strictness: PairsMatcher::MatchFeatures
 	// applies it to the distances FLANN reports, which for its L2 index are SQUARED, hence a true-norm
 	// ratio of sqrt(matchRatio); MatchFeaturesGuided (MatchGeometric.cpp) recomputes both sides as true
 	// norms and applies it to those, hence matchRatio itself. At the SIFT default that is 0.894 for the
 	// descriptor path against 0.8 for the guided one, which is therefore the stricter of the two
-	float matchRatio = 0.9f;
+	float matchRatio;
 	bool crossCheck = false;            // Enable cross-check consistency
 	bool useFlannMatcher = true;        // Use FLANN (LSH/KDTree) for faster matching; set false to force BFMatcher
-	unsigned minMatches = 50;           // Minimum inlier matches to accept pair (50 - AKAZE/ORB, 15 - SIFT)
+	unsigned minMatches;                // Minimum inlier matches to accept pair (set by DefaultsForFeatureType: 50 - AKAZE/ORB, 15 - SIFT)
 	float maxEpipolarError = 4.f;       // Enable RANSAC E/F/H verification using this maximum epipolar error in pixels (0 = disabled)
 	float minTriangulationAngle = 0.5f; // Minimum triangulation angle in degrees (0 = disabled)
 	float reprojThreshold = 6.f;        // Maximum reprojection error (pixels, 0 = disabled)
@@ -95,7 +95,7 @@ struct SFM_API MatchConfig
 	// Descriptor kind for vocabulary tree and retrieval scoring
 	// Both binary and quantized floats are stored as CV_8U; this flag selects
 	// Hamming (true) vs L2 on quantized bytes (false).
-	bool descriptorsAreBinary = true;
+	bool descriptorsAreBinary; // set by DefaultsForFeatureType
 
 	bool viewGraphCalibrationEnabled = true;  // Enable view graph calibration
 	// The radial lens fit from pairs (LensFit.h), run after the view-graph calibration on every
@@ -129,6 +129,9 @@ struct SFM_API MatchConfig
 	inline bool IsMatchesFilterOn() const {
 		return minTriangulationAngle > 0.f || reprojThreshold > 0.f || epipoleFilterThreshold > 0.f;
 	}
+
+	// starts with the thresholds and descriptor kind of FeatureType::DEFAULT, the detector every configuration defaults to
+	MatchConfig();
 
 	MatchConfig& DefaultsForFeatureType(FeatureType type);
 };

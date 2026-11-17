@@ -23,9 +23,12 @@ number of descriptors per image given to the vocabulary tree, the absolute dista
 applied by `CreateStructure` right after the detector is parsed; see `PairSelection.md` and
 `TwoViewVerificationAndLens.md`.
 
-**Default detector.** The command line's default is `SIFTGPU` (`FeatureType::DEFAULT`), and the matching defaults follow
-the detector parsed. The library's `FeatureExtractionConfig::detectorType` default is `AKAZE`; a library or Python caller
-that does not set it gets AKAZE (see open items).
+**Default detector.** One definition, `FeatureType::DEFAULT` (`FeaturesExtractor.h`): `SIFTGPU` in a build with SiftGPU
+(`_USE_SIFTGPU`, set in `ConfigLocal.h` by `libs/SFM/CMakeLists.txt`), `SIFT` in a build without it. The command line's
+`--detector-type` (`CreateStructure`, `ExtractKeyframes`), `FeatureExtractionConfig::detectorType` and
+`KeyframeConfig::detectorType` start from it, and so does `MatchConfig`: its constructor applies
+`DefaultsForFeatureType(FeatureType::DEFAULT)`, so a library or Python caller that sets nothing gets the same detector and
+matching thresholds as the command line. A caller that picks another detector calls `DefaultsForFeatureType` with it.
 
 **RootSIFT.** For SIFT and SIFTGPU the 128-dimensional float descriptor is L1-normalized, square-rooted, and quantized to
 `uint8` by scaling by 512 (most values are below 0.4, so the scale keeps more precision than 255 would)
@@ -85,8 +88,5 @@ keypoints of every extracted image in the same layout.
 
 ## Open items
 
-- The detector default differs between the command line (`SIFTGPU`) and `FeatureExtractionConfig` (`AKAZE`). A caller
-  that builds a `ReconstructionConfig` without the command line gets AKAZE unless it sets the detector, and its
-  `MatchConfig` defaults must be set for the detector with `DefaultsForFeatureType`.
 - `--gpu-device` does not choose the SiftGPU CUDA device: SiftGPU is initialized on CUDA device 0 whenever CUDA is wanted.
   Only the ONNX Runtime CUDA provider follows the device `SEACAVE::CUDA` selected.

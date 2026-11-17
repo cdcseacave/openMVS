@@ -145,7 +145,7 @@ GPS. Clustering is never involved.
 ## Key Algorithms
 
 ### Feature Extraction (`FeaturesExtractor.h`)
-- Detectors: **AKAZE** (default), **ORB**, **SIFT**, **SiftGPU** (optional)
+- Detectors: **AKAZE**, **ORB**, **SIFT**, **SiftGPU** (optional); the default (`FeatureType::DEFAULT`, also the default of `MatchConfig`'s thresholds) is SiftGPU where built in, SIFT otherwise
 - 3x3 spatial grid for even distribution: `maxFeaturesPerCell` (default 3000, ~27k total)
 - SiftGPU (local vcpkg port `ports/siftgpu`, CUDA and GLSL kept equivalent): peak threshold 0.001, curvature
   floor `-cmin` 0.001, edge 12.5, moment orientation, `-da` off by default; backend `useCUDA`
