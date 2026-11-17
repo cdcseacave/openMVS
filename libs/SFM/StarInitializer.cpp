@@ -25,6 +25,8 @@ constexpr float kArmMatchNoiseImageSide = 2880.f;
 // The bar on a pair's baseline direction, in degrees: the matching noise over the parallax energy of the pair's matches in
 // their weakest direction (ImagePair::ComputeBaselineDirectionSigma); it folds in the parallax of every match, how many there
 // are and how they are spread. A pair whose direction is less sure than this places an arm at a random direction
+// (a simpler bar performs similarly on the evaluation captures: the pair's median ray angle, in pixels, under the longer
+// image side over 180; see docs/design/IncrementalReconstruction.md)
 constexpr float kMaxArmDirectionSigma = 0.09f;
 
 // Does the pair fix no baseline direction of its own, so that its arm would be placed at a random direction?

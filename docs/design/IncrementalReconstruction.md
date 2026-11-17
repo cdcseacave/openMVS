@@ -88,8 +88,13 @@ on the perspective ones. Run on five captures against the bar of 16 pixels on th
 right and wrong images, pose scores within 0.0012), and on an outdoor panorama capture with the bottom band it ends at 770
 right images against 769, with no wrong block start against one.
 
+A simpler bar performs similarly in the same tests: the pair's median ray angle, in pixels, under the longer image side
+over 180 (one constant, independent of the image resolution, no pass over the matches). It removes 21 wrong and 64 right
+of the same first images, and on the five captures it is level with the rule on four and keeps the one wrong block start
+on the outdoor panorama capture.
+
 Rejected: 16 pixels of the pair's median ray angle (not independent of the image resolution; removes 22 wrong and 68 right
-first images); the longer image side over 180 (21 / 64); 2 degrees (22 / 133, the strong right arms of perspective captures
+first images); 2 degrees (22 / 133, the strong right arms of perspective captures
 among them: 13 right arms on CAB_0120 and 18 on Playground, and on CAB_0120 the evidence floor then falls and a weaker, wrong
 arm takes their place: a third wrong start and a pose score of 0.2049 -> 0.1846); 1.5 degrees (14 / 46, and on five captures
 it loses 11 right images on one outdoor panorama capture and brings back two wrong block starts on another); 40 times the
