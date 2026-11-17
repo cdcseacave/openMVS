@@ -17,7 +17,7 @@ Source: `PairsMatcher.h/cpp` (`Match`, `CollectVocabularyPairs`, `CollectRetriev
 
 | `--match-mode` | `MatchConfig::MatchMode` | candidates |
 |---|---|---|
-| -1 | SKIP | no matching: the saved scene's own matches are used; valid only when the loaded input is a saved scene (`.sfm`) whose pairs hold matches (a `--match-images-only` run or ExtractKeyframes stores them): `CreateStructure` refuses it at start for any other source or with `--dense true`, `Scene::Reconstruct` refuses a scene in which no pair holds a match before any work, and `Scene::MatchPairs` then only refits the missing relative poses and marks the scene matched |
+| -1 | SKIP | no matching: the saved scene's own matches are used; valid only when the loaded input is a saved scene (`.sfm`) whose pairs hold matches (a `--match-images-only` run or ExtractKeyframes stores them): `CreateStructure` refuses it at start for any other source or with a `--dense-matcher` other than `none`, `Scene::Reconstruct` refuses a scene in which no pair holds a match before any work, and `Scene::MatchPairs` then only refits the missing relative poses and marks the scene matched |
 | 0 | EXHAUSTIVE | every pair |
 | 1 (default) | VOCABULARY | pairs ranked by a vocabulary tree over the local descriptors |
 | 2 | SEQUENTIAL | consecutive images |

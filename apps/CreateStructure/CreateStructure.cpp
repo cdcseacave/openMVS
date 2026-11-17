@@ -66,7 +66,6 @@ unsigned maxPairsPerImage;
 bool matchVerificationFeedback;
 bool releaseDescriptors;
 bool matchImagesOnly;
-bool bROMA2;
 String strROMA2Model;
 String strDenseMatcher;
 String strFlexGlueModel;
@@ -206,8 +205,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 
 	boost::program_options::options_description dense("Dense matching options");
 	dense.add_options()
-		("dense", boost::program_options::value<bool>(&OPT::bROMA2)->default_value(defaults.roma2Cfg.enabled), "enable the in-process dense matcher (RoMa v2 or FlexGlue, see --dense-matcher): pair retrieval descriptors and dense matching (needs an exported model, see --roma2-model and --flexglue-model)")
-		("dense-matcher", boost::program_options::value<std::string>(&OPT::strDenseMatcher)->default_value(defaults.roma2Cfg.matcher), "the dense matcher behind --dense true (retrieval descriptors and --dense-match warps): roma2 or flexglue (flexglue needs its model, see --flexglue-model; the --dense-* matching options then apply to its warps)")
+		("dense-matcher", boost::program_options::value<std::string>(&OPT::strDenseMatcher)->default_value("none"), "the in-process dense matcher (pair retrieval descriptors and --dense-match warps): none (off), roma2 or flexglue; each needs its exported model (see --roma2-model and --flexglue-model), and the --dense-* matching options apply to the chosen matcher's warps")
 		("roma2-model", boost::program_options::value<std::string>(&OPT::strROMA2Model), "directory with the RoMa v2 ONNX graphs + manifest (default: $OPENMVS_ROMA2_MODEL_PATH, else the installed share/openMVS/roma2)")
 		("flexglue-model", boost::program_options::value<std::string>(&OPT::strFlexGlueModel), "directory of the FlexGlue model bundle: flexglue_<setting>.json and the two graphs it names (default: $OPENMVS_FLEXGLUE_MODEL_PATH, else the install prefix's share/openMVS/flexglue, as `--target flexglue-model` fetches it)")
 		("dense-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value(defaults.roma2Cfg.provider), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
@@ -324,8 +322,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --match-mode -1 (SKIP) runs no matching, the source must be a saved scene (.sfm) that already holds matches (after ExtractKeyframes or a --match-images-only run)");
 		return false;
 	}
-	if (OPT::matchMode == static_cast<int>(MatchConfig::SKIP) && OPT::bROMA2) {
-		LOG("error: --dense true with --match-mode -1 (SKIP): no matching runs, the dense matcher has nothing to do");
+	if (OPT::matchMode == static_cast<int>(MatchConfig::SKIP) && OPT::strDenseMatcher != "none") {
+		LOG("error: --dense-matcher %s with --match-mode -1 (SKIP): no matching runs, the dense matcher has nothing to do", OPT::strDenseMatcher.c_str());
 		return false;
 	}
 	if (FeatureTypeFromString(OPT::strDetectorType) == FeatureType::NONE) {
@@ -378,12 +376,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	Util::ensureValidFolderPath(OPT::strROMA2Model);
 	Util::ensureValidFolderPath(OPT::strFlexGlueModel);
-	if (OPT::strDenseMatcher != "roma2" && OPT::strDenseMatcher != "flexglue") {
-		LOG("error: unknown dense matcher '%s' (accepted: roma2, flexglue)", OPT::strDenseMatcher.c_str());
-		return false;
-	}
-	if (OPT::strDenseMatcher == "flexglue" && !OPT::bROMA2) {
-		LOG("error: --dense-matcher flexglue selects the model behind --dense true, it does nothing without it");
+	if (OPT::strDenseMatcher != "none" && OPT::strDenseMatcher != "roma2" && OPT::strDenseMatcher != "flexglue") {
+		LOG("error: unknown dense matcher '%s' (accepted: none, roma2, flexglue)", OPT::strDenseMatcher.c_str());
 		return false;
 	}
 	if (OPT::strDenseMatcher != "flexglue" && !OPT::strFlexGlueModel.empty()) {
@@ -411,13 +405,13 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	if (OPT::strDenseMatcher != "flexglue" && given("dense-min-covisibility")) {
-		LOG("error: --dense-min-covisibility given with %s (it gates FlexGlue pairs, RoMa2 gives no covisibility score)", OPT::bROMA2 ? "--dense-matcher roma2" : "--dense false");
+		LOG("error: --dense-min-covisibility given with --dense-matcher %s (it gates FlexGlue pairs, RoMa2 gives no covisibility score)", OPT::strDenseMatcher.c_str());
 		return false;
 	}
-	if (!OPT::bROMA2) {
+	if (OPT::strDenseMatcher == "none") {
 		for (const char* name: {"roma2-model", "dense-slots", "dense-min-confidence", "dense-min-overlap", "dense-matches", "dense-provider"})
 			if (given(name)) {
-				LOG("error: --%s given with --dense false (the dense matcher is off, nothing reads it)", name);
+				LOG("error: --%s given with --dense-matcher none (the dense matcher is off, nothing reads it)", name);
 				return false;
 			}
 	}
@@ -425,8 +419,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --dense-min-covisibility is a covisibility score, it must be in [0,1] (got %g)", OPT::fDenseMinCovisibility);
 		return false;
 	}
-	if (OPT::bROMA2 && !DenseMatcher::IsAvailable()) {
-		LOG("error: --dense needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
+	if (OPT::strDenseMatcher != "none" && !DenseMatcher::IsAvailable()) {
+		LOG("error: --dense-matcher %s needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)", OPT::strDenseMatcher.c_str());
 		return false;
 	}
 	if (OPT::strROMA2Provider != "auto" && OPT::strROMA2Provider != "cuda" && OPT::strROMA2Provider != "coreml" &&
@@ -450,23 +444,23 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --dense-matches is the dense fill's draw per full frame of overlap and the frame the pair evidence is anchored to, it must be at least 1 (got %u)", OPT::nROMA2DenseMatches);
 		return false;
 	}
-	if (OPT::bROMA2Match && !OPT::bROMA2) {
+	if (OPT::bROMA2Match && OPT::strDenseMatcher == "none") {
 		// a requested-but-unavailable backend never silently degrades: the one
-		// pass IS the matching round when it runs, and without --dense the enabled flag
+		// pass IS the matching round when it runs, and without --dense-matcher the enabled flag
 		// Scene::MatchPairs gates on (enabled && (needsDescriptors || needsWarps)) is false regardless
 		// of useMatching, so the descriptor round would quietly run the whole matching stage in its
 		// place with nothing in the log naming ROMA2
-		LOG("error: --dense-match needs --dense true (the one pass is the ROMAv2 warp)");
+		LOG("error: --dense-match needs --dense-matcher roma2 or flexglue (the one pass is the dense matcher's warp)");
 		return false;
 	}
-	if (OPT::bROMA2 && !OPT::bROMA2Match && OPT::matchMode != static_cast<int>(MatchConfig::RETRIEVAL)) {
+	if (OPT::strDenseMatcher != "none" && !OPT::bROMA2Match && OPT::matchMode != static_cast<int>(MatchConfig::RETRIEVAL)) {
 		// the match mode decides whether the scene needs describing (Scene::MatchPairs' own
 		// wantsDescriptors), and --dense-match is the only other consumer of the model -- with
-		// neither, --dense has nothing to load a model for. Deliberately not checked here: the
-		// converse, --match-mode 4 without --dense -- a scene loaded from an .sfm may already carry global descriptors, and this parser cannot
+		// neither, --dense-matcher has nothing to load a model for. Deliberately not checked here: the
+		// converse, --match-mode 4 without --dense-matcher -- a scene loaded from an .sfm may already carry global descriptors, and this parser cannot
 		// see what the source will import, only the flags (GlobalDescriptors::Build fails loudly
 		// and by name if it does not)
-		LOG("error: --dense has nothing to do without --dense-match true or --match-mode 4 (RETRIEVAL)");
+		LOG("error: --dense-matcher %s has nothing to do without --dense-match true or --match-mode 4 (RETRIEVAL)", OPT::strDenseMatcher.c_str());
 		return false;
 	}
 	if (OPT::bROMA2Match) {
@@ -551,7 +545,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchCfg.maxPairsPerImage = OPT::maxPairsPerImage;
 	cfg.matchCfg.verificationFeedback = OPT::matchVerificationFeedback;
 	cfg.matchCfg.releaseDescriptors = OPT::releaseDescriptors;
-	cfg.roma2Cfg.enabled = OPT::bROMA2;
+	cfg.roma2Cfg.enabled = OPT::strDenseMatcher != "none";
 	cfg.roma2Cfg.modelPath = OPT::strROMA2Model;
 	cfg.roma2Cfg.useMatching = OPT::bROMA2Match;
 	cfg.roma2Cfg.minConfidence = OPT::fROMA2MinConfidence;
@@ -560,7 +554,8 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchCfg.weightingCfg.denseMatchesPerFrame = OPT::nROMA2DenseMatches; // the pair evidence is anchored to the same frame target the matcher draws
 	cfg.roma2Cfg.slotBudget = OPT::nROMA2Slots;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
-	cfg.roma2Cfg.matcher = OPT::strDenseMatcher;
+	if (cfg.roma2Cfg.enabled)
+		cfg.roma2Cfg.matcher = OPT::strDenseMatcher;
 	cfg.roma2Cfg.flexglueModelPath = OPT::strFlexGlueModel;
 	cfg.roma2Cfg.minCovisibility = OPT::fDenseMinCovisibility;
 	#ifdef _USE_CUDA

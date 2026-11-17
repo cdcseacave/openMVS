@@ -2,8 +2,8 @@
 
 ## Overview
 
-`--dense` (RETRIEVAL pair selection and one-pass dense matching, `design/DenseMatching.md`) needs one exported model bundle on
-disk: RoMa v2 (default) or FlexGlue (`--dense-matcher flexglue`). A bundle is a folder holding a JSON manifest that ties its graphs
+`--dense-matcher` (RETRIEVAL pair selection and one-pass dense matching, `design/DenseMatching.md`) needs one exported model bundle on
+disk: RoMa v2 (`--dense-matcher roma2`) or FlexGlue (`--dense-matcher flexglue`). A bundle is a folder holding a JSON manifest that ties its graphs
 together and the ONNX graphs it names. OpenMVS carries none of it in its own repository: each bundle is fetched on demand from a
 published copy and verified against a checksums file the repository does carry (`models/<model>/checksums.txt`). With FlexGlue
 selected, only the FlexGlue bundle is loaded, required or looked for.
@@ -98,7 +98,7 @@ model, DINOv3 backbone included).
 | FlexGlue | match | FlexGlue matcher (about 46 M) | MIT |
 | FlexGlue | match | H1 pose head (0.46 M) | MIT |
 
-**Running `--dense` with either model means accepting the DINOv3 License.** `scripts/fetch_model.py` prints this notice on every
+**Running `--dense-matcher roma2` or `flexglue` with either model means accepting the DINOv3 License.** `scripts/fetch_model.py` prints this notice on every
 fetch, pointing here for a summary and at `LICENSE-DINOv3.md` in each published repository for the pinned text (it is not one of
 the files fetched into `--dest`). Read the Agreement itself for the exact terms; this section summarizes it.
 

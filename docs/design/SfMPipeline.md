@@ -12,7 +12,7 @@ Terms used throughout. A *pair* is two images with matches and, once verified, a
 images as nodes and the verified pairs as edges. A *track* is one 3D point with its observations in several images. A
 *block* is a subset of the images that is reconstructed on its own and merged later. The *pool* is the set of images that
 belong to no block. The *dense matcher* is an optional neural network (RoMa v2 or FlexGlue, run in-process through ONNX
-Runtime) that gives a warp between two images; `--dense` switches it on, whichever of the two networks is selected.
+Runtime) that gives a warp between two images; `--dense-matcher` switches it on and selects which of the two networks runs (`none` = off, the default).
 
 The program is `apps/CreateStructure/CreateStructure.cpp`. Its `main` reads the options into one `ReconstructionConfig`
 (`libs/SFM/Scene.h`), calls `Scene::Reconstruct(source, cfg)` once, saves the scene with `Scene::Save`, then writes the
@@ -29,7 +29,7 @@ flags say are done (see "Saved-scene resume").
 |---|---|---|---|---|---|---|
 | 1 | Import and cameras | an image folder, a semicolon-separated list of images, or one `.sfm` file; optionally a poses file | images with EXIF metadata, one shared camera per distinct intrinsics, forced focal/distortion applied, imported poses | `--source`, `--camera-type`, `--default-focal-ratio`, `--focal-length`, `--k1`, `--k2`, `--image-indices`, `--import-poses-file`, `--import-poses-mode`, `--known-poses-convention` | `Scene.cpp:Scene::Import` | `ImportAndCameras.md`, `SphericalCameras.md` |
 | 2 | Features | the images | keypoints and descriptors per image | `--detector-type` (AKAZE, ORB, SIFT, SIFTGPU; default SIFTGPU), `--max-features-per-cell`, `--min-features-per-cell`, `--siftgpu-cuda`, `--siftgpu-darkness-adaptivity`, `--spherical-bottom-band`, `--import-openmvg-dir`, `--export-openmvg-dir` | `Scene.cpp:Scene::ExtractFeatures` (`FeaturesExtractor.cpp:FeaturesExtractor::Extract`) | `FeatureExtraction.md`, `SiftGPUFeatureExtraction.md` |
-| 3 | Retrieval and pair selection | features (and, for RETRIEVAL, global descriptors) | the candidate pairs to match | `--match-mode` (default 1 VOCABULARY), `--vocab-max-pairs` (50), `--match-sequence-overlap` (3), `--match-verification-feedback` (1), `--dense` with `--match-mode 4` | `PairsMatcher.cpp:PairsMatcher::Match` (`CollectVocabularyPairs`, `CollectRetrievalPairs`, `CollectKnownPosePairs`, `CollectVerificationFeedbackPairs`) | `PairSelection.md` |
+| 3 | Retrieval and pair selection | features (and, for RETRIEVAL, global descriptors) | the candidate pairs to match | `--match-mode` (default 1 VOCABULARY), `--vocab-max-pairs` (50), `--match-sequence-overlap` (3), `--match-verification-feedback` (1), `--dense-matcher` with `--match-mode 4` | `PairsMatcher.cpp:PairsMatcher::Match` (`CollectVocabularyPairs`, `CollectRetrievalPairs`, `CollectKnownPosePairs`, `CollectVerificationFeedbackPairs`) | `PairSelection.md` |
 | 4 | Matching | the candidate pairs | for each pair, matches between keypoints | `--dense-match` (default 0) selects the dense pass; otherwise descriptor matching. The dense pass is sized by `--dense-*` (`--roma2-model` for RoMa2 only), `--dense-matcher`, `--flexglue-model`, `--dense-min-covisibility` | descriptors: `PairsMatcher.cpp:PairsMatcher::MatchPairsBatch`; dense: `MatchROMA2.cpp:MatchPairsROMA2`; both from `Scene.cpp:Scene::MatchPairs` | `PairSelection.md`, `DenseMatching.md` |
 | 5 | Pair verification, lens fit, focal calibration | matched pairs | inlier matches and a relative pose per verified pair; the radial lens of every pinhole camera without one; focals of cameras that do not trust theirs | `--release-descriptors`; the lens fit has no option | `PairsMatcher.cpp:PairsMatcher::GeometricFilter` (inside stage 4), then `LensFit.cpp:CalibrateFocalsAndFitLenses` and `MatchROMA2.cpp:SwitchPlanarTwinsROMA2` (both from `Scene::MatchPairs`) | `TwoViewVerificationAndLens.md`, `DenseMatching.md` (planar twin switch) |
 | 6 | Pair weighting | verified pairs | the composite weight of each pair | `--export-pairs-csv` writes the pairs right after this step | `PairsWeighting.cpp:ComputePairsWeights`, called by `WeighAndExportPairs` in `Scene.cpp` (from `FilterViewGraph`, or alone for a scene loaded at `PAIRS_FILTERED`) | `PairWeight.md` |
@@ -122,20 +122,20 @@ Dense matcher and match mode.
 | Combination | Behaviour | Where |
 |---|---|---|
 | no dense matcher, match modes 0, 1, 2, 3 | supported | `PairsMatcher.cpp:2088-2178` |
-| no dense matcher, mode 4 RETRIEVAL | supported only when every image already carries a global descriptor (a saved scene from an earlier `--dense` run); otherwise the matching fails with "RETRIEVAL matching needs a global descriptor on every image" | `PairsMatcher.cpp:741` |
-| mode -1 SKIP | supported only for a saved scene (`.sfm`) whose pairs hold matches (after `--match-images-only` or ExtractKeyframes): no matching runs and the scene's own matches are used; refused at start for any other source and with `--dense 1`, and refused by `Scene::Reconstruct` for a scene in which no pair holds a match | `CreateStructure.cpp:Application::Initialize`, `Scene.cpp:Scene::Reconstruct`, `Scene.cpp:Scene::MatchPairs` |
-| `--dense 1` without `--dense-match` and with mode other than 4 | refused: "--dense has nothing to do without --dense-match true or --match-mode 4" | `CreateStructure.cpp:401` |
-| `--dense 1`, mode 4, no `--dense-match` | supported: dense descriptors rank the pairs, ordinary descriptor matching verifies them | `Scene.cpp:596-647` |
-| `--dense-match 1` without `--dense 1` | refused | `CreateStructure.cpp:391` |
-| `--dense 1 --dense-match 1`, modes 0, 1, 2, 3, 4 | supported: the dense pass is the matching round of each candidate list | `PairsMatcher.cpp:2205` |
-| `--dense-matcher flexglue` without `--dense 1` | refused | `CreateStructure.cpp:345` |
-| `--flexglue-model` with `--dense-matcher roma2` | refused | `CreateStructure.cpp:349` |
+| no dense matcher, mode 4 RETRIEVAL | supported only when every image already carries a global descriptor (a saved scene from an earlier `--dense-matcher` run); otherwise the matching fails with "RETRIEVAL matching needs a global descriptor on every image" | `PairsMatcher.cpp:741` |
+| mode -1 SKIP | supported only for a saved scene (`.sfm`) whose pairs hold matches (after `--match-images-only` or ExtractKeyframes): no matching runs and the scene's own matches are used; refused at start for any other source and with a `--dense-matcher` other than `none`, and refused by `Scene::Reconstruct` for a scene in which no pair holds a match | `CreateStructure.cpp:Application::Initialize`, `Scene.cpp:Scene::Reconstruct`, `Scene.cpp:Scene::MatchPairs` |
+| `--dense-matcher roma2\|flexglue` without `--dense-match` and with mode other than 4 | refused: "--dense-matcher <matcher> has nothing to do without --dense-match true or --match-mode 4" | `CreateStructure.cpp:401` |
+| `--dense-matcher roma2\|flexglue`, mode 4, no `--dense-match` | supported: dense descriptors rank the pairs, ordinary descriptor matching verifies them | `Scene.cpp:596-647` |
+| `--dense-match 1` with `--dense-matcher none` | refused | `CreateStructure.cpp:391` |
+| `--dense-matcher roma2\|flexglue --dense-match 1`, modes 0, 1, 2, 3, 4 | supported: the dense pass is the matching round of each candidate list | `PairsMatcher.cpp:2205` |
+| an unknown `--dense-matcher` value | refused, naming the accepted values | `CreateStructure.cpp:Application::Initialize` |
+| `--flexglue-model` with `--dense-matcher roma2` or `none` | refused | `CreateStructure.cpp:349` |
 | `--roma2-model` given with `--dense-matcher flexglue` | refused naming the option (the FlexGlue folder is `--flexglue-model`) | `CreateStructure.cpp:Application::Initialize` |
-| `--dense-min-covisibility` given with `--dense-matcher roma2` or with `--dense 0` | refused naming the option (only FlexGlue gives a covisibility score; RoMa v2 is never gated) | `CreateStructure.cpp:Application::Initialize` |
-| `--roma2-model`, `--dense-slots`, `--dense-min-confidence`, `--dense-min-overlap`, `--dense-matches` or `--dense-provider` given with `--dense 0` | refused naming the option (the dense matcher is off, nothing reads it) | `CreateStructure.cpp:Application::Initialize` |
-| `--dense 1` in a build without ONNX Runtime | refused | `CreateStructure.cpp:357` |
+| `--dense-min-covisibility` given with `--dense-matcher roma2` or `none` | refused naming the option (only FlexGlue gives a covisibility score; RoMa v2 is never gated) | `CreateStructure.cpp:Application::Initialize` |
+| `--roma2-model`, `--dense-slots`, `--dense-min-confidence`, `--dense-min-overlap`, `--dense-matches` or `--dense-provider` given with `--dense-matcher none` | refused naming the option (the dense matcher is off, nothing reads it) | `CreateStructure.cpp:Application::Initialize` |
+| `--dense-matcher roma2\|flexglue` in a build without ONNX Runtime | refused | `CreateStructure.cpp:357` |
 | `--dense-match 1` with no model folder resolvable | refused before any work | `CreateStructure.cpp:417` |
-| `--dense 1 --dense-match 1` on a scene already `MATCHED` | the model is not loaded and the dense options are ignored, but a missing model path is still refused | `Scene.cpp:618-627` |
+| `--dense-matcher roma2\|flexglue --dense-match 1` on a scene already `MATCHED` | the model is not loaded and the dense options are ignored, but a missing model path is still refused | `Scene.cpp:618-627` |
 
 Dense matcher and camera type.
 
@@ -170,7 +170,7 @@ Solver.
 | known poses and `--match-mode` left at its default | the match mode becomes 3 KNOWN_POSES | `CreateStructure.cpp:528-531` |
 | known poses and an explicit `--match-mode` | supported, the explicit mode is used | `CreateStructure.cpp:528` |
 | import mode 3 (positions only) | not a known-poses reconstruction: the standard solver runs, the match mode stays at its default | `Scene.h:ReconstructionConfig::HasKnownPoses` |
-| known poses with `--dense` | supported | no check |
+| known poses with `--dense-matcher` | supported | no check |
 | known poses on a resumed scene with import mode 1 | the intrinsics in the file are ignored (warning), poses only | `Scene.cpp:458-468` |
 | `--match-images-only` | returns after stage 7, the scene at `PAIRS_FILTERED`; no solver runs | `Scene.cpp:Scene::Reconstruct`, the `matchImagesOnly` return |
 | a `.sfm` already `CALIBRATED` | `Reconstruct` returns false at once; `main` treats it as a partial result, writes the optional exports and does not rewrite the `.sfm` | `Scene.cpp:793-796`, `CreateStructure.cpp:535-545` |
@@ -245,7 +245,7 @@ filtering of the view-graph focal calibration.
 ## Rejected alternatives
 
 - No fallback from the dense pass to descriptor matching for a rejected pair (`PairsMatcher.cpp:2205`).
-- No automatic switch of the match mode when `--dense` is given without the dense pass or mode 4: the parser refuses it.
+- No automatic switch of the match mode when a `--dense-matcher` is given without the dense pass or mode 4: the parser refuses it.
 
 ## Open items
 

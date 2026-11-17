@@ -29,21 +29,21 @@ Source files: `OnnxRuntime.h/cpp` (session and tensor wrapper), `DenseMatcher.h`
 
 ## Options and where they act
 
-`--dense` is the master switch for the model; it does nothing alone. `CreateStructure` rejects `--dense` unless
-`--dense-match true` or `--match-mode 4` asks for something the model produces, rejects `--dense-match` without
-`--dense`, rejects `--dense-matcher flexglue` without `--dense`, and rejects `--flexglue-model` with another matcher.
+`--dense-matcher none|roma2|flexglue` is the one switch for the model: `none` (the default) loads nothing, the other two name
+the model to load; it does nothing alone. `CreateStructure` rejects a matcher unless
+`--dense-match true` or `--match-mode 4` asks for something the model produces, rejects `--dense-match` with matcher `none`,
+and rejects `--flexglue-model` with another matcher.
 The two services are independent: `--match-mode 4` alone ranks pairs by the descriptors and matches them with the
 ordinary SIFT/AKAZE/ORB flow; `--dense-match` composes with any match mode.
 
 | option | `ROMA2Config` field | default | effect |
 |---|---|---|---|
-| `--dense B` | `enabled` | false | load the in-process model |
 | `--roma2-model DIR` | `modelPath` | `$OPENMVS_ROMA2_MODEL_PATH`, else `<prefix>/share/openMVS/roma2` if present | folder of the RoMa2 bundle (manifest and graphs) |
 | `--dense-provider auto\|cuda\|coreml\|dml\|cpu` | `provider` | `auto` | ONNX Runtime execution provider (see Providers) |
 | `--dense-match B` | `useMatching` | false | one-pass pair matching |
-| `--dense-matcher roma2\|flexglue` | `matcher` | `roma2` | the model behind `--dense true`, for both services |
+| `--dense-matcher none\|roma2\|flexglue` | `enabled` (matcher is not `none`) and `matcher` | `none` | the in-process model to load, for both services; `none` loads no model |
 | `--flexglue-model DIR` | `flexglueModelPath` | `$OPENMVS_FLEXGLUE_MODEL_PATH`, else `<prefix>/share/openMVS/flexglue` if present | folder of the FlexGlue bundle (manifest and graphs) |
-| `--dense-min-covisibility F` | `minCovisibility` | 0.5 | covisibility gate before the verdict, in [0,1]; 0 = off; a matcher that gives no score (RoMa2) is never gated, and the option is refused when given with RoMa2 or with the dense matcher off |
+| `--dense-min-covisibility F` | `minCovisibility` | 0.5 | covisibility gate before the verdict, in [0,1]; 0 = off; a matcher that gives no score (RoMa2) is never gated, and the option is refused when given with `--dense-matcher roma2` or `none` |
 | `--dense-slots N` | `slotBudget` | 64 | image descriptor tensors resident on the device during pair matching; at least 2 |
 | `--dense-min-confidence F` | `minConfidence` | 0.1 | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the fill |
 | `--dense-min-overlap F` | `minOverlap` | 0.10 | the verdict's bar on the smaller inlier area (see Verdict); 0 admits every pair |
@@ -402,5 +402,5 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
   `PairsMatcher` has no homography branch. The planar twin switch resolves the pairs whose loops decide.
 - CoreML and DirectML latency is unmeasured.
 - FlexGlue's coarser warp grid (128 cells against 160) is the candidate cause of its lower F1 on Palace.
-- `--dense` help text names DINOv3/GeM retrieval; with `--dense-matcher flexglue` the retrieval is FlexGlue's pooled
+- `--dense-matcher` help text names the retrieval descriptors; with `--dense-matcher flexglue` the retrieval is FlexGlue's pooled
   256-D descriptor.

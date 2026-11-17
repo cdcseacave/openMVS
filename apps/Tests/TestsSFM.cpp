@@ -6242,7 +6242,7 @@ bool FlexGlueManifestTest()
 // flexglueModelPath and $OPENMVS_FLEXGLUE_MODEL_PATH): the explicit path wins over everything (even a set environment variable);
 // with it empty, the matcher's environment variable wins; with both absent, the result falls back to the install prefix's own
 // copy (OPENMVS_MODEL_INSTALL_DIR/<matcher>) when that directory actually exists on disk, else it is empty. And a matcher never
-// resolves to the other one's explicit path or environment variable. This is the precedence the whole --dense pipeline depends on
+// resolves to the other one's explicit path or environment variable. This is the precedence the whole --dense-matcher pipeline depends on
 // -- it decides whether the CLI's own "needs a model" error fires -- so it is checked here directly rather than only indirectly
 // through CreateStructure. The fallback case must not create that directory, so it reads the same File::isFolder check the
 // implementation uses and asserts against whichever outcome is already true on this machine.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch a published dense-matcher ONNX model bundle that `--dense` needs at runtime -- RoMa v2 (a DINOv3
+"""Fetch a published dense-matcher ONNX model bundle that `--dense-matcher` needs at runtime -- RoMa v2 (a DINOv3
 descriptor graph + a bidirectional coarse-match graph) or FlexGlue (a DINOv3 ConvNeXt descriptor graph + a match
 graph carrying the covisibility and pose heads) -- without the OpenMVS repository ever carrying a byte of it.
 One script and one checksums scheme for both: `--model` picks the bundle, everything else is the same.
@@ -522,7 +522,7 @@ def main(argv=None) -> int:
     option = "--flexglue-model" if args.model == "flexglue" else "--roma2-model"
     print(f"model ready at: {dest.resolve()}")
     print(f"set {spec.env}={dest.resolve()} (or pass {option} {dest.resolve()} to CreateStructure) so "
-          f"--dense finds it. If --dest was the CMake install prefix's own share/openMVS/{args.model}, "
+          f"--dense-matcher finds it. If --dest was the CMake install prefix's own share/openMVS/{args.model}, "
           "ROMA2Config::ResolveModelPath()'s install-prefix fallback already finds it with no environment "
           "variable needed.")
     return 0
