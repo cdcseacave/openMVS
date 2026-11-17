@@ -3046,7 +3046,7 @@ static bool SaveImage(const cv::Mat& img, const String& fileName)
 		compression_params.push_back(cv::IMWRITE_PNG_COMPRESSION);
 		compression_params.push_back(6);
 	} else
-	if (ext == ".jpg") {
+	if (ext == ".jpg" || ext == ".jpeg") {
 		compression_params.push_back(cv::IMWRITE_JPEG_QUALITY);
 		compression_params.push_back(95);
 	} else

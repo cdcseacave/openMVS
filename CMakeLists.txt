@@ -375,6 +375,18 @@ else()
 	MESSAGE(STATUS "Can't find OpenCV. Please specify OpenCV directory using OpenCV_DIR variable")
 endif()
 
+# Optional SiftGPU support via vcpkg manifest feature; detected here so that
+# _USE_SIFTGPU lands in ConfigLocal.h and every library and app sees the same value
+if(OpenMVS_USE_SIFTGPU)
+	find_exported_dependency(siftgpu CONFIG QUIET)
+	if(siftgpu_FOUND)
+		SET(_USE_SIFTGPU TRUE)
+		MESSAGE(STATUS "SiftGPU found")
+	else()
+		MESSAGE(STATUS "Can't find SiftGPU. Continuing without it.")
+	endif()
+endif()
+
 # vcpkg's ceres carries a bare `gflags` in the ceres target's INTERFACE_LINK_LIBRARIES
 # (leaked in through glog), yet its CeresConfig.cmake is generated with CERES_USES_GFLAGS
 # OFF and so never calls FIND_PACKAGE(gflags) itself. vcpkg's gflags cmake-wrapper forces

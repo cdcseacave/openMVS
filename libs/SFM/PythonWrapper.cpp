@@ -115,7 +115,7 @@ public:
 	// Per-image metadata - returns a Python list of dicts so callers can
 	// recover image and camera metadata without dragging the full C++ Image
 	// type into Python; can be used for ex to map video keyframes
-	// back to their source video frame index via timestamp*fps.
+	// back to their source video time (the decoder's presentation time stamp).
 	boost::python::list pyGetImageRecords() const {
 		boost::python::list out;
 		for (size_t i = 0; i < images.size(); ++i) {

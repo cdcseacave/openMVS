@@ -14,11 +14,13 @@ ExtractKeyframes -i input.mp4 -o scene_keyframes.sfm -d keyframes
 Notable options:
 
 - `--overlap-threshold` (default `0.85`) — minimum feature-overlap kept between two consecutive keyframes.
-- `--detector-type` (`SIFT` | `AKAZE` | `ORB` | `SIFTGPU`, default `SIFT`) — feature detector used for the overlap estimation.
+- `--detector-type` (`SIFT` | `AKAZE` | `ORB` | `SIFTGPU`, default `SIFTGPU` when OpenMVS is built with SiftGPU, `SIFT` otherwise) — feature detector used for the overlap estimation.
 - `--focal-length` (default `0`, auto-calibrate) — known focal length in pixels; the module will auto-calibrate from the fundamental matrices when left at `0`.
 - `--camera-type` (`0` pinhole, `1` spherical, default `0`) — set to `1` for equirectangular 360° video.
 - `--cubemap-faces` (`4`, `6`, `8`, `12` or `20`, default `6`) — number of tangent-pinhole faces used internally for feature extraction on spherical frames.
 - `--blur-size` (default `0`, disabled) — Gaussian kernel applied to the optical-flow image to reject motion-blurred frames.
+- `--image-format` (`jxl` | `jpg` | `png`, default `jxl`) — file type of the keyframe images written to the output directory.
+- `--export-timestamps-csv <file>` — also write a `filename,time` CSV with each keyframe's image file name and its time in the video in seconds (the video backend's frame time stamp, which also follows variable frame rate video), for tools that cannot read the `.sfm` project.
 - `--refine-calibration` (`0` disabled, `1` two-view, `2` three-view, `3` view-graph; default `3`) — level of intrinsic refinement performed during matching.
 
 Running the native SfM step (see next section) on the resulting `.sfm` produces the sparse reconstruction shown below — the keyframe camera frustums and the triangulated sparse cloud are visualized together:
@@ -49,7 +51,7 @@ When the input is a `.sfm` produced by `ExtractKeyframes` or `CreateStructure` w
 
 Notable options:
 
-- `--detector-type` (default `SIFTGPU`) — feature detector; same choices as above.
+- `--detector-type` (default `SIFTGPU` when built with SiftGPU, `SIFT` otherwise) — feature detector; same choices as above.
 - `--match-mode` (`-1` skip, `0` exhaustive, `1` vocabulary, `2` sequential, `3` known-poses; default `1`) — pairwise-matching strategy.
 - `--match-sequence-overlap` (default `3`) — sequence overlap when using sequential matching.
 - `--vocab-max-pairs` (default `50`) — target pairs per image for vocabulary-tree and known-poses matching (with `--match-verification-feedback`, the default, part of this budget is re-invested in pairs suggested by the verified matches).

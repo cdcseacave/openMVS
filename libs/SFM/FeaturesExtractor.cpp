@@ -119,7 +119,7 @@ public:
 		if (!RunSIFTOnImage(img.ID, input, keys, descs))
 			return false;
 		StoreFeatures(img, input.size(), keys, descs, skipIO);
-		return !img.keypoints.empty();
+		return true;
 	}
 
 	// Bulk driver: pipelines image decoding and post-processing around the
@@ -746,7 +746,8 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 		}
 	}
 	cv::vconcat(vecDescriptors, image.descriptors);
-	return FinishImage(image, skipIO);
+	FinishImage(image, skipIO);
+	return true;
 }
 
 bool FeaturesExtractor::NeedsExtraction(const Image& image) const
@@ -765,7 +766,7 @@ bool FeaturesExtractor::ImportImage(Image& image) const
 	return true;
 }
 
-bool FeaturesExtractor::FinishImage(Image& image, bool skipIO) const
+void FeaturesExtractor::FinishImage(Image& image, bool skipIO) const
 {
 	if (config.releaseImagePixels)
 		image.ReleasePixels(); // free pixel memory after feature extraction
@@ -773,7 +774,6 @@ bool FeaturesExtractor::FinishImage(Image& image, bool skipIO) const
 		image.ID, image.keypoints.size(), FeatureTypeToString(config.detectorType).c_str(), image.pCamera->GetFocalLength(), image.TrustIntrinsics() ? "" : "*");
 	if (!skipIO && !config.exportOpenMVGDir.empty())
 		ExportFeaturesOpenMVG(config.exportOpenMVGDir, image);
-	return !image.keypoints.empty();
 }
 
 cv::Mat FeaturesExtractor::ConvertToRootSIFT(const cv::Mat& siftDesc)
@@ -874,7 +874,7 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 		// RootSIFT, response normalization, SiftGPU dispatch) runs on this face
 		// via the same code path a real pinhole image takes — no duplication.
 		if (!ExtractImage(faceImage, detector, /*skipIO=*/true))
-			continue;
+			return false;
 
 		// Reproject face keypoints onto the equirectangular image.
 		const Matrix3x3 R_face_T = geom.rotations[k].t();
@@ -954,7 +954,8 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 	}
 	cv::vconcat(descRows, image.descriptors);
 	DEBUG_ULTIMATE("Extracted features for image % 4u from %d cubemap faces of %d px", image.ID, numFaces, faceSize);
-	return FinishImage(image, skipIO);
+	FinishImage(image, skipIO);
+	return true;
 }
 /*----------------------------------------------------------------*/
 
