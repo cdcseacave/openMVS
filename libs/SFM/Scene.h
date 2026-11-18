@@ -71,7 +71,7 @@ struct SFM_API ReconstructionConfig {
 	// Feature extraction configuration
 	FeatureExtractionConfig featuresCfg;
 
-	// ROMA2 configuration
+	// dense matcher configuration
 	DenseMatchConfig denseCfg;
 
 	// Matching parameters (will be translated to MatchConfig)
@@ -323,14 +323,14 @@ public:
 	/**
 	 * @brief Match image pairs to find correspondences
 	 * @param config Matching configuration
-	 * @param denseCfg In-process ROMAv2 configuration
+	 * @param denseCfg In-process dense matcher configuration
 	 * @param vgConfig View-graph calibration configuration
 	 * @return true if matching completed successfully
 	 */
 	bool MatchPairs(const MatchConfig& config, const DenseMatchConfig& denseCfg = DenseMatchConfig(), const ViewGraphCalibratorConfig& vgConfig = ViewGraphCalibratorConfig());
 
 	/**
-	 * @brief Describe every image with the in-process ROMAv2 model and pool the result into
+	 * @brief Describe every image with the in-process dense matcher and pool the result into
 	 * each image's global retrieval descriptor (a no-op returning true if the scene is already
 	 * marked GLOBAL_DESCRIPTORS). Sets the flag only once every image was successfully described.
 	 * @param matcher an already-loaded dense matcher (RoMa2Onnx or FlexGlueMatcher)

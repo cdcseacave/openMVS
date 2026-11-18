@@ -623,7 +623,7 @@ bool PairsMatcher::DecomposeFundamentalToPose(const Image& img1, const Image& im
 	return true;
 }
 
-// Whether a pair was matched by the RoMa2 one pass: it carries a dense segment, or either image
+// Whether a pair was matched by the dense one pass: it carries a dense segment, or either image
 // carries dense keypoints. The one pass is their only producer, and a scene it matched holds no
 // descriptor-matched pair (there is no union of the two), so such a pair is re-verified the way it
 // was assembled; a pair whose fill drew nothing in a scene of descriptor pairs cannot exist.
@@ -652,7 +652,7 @@ unsigned PairsMatcher::ComputeRelativePoses(bool onlyTrustedIntrinsics, bool onl
 			return;
 		if (!updatedCameras.empty() && updatedCameras.count(img1.pCamera) == 0 && updatedCameras.count(img2.pCamera) == 0)
 			return;
-		// Recompute relative pose with the new intrinsics: a pair the RoMa2 one pass matched through
+		// Recompute relative pose with the new intrinsics: a pair the dense one pass matched through
 		// the fit and classification it was assembled with, which keep its sparse and dense segments
 		// apart (GeometricFilter over all its matches holds the dense samples to the descriptor
 		// estimator at full weight, keeps one that fails as an outlier, and without the strict filter
@@ -2213,12 +2213,12 @@ unsigned PairsMatcher::Match(bool& bFatal)
 	}
 	ASSERT(!pairsToMatch.empty());
 
-	// Run a matching round, in one of its two shapes: the ROMAv2 one pass when the dense matcher
+	// Run a matching round, in one of its two shapes: the dense one pass when the dense matcher
 	// is enabled, otherwise the descriptor round -- pre-match filter if requested, GPU-friendly
 	// ordering, then parallel feature matching and geometric verification of all the candidates
 	MatchStats stats;
 	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption) {
-		// One-pass dense pair matching (opt-in): the whole round is the ROMAv2 pass, which judges
+		// One-pass dense pair matching (opt-in): the whole round is the dense pass, which judges
 		// every candidate from its bidirectional warp alone, guides the sparse matching of the
 		// admitted ones through that warp, fills them densely and stores them. A pair the warp
 		// rejects is dropped: there is no descriptor-matching round to fall back to, and no union

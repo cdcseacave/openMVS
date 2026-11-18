@@ -41,7 +41,7 @@ namespace SFM {
 // Forward declarations
 class SFM_API Scene;
 
-// Dense correspondence maps of an image pair in ONE direction, as produced by the ROMAv2 coarse
+// Dense correspondence maps of an image pair in ONE direction, as produced by the dense matcher's coarse
 // matcher: one cell per warp grid position of the source image, holding where that cell lands in
 // the target image and how confident the model is that both images see it
 struct SFM_API WarpMaps {
@@ -290,7 +290,7 @@ SFM_API size_t SampleWarpComplementary(
 	std::vector<Point2f>& sampledB,
 	std::vector<float>& confidences);
 
-// Append one pair's dense (ROMAv2 warp) correspondences to the scene, alongside the sparse matches
+// Append one pair's dense (warp) correspondences to the scene, alongside the sparse matches
 // the pair already carries. Each correspondence becomes one keypoint at the end of each image's
 // keypoint array -- past its described prefix, which is closed here if it was still open -- and one
 // match between the two. pointsA/pointsB/confidences are index-parallel and in the pixels of the

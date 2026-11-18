@@ -79,7 +79,7 @@ public:
 	//                                                             correspondences that passed the
 	//                                                             strict filter -- track-forming,
 	//                                                             and the pair's DESCRIPTOR EVIDENCE
-	//   [numFilteredInliers, numFilteredInliers+numDenseInliers)   the dense (ROMAv2 warp) supplement
+	//   [numFilteredInliers, numFilteredInliers+numDenseInliers)   the dense (warp) supplement
 	//                                                             -- track-forming, but no evidence
 	//                                                             of the pair's authority
 	//   [numFilteredInliers+numDenseInliers, matches.size())       RANSAC inliers the strict filter
@@ -234,7 +234,7 @@ public:
 		ASSERT(numFilteredInliers >= 0 || numDenseInliers == 0);
 		return numFilteredInliers >= 0 ? (unsigned)numFilteredInliers : GetNumInliers();
 	}
-	// Number of dense (ROMAv2 warp) supplement matches, the second segment of `matches`
+	// Number of dense (warp) supplement matches, the second segment of `matches`
 	unsigned GetNumDenseInliers() const {
 		// The partition must describe ranges of `matches` that exist. Asserted at the READER rather
 		// than only at the writers that maintain it, because the four union consumers (BuildTracks
@@ -266,7 +266,7 @@ public:
 	}
 
 	// Debug-only invariant check on the `matches` partition: no match in the sparse segment
-	// [0, GetNumFilteredInliers()) may have a dense (ROMAv2 warp) endpoint, since a descriptor match
+	// [0, GetNumFilteredInliers()) may have a dense (warp) endpoint, since a descriptor match
 	// is described at both ends on every path that produces one and the keypoint filter's
 	// described-wins rule never moves a described keypoint onto a dense one. Compiled out of release
 	// builds. Deliberately ONE-DIRECTIONAL: the converse is false by design, because

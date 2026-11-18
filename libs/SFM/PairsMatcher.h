@@ -212,7 +212,7 @@ public:
 		const Image& img2,
 		ImagePair& pair) const;
 
-	// The same estimator at a caller-chosen epipolar tolerance, in pixels: the ROMA2 verdict fits
+	// The same estimator at a caller-chosen epipolar tolerance, in pixels: the dense verdict fits
 	// warp cells, which can only claim half a warp cell of accuracy, and demanding the descriptor
 	// path's sub-pixel precision of them would reject the true pairs along with the false ones
 	// (DenseWarp.h, WarpTolerance). The branch choice (SelectGeometryBranch), the strict filters and
@@ -247,12 +247,12 @@ public:
 	//  - updatedCameras: if non-empty, only pairs involving these cameras are updated.
 	//  - onlyTrustedIntrinsics: if true, only updates pairs where both cameras have trusted intrinsics.
 	//  - onlyComputeIfMissing: if true, only computes relative pose for pairs missing it.
-	// A pair the RoMa2 one pass matched is re-verified by ReverifyPairDense, keeping its sparse and
+	// A pair the dense one pass matched is re-verified by ReverifyPairDense, keeping its sparse and
 	// dense segments apart; any other pair by GeometricFilter.
 	// Returns number of pairs updated.
 	unsigned ComputeRelativePoses(bool onlyTrustedIntrinsics = true, bool onlyComputeIfMissing = true, const std::unordered_set<CameraPtr>& updatedCameras = {});
 
-	// Attach the in-process ROMAv2 model and its configuration for the dense one-pass matching
+	// Attach the in-process dense matcher and its configuration for the dense one-pass matching
 	// path (MatchPairsDense); model may be NULL if denseCfg leaves that path disabled.
 	void SetDense(DenseMatcher* model, const DenseMatchConfig& cfg);
 
@@ -385,7 +385,7 @@ private:
 	// built for VOCABULARY (lazy initialization)
 	std::unique_ptr<GlobalDescriptors> globalDescriptors;
 
-	// In-process ROMAv2 model and its configuration (NULL/defaults unless SetDense was called)
+	// In-process dense matcher and its configuration (NULL/defaults unless SetDense was called)
 	DenseMatcher* denseMatcher = NULL;
 	DenseMatchConfig denseCfg;
 

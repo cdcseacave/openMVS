@@ -85,7 +85,7 @@ bool PrepareImageDense(Image& img, const DenseMatcher& matcher, PlanarImage& pla
 
 // Pipelines image load+preprocess on the thread pool while the calling thread runs the ONNX
 // Runtime call for the previously prepared buffer (the SiftGPU bulk-driver pattern,
-// FeaturesExtractor.cpp:113-153, applied to ROMA2). Fixed-size ring of `capacity` planar
+// FeaturesExtractor.cpp:113-153, applied to the dense matcher). Fixed-size ring of `capacity` planar
 // buffers keyed by *submission order*, not by image: Submit(image) schedules a pool task
 // writing into buffer `numSubmitted++ % capacity`, and Take() blocks on the oldest
 // still-outstanding submission and hands back the buffer it filled (NULL if it could not).
@@ -328,7 +328,7 @@ struct WarpPassStats {
 // matcher it may use.
 typedef std::function<void(size_t idxPair, const PairIdx& pair, PairOutput& output, unsigned threadIdx)> WarpConsumer;
 
-// Drive the ROMAv2 coarse-match graph over the given pairs, handing each pair's bidirectional warp
+// Drive the dense matcher's coarse-match graph over the given pairs, handing each pair's bidirectional warp
 // to the thread pool: plan the device slots (Belady over the pairs in (ID1,ID2) order), pipeline the
 // image load+preprocess on the pool while this thread runs Describe and MatchCoarse, and detach one
 // `consume` task per warped pair. Both directions come out of the SAME MatchCoarse call, so only the
@@ -1070,7 +1070,7 @@ unsigned SFM::SwitchPlanarTwinsDense(PairsMatcher& pairsMatcher, const DenseMatc
 	const auto IsDensePair = [&](const ImagePair& pair) {
 		return pair.GetNumDenseInliers() > 0 || scene.images[pair.ID1].HasDenseKeypoints() || scene.images[pair.ID2].HasDenseKeypoints();
 	};
-	// 1) the twin of every posed, plane-dominated RoMa2 pair
+	// 1) the twin of every posed, plane-dominated dense pair
 	std::vector<ImagePair> twins(scene.pairs.size());
 	std::vector<uint8_t> hasTwin(scene.pairs.size(), 0);
 	std::atomic<unsigned> numPlanar{0};

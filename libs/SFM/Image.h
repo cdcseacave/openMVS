@@ -34,7 +34,7 @@ public:
 
 	// Feature data
 	// keypoints holds the described keypoints first -- the detector's own detections, one
-	// descriptor row each -- and, past that prefix, the dense keypoints: ROMAv2 warp samples
+	// descriptor row each -- and, past that prefix, the dense keypoints: warp samples
 	// appended by the dense supplementation pass, which carry no descriptor. So
 	// keypoints.size() >= NumDescribedKeypoints() == descriptors.rows, and there is no separate
 	// keypoint structure: a keypoint index alone says which kind it is (IsDenseKeypoint).
@@ -50,8 +50,8 @@ public:
 	uint32_t numDescribedKeypoints = NO_ID;
 
 	// Optional 1xD CV_32F L2-normalized global retrieval descriptor of the whole image
-	// (GeM-pooled DINOv3 features from the ROMAv2 describe graph); empty unless the
-	// ROMAv2 retrieval pass ran, in which case it ranks the candidate pairs
+	// (pooled features from the dense matcher's describe graph); empty unless the
+	// dense retrieval pass ran, in which case it ranks the candidate pairs
 	cv::Mat globalDescriptor;
 
 	// Additional metadata
@@ -181,7 +181,7 @@ public:
 	// prefix, since every caller pairs the returned index with a descriptor row
 	UnsignedArr SelectTopKeypoints(unsigned maxKeypoints) const;
 
-	// Build the keypoint standing for one dense (ROMAv2 warp) correspondence sample.
+	// Build the keypoint standing for one dense (warp) correspondence sample.
 	// The response/size convention the weighting functions below then see:
 	//  - response = the warp confidence at that sample, which is the only per-sample quality the
 	//    warp offers; it lands in [DenseMatchConfig::minConfidence, 1], well above the response of a

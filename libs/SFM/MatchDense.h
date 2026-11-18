@@ -225,7 +225,7 @@ SFM_API bool AssemblePairDense(const PairsMatcher& pairsMatcher, const Image& im
 	const PairVerdict& verdict, const std::vector<DMatch>& guided, const DenseMatchConfig& config, int warpSize,
 	ImagePair& pair, DenseMatches& dense);
 
-// The fit and the classification of one RoMa2 pair's correspondences, shared by the assembly at
+// The fit and the classification of one dense pair's correspondences, shared by the assembly at
 // matching (AssemblePairDense) and the re-verification of a stored pair (ReverifyPairDense): ONE
 // geometry fitted on sparse u dense through pairsMatcher.GeometricFilter at the matcher's
 // maxEpipolarError on temporary Image copies whose keypoints are those correspondences, polished by
@@ -247,7 +247,7 @@ SFM_API bool FitAndClassifyPairDense(const PairsMatcher& pairsMatcher, const Ima
 	const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA, const std::vector<Point2f>& densePointsB,
 	const DenseMatchConfig& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept, bool bFit = true);
 
-// Re-verify a stored RoMa2 pair through its cameras as they are now (a lens fitted, a focal
+// Re-verify a stored dense pair through its cameras as they are now (a lens fitted, a focal
 // calibrated), the way it was assembled: its sparse candidates -- the sparse segment, any RANSAC
 // inlier a strict filter rejected, and the outliers -- and its dense segment go through
 // FitAndClassifyPairDense, on a geometry fitted to them afresh; a match with a dense end outside
@@ -264,7 +264,7 @@ SFM_API bool FitAndClassifyPairDense(const PairsMatcher& pairsMatcher, const Ima
 SFM_API void ReverifyPairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
 	const DenseMatchConfig& config, ImagePair& pair, bool bRefit = true);
 
-// The planar twin of a RoMa2 pair: a homography fitted (RANSAC, 2000 iterations, on the cameras'
+// The planar twin of a dense pair: a homography fitted (RANSAC, 2000 iterations, on the cameras'
 // normalized planes, at the angular equivalent of the matches' classification bar maxEpipolarError)
 // on the pair's track-forming matches; `share` is the part of them it explains. When that is at
 // least config.twinMinPlaneShare, the physically valid decompositions of the homography (90% of
@@ -277,7 +277,7 @@ SFM_API bool PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA
 	const DenseMatchConfig& config, const ImagePair& pair, ImagePair& twin, float& share);
 
 // The planar twin switch, once every pair is verified (after the lens fit) and before anything
-// reads the poses: the candidates are the posed RoMa2 pairs with a planar twin (PlanarTwinDense);
+// reads the poses: the candidates are the posed dense pairs with a planar twin (PlanarTwinDense);
 // a triangle is a candidate (a,b) and an image c with (a,c) and (b,c) posed, and it closes when its
 // rotation loop is within config.twinMaxLoopAngle degrees. The gain of a candidate is the number of
 // its triangles that close after switching it minus before, every other pair at its current pose

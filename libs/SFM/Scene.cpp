@@ -687,7 +687,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const DenseMatchConfig& denseC
 	if (!CalibrateFocalsAndFitLenses(pairsMatcher, vgConfig))
 		return false;
 
-	// a plane-dominated RoMa2 pair keeps the planar twin its rotation loops prefer (SwitchPlanarTwinsDense): after the
+	// a plane-dominated dense pair keeps the planar twin its rotation loops prefer (SwitchPlanarTwinsDense): after the
 	// last refit of the pairs (the lens fit's), before anything reads their poses (FilterViewGraph
 	// recomputes the pair weights first)
 	SwitchPlanarTwinsDense(pairsMatcher, denseCfg);
