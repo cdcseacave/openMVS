@@ -1131,72 +1131,6 @@ bool MVS::SyntheticDepthBaselineTest()
 }
 /*----------------------------------------------------------------*/
 
-// the cost of scoring one plane hypothesis at one pixel against one view, through the PatchMatch
-// estimator of the reference model: ns per ScorePixel of the GT plane over the reference pixels whose
-// patch the target sees whole (score below thRobust), each pixel prepared once and scored rounds times
-template<template<typename> class MODEL>
-static double SynthScoreBench(const SynthView& ref, const SynthView& trg, unsigned rounds, size_t& numPixels)
-{
-	Image images[2];
-	DepthData depthData;
-	const SynthView* views[2] = {&ref, &trg};
-	for (int i = 0; i < 2; ++i) {
-		const SynthView& view = *views[i];
-		Image& image = images[i];
-		image.ID = i;
-		image.poseID = 0;
-		image.model = view.camera.model;
-		image.width = view.camera.width;
-		image.height = view.camera.height;
-		image.camera.K = view.camera.GetK();
-		image.camera.R = view.camera.R;
-		image.camera.C = view.camera.C;
-		image.camera.ComposeP();
-		DepthData::ViewData& viewData = depthData.images.AddEmpty();
-		viewData.scale = 1;
-		viewData.pImageData = &image;
-		viewData.camera = image.camera;
-		Image8U gray;
-		cv::cvtColor(view.image, gray, cv::COLOR_BGR2GRAY);
-		gray.convertTo(viewData.image, CV_32F, 1.0/255.0);
-	}
-	depthData.images[1].Init(depthData.images[0].camera);
-	const cv::Size size(ref.camera.width, ref.camera.height);
-	depthData.depthMap.create(size); depthData.normalMap.create(size); depthData.confMap.create(size);
-	depthData.dMin = 0.1f; depthData.dMax = 100.f;
-	DepthEstimatorBase::WeightMap weightMap;
-	weightMap.resize(size.area());
-	DepthEstimatorBase::MapRefArr coords;
-	volatile Thread::safe_t idxPixel(-1);
-	std::unique_ptr<DepthEstimatorBase::PixelPending[]> pending(new DepthEstimatorBase::PixelPending[size.area()]);
-	DepthEstimatorT<MODEL> estimator(0, depthData, idxPixel, pending.get(), weightMap, coords);
-	// the reference pixels seen whole by the target
-	std::vector<ImageRef> pixels;
-	for (int r = DepthEstimatorBase::nSizeHalfWindow; r < size.height-DepthEstimatorBase::nSizeHalfWindow; r += 2) {
-		for (int c = DepthEstimatorBase::nSizeHalfWindow; c < size.width-DepthEstimatorBase::nSizeHalfWindow; c += 2) {
-			const ImageRef x(c, r);
-			if (!estimator.PreparePixelPatch(x) || !estimator.FillPixelPatch())
-				continue;
-			if (estimator.ScorePixel(ref.depthMap(x), ref.normalMap(x)) < estimator.thRobust)
-				pixels.push_back(x);
-		}
-	}
-	numPixels = pixels.size();
-	if (pixels.empty())
-		return 0;
-	float sum(0);
-	const auto t0(std::chrono::steady_clock::now());
-	for (const ImageRef& x: pixels) {
-		estimator.PreparePixelPatch(x);
-		estimator.FillPixelPatch();
-		for (unsigned round = 0; round < rounds; ++round)
-			sum += estimator.ScorePixel(ref.depthMap(x), ref.normalMap(x));
-	}
-	const double seconds(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
-	ASSERT(sum >= 0);
-	return seconds*1e9/(double(rounds)*pixels.size());
-}
-
 bool MVS::SyntheticSphericalTest()
 {
 	TD_TIMER_START();
@@ -2005,13 +1939,15 @@ bool MVS::BrownUndistortOnLoadTest()
 			return text.substr(begin, text.find('"', begin) - begin);
 		};
 		const Image& imageData = scene.images[0];
-		double focal, cx, cy;
+		double focal, cx, cy, pitchX, pitchY;
 		std::istringstream(Attribute("FocalMm")) >> focal;
+		std::istringstream(Attribute("PixelSizeMm")) >> pitchX >> pitchY;
 		std::istringstream(Attribute("CenterPx")) >> cx >> cy;
 		Image8U3 raster, pixels;
-		if (!raster.Load(MAKE_PATH_FULL(WORKING_FOLDER_FULL, String(Attribute("fileName")))) || imageData.ReadPixels(pixels) == NULL ||
+		if (!raster.Load(tmpDir(String(Attribute("fileName")))) || imageData.ReadPixels(pixels) == NULL ||
 			raster.size() != imageData.GetSize() || cv::norm(raster, pixels, cv::NORM_INF) != 0 ||
-			!(std::abs(focal - imageData.camera.K(0,0)) < 1e-3) ||
+			!(std::abs(focal/pitchX - imageData.camera.K(0,0)) < 1e-3) ||
+			!(std::abs(focal/pitchY - imageData.camera.K(1,1)) < 1e-3) ||
 			!(std::abs(cx - imageData.camera.K(0,2)) < 1e-3) || !(std::abs(cy - imageData.camera.K(1,2)) < 1e-3)) {
 			VERBOSE("ERROR: BrownUndistortOnLoadTest: the MeshLab raster does not hold the pixels of its camera");
 			return false;
@@ -2062,16 +1998,6 @@ String ArgPath(LPCTSTR arg)
 	return Util::getFullPath(path);
 }
 
-// sets DepthEstimatorBase::fSphericalWarpMaxElevation from the optional argument i while it lives
-struct ScopedMaxElevation {
-	const float prev;
-	ScopedMaxElevation(int argc, LPCTSTR* argv, int i) : prev(DepthEstimatorBase::fSphericalWarpMaxElevation) {
-		if (i < argc)
-			DepthEstimatorBase::fSphericalWarpMaxElevation = (float)std::atof(argv[i]);
-	}
-	~ScopedMaxElevation() { DepthEstimatorBase::fSphericalWarpMaxElevation = prev; }
-};
-
 bool ValidPanoramas(int panoWidth, unsigned numPanos)
 {
 	if (panoWidth > 0 && panoWidth % 8 == 0 && numPanos >= 2 && numPanos <= 5)
@@ -2114,60 +2040,17 @@ bool ToolSynth(int argc, LPCTSTR* argv)
 	return true;
 }
 
-// scorebench <verbosity> [panoWidth] [rounds] [maxElevation] [faceWidth]: ns per ScorePixel against one
-// view, panorama 3 against panorama 4 and each cube face of 3 against the same face of 4 (faceWidth
-// panoWidth/sqrt(2) compares at the same image size)
-bool ToolScoreBench(int argc, LPCTSTR* argv)
-{
-	const int panoWidth(ArgInt(argc, argv, 2, 1536));
-	const unsigned rounds((unsigned)ArgInt(argc, argv, 3, 4));
-	const ScopedMaxElevation maxElevation(argc, argv, 4);
-	const int faceWidth(ArgInt(argc, argv, 5, panoWidth/4));
-	OPTDENSE::init();
-	OPTDENSE::update();
-	SynthConfig config(SynthMiddleConfig(panoWidth, 2, false));
-	config.supersample = 1;
-	SynthViewArr panos;
-	SynthGenerate(config, panos);
-	config.panoWidth = faceWidth*4;
-	config.spherical = false;
-	config.faces = true;
-	SynthViewArr faces;
-	SynthGenerate(config, faces);
-	// alternate the two measurements and keep the fastest of each, the machine being shared
-	double nsSphereMin(DBL_MAX), nsFacesMin(DBL_MAX);
-	for (int repeat = 0; repeat < 5; ++repeat) {
-		size_t numPixels;
-		const double nsSphere(SynthScoreBench<Spherical>(panos[0], panos[1], rounds, numPixels));
-		double nsFaces(0); size_t numFacePixels(0);
-		for (int f = 0; f < 6; ++f) {
-			size_t n;
-			const double ns(SynthScoreBench<Pinhole>(faces[f], faces[6+f], rounds, n));
-			nsFaces += ns*n;
-			numFacePixels += n;
-		}
-		nsFaces /= numFacePixels;
-		VERBOSE("scorebench: panorama %dx%d %.1f ns over %zu pixels, faces %dx%d %.1f ns over %zu pixels",
-			panoWidth, panoWidth/2, nsSphere, numPixels, faceWidth, faceWidth, nsFaces, numFacePixels);
-		nsSphereMin = MINF(nsSphereMin, nsSphere);
-		nsFacesMin = MINF(nsFacesMin, nsFaces);
-	}
-	VERBOSE("scorebench: spherical %.1f ns, pinhole faces %.1f ns per ScorePixel (one view): ratio %.3f", nsSphereMin, nsFacesMin, nsSphereMin/nsFacesMin);
-	return true;
-}
-
-// sphtest <verbosity> [panoWidth] [numPanos] [faces] [maxElevation] [maxViews] [maxThreads] [gpu]: PatchMatch on
+// sphtest <verbosity> [panoWidth] [numPanos] [faces] [maxViews] [maxThreads] [gpu]: PatchMatch on
 // panoramas and on their cube faces, the depth-maps scored per band
 bool ToolSphTest(int argc, LPCTSTR* argv)
 {
 	const int panoWidth(ArgInt(argc, argv, 2, 512));
 	const unsigned numPanos((unsigned)ArgInt(argc, argv, 3, 3));
 	const bool faces(ArgInt(argc, argv, 4, 1) != 0);
-	const ScopedMaxElevation maxElevation(argc, argv, 5);
 	SynthDenseOptions options;
-	options.maxViews = (unsigned)ArgInt(argc, argv, 6, 0);
-	options.maxThreads = (unsigned)ArgInt(argc, argv, 7, 0);
-	options.gpu = ArgInt(argc, argv, 8, 0) != 0;
+	options.maxViews = (unsigned)ArgInt(argc, argv, 5, 0);
+	options.maxThreads = (unsigned)ArgInt(argc, argv, 6, 0);
+	options.gpu = ArgInt(argc, argv, 7, 0) != 0;
 	if (options.gpu && !SynthGPUAvailable()) {
 		std::printf("error: no GPU\n");
 		return false;
@@ -2393,51 +2276,6 @@ bool ToolFaceScene(int argc, LPCTSTR* argv)
 	return true;
 }
 
-// undistortbench <scene.mvs> [numImages]: the load cost of the undistortion over the first numImages images
-// undistorted on read: the file decode and the remap ReadPixels adds to it, timed apart; the first image of
-// a camera also builds its maps
-bool ToolUndistortBench(int argc, LPCTSTR* argv)
-{
-	const String fileName(ArgPath(argv[1]));
-	const ScopedWorkingFolder workingFolder(Util::getFilePath(fileName));
-	Scene scene;
-	if (scene.Load(fileName) == Scene::SCENE_NA)
-		return false;
-	const unsigned numImages((unsigned)ArgInt(argc, argv, 2, 8));
-	typedef std::chrono::steady_clock Clock;
-	const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double,std::milli>(b - a).count(); };
-	double decodeMs(0), remapMs(0), mapsMs(0);
-	unsigned n(0);
-	for (const Image& imageData: scene.images) {
-		if (n == numImages)
-			break;
-		if (!imageData.IsUndistortedOnRead())
-			continue;
-		Image8U3 pixels, undistorted;
-		const Clock::time_point t0(Clock::now());
-		if (Image::ReadImage(imageData.name, pixels) == NULL)
-			return false;
-		const Clock::time_point t1(Clock::now());
-		const std::shared_ptr<const CameraUndistortMaps> maps(imageData.GetUndistortMaps());
-		const Clock::time_point t2(Clock::now());
-		maps->Remap(pixels, undistorted, cv::INTER_LINEAR);
-		const Clock::time_point t3(Clock::now());
-		VERBOSE("image %u %dx%d: decode %.1f ms, maps %.1f ms, remap %.1f ms", imageData.ID, pixels.width(), pixels.height(),
-			ms(t0, t1), ms(t1, t2), ms(t2, t3));
-		decodeMs += ms(t0, t1);
-		mapsMs += ms(t1, t2);
-		remapMs += ms(t2, t3);
-		++n;
-	}
-	if (n == 0) {
-		VERBOSE("error: no image undistorted on read");
-		return false;
-	}
-	VERBOSE("%u images undistorted on read: decode %.1f ms/image, remap %.1f ms/image, maps %.1f ms in total",
-		n, decodeMs/n, remapMs/n, mapsMs);
-	return true;
-}
-
 // add one GT/estimate pair to evaluator; a missing estimate counts as no estimate, a GT of another
 // resolution is sampled at the nearest pixel of each estimated pixel center; the model only selects the
 // bands: spherical if named so, or if not named and the GT camera matrix is the equirectangular one
@@ -2515,14 +2353,12 @@ bool MVS::SynthTool(int argc, LPCTSTR* argv)
 	static const Mode modes[] = {
 		{_T("synth"), 2, ToolSynth, _T("<outDir> [panoWidth=512]")},
 		{_T("mixtest"), 1, ToolMixTest, _T("<verbosity> [gpu=0]")},
-		{_T("sphtest"), 1, ToolSphTest, _T("<verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation: exact warp above, degrees] [maxViews] [maxThreads] [gpu=0]")},
+		{_T("sphtest"), 1, ToolSphTest, _T("<verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxViews] [maxThreads] [gpu=0]")},
 		{_T("conftest"), 1, ToolConfTest, _T("<verbosity>")},
 		{_T("sphfuse"), 1, ToolSphFuse, _T("<verbosity> [panoWidth=512] [numPanos=3] [faces=1 (0: none, 1: apart, 2: with the panoramas)] [fusionFilter=2] [maxThreads]")},
-		{_T("scorebench"), 1, ToolScoreBench, _T("<verbosity> [panoWidth=1536] [rounds=4] [maxElevation] [faceWidth=panoWidth/4]")},
 		{_T("evaldepth"), 3, ToolEvalDepth, _T("<gt.dmap|gtFolder> <est.dmap|estFolder> [pinhole|spherical, default from the GT camera matrix]")},
 		{_T("evalcloud"), 3, ToolEvalCloud, _T("<cloud.ply|scene.mvs> <gtFolder> [evalWidth=GT width] [th1%=1 th2%=2 th3%=5]")},
 		{_T("facescene"), 5, ToolFaceScene, _T("<scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize=panoWidth/sqrt(12)]")},
-		{_T("undistortbench"), 2, ToolUndistortBench, _T("<scene.mvs> [numImages=8]")},
 	};
 	const String name(argv[0]);
 	for (const Mode& mode: modes)

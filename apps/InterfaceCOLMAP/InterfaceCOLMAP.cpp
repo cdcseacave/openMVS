@@ -261,7 +261,6 @@ struct Camera {
 	String model; // camera model name
 	uint32_t width = 0, height = 0; // camera resolution
 	std::vector<REAL> params; // camera parameters
-	uint64_t numCameras{0}; // only for binary format
 
 	Camera() {}
 	Camera(uint32_t _ID) : ID(_ID) {}
@@ -328,11 +327,6 @@ struct Camera {
 	bool ReadBIN(std::istream& stream) {
 		if (stream.peek() == EOF)
 			return false;
-
-		if (numCameras == 0) {
-			// Read the first entry in the binary file
-			numCameras = ReadBinaryLittleEndian<uint64_t>(&stream);
-		}
 
 		ID = ReadBinaryLittleEndian<camera_t>(&stream);
 		const int modelIdx(ReadBinaryLittleEndian<int>(&stream));
@@ -402,12 +396,6 @@ struct Camera {
 	}
 
 	bool WriteBIN(std::ostream& stream) {
-		if (numCameras != 0) {
-			// Write the first entry in the binary file
-			WriteBinaryLittleEndian<uint64_t>(&stream, numCameras);
-			numCameras = 0;
-		}
-
 		WriteBinaryLittleEndian<camera_t>(&stream, ID);
 		const uint32_t modelIdx(ModelIndex(model));
 		ASSERT(modelIdx != NO_ID && params.size() == mapCameraModelNumParams[modelIdx]);
@@ -424,7 +412,7 @@ typedef std::vector<Camera> Cameras;
 struct Image {
 	struct Proj {
 		Eigen::Vector2f p;
-		uint32_t idPoint = NO_ID;
+		point3D_t idPoint = std::numeric_limits<point3D_t>::max();
 	};
 	uint32_t ID = NO_ID; // ID of the image
 	Eigen::Quaterniond q; // rotation
@@ -432,7 +420,6 @@ struct Image {
 	uint32_t idCamera = NO_ID; // ID of the associated camera
 	String name; // image file name
 	std::vector<Proj> projs; // known image projections
-	uint64_t numRegImages{0}; // only for binary format
 
 	Image() {}
 	Image(uint32_t _ID) : ID(_ID) {}
@@ -460,18 +447,18 @@ struct Image {
 		in  >> ID
 			>> q.w() >> q.x() >> q.y() >> q.z()
 			>> t(0) >> t(1) >> t(2)
-			>> idCamera >> name;
+			>> idCamera;
+		std::getline(in >> std::ws, name);
 		if (in.fail())
 			return false;
 		Util::ensureValidPath(name);
 		if (!NextLine(stream, in, false))
 			return false;
 		projs.clear();
-		while (true) {
+		while ((in >> std::ws).peek() != EOF) {
 			Proj proj;
-			in >> proj.p(0) >> proj.p(1) >> (int&)proj.idPoint;
-			if (in.fail())
-				break;
+			if (!(in >> proj.p(0) >> proj.p(1) >> proj.idPoint))
+				return false;
 			projs.emplace_back(proj);
 		}
 		return true;
@@ -483,11 +470,6 @@ struct Image {
 		if (stream.peek() == EOF)
 			return false;
 
-		if (!numRegImages) {
-			// Read the first entry in the binary file
-			numRegImages = ReadBinaryLittleEndian<uint64_t>(&stream);
-		}
-
 		ID = ReadBinaryLittleEndian<image_t>(&stream);
 		q.w() = ReadBinaryLittleEndian<double>(&stream);
 		q.x() = ReadBinaryLittleEndian<double>(&stream);
@@ -498,23 +480,17 @@ struct Image {
 		t(2) = ReadBinaryLittleEndian<double>(&stream);
 		idCamera = ReadBinaryLittleEndian<camera_t>(&stream);
 
-		name = "";
-		while (true) {
-			char nameChar;
-			stream.read(&nameChar, 1);
-			if (nameChar == '\0')
-				break;
-			name += nameChar;
-		}
+		if (!std::getline(stream, name, '\0') || stream.eof())
+			return false;
 		Util::ensureValidPath(name);
 
 		const size_t numPoints2D = ReadBinaryLittleEndian<uint64_t>(&stream);
 		projs.clear();
-		for (size_t j = 0; j < numPoints2D; ++j) {
+		for (size_t j = 0; j < numPoints2D && stream; ++j) {
 			Proj proj;
 			proj.p(0) = (float)ReadBinaryLittleEndian<double>(&stream);
 			proj.p(1) = (float)ReadBinaryLittleEndian<double>(&stream);
-			proj.idPoint = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
+			proj.idPoint = ReadBinaryLittleEndian<point3D_t>(&stream);
 			projs.emplace_back(proj);
 		}
 		return true;
@@ -527,7 +503,12 @@ struct Image {
 			<< idCamera << _T(" ") << name
 			<< std::endl;
 		for (const Proj& proj: projs) {
-			out << proj.p(0) << _T(" ") << proj.p(1) << _T(" ") << (int)proj.idPoint << _T(" ");
+			out << proj.p(0) << ' ' << proj.p(1) << ' ';
+			if (proj.idPoint == std::numeric_limits<point3D_t>::max())
+				out << "-1";
+			else
+				out << proj.idPoint;
+			out << ' ';
 			if (out.fail())
 				return false;
 		}
@@ -536,12 +517,6 @@ struct Image {
 	}
 
 	bool WriteBIN(std::ostream& stream) {
-		if (numRegImages != 0) {
-			// Write the first entry in the binary file
-			WriteBinaryLittleEndian<uint64_t>(&stream, numRegImages);
-			numRegImages = 0;
-		}
-
 		WriteBinaryLittleEndian<image_t>(&stream, ID);
 
 		WriteBinaryLittleEndian<double>(&stream, q.w());
@@ -573,16 +548,13 @@ struct Point {
 		uint32_t idImage;
 		uint32_t idProj;
 	};
-	uint32_t ID = NO_ID; // ID of the point
+	point3D_t ID = std::numeric_limits<point3D_t>::max(); // ID of the point
 	Interface::Pos3f p; // position
 	Interface::Col3 c; // BGR color
 	float e = 0; // error
 	std::vector<Track> tracks; // point track
-	uint64_t numPoints3D{0}; // only for binary format
 
 	Point() {}
-	Point(uint32_t _ID) : ID(_ID) {}
-	bool operator < (const Image& rhs) const { return ID < rhs.ID; }
 
 	bool Read(std::istream& stream, bool binary) {
 		if (binary)
@@ -607,17 +579,16 @@ struct Point {
 			>> p.x >> p.y >> p.z
 			>> r >> g >> b
 			>> e;
+		if (in.fail())
+			return false;
 		c.x = CLAMP(b,0,255);
 		c.y = CLAMP(g,0,255);
 		c.z = CLAMP(r,0,255);
-		if (in.fail())
-			return false;
 		tracks.clear();
-		while (true) {
+		while ((in >> std::ws).peek() != EOF) {
 			Track track;
-			in >> track.idImage >> track.idProj;
-			if (in.fail())
-				break;
+			if (!(in >> track.idImage >> track.idProj))
+				return false;
 			tracks.emplace_back(track);
 		}
 		return !tracks.empty();
@@ -629,13 +600,8 @@ struct Point {
 		if (stream.peek() == EOF)
 			return false;
 
-		if (!numPoints3D) {
-			// Read the first entry in the binary file
-			numPoints3D = ReadBinaryLittleEndian<uint64_t>(&stream);
-		}
-
 		int r,g,b;
-		ID = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
+		ID = ReadBinaryLittleEndian<point3D_t>(&stream);
 		p.x = (float)ReadBinaryLittleEndian<double>(&stream);
 		p.y = (float)ReadBinaryLittleEndian<double>(&stream);
 		p.z = (float)ReadBinaryLittleEndian<double>(&stream);
@@ -649,7 +615,7 @@ struct Point {
 
 		const size_t trackLength = ReadBinaryLittleEndian<uint64_t>(&stream);
 		tracks.clear();
-		for (size_t j = 0; j < trackLength; ++j) {
+		for (size_t j = 0; j < trackLength && stream; ++j) {
 			Track track;
 			track.idImage = ReadBinaryLittleEndian<image_t>(&stream);
 			track.idProj = ReadBinaryLittleEndian<point2D_t>(&stream);
@@ -676,12 +642,6 @@ struct Point {
 
 	bool WriteBIN(std::ostream& stream) {
 		ASSERT(!tracks.empty());
-		if (numPoints3D != 0) {
-			// Write the first entry in the binary file
-			WriteBinaryLittleEndian<uint64_t>(&stream, numPoints3D);
-			numPoints3D = 0;
-		}
-
 		WriteBinaryLittleEndian<point3D_t>(&stream, ID);
 		WriteBinaryLittleEndian<double>(&stream, p.x);
 		WriteBinaryLittleEndian<double>(&stream, p.y);
@@ -716,26 +676,23 @@ struct Mat {
 	}
 
 	// See: colmap/src/mvs/mat.h
-	void Read(const std::string& path) {
-		std::streampos pos; {
-			std::fstream text_file(path, std::ios::in | std::ios::binary);
-			char unused_char;
-			text_file >> width_ >> unused_char >> height_ >> unused_char >> depth_ >>
-				unused_char;
-			pos = text_file.tellg();
-		}
-		data_.resize(width_ * height_ * depth_);
-		std::fstream binary_file(path, std::ios::in | std::ios::binary);
-		binary_file.seekg(pos);
-		ReadBinaryLittleEndian<T>(&binary_file, &data_);
-	}
-	void Write(const std::string& path) const {
-		{
-			std::fstream text_file(path, std::ios::out);
-			text_file << width_ << "&" << height_ << "&" << depth_ << "&";
-		}
-		std::fstream binary_file(path, std::ios::out | std::ios::binary | std::ios::app);
-		WriteBinaryLittleEndian<T>(&binary_file, data_);
+	bool Read(const std::string& path, size_t channels) {
+		ASSERT(channels == 1 || channels == 3);
+		std::ifstream file(path, std::ios::binary);
+		char x, y, z;
+		if (!(file >> width_ >> x >> height_ >> y >> depth_ >> z) ||
+			x != '&' || y != '&' || z != '&' || depth_ != channels || width_ == 0 || height_ == 0 ||
+			width_ > INT_MAX || height_ > INT_MAX || width_ > data_.max_size()/height_/channels)
+			return false;
+		const size_t count(width_*height_*channels);
+		const auto start = file.tellg();
+		file.seekg(0, std::ios::end);
+		if (!file || file.tellg()-start != (std::streamoff)(count*sizeof(T)))
+			return false;
+		file.seekg(start);
+		data_.resize(count);
+		ReadBinaryLittleEndian<T>(&file, &data_);
+		return bool(file);
 	}
 };
 } // namespace COLMAP
@@ -764,11 +721,35 @@ bool DetermineInputSource(const String& filenameTXT, const String& filenameBIN, 
 }
 
 
+template<class Record, class Consume>
+bool ReadRecords(std::istream& file, bool binary, Consume consume)
+{
+	ASSERT(file.good());
+	const uint64_t count = binary ? COLMAP::ReadBinaryLittleEndian<uint64_t>(&file) : std::numeric_limits<uint64_t>::max();
+	if (!file)
+		return false;
+	Record record;
+	for (uint64_t i = 0; i < count; ++i) {
+		if (!binary) {
+			while ((file >> std::ws).peek() == '#')
+				file.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+			if (file.eof())
+				return !file.bad();
+		}
+		if (!record.Read(file, binary))
+			return false;
+		if ((binary && !file) || !consume(record))
+			return false;
+	}
+	return true;
+}
+
 bool ImportScene(const String& strFolder, const String& strOutFolder, Interface& scene, PointCloud& pointcloud)
 {
 	// read camera list
 	typedef std::unordered_map<uint32_t,uint32_t> CamerasMap;
 	CamerasMap mapCameras;
+	std::vector<cv::Size> cameraSizes; // original raster sizes, including cameras exported with normalized K
 	{
 		const String filenameCamerasTXT(strFolder+COLMAP_CAMERAS_TXT);
 		const String filenameCamerasBIN(strFolder+COLMAP_CAMERAS_BIN);
@@ -782,17 +763,22 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 	
 		typedef std::unordered_map<COLMAP::Camera,uint32_t,COLMAP::Camera::CameraHash,COLMAP::Camera::CameraEqualTo> CamerasSet;
 		CamerasSet setCameras;
-		COLMAP::Camera colmapCamera;
-		while (file.good() && colmapCamera.Read(file, binary)) {
+		if (!ReadRecords<COLMAP::Camera>(file, binary, [&](const COLMAP::Camera& colmapCamera) {
+			if (colmapCamera.width == 0 || colmapCamera.height == 0 || colmapCamera.width > INT_MAX || colmapCamera.height > INT_MAX)
+				return false;
 			const auto setIt(setCameras.emplace(colmapCamera, (uint32_t)scene.platforms.size()));
-			mapCameras.emplace(colmapCamera.ID, setIt.first->second);
+			if (!mapCameras.emplace(colmapCamera.ID, setIt.first->second).second) {
+				VERBOSE("error: duplicate COLMAP camera %u", colmapCamera.ID);
+				return false;
+			}
 			if (!setIt.second) {
 				// reuse existing platform
-				continue;
+				return true;
 			}
 			// create new platform
 			Interface::Platform platform;
-			platform.name = String::FormatString(_T("platform%03u"), colmapCamera.ID); // only one camera per platform supported
+			platform.name = String::FormatString(_T("platform%03u"), colmapCamera.ID);
+			cameraSizes.emplace_back((int)colmapCamera.width, (int)colmapCamera.height);
 			Interface::Platform::Camera camera;
 			camera.name = colmapCamera.model;
 			if (!colmapCamera.ToInterface(camera)) {
@@ -808,7 +794,9 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			}
 			platform.cameras.emplace_back(camera);
 			scene.platforms.emplace_back(platform);
-		}
+			return true;
+		}))
+			return false;
 	}
 	if (mapCameras.empty()) {
 		VERBOSE("error: no valid cameras");
@@ -829,23 +817,28 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 		}
 		LOG_OUT() << "Reading images: " << filenameImages << std::endl;
 
-		COLMAP::Image imageColmap;
-		while (file.good() && imageColmap.Read(file, binary)) {
-			mapImages.emplace(imageColmap, (uint32_t)scene.images.size());
+		if (!ReadRecords<COLMAP::Image>(file, binary, [&](const COLMAP::Image& imageColmap) {
+			const auto itCam = mapCameras.find(imageColmap.idCamera);
+			if (itCam == mapCameras.end() || !mapImages.emplace(imageColmap, (uint32_t)scene.images.size()).second) {
+				VERBOSE("error: invalid camera or duplicate COLMAP image %u", imageColmap.ID);
+				return false;
+			}
 			Interface::Platform::Pose pose;
 			Eigen::Map<EMat33d>(pose.R.val) = imageColmap.q.toRotationMatrix();
 			EnsureRotationMatrix((Matrix3x3d&)pose.R);
 			Eigen::Map<EVec3d>(&pose.C.x) = -(imageColmap.q.inverse() * imageColmap.t);
 			Interface::Image image;
 			image.name = MAKE_PATH_REL(strOutFolder,OPT::strImageFolder+imageColmap.name);
-			image.platformID = mapCameras.at(imageColmap.idCamera);
+			image.platformID = itCam->second;
 			image.cameraID = 0;
 			image.ID = imageColmap.ID;
 			Interface::Platform& platform = scene.platforms[image.platformID];
 			image.poseID = (uint32_t)platform.poses.size();
 			platform.poses.emplace_back(pose);
 			scene.images.emplace_back(std::move(image));
-		}
+			return true;
+		}))
+			return false;
 	}
 
 	// read points list
@@ -862,13 +855,15 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			return false;
 		}
 		LOG_OUT() << "Reading points: " << filenamePoints << std::endl;
-		COLMAP::Point point;
-		while (file.good() && point.Read(file, binary)) {
+		if (!ReadRecords<COLMAP::Point>(file, binary, [&](const COLMAP::Point& point) {
 			Interface::Vertex vertex;
 			vertex.X = point.p;
 			for (const COLMAP::Point::Track& track: point.tracks) {
 				const auto itImage(mapImages.find(COLMAP::Image(track.idImage)));
-				ASSERT(itImage != mapImages.end() && track.idProj < itImage->first.projs.size());
+				if (itImage == mapImages.end() || track.idProj >= itImage->first.projs.size() || itImage->first.projs[track.idProj].idPoint != point.ID) {
+					VERBOSE("error: invalid observation in COLMAP point %llu", (unsigned long long)point.ID);
+					return false;
+				}
 				Interface::Vertex::View view;
 				view.imageID = itImage->second;
 				view.confidence = 0;
@@ -881,7 +876,9 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 				[](const Interface::Vertex::View& view0, const Interface::Vertex::View& view1) { return view0.imageID < view1.imageID; });
 			scene.vertices.emplace_back(std::move(vertex));
 			scene.verticesColor.emplace_back(Interface::Color{point.c});
-		}
+			return true;
+		}))
+			return false;
 		if (!scene.vertices.empty())
 			scene.flags |= Interface::HAS_OBSERVATIONS;
 	}
@@ -893,26 +890,31 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			VERBOSE("error: unable to open file '%s'", filenameDensePoints.c_str());
 			return false;
 		}
-		File file(filenameDenseVisPoints, File::READ, File::OPEN);
-		if (!file.isOpen()) {
+		std::ifstream file(filenameDenseVisPoints, std::ios::binary);
+		if (!file) {
 			VERBOSE("error: unable to open file '%s'", filenameDenseVisPoints.c_str());
 			return false;
 		}
-		uint64_t numPoints(0);
-		file.read(&numPoints, sizeof(uint64_t));
-		if (pointcloud.GetSize() != numPoints) {
+		const uint64_t numPoints = COLMAP::ReadBinaryLittleEndian<uint64_t>(&file);
+		if (!file || pointcloud.GetSize() != numPoints) {
 			VERBOSE("error: point-cloud and visibility have different size");
 			return false;
 		}
 		pointcloud.pointViews.resize(numPoints);
 		for (size_t i=0; i<numPoints; ++i) {
 			PointCloud::ViewArr& views = pointcloud.pointViews[i];
-			uint32_t numViews(0);
-			file.read(&numViews, sizeof(uint32_t));
+			const uint32_t numViews = COLMAP::ReadBinaryLittleEndian<uint32_t>(&file);
+			if (!file || numViews > scene.images.size()) {
+				VERBOSE("error: invalid visibility of point %zu in '%s'", i, filenameDenseVisPoints.c_str());
+				return false;
+			}
 			for (uint32_t v=0; v<numViews; ++v) {
-				uint32_t imageID;
-				file.read(&imageID, sizeof(uint32_t));
-				views.emplace_back(imageID);
+				const uint32_t imageIdx = COLMAP::ReadBinaryLittleEndian<uint32_t>(&file);
+				if (!file || imageIdx >= scene.images.size()) {
+					VERBOSE("error: invalid visibility of point %zu in '%s'", i, filenameDenseVisPoints.c_str());
+					return false;
+				}
+				views.emplace_back(imageIdx);
 			}
 			views.Sort();
 		}
@@ -971,14 +973,21 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 		FOREACH(idx, scene.images) {
 			const Interface::Image& image = scene.images[idx];
 			COLMAP::Mat<float> colDepthMap, colNormalMap;
-			const String filenameImage(Util::getFileNameExt(image.name));
+			const String imagePath(MAKE_PATH_FULL(strOutFolder, image.name));
+			const String filenameImage(MAKE_PATH_REL(OPT::strImageFolder, imagePath));
 			for (const String& type : strType) {
 				const String filenameDepthMaps(pathDepthMaps+filenameImage+type);
 				if (File::isFile(filenameDepthMaps)) {
-					colDepthMap.Read(filenameDepthMaps);
+					if (!colDepthMap.Read(filenameDepthMaps, 1)) {
+						VERBOSE("error: invalid COLMAP depth map '%s'", filenameDepthMaps.c_str());
+						return false;
+					}
 					const String filenameNormalMaps(pathNormalMaps+filenameImage+type);
-					if (File::isFile(filenameNormalMaps))
-						colNormalMap.Read(filenameNormalMaps);
+					if (File::isFile(filenameNormalMaps) && (!colNormalMap.Read(filenameNormalMaps, 3) ||
+						colNormalMap.width_ != colDepthMap.width_ || colNormalMap.height_ != colDepthMap.height_)) {
+						VERBOSE("error: invalid COLMAP normal map '%s'", filenameNormalMaps.c_str());
+						return false;
+					}
 					break;
 				}
 			}
@@ -994,10 +1003,15 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 					VERBOSE("error: the depth-map of image '%s' has a distorted camera: import the model of the undistorted dense workspace", image.name.c_str());
 					return false;
 				}
+				const cv::Size& imageSize = cameraSizes[image.platformID];
+				if (colDepthMap.width_ > (size_t)imageSize.width || colDepthMap.height_ > (size_t)imageSize.height) {
+					VERBOSE("error: the depth-map of image '%s' is larger than its image", image.name.c_str());
+					return false;
+				}
 				IIndexArr IDs {image.ID};
 				IDs.Join(imagesNeighbors[(IIndex)idx]);
 				const Interface::Platform::Pose pose(platform.GetPose(image.cameraID, image.poseID));
-				const Interface::Mat33d K(platform.GetFullK(image.cameraID, (uint32_t)colDepthMap.width_, (uint32_t)colDepthMap.height_));
+				const Interface::Mat33d K(platform.GetFullK(image.cameraID, imageSize.width, imageSize.height));
 				MVS::DepthMap depthMap((int)colDepthMap.height_, (int)colDepthMap.width_);
 				memcpy(depthMap.getData(), colDepthMap.data_.data(), colDepthMap.GetNumBytes());
 				MVS::NormalMap normalMap;
@@ -1013,7 +1027,7 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 				MVS::ViewsMap viewsMap;
 				const auto depthMM(std::minmax_element(colDepthMap.data_.cbegin(), colDepthMap.data_.cend()));
 				const MVS::Depth dMin(*depthMM.first), dMax(*depthMM.second);
-				if (!ExportDepthDataRaw(strOutFolder+String::FormatString("depth%04u.dmap", image.ID), MAKE_PATH_FULL(strOutFolder, image.name), IDs, depthMap.size(), K, pose.R, pose.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
+				if (!ExportDepthDataRaw(strOutFolder+String::FormatString("depth%04u.dmap", image.ID), imagePath, IDs, imageSize, K, pose.R, pose.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
 					return false;
 			}
 		}
@@ -1075,14 +1089,34 @@ Point2f ProjectPoint(const Camera& camera, const BrownDistortion<REAL>& distorti
 bool ExportScene(const String& strFolder, const Interface& scene,
 	bool bForceSparsePointCloud = false, bool bForceCommonIntrinsics = false, bool noPoints = false, bool binary = true)
 {
+	if ((!scene.verticesColor.empty() && scene.verticesColor.size() != scene.vertices.size()) ||
+		(!scene.verticesNormal.empty() && scene.verticesNormal.size() != scene.vertices.size())) {
+		VERBOSE("error: point attributes have different lengths");
+		return false;
+	}
 	Util::ensureFolder(strFolder+COLMAP_SPARSE_FOLDER);
 
-	// write camera list: the camera of each platform, index-aligned with the platforms (the COLMAP camera
-	// ID is the platform ID), or only the first one, shared by all images; a camera of unknown size that
-	// no posed image uses is not written (its width stays 0)
+	// Flatten rig cameras into COLMAP intrinsics. Each image uses its composed world pose.
+	std::vector<PairIdx> cameraKeys;
+	std::vector<uint32_t> firstCamera;
+	for (uint32_t p = 0; p < scene.platforms.size(); ++p) {
+		firstCamera.push_back((uint32_t)cameraKeys.size());
+		for (uint32_t c = 0; c < scene.platforms[p].cameras.size(); ++c)
+			cameraKeys.emplace_back(p, c);
+	}
+	std::vector<const Interface::Image*> cameraImages(cameraKeys.size());
+	for (const auto& image: scene.images) {
+		if (!image.IsValid())
+			continue;
+		if (scene.platforms[image.platformID].cameras[image.cameraID].model == Interface::Platform::Camera::SPHERICAL) {
+			VERBOSE("error: spherical image '%s' requires cube-map export for COLMAP", image.name.c_str());
+			return false;
+		}
+		cameraImages[firstCamera[image.platformID]+image.cameraID] = &image;
+	}
 	CLISTDEF0IDX(KMatrix,uint32_t) Ks;
 	CLISTDEF0IDX(BrownDistortion<REAL>,uint32_t) distortions; // all zero for a pinhole camera
-	CLISTDEF0IDX(COLMAP::Camera,uint32_t) cams;
+	COLMAP::Cameras cams;
 	uint32_t idCommonCamera(NO_ID);
 	{
 		const String filenameCameras(strFolder+(binary?COLMAP_CAMERAS_BIN:COLMAP_CAMERAS_TXT));
@@ -1097,13 +1131,13 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			file << _T("# Camera list with one line of data per camera:") << std::endl;
 			file << _T("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]") << std::endl;
 		}
-		Ks.reserve((uint32_t)scene.platforms.size());
-		distortions.reserve((uint32_t)scene.platforms.size());
-		cams.reserve((uint32_t)scene.platforms.size());
-		for (uint32_t ID=0; ID<(uint32_t)scene.platforms.size(); ++ID) {
-			const Interface::Platform& platform = scene.platforms[ID];
-			ASSERT(platform.cameras.size() == 1); // only one camera per platform supported
-			const Interface::Platform::Camera& camera = platform.cameras[0];
+		Ks.reserve((uint32_t)cameraKeys.size());
+		distortions.reserve((uint32_t)cameraKeys.size());
+		cams.reserve(cameraKeys.size());
+		for (uint32_t ID = 0; ID < cameraKeys.size(); ++ID) {
+			const PairIdx key(cameraKeys[ID]);
+			const Interface::Platform& platform = scene.platforms[key.i];
+			const auto& camera = platform.cameras[key.j];
 			COLMAP::Camera& cam = cams.emplace_back();
 			KMatrix& K = Ks.emplace_back(KMatrix::IDENTITY);
 			BrownDistortion<REAL>& distortion = distortions.emplace_back(BrownDistortion<REAL>{});
@@ -1114,7 +1148,10 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 				cam.params.resize(4);
 				break;
 			case Interface::Platform::Camera::BROWN:
-				ASSERT(camera.params.size() == 5 || camera.params.size() == 8);
+				if (camera.params.size() != 5 && camera.params.size() != 8) {
+					VERBOSE("error: invalid Brown parameters for camera %u of platform %u", key.j, key.i);
+					return false;
+				}
 				if (camera.params.size() == 5 && camera.params[4] == 0) {
 					cam.model = _T("OPENCV");
 					cam.params.resize(8);
@@ -1126,21 +1163,14 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 					cam.params[p] = p-4 < camera.params.size() ? camera.params[p-4] : 0.0;
 				break;
 			default:
-				VERBOSE("error: camera model %u of platform %u is not supported by COLMAP", (unsigned)camera.model, ID);
+				VERBOSE("error: camera model %u of platform %u is not supported by COLMAP", (unsigned)camera.model, key.i);
 				return false;
 			}
 			cam.ID = ID;
 			if (camera.width == 0 || camera.height == 0) {
-				// find one image using this camera
-				const Interface::Image* pImage(NULL);
-                for (const Interface::Image& image : scene.images) {
-					if (image.platformID == ID && image.cameraID == 0 && image.poseID != NO_ID) {
-						pImage = &image;
-						break;
-					}
-				}
+				const Interface::Image* pImage = cameraImages[ID];
 				if (pImage == NULL) {
-					LOG("warning: camera %u of platform %u not exported: no posed image uses it", 0, ID);
+					LOG("warning: camera %u of platform %u not exported: no posed image uses it", key.j, key.i);
 					continue;
 				}
 				IMAGEPTR ptrImage(Image::ReadImageHeader(MAKE_PATH_SAFE(pImage->name)));
@@ -1149,7 +1179,7 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 				cam.width = ptrImage->GetWidth();
 				cam.height = ptrImage->GetHeight();
 				// unnormalize camera intrinsics
-				K = platform.GetFullK(0, cam.width, cam.height);
+				K = platform.GetFullK(key.j, cam.width, cam.height);
 			} else {
 				cam.width = camera.width;
 				cam.height = camera.height;
@@ -1161,9 +1191,7 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			cam.params[2] = K(0,2)+REAL(0.5);
 			cam.params[3] = K(1,2)+REAL(0.5);
 			if (camera.model == Interface::Platform::Camera::BROWN)
-				distortion = BrownDistortion<REAL>{cam.params[4], cam.params[5], cam.params[6], cam.params[7],
-					cam.params.size() > 8 ? cam.params[8] : REAL(0), cam.params.size() > 8 ? cam.params[9] : REAL(0),
-					cam.params.size() > 8 ? cam.params[10] : REAL(0), cam.params.size() > 8 ? cam.params[11] : REAL(0)};
+				distortion = ParamsToBrownDistortion(camera.params);
 			if (bForceCommonIntrinsics) {
 				idCommonCamera = ID;
 				break;
@@ -1195,13 +1223,12 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			if (image.poseID == NO_ID)
 				continue;
 			const Interface::Platform& platform = scene.platforms[image.platformID];
-			const Interface::Platform::Pose& pose = platform.poses[image.poseID];
-			ASSERT(image.cameraID == 0);
+			const auto pose = platform.GetPose(image.cameraID, image.poseID);
 			COLMAP::Image& img = images[ID];
-			img.ID = image.ID;
+			img.ID = image.ID == NO_ID ? ID : image.ID;
 			img.q = Eigen::Quaterniond(Eigen::Map<const EMat33d>(pose.R.val));
 			img.t = -(img.q * Eigen::Map<const EVec3d>(&pose.C.x));
-			img.idCamera = bForceCommonIntrinsics ? idCommonCamera : image.platformID;
+			img.idCamera = bForceCommonIntrinsics ? idCommonCamera : firstCamera[image.platformID]+image.cameraID;
 			ASSERT(img.idCamera < cams.size() && cams[img.idCamera].width > 0);
 			img.name = MAKE_PATH_REL(OPT::strImageFolder, MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name));
 			Camera& camera = cameras[ID];
@@ -1211,120 +1238,124 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			camera.ComposeP();
 			const COLMAP::Camera& cam = cams[img.idCamera];
 			const uint32_t resolutionView(cam.width*cam.height);
-			const float linearFactor(float(avgResolutionLargeView-resolutionView)/(avgResolutionLargeView-avgResolutionSmallView));
+			const float linearFactor(CLAMP((float(resolutionView)-avgResolutionSmallView)/(avgResolutionLargeView-avgResolutionSmallView), 0.f, 1.f));
 			maxNumPointsSparse += (avgPointsPerSmallView+(avgPointsPerLargeView-avgPointsPerSmallView)*linearFactor)/avgViewsPerPoint;
 		}
 	}
 
 	// auto-select dense or sparse mode based on number of points
 	const bool bSparsePointCloud(scene.vertices.size() < (size_t)maxNumPointsSparse);
-	if (bSparsePointCloud || bForceSparsePointCloud) {
-		// write points list
+	const bool writeSparsePoints = !noPoints && (bSparsePointCloud || bForceSparsePointCloud);
+	// write points list
+	{
+		const String filenamePoints(strFolder+(binary?COLMAP_POINTS_BIN:COLMAP_POINTS_TXT));
+		LOG_OUT() << "Writing points: " << filenamePoints << std::endl;
+		std::ofstream file(filenamePoints, binary ? std::ios::trunc|std::ios::binary : std::ios::trunc);
+		file.precision(std::numeric_limits<double>::max_digits10); // the text files keep the full precision
+		if (!file.good()) {
+			VERBOSE("error: unable to open file '%s'", filenamePoints.c_str());
+			return false;
+		}
+		if (binary) {
+			COLMAP::WriteBinaryLittleEndian<uint64_t>(&file, writeSparsePoints ? scene.vertices.size() : 0);
+		} else {
+			file << _T("# 3D point list with one line of data per point:") << std::endl;
+			file << _T("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)") << std::endl;
+		}
+
+		if (writeSparsePoints) {
+			for (uint32_t ID=0; ID<(uint32_t)scene.vertices.size(); ++ID) {
+				const Interface::Vertex& vertex = scene.vertices[ID];
+				COLMAP::Point point;
+				point.ID = ID;
+				point.p = vertex.X;
+				for (const Interface::Vertex::View& view: vertex.views) {
+					if (view.imageID >= images.size() || images[view.imageID].ID == NO_ID) {
+						VERBOSE("error: invalid image in observations of point %u", ID);
+						return false;
+					}
+					COLMAP::Image& img = images[view.imageID];
+					point.tracks.emplace_back(COLMAP::Point::Track{img.ID, (uint32_t)img.projs.size()});
+					COLMAP::Image::Proj proj;
+					proj.idPoint = ID;
+					// the feature observation if available, else the projection through the camera model
+					const Point2f x(scene.HasObservations() ? Point2f(view.x) : ProjectPoint(cameras[view.imageID], distortions[img.idCamera], Point3(vertex.X)));
+					// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5)
+					proj.p = Eigen::Vector2f(x.x+0.5f, x.y+0.5f);
+					img.projs.emplace_back(proj);
+				}
+				point.c = scene.verticesColor.empty() ? Interface::Col3(255,255,255) : scene.verticesColor[ID].c;
+				point.e = 0;
+				if (!point.Write(file, binary))
+					return false;
+			}
+		}
+	}
+
+	if (writeSparsePoints) {
+		Util::ensureFolder(strFolder+COLMAP_STEREO_FOLDER);
+
+		// write fusion list
 		{
-			const String filenamePoints(strFolder+(binary?COLMAP_POINTS_BIN:COLMAP_POINTS_TXT));
-			LOG_OUT() << "Writing points: " << filenamePoints << std::endl;
-			std::ofstream file(filenamePoints, binary ? std::ios::trunc|std::ios::binary : std::ios::trunc);
-			file.precision(std::numeric_limits<double>::max_digits10); // the text files keep the full precision
+			const String filenameFusion(strFolder+COLMAP_FUSION);
+			LOG_OUT() << "Writing fusion configuration: " << filenameFusion << std::endl;
+			std::ofstream file(filenameFusion);
 			if (!file.good()) {
-				VERBOSE("error: unable to open file '%s'", filenamePoints.c_str());
+				VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
 				return false;
 			}
-			uint64_t numPoints3D = 0;
-			if (binary) {
-				numPoints3D = scene.vertices.size();
-			} else {
-				file << _T("# 3D point list with one line of data per point:") << std::endl;
-				file << _T("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)") << std::endl;
-			}
-
-			if (!noPoints) {
-				for (uint32_t ID=0; ID<(uint32_t)scene.vertices.size(); ++ID) {
-					const Interface::Vertex& vertex = scene.vertices[ID];
-					COLMAP::Point point;
-					point.ID = ID;
-					point.p = vertex.X;
-					for (const Interface::Vertex::View& view: vertex.views) {
-						COLMAP::Image& img = images[view.imageID];
-						point.tracks.emplace_back(COLMAP::Point::Track{img.ID, (uint32_t)img.projs.size()});
-						COLMAP::Image::Proj proj;
-						proj.idPoint = ID;
-						// the feature observation if available, else the projection through the camera model
-						const Point2f x(scene.HasObservations() ? Point2f(view.x) : ProjectPoint(cameras[view.imageID], distortions[img.idCamera], Point3(vertex.X)));
-						// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5)
-						proj.p = Eigen::Vector2f(x.x+0.5f, x.y+0.5f);
-						img.projs.emplace_back(proj);
-					}
-					point.c = scene.verticesColor.empty() ? Interface::Col3(255,255,255) : scene.verticesColor[ID].c;
-					point.e = 0;
-					if (numPoints3D != 0) {
-						point.numPoints3D = numPoints3D;
-						numPoints3D = 0;
-					}
-					if (!point.Write(file, binary))
-						return false;
-				}
+			for (const COLMAP::Image& img: images) {
+				if (img.projs.empty())
+					continue;
+				file << img.name << std::endl;
+				if (file.fail())
+					return false;
 			}
 		}
 
-		if (!noPoints) {
-			Util::ensureFolder(strFolder+COLMAP_STEREO_FOLDER);
-
-			// write fusion list
-			{
-				const String filenameFusion(strFolder+COLMAP_FUSION);
-				LOG_OUT() << "Writing fusion configuration: " << filenameFusion << std::endl;
-				std::ofstream file(filenameFusion);
-				if (!file.good()) {
-					VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
-					return false;
-				}
-				for (const COLMAP::Image& img: images) {
-					if (img.projs.empty())
-						continue;
-					file << img.name << std::endl;
-					if (file.fail())
-						return false;
-				}
+		// write patch-match list
+		{
+			const String filenameFusion(strFolder+COLMAP_PATCHMATCH);
+			LOG_OUT() << "Writing patch-match configuration: " << filenameFusion << std::endl;
+			std::ofstream file(filenameFusion);
+			if (!file.good()) {
+				VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
+				return false;
 			}
-
-			// write patch-match list
-			{
-				const String filenameFusion(strFolder+COLMAP_PATCHMATCH);
-				LOG_OUT() << "Writing patch-match configuration: " << filenameFusion << std::endl;
-				std::ofstream file(filenameFusion);
-				if (!file.good()) {
-					VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
+			for (const COLMAP::Image& img: images) {
+				if (img.projs.empty())
+					continue;
+				file << img.name << std::endl;
+				if (file.fail())
 					return false;
-				}
-				for (const COLMAP::Image& img: images) {
-					if (img.projs.empty())
-						continue;
-					file << img.name << std::endl;
-					if (file.fail())
-						return false;
-					file << _T("__auto__, 20") << std::endl;
-					if (file.fail())
-						return false;
-				}
+				file << _T("__auto__, 20") << std::endl;
+				if (file.fail())
+					return false;
 			}
-
-			Util::ensureFolder(strFolder+COLMAP_STEREO_CONSISTENCYGRAPHS_FOLDER);
-			Util::ensureFolder(strFolder+COLMAP_STEREO_DEPTHMAPS_FOLDER);
-			Util::ensureFolder(strFolder+COLMAP_STEREO_NORMALMAPS_FOLDER);
 		}
+
+		Util::ensureFolder(strFolder+COLMAP_STEREO_CONSISTENCYGRAPHS_FOLDER);
+		Util::ensureFolder(strFolder+COLMAP_STEREO_DEPTHMAPS_FOLDER);
+		Util::ensureFolder(strFolder+COLMAP_STEREO_NORMALMAPS_FOLDER);
 	}
 	if (!noPoints && !bSparsePointCloud) {
 		// export dense point-cloud
 		const String filenameDensePoints(strFolder+COLMAP_DENSE_POINTS);
 		const String filenameDenseVisPoints(strFolder+COLMAP_DENSE_POINTS_VISIBILITY);
 		LOG_OUT() << "Writing points: " << filenameDensePoints << " and " << filenameDenseVisPoints << std::endl;
-		File file(filenameDenseVisPoints, File::WRITE, File::CREATE | File::TRUNCATE);
-		if (!file.isOpen()) {
+		std::ofstream file(filenameDenseVisPoints, std::ios::binary);
+		if (!file) {
 			VERBOSE("error: unable to write file '%s'", filenameDenseVisPoints.c_str());
 			return false;
 		}
+		// Visibility indexes the registered images in the order written to the model.
+		std::vector<uint32_t> imageIndices(images.size(), NO_ID);
+		uint32_t registered = 0;
+		for (size_t i = 0; i < images.size(); ++i)
+			if (images[i].ID != NO_ID)
+				imageIndices[i] = registered++;
 		const uint64_t numPoints(scene.vertices.size());
-		file.write(&numPoints, sizeof(uint64_t));
+		COLMAP::WriteBinaryLittleEndian<uint64_t>(&file, numPoints);
 		PointCloud pointcloud;
 		for (size_t i=0; i<numPoints; ++i) {
 			const Interface::Vertex& vertex = scene.vertices[i];
@@ -1334,14 +1365,17 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			if (!scene.verticesColor.empty())
 				pointcloud.colors.emplace_back(scene.verticesColor[i].c);
 			const uint32_t numViews((uint32_t)vertex.views.size());
-			file.write(&numViews, sizeof(uint32_t));
+			COLMAP::WriteBinaryLittleEndian<uint32_t>(&file, numViews);
 			for (uint32_t v=0; v<numViews; ++v) {
 				const Interface::Vertex::View& view = vertex.views[v];
-                const COLMAP::Image& img = images[view.imageID];
-				file.write(&img.ID, sizeof(uint32_t));
+				if (view.imageID >= imageIndices.size() || imageIndices[view.imageID] == NO_ID) {
+					VERBOSE("error: invalid image in visibility of point %zu", i);
+					return false;
+				}
+				COLMAP::WriteBinaryLittleEndian<uint32_t>(&file, imageIndices[view.imageID]);
 			}
 		}
-		if (!pointcloud.Save(filenameDensePoints, false, true)) {
+		if (!file.flush() || !pointcloud.Save(filenameDensePoints, false, true)) {
 			VERBOSE("error: unable to write file '%s'", filenameDensePoints.c_str());
 			return false;
 		}
@@ -1357,27 +1391,17 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			VERBOSE("error: unable to open file '%s'", filenameImages.c_str());
 			return false;
 		}
-		uint64_t numRegImages = 0;
 		if (binary) {
-			for (const COLMAP::Image& img: images) {
-				if (bSparsePointCloud && img.projs.empty())
-					continue;
-				++numRegImages;
-			}
+			const auto count = std::count_if(images.begin(), images.end(), [](const COLMAP::Image& img) { return img.ID != NO_ID; });
+			COLMAP::WriteBinaryLittleEndian<uint64_t>(&file, count);
 		} else {
 			file << _T("# Image list with two lines of data per image:") << std::endl;
 			file << _T("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME") << std::endl;
 			file << _T("#   POINTS2D[] as (X, Y, POINT3D_ID)") << std::endl;
 		}
 		for (COLMAP::Image& img: images) {
-			if (!noPoints) {
-				if (bSparsePointCloud && img.projs.empty())
-					continue;
-				if (numRegImages != 0) {
-					img.numRegImages = numRegImages;
-					numRegImages = 0;
-				}
-			}
+			if (img.ID == NO_ID)
+				continue;
 			if (!img.Write(file, binary))
 				return false;
 		}
@@ -1460,8 +1484,7 @@ bool ExportImagesLog(const String& fileName, const Interface& scene)
 		Eigen::Matrix3d R(Eigen::Matrix3d::Identity());
 		Eigen::Vector3d t(Eigen::Vector3d::Zero());
 		if (image.poseID != NO_ID) {
-			const Interface::Platform& platform = scene.platforms[image.platformID];
-			const Interface::Platform::Pose& pose = platform.poses[image.poseID];
+			const auto pose = scene.GetPose(ID);
 			R = Eigen::Map<const EMat33d>(pose.R.val).transpose();
 			t = Eigen::Map<const EVec3d>(&pose.C.x);
 		}
@@ -1512,13 +1535,15 @@ bool ExportImagesCamera(const String& pathName, const Interface& scene)
 				height = camera.height;
 				K = camera.K;
 			} else {
-				IMAGEPTR pImage = Image::ReadImageHeader(image.name);
+				IMAGEPTR pImage = Image::ReadImageHeader(MAKE_PATH_SAFE(image.name));
+				if (!pImage)
+					return false;
 				width = pImage->GetWidth();
 				height = pImage->GetHeight();
 				K = platform.GetFullK(image.cameraID, width, height);
 			}
 			if (image.poseID != NO_ID) {
-				const Interface::Platform::Pose& pose = platform.poses[image.poseID];
+				const auto pose = scene.GetPose(ID);
 				R = pose.R.t();
 				t = pose.C;
 			}
@@ -1560,6 +1585,15 @@ int main(int argc, LPCTSTR* argv)
 		Interface scene;
 		if (!ARCHIVE::SerializeLoad(scene, MAKE_PATH_SAFE(OPT::strInputFileName)))
 			return EXIT_FAILURE;
+		for (const auto& image: scene.images) {
+			const bool hasPlatform = image.platformID < scene.platforms.size();
+			const bool hasCamera = hasPlatform && image.cameraID < scene.platforms[image.platformID].cameras.size();
+			if ((image.platformID != NO_ID && !hasPlatform) || (image.cameraID != NO_ID && !hasCamera) ||
+				(image.IsValid() && (!hasCamera || image.poseID >= scene.platforms[image.platformID].poses.size()))) {
+				VERBOSE("error: invalid camera or pose for image '%s'", image.name.c_str());
+				return EXIT_FAILURE;
+			}
+		}
 		if (Util::getFileExt(OPT::strOutputFileName) == _T(".log")) {
 			// write poses in log format, and the intrinsics file if the scene has one pinhole camera
 			ExportIntrinsicsTxt(MAKE_PATH_FULL(WORKING_FOLDER_FULL, String("intrinsics.txt")), scene);

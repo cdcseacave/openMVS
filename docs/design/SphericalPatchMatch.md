@@ -69,9 +69,9 @@ out-of-line sampler cost the pinhole estimator 15 % on clang/arm64).
 - A spherical reference is estimated across the seam (only the 4 rows next to each pole are skipped); the
   reference patch and the propagation neighbors wrap their columns (`Col0`).
 - Pixel order, pinhole and spherical alike: the estimators pull pixels in zigzag order and work on a copy of
-  the pixel's estimate, written back as a whole between two state changes of its flag (`PixelPending`: 1 not
-  estimated yet in this pass, 2 being written, 0 done). A neighbor's estimate is read as a whole
-  (`ReadEstimate`): this pass's if that neighbor is done, else the previous pass's, never a mix. Only at the
+  the pixel's estimate. A reader briefly locks a pending neighbor to copy its previous estimate.
+  The writer acquires the same lock to publish depth, normal and score together. Completed pixels are
+  immutable until the pass ends and can be read without locking. Only at the
   corners of the zigzag stripes, where the anti-diagonals are shorter than the number of estimators, does a
   pixel wait for a lower neighbor still in flight fewer than `DepthEstimatorBase::nZigzagMinStride` (64)
   pixels before it. Elsewhere a lower neighbor is a whole anti-diagonal back, or its estimator is preempted
@@ -239,122 +239,33 @@ All other PatchMatch options apply unchanged.
 
 ## 5. Validation
 
-Synthetic room (`Tests sphtest`, `Tests sphfuse`, `Tests scorebench`; 3 panoramas 1536x768, cube faces
-384x384) and Holo360D Outdoor_004 (40 frames at `--max-resolution 1440`, `Tests evaldepth`, `Tests evalcloud`).
-A = exact warp everywhere, B = tangent warp with A above 70° (default), C = panoramas rendered to cube faces
-and the pinhole PatchMatch (`CreateStructure --spherical-export cubemap`, `Tests facescene`).
+The synthetic room has ray-cast ground truth. Holo360D Outdoor_004 uses 40 frames at
+1440 px. Depth completeness is the fraction of ground-truth pixels with an estimate.
+Fused F is the harmonic mean of precision and recall at the stated range tolerance.
 
-Depth-maps, fraction of GT pixels within 1 / 5 % and abs-rel median:
+| Dataset and shipped configuration | Depth completeness | Median relative depth error | Fused F |
+|---|---:|---:|---:|
+| Synthetic 1536, CPU | 0.911 | 0.00050 | 0.975 at 1% |
+| Synthetic 1536, CUDA | 0.983 | 0.00041 | |
+| Synthetic 1536, Metal | 0.982 | 0.00041 | |
+| Mixed 96 px faces against two 384 px panoramas, CPU / CUDA / Metal | 0.838 / 0.991 / 0.990 | 0.00247 / 0.00226 / 0.00225 | |
+| Holo360D, CPU | 0.954 | 0.201 | 0.522 at 5% |
+| Holo360D, CUDA / Metal | 0.681 | 0.0471 | 0.617 at 5% |
 
-| scene | method | device | completeness | abs-rel median | <1% | <5% |
-|---|---|---|---|---|---|---|
-| synthetic 1536 | A | CPU | 0.911 | 0.00047 | 0.983 | 0.994 |
-| | B | CPU | 0.911 | 0.00050 | 0.982 | 0.994 |
-| | C | CPU | 0.913 | 0.00079 | 0.913 | 0.952 |
-| | A / B / C | CUDA | 0.983 / 0.983 / 0.970 | 0.00039 / 0.00041 / 0.00056 | 0.987 / 0.986 / 0.945 | 0.995 / 0.995 / 0.966 |
-| | B | Metal | 0.982 | 0.00041 | 0.986 | 0.995 |
-| synthetic 512x256 | B | CPU | 0.956 | 0.00147 | 0.919 | 0.986 |
-| | B | CUDA / Metal | 0.964 | 0.00138 / 0.00139 | 0.931 | 0.988 |
-| synthetic 384, 6 faces 96x96 against 2 panoramas (`Tests mixtest 1`, `Tests mixtest 1 1` on the GPU) | B | CPU / CUDA / Metal | 0.838 / 0.991 / 0.990 | 0.00247 / 0.00226 / 0.00225 | 0.839 / 0.879 / 0.880 | 0.976 / 0.978 / 0.977 |
-| Holo360D 1440 | A / B / C | CPU | 0.954 / 0.954 / 0.774 | 0.182 / 0.201 / 0.130 | | 0.352 / 0.346 / 0.375 |
-| | A / B / C | CUDA | 0.680 / 0.681 / 0.644 | 0.0460 / 0.0471 / 0.0945 | | 0.513 / 0.509 / 0.406 |
-| | B | Metal | 0.681 | 0.0471 | | 0.509 |
-
-Fused clouds (precision / recall / F within th x range of the GT):
-
-| scene | method | F@1% | F@2% | F@5% | F@10% |
-|---|---|---|---|---|---|
-| synthetic 1536 CPU | B | 0.975 | 0.991 | | |
-| | C | 0.903 | 0.949 | | |
-| synthetic 512 CPU | B / C | 0.806 / 0.637 | 0.931 / 0.757 | | |
-| Holo360D 1440 CPU | A / B / C | | 0.346 / 0.338 / 0.308 | 0.535 / 0.522 / 0.562 | 0.679 / 0.667 / 0.734 |
-| Holo360D 1440 CUDA | A / B / C | | 0.412 / 0.404 / 0.264 | 0.631 / 0.617 / 0.480 | 0.755 / 0.744 / 0.646 |
-| Holo360D 1440 Metal | B | | 0.404 | 0.617 | 0.745 |
-
-Synthetic 1536 B CPU: precision 0.999, recall 0.952 at 1 %; per-band F@1% equator 0.963, north 1.000, south
-0.964, seam 0.974. Against C the panoramas win on every band, most at the south pole (C: 0.711).
-
-Reading the numbers:
-- B matches A in accuracy and costs 0.8x of it on CPU, 0.7x on CUDA. C is less accurate and less complete on the synthetic
-  room and on Holo360D CUDA, recovers more ground recall only on Holo360D CPU at the loose thresholds, loses
-  whole faces on real captures (Cocarascu: 160 of 720 reference views without neighbors) and needs a face
-  export (176-635 s on the real captures).
-- On Holo360D the GPU estimators keep fewer pixels than the CPU one and are more accurate on every band;
-  the pixels only the CPU keeps are wrong (abs-rel median 0.81). The cause is the estimators (view
-  selection, the cost threshold of `FilterPlanes`), not the spherical model: on synthetic data CUDA matches
-  or beats the CPU on every band.
-- Holo360D GT and poses agree with the images to a few pixels only; all methods are bounded by it.
-- The synthetic panoramas look along their trajectory, so the epipoles of their neighbors lie in the seam
-  band and its antipodal band, where the view gate acts. `SyntheticSphericalTest` requires seam <5 % above
-  center − 0.01 and completeness above 0.99 x center.
-
-Cost, synthetic 1536:
-
-| measure | result |
-|---|---|
-| `scorebench`, ns per ScorePixel (MSVC): A / B / pinhole faces | 225 / 157 / 132 (1.70x / 1.19x) |
-| CPU whole run, µs per GT pixel: A / B / C | 5.08 / 4.07 / 3.9 |
-| CUDA whole run, µs per GT pixel: A / B / C | 0.197 / 0.141 / 0.183 |
-| Metal (M3 Max) whole run, µs per GT pixel | 0.107 (CPU on that machine 2.43) |
-| CUDA kernel, panorama vs faces, 1024 px / 3840 px | 1.62x / 0.70x photometric, 1.27x / 0.47x geometric |
-| pinhole fountain-P11 CPU depth-maps + fusion vs the pre-model estimator | 202.1 s vs 201.4 s (+0.3 %) |
-| pinhole SceauxCastle CPU vs the pre-model estimator, clang/arm64 (M3 Max) | 1 thread +1 %, 14 threads +5 % |
-| pinhole SceauxCastle CPU vs the pre-model estimator, GCC 13 x86-64 (EPYC 7J13) | 1 thread -6 %, 8 threads -7 % |
-
-The CUDA excess at small sizes is Method A near the poles (~4.3x the cost of B on ~12 % of the
-evaluations) and the per-hypothesis model math; at real panorama sizes the spherical kernels are cheaper
-per pixel than the faces. Real captures (7680x3840 keyframes, `--max-resolution 1440`): CUDA B, Cocarascu
-120 frames 165 s, 2.36 M points, depth share 0.898; MaidenLane 91 frames 105 s, 5.99 M points, 0.972.
-
-Warp accuracy (`TestSphericalPatchWarp`, random poses and slanted planes, 2880x1440, 9x9 patch): B against A,
-per-patch max texel error p99 0.042 / 0.079 / 0.140 / 0.757 px for target elevations below 30 / 50 / 70 / 90°;
-seam-crossing patches max 0.23 px; the affine warp has a median error of 1.0-3.6 px.
-
-Seam and pixel order (synthetic 512, B, 24 threads): the seam band matches its antipodal band within 0.003
-on <5 %. Without the corner waits, the bottom-right corner of the zigzag order has 145-285 wrong estimates
-per run, with them 5-31 (single thread 11-54).
-
-Scene far from its origin (tests scene translated along (1,1,1), CUDA, depths kept by the estimator, and
-the depth-maps against those of the scene at the origin, fraction within 1 %; any change of the input
-bits moves a PatchMatch run to 0.845-0.850):
-
-| translation | absolute centers in single precision | centers relative to the reference |
-|---|---|---|
-| 0 | 784 k | 783 k |
-| 1e5 | 652 k, 0.810 | 782 k, 0.845 |
-| 1e7 | 11 k, 0.015 | 797 k, 0.841 |
-
-Reference numbers for the regression run (`Tests sphtest 2 512 3 1 70 0 0 0` CPU, `... 0 0 1` CUDA):
-per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness, abs-rel 0.00138.
+The synthetic suite checks seam accuracy against the antipodal band and exercises CUDA or Metal
+with the scene translated 1e6 m from the origin along every axis. `TestSphericalPatchWarp` measures
+a 99th-percentile maximum texel error of 0.140 px below the 70-degree switch on 2880 x 1440 panoramas.
 
 ## 6. Rejected alternatives
 
-- Affine warp (M with its projective row frozen at the patch center): 1-3.6 px median texel error.
-- Method B everywhere: 1/cosφ error at the poles (south band abs-rel 0.00064 vs 0.00042).
-- Method A everywhere: 1.25-1.5x the cost of B.
-- Exact warp only above 80°: pole bands lose 20-35 % abs-rel at 512x256 for 1.32x instead of 1.62x the CUDA
-  cube-face cost at 1024 px.
-- Padding equirectangular images with wrapped columns: patches off the seam take the plain loop.
-- A wrap-aware sampler and bounds test at each sampling site of the normal refinement, instead of the wrapped
-  margin: more code in the function and a second sampling path to keep in step.
-- `std::atan2` in the warps: the exact warp spends most of its time there.
-- Pixels waiting for all their preceding neighbors: 5-8 % multi-threaded wall, idle cores.
-- Setting aside a pixel whose preceding neighbors are in progress: +40 % wall.
-- Eigen fixed-size expressions in the per-hypothesis warp code: not inlined by MSVC, ~10 ns per 3x3 product.
-- Pole stride (estimate ~1/cos(elevation) columns per row, fill the rest): south <5 % 0.98 -> 0.44.
-- Isotropic angular patch; filling the 4 pole rows from the nearest estimated row: fused F within noise.
-- An upper triangulation-angle gate (65°): Holo360D abs-rel median 0.28 -> 0.74.
-- Dropping the `FilterNeighborViews` angle filter for panoramas: no change with the per-pixel gate.
-- View-gate variants (an all-gated hypothesis scoring `thRobust`; gated views left out of the aggregation;
-  one view set per pixel and pass; dropping estimates every view sees below `fMinAngle`): F@5 % equal or
-  lower; the shipped rule has the fewest wrong estimates among pixels every neighbor sees below 3°.
+- An affine approximation introduces median patch errors of 1 to 3.6 px.
+- Using the tangent warp at the poles increases depth error. Using the exact warp everywhere costs more.
+- Skipping columns near the poles reduces the fraction of accurate south-pole estimates.
+- Rejecting a hypothesis when every neighbor falls below the triangulation threshold biases epipolar depths.
+- An upper triangulation-angle gate at 65 degrees increased Holo360D median relative error.
 
 ## 7. Open items
 
-- MSVC: accumulating the NCC sums through the texel sink costs the pinhole `scorebench` ~4 % (132 vs 127 ns
-  with a texel buffer summed into locals); a whole single-threaded densify shows no difference, GCC none at all.
-- Pinhole CPU on arm64: +5 % multi-threaded from the release/acquire fences of the per-pixel estimate
-  hand-over (a `dmb`, where x86 orders the stores for free).
 - CUDA clamps the rows at the poles where the CPU rejects the view.
 - The shape constants of the confidence recalibration were calibrated on pinhole ground truth; a
   spherical calibration (Holo360D) is untested.

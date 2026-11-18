@@ -453,8 +453,8 @@ struct MVS_API DepthEstimatorBase {
 	typedef CLISTDEFIDX(Weight,int) WeightMap;
 	#endif
 
-	// per-pixel state of a propagation pass: 1 while the pixel is not estimated yet in this pass, 2 while
-	// its estimate is written to the maps, 0 once it is
+	// Pending pixels can still be updated. Completed estimates are immutable until the workers join.
+	enum PixelState : uint8_t { COMPLETE, PENDING, LOCKED };
 	typedef std::atomic<uint8_t> PixelPending;
 	// the smallest stripe height of the zigzag pixel order: off the stripe corners, the preceding
 	// neighbors of a pixel are at least this many pixels before it in the order
@@ -472,7 +472,7 @@ struct MVS_API DepthEstimatorBase {
 	// a spherical target view is sampled through the tangent-plane homography of the patch while the
 	// elevation of the patch center seen from the target is at most this (degrees), and through the
 	// exact per-texel warp above it, where the homography error grows as 1/cos(elevation)
-	static float fSphericalWarpMaxElevation;
+	static constexpr float fSphericalWarpMaxElevation = 70.f;
 };
 
 // PatchMatch depth-map estimator of a reference view seen through the camera model MODEL

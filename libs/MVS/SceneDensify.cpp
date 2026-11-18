@@ -908,14 +908,6 @@ bool DepthMapsData::EstimateDepthMapCPU(IIndex idxImage, int nGeometricIter)
 			if (bMasked)
 				depthData.ApplyIgnoreMask(mask);
 			DepthEstimatorBase::MapMatrix2ZigzagIdx(size, coords, mask, MAXF((int)DepthEstimatorBase::nZigzagMinStride,(int)nMaxThreads*8));
-			#if 0 && !defined(_RELEASE)
-			// show pixels to be processed
-			Image8U cmask(size);
-			cmask.memset(0);
-			for (const DepthEstimatorBase::MapRef& x: coords)
-				cmask(x.y, x.x) = 255;
-			cmask.Show("cmask");
-			#endif
 			// the pixel order of a masked image is not reused by the next image
 			prevDepthMapSize = bMasked ? cv::Size() : size;
 		}
@@ -957,9 +949,9 @@ bool DepthMapsData::EstimateDepthMapCPU(IIndex idxImage, int nGeometricIter)
 		for (unsigned iter=iterBegin; iter<iterEnd; ++iter) {
 			// mark the pixels this pass estimates
 			for (int i=0; i<size.area(); ++i)
-				pending[i].store(0, std::memory_order_relaxed);
+				pending[i].store(DepthEstimatorBase::COMPLETE, std::memory_order_relaxed);
 			for (const DepthEstimatorBase::MapRef& x: coords)
-				pending[x.y*size.width+x.x].store(1, std::memory_order_relaxed);
+				pending[x.y*size.width+x.x].store(DepthEstimatorBase::PENDING, std::memory_order_relaxed);
 			// create working threads
 			idxPixel = -1;
 			ASSERT(estimators.empty());

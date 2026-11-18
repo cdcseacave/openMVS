@@ -136,15 +136,17 @@ T NativeToBigEndian(const T x) {
 
 template <typename T>
 T ReadBinaryLittleEndian(std::istream* stream) {
-  T data_little_endian;
+  T data_little_endian{};
   stream->read(reinterpret_cast<char*>(&data_little_endian), sizeof(T));
   return LittleEndianToNative(data_little_endian);
 }
 
 template <typename T>
 void ReadBinaryLittleEndian(std::istream* stream, std::vector<T>* data) {
-  for (size_t i = 0; i < data->size(); ++i) {
-    (*data)[i] = ReadBinaryLittleEndian<T>(stream);
+  if (data->empty()) return;
+  stream->read(reinterpret_cast<char*>(data->data()), data->size() * sizeof(T));
+  if (IsBigEndian()) {
+    for (auto& elem : *data) elem = ReverseBytes(elem);
   }
 }
 

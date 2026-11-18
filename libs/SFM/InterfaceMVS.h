@@ -11,6 +11,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include <optional>
 #include "Camera.h"
 #include "../Math/Camera/CameraUndistort.h"
 
@@ -33,12 +34,11 @@ SFM_API bool UndistortDMAP(const String& depthMapFile,
 // Batch undistort depth-maps at their native resolution, matching image undistortion:
 // each depth-map lands in the frame of the undistorted camera UndistortedK(K, distortion, size, alpha)
 // of its image, in the orientation of the image file (stored in the depth-map), scaled to the depth-map
-// resolution; alpha is the one used for the undistorted image files, or UNDISTORT_ALPHA for a native
-// export, which the MVS loader undistorts.
-// undistortedIntrinsics receives that undistorted camera per distorted camera.
+// resolution. Pass alpha for images undistorted on export. Omit it for native Brown images.
+// For an explicit alpha, undistortedIntrinsics receives each camera's working-orientation K.
 SFM_API bool UndistortDepthMaps(const Scene& scene,
 	const CLISTDEF2(String)& depthMapFiles,
-	double alpha=UNDISTORT_ALPHA,
+	std::optional<double> alpha=std::nullopt,
 	std::unordered_map<const Camera*, KMatrix>* undistortedIntrinsics=NULL);
 
 

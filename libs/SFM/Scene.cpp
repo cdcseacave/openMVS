@@ -1325,8 +1325,9 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 
 	if (outImagePaths)
 		outImagePaths->assign(images.size(), String());
+	int failures = 0;
 	#ifdef SCENE_USE_OPENMP
-	#pragma omp parallel for schedule(dynamic)
+	#pragma omp parallel for schedule(dynamic) reduction(+:failures)
 	#endif
 	for (int_t _i = 0; _i < (int_t)images.size(); ++_i) {
 		const IIndex i = static_cast<IIndex>(_i);
@@ -1336,29 +1337,32 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 		const auto itMaps = undistortMaps.find(img.pCamera);
 		if (itMaps == undistortMaps.end())
 			continue;
-		bool loadedHere = false;
-		if (!img.HasPixels()) {
-			const_cast<Image&>(img).LoadPixels();
-			loadedHere = true;
+		cv::Mat source = img.pixels;
+		if (source.empty()) {
+			if (!LoadImage(img.fileName, source, PF_R8G8B8)) {
+				if (img.IsValid()) {
+					VERBOSE("error: cannot read image '%s' for undistortion", img.fileName.c_str());
+					++failures;
+				}
+				continue;
+			}
+			img.ToWorkingOrientation(source);
 		}
-		if (!img.HasPixels())
-			continue;
 		cv::Mat undistorted;
-		itMaps->second.Remap(img.pixels, undistorted, cv::INTER_CUBIC);
-		if (loadedHere)
-			const_cast<Image&>(img).ReleasePixels();
+		itMaps->second.Remap(source, undistorted, cv::INTER_CUBIC);
 		// Restore original orientation if the working copy was rotated to landscape
 		undistorted = img.ToOriginalOrientation(undistorted);
 		const String stem = Util::getFileName(img.fileName);
-		const String outPath = outputDir + stem + extension;
+		const String outPath = outputDir + String::FormatString("%u_", i) + stem + extension;
 		if (!SaveImage(undistorted, outPath)) {
 			VERBOSE("error: saving undistorted image '%s' to '%s' failed", img.fileName.c_str(), outPath.c_str());
+			++failures;
 			continue;
 		}
 		if (outImagePaths)
 			(*outImagePaths)[i] = outPath;
 	}
-	return true;
+	return failures == 0;
 }
 
 // Precompute neighbor views based on shared track observations

@@ -223,12 +223,15 @@ bool PatchMatch::Impl::RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLB
 		nb.confOffset = src.conf ? (uint32_t)numConfs : CONF_NO_MAP; numConfs += src.conf ? area : 0;
 		nb.normalOffset = src.normal ? (uint32_t)numNormals : CONF_NO_MAP; numNormals += src.normal ? 3*area : 0;
 	}
-	ASSERT(numNormals < CONF_NO_MAP);
+	if (numDepths >= CONF_NO_MAP || numConfs >= CONF_NO_MAP || numNormals >= CONF_NO_MAP)
+		return false;
 	// a buffer of the given floats, at least one so that every binding holds one
 	const auto newFloats = [dev](size_t count) {
 		return [dev newBufferWithLength:sizeof(float)*MAXF(count, (size_t)1) options:MTLResourceStorageModeShared];
 	};
 	id<MTLBuffer> bDepths = newFloats(numDepths), bConfs = newFloats(numConfs), bNormals = newFloats(numNormals);
+	if (!bDepths || !bConfs || !bNormals)
+		return false;
 	for (size_t k = 0; k < neighbors.size(); ++k) {
 		const ConfNeighborHost& src = request.neighbors[k];
 		const MtlConfNeighbor& nb = neighbors[k];
@@ -246,6 +249,8 @@ bool PatchMatch::Impl::RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLB
 	id<MTLBuffer> bNeighbors = [dev newBufferWithBytes:(neighbors.empty() ? &noNeighbor : neighbors.data())
 		length:sizeof(MtlConfNeighbor)*MAXF(neighbors.size(), (size_t)1) options:MTLResourceStorageModeShared];
 	id<MTLBuffer> bPrior = newFloats((size_t)W*H), bOut = newFloats((size_t)W*H);
+	if (!bNeighbors || !bPrior || !bOut)
+		return false;
 
 	// two passes, each its own encoder: the sweep reads the prior the first one writes
 	id<MTLCommandBuffer> cb = [queue commandBuffer];
@@ -615,6 +620,8 @@ bool PatchMatch::AdjustConfidence(DepthData& depthData, const ConfAdjustRequest&
 	@autoreleasepool {
 		const int W(depthMap.cols), H(depthMap.rows);
 		id<MTLBuffer> bPlanes = [impl->device newBufferWithLength:sizeof(simd_float4)*W*H options:MTLResourceStorageModeShared];
+		if (!bPlanes)
+			return false;
 		simd_float4* planes = (simd_float4*)bPlanes.contents;
 		for (int r = 0; r < H; ++r)
 			for (int c = 0; c < W; ++c) {
@@ -627,6 +634,8 @@ bool PatchMatch::AdjustConfidence(DepthData& depthData, const ConfAdjustRequest&
 		id<MTLBuffer> bTrig = request.spherical ?
 			[impl->device newBufferWithBytes:request.refTrig.data() length:sizeof(request.refTrig[0])*request.refTrig.size() options:MTLResourceStorageModeShared] :
 			impl->dummyTrig;
+		if (!bConf || !bTrig)
+			return false;
 		return impl->RunConfidence(W, H, bPlanes, bConf, bTrig, !normalMap.empty(), false, request, confMap.ptr<float>());
 	}
 }

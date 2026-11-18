@@ -1767,7 +1767,7 @@ bool MatchGeometricSphericalTest()
 
 
 // ===============================================================================
-// Phase 5: Cube-map bridge tests
+// Cube-map bridge tests
 // ===============================================================================
 
 // Helper: synthesize a simple equirectangular test image with 6 distinct
@@ -1894,6 +1894,67 @@ bool CubeMapFaceRenderTest()
 }
 /*----------------------------------------------------------------*/
 
+bool UndistortDepthMapsTest()
+{
+	const ScopedTempDir dir(_T("UndistortDepthMapsTest"));
+	if (!dir.IsValid())
+		return false;
+	Scene scene;
+	const cv::Size size(96, 64);
+	auto* cam = new PinholeCamera(size, 75, 72, 44, 35);
+	cam->SetDistortion(-0.18, 0.04, 0.01, -0.025, 0);
+	scene.cameras.emplace_back(cam);
+	const Pose3D pose(RMatrix::IDENTITY, CMatrix::ZERO);
+	CLISTDEF2(String) paths;
+	for (unsigned i = 0; i < 3; ++i) {
+		Image& img = scene.images.emplace_back(i, dir("photo.png"), pose, 0, cam);
+		img.View::metadata.rotated = i == 2;
+		const cv::Size fileSize(img.GetOriginalSize());
+		const cv::Size depthSize(fileSize.width/(i+1), fileSize.height/(i+1));
+		MVS::DepthDataRaw data;
+		data.header.imageWidth = fileSize.width;
+		data.header.imageHeight = fileSize.height;
+		data.header.dMin = 1;
+		data.header.dMax = 3;
+		data.header.type = MVS::HeaderDepthDataRaw::CONF_ADJUSTED;
+		data.imageFileName = "../images/photo.png";
+		data.IDs.push_back(i);
+		data.K = cam->GetK();
+		img.RevertRotation(&data.K);
+		data.R = pose.R;
+		data.C = pose.C;
+		cv::Mat depth(depthSize, CV_32FC1, cv::Scalar(2)), normal(depthSize, CV_32FC3, cv::Scalar(0,0,-1));
+		cv::Mat confidence(depthSize, CV_32FC1, cv::Scalar(0.75));
+		paths.emplace_back(dir(String::FormatString("%u.dmap", i)));
+		if (!MVS::ExportDepthDataRaw(paths.back(), data, depth, normal, confidence, cv::Mat()))
+			return false;
+	}
+	if (!UndistortDepthMaps(scene, paths))
+		return false;
+	FOREACH(i, paths) {
+		const Image& img = scene.images[i];
+		const cv::Size sizeOnDisk(img.GetOriginalSize());
+		const cv::Size expected(sizeOnDisk.width/(i+1), sizeOnDisk.height/(i+1));
+		MVS::DepthDataRaw data;
+		cv::Mat depth, normal, confidence, views;
+		KMatrix K(cam->GetK());
+		img.RevertRotation(&K);
+		auto distortion = cam->GetDistortion();
+		if (img.IsRotated())
+			std::tie(distortion.p1, distortion.p2) = std::make_pair(-distortion.p2, distortion.p1);
+		if (!MVS::ImportDepthDataRaw(paths[i], data, depth, normal, confidence, views) ||
+			depth.size() != expected || normal.size() != expected || confidence.size() != expected ||
+			depth.at<float>(expected.height/2, expected.width/2) != 2.f ||
+			cv::norm(data.K, UndistortedK(K, distortion, sizeOnDisk), cv::NORM_INF) > 1e-10 ||
+			data.imageFileName != "../images/photo.png" || !(data.header.type & MVS::HeaderDepthDataRaw::CONF_ADJUSTED))
+			return false;
+	}
+	paths.assign(scene.images.size(), String());
+	paths[0] = dir("missing.dmap");
+	return !UndistortDepthMaps(scene, paths);
+}
+/*----------------------------------------------------------------*/
+
 bool CubeMapBridgeGeometryTest()
 {
 	VERBOSE("\n=== CubeMapBridgeGeometryTest: rig platform + face images + observations via ExportMVS ===");
@@ -1902,9 +1963,7 @@ bool CubeMapBridgeGeometryTest()
 	Pose3D poseRelGT;
 	BuildSphericalTwoViewScene(scene, poseRelGT);
 
-	// Export to a temp .mvs so we can inspect the serialised interface. The
-	// internal platform / image / vertex emission is exercised end-to-end
-	// (the 4 old bridge helpers are now file-local to InterfaceMVS.cpp).
+	// Inspect the exported rig, face images and observations together.
 	const ScopedTempDir tmpDir(_T("CubeMapBridgeGeometryTest"));
 	if (!tmpDir.IsValid())
 		return false;
@@ -2056,6 +2115,10 @@ bool CubeMapBridgeEndToEndTest()
 	pose.R = Matrix3x3::IDENTITY;
 	scene.images.emplace_back(0, srcFileName, pose, 0, scene.cameras[0]);
 
+	Image& unposed = scene.images.emplace_back(1, tmpDir("other/source.jxl"), pose, 0, scene.cameras[0]);
+	unposed.InvalidatePose();
+	unposed.pixels = cv::Mat(src.size(), CV_8UC3, cv::Scalar::all(0));
+
 	// Export via the full ExportMVS pipeline: it renders + saves the N faces
 	// under `undistortImageDir`, writes the .mvs, and emits the rig platform,
 	// face images and track vertices the same way production MVS export does.
@@ -2076,9 +2139,13 @@ bool CubeMapBridgeEndToEndTest()
 	}
 
 	// Verify each face file exists and its central pixel matches the patch color.
-	const String stem = Util::getFileName(srcFileName);
+	MVS::Interface iface;
+	if (!MVS::ARCHIVE::SerializeLoad(iface, mvsPath) || iface.images.size() != 12 || iface.platforms[0].poses.size() != 1)
+		return false;
 	for (unsigned k = 0; k < 6; ++k) {
-		const String faceFileName = outputDir + stem + String::FormatString(_T("_face%u"), k) + _T(".jxl");
+		if (iface.images[k+6].IsValid() || iface.images[k].name == iface.images[k+6].name)
+			return false;
+		const String faceFileName = tmpDir(iface.images[k].name);
 		if (!std::filesystem::exists(faceFileName.c_str())) {
 			VERBOSE("CubeMapBridgeEndToEndTest FAILED: face file '%s' not written", faceFileName.c_str());
 			return false;
@@ -2109,6 +2176,31 @@ bool CubeMapBridgeEndToEndTest()
 		}
 	}
 
+	// Import a normalized rig camera and measured subpixel observations through the public SfM API.
+	auto& platform = iface.platforms.front();
+	const KMatrix faceK(platform.cameras.front().K);
+	for (unsigned k = 0; k < platform.cameras.size(); ++k) {
+		const auto& cam = platform.cameras[k];
+		platform.SetFullK(k, cam.K, cam.width, cam.height, true);
+	}
+	iface.flags |= MVS::Interface::HAS_OBSERVATIONS;
+	auto& vertex = iface.vertices.emplace_back();
+	vertex.X = MVS::Interface::Pos3f(0, 0, 1);
+	for (unsigned k = 0; k < 2; ++k) {
+		auto& view = vertex.views.emplace_back();
+		view.imageID = k;
+		view.x = MVS::Interface::Pos2f(12.25f+k, 34.5f);
+	}
+	Scene imported;
+	if (!MVS::ARCHIVE::SerializeSave(iface, mvsPath) || !ImportMVS(mvsPath, imported) || imported.tracks.size() != 1)
+		return false;
+	for (const Observation& obs: imported.tracks.front()) {
+		const auto& img = imported.images[obs.imageID];
+		if (img.GetSize() != cv::Size(128,128) || cv::norm(img.GetK()-faceK) > 1e-9 ||
+			obs.featureID >= img.keypoints.size() ||
+			img.keypoints[obs.featureID].pt != cv::Point2f(12.25f+obs.imageID, 34.5f))
+			return false;
+	}
 	VERBOSE("CubeMapBridgeEndToEndTest PASSED (6 faces written + verified under %s)", tmpDir.Path().c_str());
 	return true;
 }

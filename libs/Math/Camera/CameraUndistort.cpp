@@ -14,13 +14,30 @@
 using namespace SEACAVE;
 
 
-// D E F I N E S ///////////////////////////////////////////////////
-
-// uncomment to enable save rendered faces to disk for visual inspection (debug only)
-//#define SPHERECUBEMAP_DEBUG_FACES
-
-
 // S T R U C T S ///////////////////////////////////////////////////
+
+BrownDistortion<REAL> SEACAVE::ParamsToBrownDistortion(const std::vector<double>& params)
+{
+	ASSERT(params.size() == 5 || params.size() == 8);
+	BrownDistortion<REAL> distortion{params[0], params[1], params[2], params[3], params[4], REAL(0), REAL(0), REAL(0)};
+	if (params.size() == 8) {
+		distortion.k4 = params[5];
+		distortion.k5 = params[6];
+		distortion.k6 = params[7];
+	}
+	return distortion;
+}
+// the 8-value form only if the rational terms are used
+std::vector<double> SEACAVE::BrownDistortionToParams(const BrownDistortion<REAL>& distortion)
+{
+	std::vector<double> params{distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3};
+	if (distortion.k4 != 0 || distortion.k5 != 0 || distortion.k6 != 0) {
+		params.push_back(distortion.k4);
+		params.push_back(distortion.k5);
+		params.push_back(distortion.k6);
+	}
+	return params;
+}
 
 KMatrix SEACAVE::UndistortedK(const KMatrix& K, const BrownDistortion<REAL>& distortion, const cv::Size& size, double alpha)
 {
@@ -415,13 +432,6 @@ std::vector<TImage<TYPE>> SphereCubeMap::SphericalToTangentialFaces(
 		RenderFaceKernel(sphericalImageWrapped, sphere, geometry.rotations[k],
 		                 f, cx, cy, geometry.faceSize, images[k]);
 
-	#ifdef SPHERECUBEMAP_DEBUG_FACES
-	for (int k = 0; k < geometry.numFaces; ++k) {
-		String fileName = MAKE_PATH(String::FormatString("spherical_face_%02d.png", k));
-		if (!images[k].Save(fileName))
-			DEBUG("Warning: failed to save debug face image: %s", fileName.c_str());
-	}
-	#endif
 
 	return images;
 }

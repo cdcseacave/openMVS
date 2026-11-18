@@ -125,7 +125,7 @@ public:
 			return depth > 0 && camera.IsInside(x, Point2f(size));
 		}
 		ImageRef ir;
-		if (!GetPixel(pt, size, ir))
+		if (depth <= 0 || !GetPixel(pt, size, ir))
 			return false;
 		x = Point2f((float)ir.x, (float)ir.y);
 		return true;

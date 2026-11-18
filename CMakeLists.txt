@@ -273,7 +273,7 @@ if(OpenMVS_USE_CUDA)
 		# the static CUDA libraries (cudart_static, cudadevrt) are built against the static CRT and
 		# request LIBCMT, while the targets link the DLL CRT, which provides all they need
 		if(MSVC AND NOT CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "^MultiThreaded(Debug)?$")
-			ADD_LINK_OPTIONS(/NODEFAULTLIB:LIBCMT)
+			ADD_LINK_OPTIONS("$<HOST_LINK:/NODEFAULTLIB:LIBCMT>")
 		endif()
 		# Add OpenMP support to CUDA host compiler
 		if(_USE_OPENMP)

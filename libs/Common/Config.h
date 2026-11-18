@@ -225,8 +225,11 @@
 #	define FORCEINLINE inline
 #endif
 
-// function callable from both host code and CUDA device code
 #ifdef __CUDACC__
+	// the CUDA keyword, on the device as on the host side of the same function
+#	undef FORCEINLINE
+#	define FORCEINLINE __forceinline__
+	// function callable from both host code and CUDA device code
 #	define HOST_DEVICE __host__ __device__
 #else
 #	define HOST_DEVICE

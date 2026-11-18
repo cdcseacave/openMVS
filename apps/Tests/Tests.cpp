@@ -264,7 +264,7 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::CubeMapFaceRenderTest())
 				return false;
-			if (!SFM::CubeMapBridgeGeometryTest())
+			if (!SFM::UndistortDepthMapsTest() || !SFM::CubeMapBridgeGeometryTest())
 				return false;
 			if (!SFM::CubeMapBridgeEndToEndTest())
 				return false;

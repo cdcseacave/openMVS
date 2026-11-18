@@ -88,7 +88,7 @@ def get_image_pose(scene, image):
   return R, C
 
 
-def scale_depth_map(scene, image_idx, depth_map, verbose=False):
+def scale_depth_map(scene, image_idx, depth_map, verbose=False, *, depth_K=None):
   """
   Estimate the scale and shift of the depth map based on the scene sparse point cloud,
   ussing RANSAC to find the best fit:
@@ -105,13 +105,11 @@ def scale_depth_map(scene, image_idx, depth_map, verbose=False):
 
   # Collect 3D points and corresponding depth values
   image = scene["images"][image_idx]
-  image_width  = scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["width"]
-  image_height = scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["height"]
-  K = np.array(scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["K"])
-  assert get_image_pose(scene, image) is not None, "the image must have a pose"
+  camera = scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]
   R, C = get_image_pose(scene, image)
-  K = scale_K(K, depth_map.shape[1] / image_width, depth_map.shape[0] / image_height)
-  spherical = scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]].get("model") == CAMERA_MODEL_SPHERICAL
+  if depth_K is None:
+    depth_K = scale_K(np.asarray(camera["K"]), depth_map.shape[1] / camera["width"], depth_map.shape[0] / camera["height"])
+  spherical = camera.get("model") == CAMERA_MODEL_SPHERICAL
   depths_sfm = []
   depths_dmap = []
   mean_depth = 0
@@ -124,7 +122,7 @@ def scale_depth_map(scene, image_idx, depth_map, verbose=False):
         # the depth is z for a pinhole camera and the range |X| for a spherical one
         if not spherical and Xcam[2] <= 0:
           break
-        px, py, depth_sfm = projectCamera(K, Xcam, spherical)
+        px, py, depth_sfm = projectCamera(depth_K, Xcam, spherical)
         x = np.array([px, py])
         depth_dmap = sample_depth_map(depth_map, x, wrap_columns=spherical)
         if depth_dmap <= 0:
@@ -258,32 +256,53 @@ def import_dmaps(scene_file, input_dir, ext, output_file, rescale=True, verbose=
       print(f"Warning: Could not load depth map for {image_name}")
       continue
 
+    camera = scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]
+    image_id = image.get("id", NO_ID)
+    if image_id == NO_ID:
+      image_id = idx
+    image_path = os.path.join(os.path.dirname(os.path.abspath(scene_file)), image["name"])
+    width, height = camera.get("width", 0), camera.get("height", 0)
+    K = np.asarray(camera["K"])
+    if not width or not height:
+      # A normalized interface camera gets its resolution from each image file.
+      import cv2
+      pixels = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE | cv2.IMREAD_IGNORE_ORIENTATION)
+      if pixels is None:
+        raise ValueError(f"Cannot determine the resolution of {image_path}")
+      height, width = pixels.shape
+      K = scale_K(K, max(width, height), max(width, height))
+    try:
+      stored_path = os.path.relpath(image_path, output_file)
+    except ValueError:  # separate Windows drives
+      stored_path = image_path
+
     if rescale:
       # Scale and shift the depth map
-      scale, shift = scale_depth_map(scene, idx, depth_map, verbose)
+      scale, shift = scale_depth_map(scene, idx, depth_map, verbose,
+                                     depth_K=scale_K(K, depth_map.shape[1] / width, depth_map.shape[0] / height))
       depth_map[depth_map != 0] = scale * depth_map[depth_map != 0] + shift
 
     # Create DMAP data; saveDMAP derives the stored content from the maps present here,
     # so an imported depth-map carries no normals, confidence or views
     dmap_data = {
-      "image_width": scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["width"],
-      "image_height": scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["height"],
+      "image_width": width,
+      "image_height": height,
       "depth_width": depth_map.shape[1],
       "depth_height": depth_map.shape[0],
       "depth_min": np.min(depth_map[depth_map > 0]) if np.any(depth_map > 0) else 0,
       "depth_max": np.max(depth_map),
-      "file_name": image["name"],
-      "reference_view_id": image["id"],
+      "file_name": stored_path,
+      "reference_view_id": image_id,
       "neighbor_view_ids": [],
-      "K": scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["K"],
+      "K": K,
       "R": pose[0],
       "C": pose[1],
       "depth_map": depth_map,
-      "spherical": scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]].get("model") == CAMERA_MODEL_SPHERICAL,
+      "spherical": camera.get("model") == CAMERA_MODEL_SPHERICAL,
     }
 
     # Save DMAP
-    dmap_output_path = os.path.join(output_file, f"depth{image['id']:04d}.dmap")
+    dmap_output_path = os.path.join(output_file, f"depth{image_id:04d}.dmap")
     saveDMAP(dmap_data, dmap_output_path)
 
 

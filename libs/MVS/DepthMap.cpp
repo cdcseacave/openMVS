@@ -447,7 +447,6 @@ void DepthEstimatorBase::MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& co
 	}
 }
 
-float DepthEstimatorBase::fSphericalWarpMaxElevation(70.f);
 
 // replace POWI(0.5f, idxScaleRange):           0    1      2       3       4         5         6           7           8             9             10              11
 const float DepthEstimatorBase::scaleRanges[12] = {1.f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f, 0.001953125f, 0.0009765625f, 0.00048828125f};
@@ -1091,18 +1090,7 @@ float DepthEstimatorT<MODEL>::ScorePixel(Depth depth, const Normal& normal)
 	// set score as the nth element
 	return scores.GetNth(idxScore);
 	#elif DENSE_AGGNCC == DENSE_AGGNCC_MEAN
-	// set score as the average similarity
-	#if 1
 	return scores.mean();
-	#else
-	const float* pscore(scores.data());
-	const float* pescore(pscore+scores.rows());
-	float score(0);
-	do {
-		score += MINF(*pscore, thRobust);
-	} while (++pscore <= pescore);
-	return score/scores.rows();
-	#endif
 	#elif DENSE_AGGNCC == DENSE_AGGNCC_MIN
 	// set score as the min similarity
 	return scores.minCoeff();
@@ -1110,9 +1098,6 @@ float DepthEstimatorT<MODEL>::ScorePixel(Depth depth, const Normal& normal)
 	// set score as the min-mean similarity
 	if (idxScore == 0)
 		return *std::min_element(scores.cbegin(), scores.cend());
-	#if 0
-	return std::accumulate(scores.cbegin(), &scores.GetNth(idxScore), 0.f) / idxScore;
-	#elif 1
 	const float* pescore(&scores.GetNth(idxScore));
 	const float* pscore(scores.cbegin());
 	int n(1); float score(*pscore);
@@ -1124,21 +1109,21 @@ float DepthEstimatorT<MODEL>::ScorePixel(Depth depth, const Normal& normal)
 		++n;
 	} while (pscore < pescore);
 	return score/n;
-	#else
-	const float thScore(MAXF(*std::min_element(scores.cbegin(), scores.cend()), 0.05f)*2);
-	const float* pscore(scores.cbegin());
-	const float* pescore(pscore+scores.size());
-	int n(0); float score(0);
-	do {
-		const float s(*pscore);
-		if (s <= thScore) {
-			score += s;
-			++n;
-		}
-	} while (++pscore <= pescore);
-	return score/n;
 	#endif
-	#endif
+}
+
+// Claim a pending estimate for a short read or write. A completed estimate can be read lock-free.
+static bool LockPendingEstimate(DepthEstimatorBase::PixelPending& flag)
+{
+	using Base = DepthEstimatorBase;
+	uint8_t state = flag.load(std::memory_order_acquire);
+	while (state != Base::COMPLETE) {
+		ASSERT(state == Base::PENDING || state == Base::LOCKED);
+		if (state == Base::PENDING && flag.compare_exchange_weak(state, Base::LOCKED, std::memory_order_acquire))
+			return true;
+		state = flag.load(std::memory_order_acquire);
+	}
+	return false;
 }
 
 // estimate the pixel of the given index in the pass order; its estimate is written to the maps at the
@@ -1150,7 +1135,7 @@ void DepthEstimatorT<MODEL>::ProcessPixel(IDX idx)
 	ASSERT(dir == LT2RB || dir == RB2LT);
 	const ImageRef x(dir == LT2RB ? coords[idx] : coords[coords.size()-1-idx]);
 	PixelPending& flag = pending[x.y*size.width+x.x];
-	ASSERT(flag.load(std::memory_order_relaxed) == 1);
+	ASSERT(flag.load(std::memory_order_relaxed) != COMPLETE);
 	// a preceding 4-neighbor (left and up from left-top to right-bottom, right and down the other way;
 	// the one across the seam of a spherical reference comes later in the order) still in flight fewer
 	// than nZigzagMinStride pixels before x lies on the short anti-diagonals of a stripe corner, where the
@@ -1162,47 +1147,49 @@ void DepthEstimatorT<MODEL>::ProcessPixel(IDX idx)
 		if (nx.x < 0 || nx.y < 0 || nx.x >= size.width || nx.y >= size.height)
 			continue;
 		const PixelPending& nflag = pending[nx.y*size.width+nx.x];
-		if (nflag.load(std::memory_order_acquire) == 0)
+		if (nflag.load(std::memory_order_acquire) == COMPLETE)
 			continue;
 		for (IDX k=1; k<=MINF((IDX)nZigzagMinStride, idx); ++k) {
 			const ImageRef p(dir == LT2RB ? coords[idx-k] : coords[coords.size()-1-(idx-k)]);
 			if (p.x == nx.x && p.y == nx.y) {
-				while (nflag.load(std::memory_order_acquire))
+				while (nflag.load(std::memory_order_acquire) != COMPLETE)
 					std::this_thread::yield();
 				break;
 			}
 		}
 	}
-	if (PreparePixelPatch(x) && FillPixelPatch()) {
-		Depth depth(depthMap0(x));
-		Normal normal(normalMap0(x));
-		float conf(confMap0(x));
+	const bool update = PreparePixelPatch(x) && FillPixelPatch();
+	Depth depth;
+	Normal normal;
+	float conf;
+	if (update) {
+		depth = depthMap0(x);
+		normal = normalMap0(x);
+		conf = confMap0(x);
 		EstimatePixel(depth, normal, conf);
-		flag.store(2, std::memory_order_relaxed);
-		std::atomic_thread_fence(std::memory_order_release);
+	}
+	const bool locked = LockPendingEstimate(flag);
+	ASSERT(locked);
+	(void)locked;
+	if (update) {
 		depthMap0(x) = depth;
 		normalMap0(x) = normal;
 		confMap0(x) = conf;
 	}
-	flag.store(0, std::memory_order_release);
+	flag.store(COMPLETE, std::memory_order_release);
 }
-// the estimate of reference pixel nx as one whole, read again if its estimator wrote it meanwhile:
-// the one of this pass if nx is estimated already, else the previous pass's
+
 template<template<typename> class MODEL>
 void DepthEstimatorT<MODEL>::ReadEstimate(const ImageRef& nx, Depth& depth, Normal& normal, float& conf) const
 {
-	const PixelPending& flag = pending[nx.y*size.width+nx.x];
-	for (;;) {
-		const uint8_t state(flag.load(std::memory_order_acquire));
-		if (state == 2)
-			continue;
-		depth = depthMap0(nx);
-		normal = normalMap0(nx);
-		conf = confMap0(nx);
-		std::atomic_thread_fence(std::memory_order_acquire);
-		if (flag.load(std::memory_order_relaxed) == state)
-			return;
-	}
+	ASSERT(depthMap0.isInside(nx));
+	PixelPending& flag = pending[nx.y*size.width+nx.x];
+	const bool locked = LockPendingEstimate(flag);
+	depth = depthMap0(nx);
+	normal = normalMap0(nx);
+	conf = confMap0(nx);
+	if (locked)
+		flag.store(PENDING, std::memory_order_release);
 }
 
 // run propagation and random refinement cycles on the prepared pixel x0;

@@ -114,33 +114,21 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 
 	// load the images into copies: the pixels serve this refinement only, the scene images keep their
 	// resolution and cameras
-	// TODO: replace with images cache
 	ImageArr scaledImages(images.size());
+	int loadFailures = 0;
 	#ifdef SCENE_USE_OPENMP
-	bool bAbort(false);
-	#pragma omp parallel for
-	for (int64_t _idx=0; _idx<(int64_t)images.size(); ++_idx) {
-		#pragma omp flush (bAbort)
-		if (bAbort)
-			continue;
-		const IIndex idx(static_cast<IIndex>(_idx));
-	#else
-	FOREACH(idx, images) {
+	#pragma omp parallel for reduction(+:loadFailures)
 	#endif
+	for (int64_t _idx=0; _idx<(int64_t)images.size(); ++_idx) {
+		const IIndex idx(static_cast<IIndex>(_idx));
 		if (!images[idx].IsValid())
 			continue;
 		Image& view = scaledImages[idx];
 		view = images[idx];
 		view.ReleaseImage(); // the copy shares the pixels of the scene image: decode into its own buffer
 		if (!view.ReloadImage(1024)) {
-			#ifdef SCENE_USE_OPENMP
-			bAbort = true;
-			#pragma omp flush (bAbort)
+			++loadFailures;
 			continue;
-			#else
-			pointcloud.normals.Release();
-			return false;
-			#endif
 		}
 		view.UpdateCamera(platforms);
 		if (view.IsSpherical()) {
@@ -152,12 +140,10 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 			view.camera.K(0,2) += seamMargin;
 		}
 	}
-	#ifdef SCENE_USE_OPENMP
-	if (bAbort) {
+	if (loadFailures != 0) {
 		pointcloud.normals.Release();
 		return false;
 	}
-	#endif
 
 	// Define optimization data structure
 	struct NormalOptimizationData {

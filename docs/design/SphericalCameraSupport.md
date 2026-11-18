@@ -89,8 +89,10 @@ on-disk orientation (`View::RevertRotation` for `K`; `p1' = -p2`, `p2' = p1`; th
 - Pinhole with distortion: `BROWN` (`k1,k2,p1,p2,k3`, plus `k4,k5,k6` for the rational model) and the original
   image paths; no image is written. `libs/MVS` undistorts on
   load (`CameraModels.md`). Only with `ExportMVSConfig::undistortImageDir` (`CreateStructure
-  --undistort-extension <ext>`) are images undistorted on export by `Scene::UndistortImages` and written as
-  `PINHOLE` cameras of `UndistortedK(K, distortion, size, undistortAlpha)`.
+  --undistort-extension <ext>`) are images undistorted on export by `Scene::UndistortImages`, written as
+  `<index>_<stem><ext>` (the SfM image index keeps equal stems from different folders apart), and
+  exported as `PINHOLE` cameras of `UndistortedK(K, distortion, size, undistortAlpha)`; the export fails
+  if a posed image can not be undistorted.
 - Spherical, `NATIVE` (default, `--spherical-export native`): `SPHERICAL` with the angular `K` of
   `Spherical<REAL>::FromSize(W, H)` and the original image paths.
 - Spherical, `CUBEMAP` (`--spherical-export cubemap`): the bridge below.
@@ -102,18 +104,16 @@ track observation has no keypoint.
 
 The cube-map bridge builds one `SphereCubeMap::TangentFacesGeometry` for `(sphericalNumFaces,
 sphericalFaceSize)` (the face count must be 4, 6, 8, 12 or 20, `IsSupportedNumFaces`, else the export
-fails), then runs four file-local helpers of `InterfaceMVS.cpp`:
-1. `EmitSphericalPlatforms`: one MVS `Platform` per spherical SFM camera with N face `Camera` records.
-2. `AppendSphericalFaceImages`: N `Interface::Image` records per source image, named `<stem>_face<k><ext>`,
-   with IDs from a synthetic counter past the maximum SFM image ID.
-3. `RenderAndSaveSphericalFaces`: renders the faces and writes them to disk.
-4. `ProjectTrackOntoSphericalFaces`: each 3D track point gets a `Vertex::View` in every face whose camera
-   has it in front.
+fails). Three helpers in `InterfaceMVS.cpp` share that geometry.
 
-`UndistortDepthMaps` (`InterfaceMVS.cpp`, the ROMA2 depth-maps of `CreateStructure`) is pinhole-only. It
-writes each depth-map in the frame of the undistorted camera of its image, `UndistortedK` scaled to the
-depth-map resolution, and stores that `K'`: `alpha` is `UNDISTORT_ALPHA` for a native export and
-`--undistort-alpha` for an undistorted one. It uses `UndistortMaps` (`CameraModels.md`).
+1. `EmitSphericalPlatforms` creates one platform per spherical SfM camera with one calibrated camera per face.
+2. `ExportSphericalFaces` renders the face files and registers their paths as `cube<ID>_<stem>_face<k><ext>`.
+   IDs start above the maximum source image ID. The faces share the source pose when available.
+3. `ProjectTrackOntoSphericalFaces` emits a view for each face containing the feature ray or projected point.
+
+`UndistortDepthMaps` remaps pinhole-family depth maps to the exported image frame. Native Brown exports use
+the on-disk orientation and `UNDISTORT_ALPHA`. Undistorted exports use the working orientation and
+`--undistort-alpha`. The header stores intrinsics at image resolution. Pixel remapping uses those intrinsics scaled to the depth-map resolution.
 
 ### MVS load
 

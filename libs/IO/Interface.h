@@ -4,6 +4,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include <algorithm>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -368,6 +369,8 @@ bool SerializeLoad(_Tp& obj, const std::string& fileName, uint32_t* pVersion=NUL
 	// serialize in the current state
 	ARCHIVE::ArchiveLoad serializer(stream, version);
 	serializer & obj;
+	if (!stream)
+		return false;
 	if (pVersion)
 		*pVersion = version;
 	return true;
@@ -442,11 +445,14 @@ template<>
 inline bool Load<std::string>(ArchiveLoad& a, std::string& s) {
 	uint64_t size;
 	Load(a, size);
-	if (size > 0) {
-		s.resize(size);
-		a.stream.read(&s[0], sizeof(char)*size);
+	if (!a.stream || size > s.max_size()) {
+		a.stream.setstate(std::ios::failbit);
+		return false;
 	}
-	return true;
+	s.resize((size_t)size);
+	if (size)
+		a.stream.read(&s[0], (std::streamsize)size);
+	return bool(a.stream);
 }
 
 // Serialization support for std::vector
@@ -462,12 +468,17 @@ template<typename _Tp>
 inline bool Load(ArchiveLoad& a, std::vector<_Tp>& v) {
 	uint64_t size;
 	Load(a, size);
-	if (size > 0) {
-		v.resize(size);
-		for (uint64_t i=0; i<size; ++i)
-			Load(a, v[i]);
+	if (!a.stream || size > v.max_size()) {
+		a.stream.setstate(std::ios::failbit);
+		return false;
 	}
-	return true;
+	v.resize((size_t)size);
+	for (auto& value: v) {
+		if (!a.stream)
+			return false;
+		Load(a, value);
+	}
+	return bool(a.stream);
 }
 
 } // namespace ARCHIVE
@@ -605,11 +616,11 @@ struct Interface
 		}
 		static Mat33d ScaleK(const Mat33d& _K, double scale) {
 			Mat33d K(_K);
-			const bool bNormalized(K(0,2) < 3 && K(1,2) < 3);
+			// Keep pixel centers at integer coordinates in both directions, including normalization.
 			K(0,0) *= scale;
 			K(1,1) *= scale;
-			K(0,2) = bNormalized ? K(0,2)*scale : (K(0,2)+0.5)*scale-0.5;
-			K(1,2) = bNormalized ? K(1,2)*scale : (K(1,2)+0.5)*scale-0.5;
+			K(0,2) = (K(0,2)+0.5)*scale-0.5;
+			K(1,2) = (K(1,2)+0.5)*scale-0.5;
 			K(0,1) *= scale;
 			return K;
 		}
@@ -1245,7 +1256,8 @@ inline void UnpackNormals(const int16_t* packed, int rows, int cols, cv::Mat& no
 inline bool ExportDepthDataRaw(std::ostream& stream, const DepthDataRaw& data,
 	const cv::Mat& depthMap, const cv::Mat& normalMap, const cv::Mat& confMap, const cv::Mat& viewsMap)
 {
-	if (depthMap.empty() || depthMap.type() != CV_32FC1 || data.IDs.empty() || data.IDs.size() >= 256)
+	if (depthMap.empty() || depthMap.type() != CV_32FC1 || data.IDs.empty() || data.IDs.size() >= 256 ||
+		data.imageFileName.size() > std::numeric_limits<uint16_t>::max())
 		return false;
 	if ((!normalMap.empty() && (normalMap.type() != CV_32FC3 || normalMap.rows != depthMap.rows || normalMap.cols != depthMap.cols)) ||
 		(!confMap.empty() && (confMap.type() != CV_32FC1 || confMap.rows != depthMap.rows || confMap.cols != depthMap.cols)) ||

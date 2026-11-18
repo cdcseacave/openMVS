@@ -56,34 +56,6 @@ static_assert((uint8_t)CameraModelType::PINHOLE == Interface::Platform::Camera::
 static_assert((uint8_t)CameraModelType::BROWN == Interface::Platform::Camera::BROWN, "camera model ids differ");
 static_assert((uint8_t)CameraModelType::SPHERICAL == Interface::Platform::Camera::SPHERICAL, "camera model ids differ");
 
-namespace {
-
-// the Interface BROWN params: k1,k2,p1,p2,k3[,k4,k5,k6]
-BrownDistortion<REAL> ParamsToBrownDistortion(const std::vector<double>& params)
-{
-	ASSERT(params.size() == 5 || params.size() == 8);
-	BrownDistortion<REAL> distortion{params[0], params[1], params[2], params[3], params[4], REAL(0), REAL(0), REAL(0)};
-	if (params.size() == 8) {
-		distortion.k4 = params[5];
-		distortion.k5 = params[6];
-		distortion.k6 = params[7];
-	}
-	return distortion;
-}
-// the 8-value form only if the rational terms are used
-std::vector<double> BrownDistortionToParams(const BrownDistortion<REAL>& distortion)
-{
-	std::vector<double> params{distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3};
-	if (distortion.k4 != 0 || distortion.k5 != 0 || distortion.k6 != 0) {
-		params.push_back(distortion.k4);
-		params.push_back(distortion.k5);
-		params.push_back(distortion.k6);
-	}
-	return params;
-}
-
-} // namespace
-
 void Scene::Release()
 {
 	platforms.Release();
@@ -207,13 +179,23 @@ bool Scene::LoadInterface(const String& fileName)
 			Util::ensureUnifySlash(imageData.maskName);
 			imageData.maskName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageData.maskName);
 		}
+		imageData.platformID = image.platformID;
+		imageData.cameraID = image.cameraID;
 		imageData.poseID = image.poseID;
+		if ((image.platformID != NO_ID && image.platformID >= obj.platforms.size()) ||
+			(image.cameraID != NO_ID && (image.platformID == NO_ID || image.cameraID >= obj.platforms[image.platformID].cameras.size()))) {
+			VERBOSE("error: invalid camera for image '%s'", image.name.c_str());
+			return false;
+		}
 		if (imageData.poseID == NO_ID) {
 			DEBUG_EXTRA("warning: uncalibrated image '%s'", image.name.c_str());
 			continue;
 		}
-		imageData.platformID = image.platformID;
-		imageData.cameraID = image.cameraID;
+		if (image.platformID == NO_ID || image.cameraID == NO_ID ||
+			image.poseID >= obj.platforms[image.platformID].poses.size()) {
+			VERBOSE("error: invalid camera or pose for image '%s'", image.name.c_str());
+			return false;
+		}
 		// init camera
 		const Interface::Platform::Camera& camera = obj.platforms[image.platformID].cameras[image.cameraID];
 		if (camera.HasResolution()) {
@@ -249,6 +231,11 @@ bool Scene::LoadInterface(const String& fileName)
 		return false;
 
 	// import 3D points
+	if ((!obj.verticesNormal.empty() && obj.verticesNormal.size() != obj.vertices.size()) ||
+		(!obj.verticesColor.empty() && obj.verticesColor.size() != obj.vertices.size())) {
+		VERBOSE("error: point attributes have different lengths in '%s'", fileName.c_str());
+		return false;
+	}
 	if (!obj.vertices.empty()) {
 		bool bValidWeights(false);
 		pointcloud.points.resize(obj.vertices.size());
@@ -273,13 +260,17 @@ bool Scene::LoadInterface(const String& fileName)
 				return vertex.views[i0].imageID < vertex.views[i1].imageID;
 			});
 			ASSERT(vertex.views.size() >= 2);
-			views.ForEach([&](PointCloud::ViewArr::IDX v) {
+			FOREACH(v, views) {
 				const Interface::Vertex::View& view = vertex.views[indices[v]];
+				if (view.imageID >= images.size() || !images[view.imageID].IsValid()) {
+					VERBOSE("error: invalid image in views of point %u", (unsigned)i);
+					return false;
+				}
 				views[v] = view.imageID;
 				weights[v] = view.confidence;
 				if (view.confidence != 0)
 					bValidWeights = true;
-			});
+			}
 			if (obj.HasObservations()) {
 				// observations in the frame of the camera, as the images are read
 				PointCloud::ObservationArr& observations = pointcloud.pointObservations[i];
@@ -510,7 +501,7 @@ bool Scene::LoadDMAP(const String& fileName)
 		platform.cameras.back().model = CameraModelType::SPHERICAL; // K is the angular camera matrix, the depth the range
 	platform.poses.emplace_back(Platform::Pose{camera.R, camera.C});
 	Image& image = images.AddEmpty();
-	image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageFileName);
+	image.name = MAKE_PATH_FULL(Util::getFullPath(Util::getFilePath(fileName)), imageFileName);
 	image.platformID = 0;
 	image.cameraID = 0;
 	image.poseID = 0;
@@ -698,7 +689,7 @@ Scene::SCENE_TYPE Scene::Load(const String& fileName, bool bImport)
 		return SCENE_NA;
 	}
 	// load project version
-	uint32_t nVer;
+	uint32_t nVer = 0;
 	fs.read((char*)&nVer, sizeof(uint32_t));
 	if (!fs || nVer != PROJECT_VER) {
 		VERBOSE("error: project saved by a different version (stream version %u, expected %u): "
@@ -712,7 +703,7 @@ Scene::SCENE_TYPE Scene::Load(const String& fileName, bool bImport)
 	uint64_t nReserved;
 	fs.read((char*)&nReserved, sizeof(uint64_t));
 	// serialize in the current state
-	if (!SerializeLoad(*this, fs, (ARCHIVE_TYPE)nType)) {
+	if (!fs || !SerializeLoad(*this, fs, (ARCHIVE_TYPE)nType)) {
 		VERBOSE("error: unable to load project data");
 		return SCENE_NA;
 	}
@@ -805,9 +796,9 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 		"  <MLRaster label=\"%s\">\n"
 		"   <VCGCamera TranslationVector=\"%0.6g %0.6g %0.6g 1\"";
 	static const char mlp_raster_cam[] =
-		" LensDistortion=\"%0.6g %0.6g\""
+		" LensDistortion=\"0 0\""
 		" ViewportPx=\"%u %u\""
-		" PixelSizeMm=\"1 %0.4f\""
+		" PixelSizeMm=\"1 %.10g\""
 		" FocalMm=\"%0.4f\""
 		" CenterPx=\"%0.4f %0.4f\"";
 	static const char mlp_raster_rot[] =
@@ -818,8 +809,29 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 	Util::ensureFolder(fileName);
 	File f(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
 
+	if (!f.isOpen())
+		return false;
+	const String projectDir(MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName)));
+	// MeshLab resolves both mesh and raster paths relative to the project.
+	const auto ProjectPath = [&](const String& path) {
+		ASSERT(!path.empty());
+		return MAKE_PATH_REL(projectDir, MAKE_PATH_FULL(WORKING_FOLDER_FULL, path));
+	};
+	const auto XmlAttribute = [](const String& value) {
+		String escaped;
+		escaped.reserve(value.size());
+		for (const char c: value) {
+			switch (c) {
+			case '&': escaped += "&amp;"; break;
+			case '<': escaped += "&lt;"; break;
+			case '"': escaped += "&quot;"; break;
+			default: escaped += c;
+			}
+		}
+		return escaped;
+	};
 	// write MLP header containing the referenced PLY file
-	f.print(mlp_header, Util::getFileName(fileNameScene).c_str(), MAKE_PATH_REL(WORKING_FOLDER_FULL, fileNameScene).c_str());
+	f.print(mlp_header, XmlAttribute(Util::getFileName(fileNameScene)).c_str(), XmlAttribute(ProjectPath(fileNameScene)).c_str());
 
 	// write the raster layers: MeshLab sees a pinhole camera, so a spherical image is left out, and the
 	// image file of a BROWN camera is written undistorted onto the camera grid (the pixels the camera
@@ -854,20 +866,19 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 		}
 		const Camera& camera = imageData.camera;
 		f.print(mlp_raster_pos,
-			Util::getFileName(imageData.name).c_str(),
+			XmlAttribute(Util::getFileName(imageData.name)).c_str(),
 			-camera.C.x, -camera.C.y, -camera.C.z
 		);
 		f.print(mlp_raster_cam,
-			0.0, 0.0, // the lens distortion: doubles for %g (an int shifts every later value on x86-64 System V)
 			imageData.width, imageData.height,
-			camera.K(1,1)/camera.K(0,0), camera.K(0,0),
+			camera.K(0,0)/camera.K(1,1), camera.K(0,0),
 			camera.K(0,2), camera.K(1,2)
 		);
 		f.print(mlp_raster_rot,
 			 camera.R(0,0),  camera.R(0,1),  camera.R(0,2),
 			-camera.R(1,0), -camera.R(1,1), -camera.R(1,2),
 			-camera.R(2,0), -camera.R(2,1), -camera.R(2,2),
-			MAKE_PATH_REL(WORKING_FOLDER_FULL, rasterName).c_str()
+			XmlAttribute(ProjectPath(rasterName)).c_str()
 		);
 	}
 	f << " </RasterGroup>\n</MeshLabProject>\n";

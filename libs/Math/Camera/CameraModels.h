@@ -36,13 +36,6 @@ namespace SEACAVE {
 //    along x and y, then Ray(x)), PixelHomography(r) maps rays near r to homogeneous pixels;
 //    the plane-induced patch warp between two views is composed from these two.
 
-// the small hot helpers below are always inlined, on the host and on the device
-#ifdef __CUDACC__
-#define CAMERAMODELS_FORCEINLINE __forceinline__
-#else
-#define CAMERAMODELS_FORCEINLINE FORCEINLINE
-#endif
-
 // the plain scalar of T: T itself, or the value type of a Ceres Jet; the constants of the models that
 // Ceres differentiates are written in it, so that a Jet is offset or scaled by a scalar instead of
 // combined with a constant Jet (a full Jet operation per constant in the bundle adjustment)
@@ -52,7 +45,7 @@ template<typename T, int N> struct ScalarOf<ceres::Jet<T,N>> { typedef T type; }
 // atan2 in single precision by a minimax polynomial of atan on [0,1] (max error 1.3e-7 rad, the
 // precision of the float atan2), several times cheaper than the library atan2 on the CPU and the GPU;
 // the CPU packet version (DepthMap.cpp) evaluates the same polynomial lane by lane
-HOST_DEVICE CAMERAMODELS_FORCEINLINE float FastAtan2(float y, float x) {
+HOST_DEVICE FORCEINLINE float FastAtan2(float y, float x) {
 	const float ax(x < 0.f ? -x : x), ay(y < 0.f ? -y : y);
 	const float mx(ax > ay ? ax : ay);
 	if (mx == 0.f)
@@ -94,7 +87,7 @@ struct Pinhole {
 		return Vec2(fx * n.x() + cx, fy * n.y() + cy);
 	}
 	// camera-space point -> normalized image-plane coordinates
-	HOST_DEVICE static CAMERAMODELS_FORCEINLINE Vec2 Perspective(const Vec3& X) {
+	HOST_DEVICE static FORCEINLINE Vec2 Perspective(const Vec3& X) {
 		const T invZ(typename ScalarOf<T>::type(1) / X.z());
 		return Vec2(X.x() * invZ, X.y() * invZ);
 	}
@@ -107,7 +100,7 @@ struct Pinhole {
 		x = NormalizedToPixel(Perspective(X));
 		return X.z() > T(0);
 	}
-	HOST_DEVICE CAMERAMODELS_FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x) const {
+	HOST_DEVICE FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x) const {
 		return Project(X, x);
 	}
 	HOST_DEVICE static T Depth(const Vec3& X) {
@@ -139,7 +132,7 @@ struct Pinhole {
 // and meaning: radial (1+k1*r2+k2*r4+k3*r6)/(1+k4*r2+k5*r4+k6*r6), tangential p1, p2;
 // the rational part k4..k6 is zero for the plain polynomial model
 template<typename T>
-HOST_DEVICE CAMERAMODELS_FORCEINLINE Eigen::Matrix<T,2,1> DistortBrown(const Eigen::Matrix<T,2,1>& p,
+HOST_DEVICE FORCEINLINE Eigen::Matrix<T,2,1> DistortBrown(const Eigen::Matrix<T,2,1>& p,
 	const T& k1, const T& k2, const T& p1, const T& p2, const T& k3, const T& k4, const T& k5, const T& k6)
 {
 	const T x2(p.x() * p.x());
@@ -256,7 +249,7 @@ struct Spherical {
 	}
 	// Project in single precision through FastAtan2, for the patch warps' hot loops, given
 	// rho = sqrt(X.x^2+X.z^2) (which PixelHomography takes too)
-	HOST_DEVICE CAMERAMODELS_FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x, T rho) const {
+	HOST_DEVICE FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x, T rho) const {
 		using std::abs; using std::sqrt;
 		// rho is the caller's sqrt(X.x^2+X.z^2): equal up to rounding only, as compilers that contract
 		// a*a+b*b into an fma (clang, GCC, nvcc) round the caller's and this expression differently
@@ -266,7 +259,7 @@ struct Spherical {
 			fy * FastAtan2(X.y(), rho) + cy);
 		return rho > T(0) || X.y() != T(0);
 	}
-	HOST_DEVICE CAMERAMODELS_FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x) const {
+	HOST_DEVICE FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x) const {
 		using std::sqrt;
 		return ProjectFast(X, x, sqrt(X.x()*X.x() + X.z()*X.z()));
 	}

@@ -262,6 +262,9 @@ def saveDMAP(data: dict, dmap_path: str):
     if np.isfinite(max_conf) and max_conf > 0:
       conf_scale = float(max_conf)
 
+  file_name = data['file_name'].encode('utf-8')
+  if len(file_name) > 0xFFFF:
+    raise ValueError('DMAP image path exceeds 65535 UTF-8 bytes')
   with open(dmap_path, 'wb') as dmap:
     dmap.write('D2'.encode())
 
@@ -274,9 +277,8 @@ def saveDMAP(data: dict, dmap_path: str):
     dmap.write(np.array([depth_min, depth_max], dtype=np.float32))
     dmap.write(np.array([conf_scale], dtype=np.float32))
 
-    file_name = data['file_name']
     dmap.write(np.array([len(file_name)], dtype=np.uint16))
-    dmap.write(file_name.encode())
+    dmap.write(file_name)
 
     view_ids = [data['reference_view_id']] + data['neighbor_view_ids']
     dmap.write(np.array([len(view_ids)], dtype=np.uint32))
@@ -401,14 +403,19 @@ def loadMVSInterface(archive_path):
     - pt_max (list): The maximum point.
   """
   with open(archive_path, 'rb') as mvs:
-    archive_type = mvs.read(4).decode()
-    if archive_type != 'MVSI':
-      print('error: opening file \'{}\''.format(archive_path))
-      return
-    
-    version = np.frombuffer(mvs.read(4), dtype=np.uint32).tolist()[0]
-    reserve = np.frombuffer(mvs.read(4), dtype=np.uint32)
-    
+    if mvs.read(4) == b'MVSI':
+      version = int.from_bytes(mvs.read(4), 'little')
+      if version > 8 or len(mvs.read(4)) != 4:
+        raise ValueError('Invalid or unsupported MVS interface header')
+    else:
+      # Version zero starts directly with the platform count. A native archive uses a different codec.
+      mvs.seek(0)
+      prefix = mvs.read(8)
+      if len(prefix) != 8 or int.from_bytes(prefix, 'little') > mvs.seek(0, 2) // 8:
+        raise ValueError('Invalid MVS interface header')
+      mvs.seek(0)
+      version = 0
+
     data = {
       'stream_version': version,
       'platforms': [],
@@ -560,11 +567,22 @@ def saveMVSInterface(data: dict, archive_path: str):
     data (dict): A dictionary containing the MVS data.
     archive_path (str): The path to save the MVS archive file.
   """
+  version = data.get('stream_version', 8)
+  if not 0 <= version <= 8:
+    raise ValueError(f'Unsupported MVS interface version {version}')
+  for platform in data['platforms']:
+    for camera in platform['cameras']:
+      model = camera.get('model', CAMERA_MODEL_PINHOLE)
+      if model not in (CAMERA_MODEL_PINHOLE, CAMERA_MODEL_BROWN, CAMERA_MODEL_SPHERICAL):
+        raise ValueError(f'Unknown camera model {model}')
+      if version < 8 and model != CAMERA_MODEL_PINHOLE:
+        raise ValueError('MVS interface versions before 8 support only pinhole cameras')
+      if model == CAMERA_MODEL_BROWN and len(camera.get('params', [])) not in (5, 8):
+        raise ValueError('A Brown camera requires 5 or 8 distortion coefficients')
   with open(archive_path, 'wb') as mvs:
-    mvs.write('MVSI'.encode())
-    version = data.get('stream_version', 8)
-    mvs.write(np.array([version], dtype=np.uint32))
-    mvs.write(np.array([0], dtype=np.uint32))  # reserve
+    if version > 0:
+      mvs.write(b'MVSI')
+      mvs.write(np.array([version, 0], dtype=np.uint32))
 
     platforms_size = len(data['platforms'])
     mvs.write(np.array([platforms_size], dtype=np.uint64))
@@ -589,14 +607,10 @@ def saveMVSInterface(data: dict, archive_path: str):
         mvs.write(np.array(camera['K'], dtype=np.float64).tobytes())
         mvs.write(np.array(camera['R'], dtype=np.float64).tobytes())
         mvs.write(np.array(camera['C'], dtype=np.float64).tobytes())
-        # a v7 stream has no camera model: only a pinhole camera can be written to it
-        assert version > 7 or camera.get('model', CAMERA_MODEL_PINHOLE) == CAMERA_MODEL_PINHOLE,           'stream_version < 8 stores PINHOLE cameras only'
         if version > 7:
           model = camera.get('model', CAMERA_MODEL_PINHOLE)
-          assert model in (CAMERA_MODEL_PINHOLE, CAMERA_MODEL_BROWN, CAMERA_MODEL_SPHERICAL), 'unknown camera model'
           mvs.write(np.array([model], dtype=np.uint8))
           if model == CAMERA_MODEL_BROWN:
-            assert len(camera['params']) in (5, 8)
             mvs.write(np.array([len(camera['params'])], dtype=np.uint64))
             mvs.write(np.array(camera['params'], dtype=np.float64).tobytes())
       poses_size = len(platform['poses'])

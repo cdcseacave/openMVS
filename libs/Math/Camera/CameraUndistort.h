@@ -23,6 +23,10 @@ namespace SEACAVE {
 
 // Resampling between camera models.
 
+// OpenCV coefficient order: k1, k2, p1, p2, k3 and optionally k4, k5, k6.
+MATH_API BrownDistortion<REAL> ParamsToBrownDistortion(const std::vector<double>& params);
+MATH_API std::vector<double> BrownDistortionToParams(const BrownDistortion<REAL>& distortion);
+
 // free scaling of the undistorted camera matrix (see UndistortedK) used wherever the undistorted
 // images are not written to disk: the MVS loader and the depth-maps that go with its images
 constexpr double UNDISTORT_ALPHA = 0.6;

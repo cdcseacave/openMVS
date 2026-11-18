@@ -370,8 +370,9 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("error: failed to generate depth-maps from '%s'", cfg.roma2Cfg.importROMA2Path.c_str());
 		return EXIT_FAILURE;
 	}
-	if (!depthMapFiles.empty())
-		UndistortDepthMaps(scene, depthMapFiles, OPT::strUndistortExt.empty() ? UNDISTORT_ALPHA : (double)OPT::undistortAlpha);
+	if (!depthMapFiles.empty() && !UndistortDepthMaps(scene, depthMapFiles,
+		OPT::strUndistortExt.empty() ? std::nullopt : std::optional<double>(OPT::undistortAlpha)))
+		return EXIT_FAILURE;
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/

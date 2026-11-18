@@ -15,6 +15,8 @@
 #define _USE_OPENCV
 #endif
 #include "../IO/Interface.h"
+#include <filesystem>
+#include <map>
 
 #ifdef _USE_OPENMP
 #define INTERFACEMVS_USE_OPENMP
@@ -25,56 +27,60 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-bool SFM::UndistortDMAP(const String& depthMapFile,
-	const UndistortMaps& maps, const KMatrix& imageUndistortedK)
+namespace {
+
+struct DistortedDepthMap {
+	MVS::DepthDataRaw data;
+	Image32F depths;
+	cv::Mat normals, confidence, views;
+
+	bool Load(const String& path) {
+		ASSERT(!path.empty());
+		if (!MVS::ImportDepthDataRaw(path, data, depths, normals, confidence, views) ||
+			(data.header.type & MVS::HeaderDepthDataRaw::SPHERICAL)) {
+			VERBOSE("error: cannot read pinhole depth-map '%s'", path.c_str());
+			return false;
+		}
+		return true;
+	}
+
+	bool Undistort(const String& path, const UndistortMaps& maps, const KMatrix& imageK) {
+		ASSERT(!depths.empty() && !maps.map1.empty());
+		if (depths.size() != maps.map1.size()) {
+			VERBOSE("error: undistortion map size differs from depth-map '%s'", path.c_str());
+			return false;
+		}
+		Image32F output;
+		maps.RemapDepth(depths, output);
+		for (cv::Mat* map: {&normals, &confidence, &views}) {
+			if (!map->empty()) {
+				cv::Mat remapped;
+				maps.Remap(*map, remapped, cv::INTER_NEAREST);
+				*map = std::move(remapped);
+			}
+		}
+		// The temporary file shares the original directory, so relative image paths stay valid.
+		const String tmp(path + ".tmp");
+		data.K = imageK;
+		std::error_code ec;
+		if (MVS::ExportDepthDataRaw(tmp, data, output, normals, confidence, views)) {
+			std::filesystem::rename(tmp.c_str(), path.c_str(), ec);
+			if (!ec)
+				return true;
+		}
+		File::deleteFile(tmp);
+		VERBOSE("error: cannot replace depth-map '%s'", path.c_str());
+		return false;
+	}
+};
+
+} // namespace
+
+bool SFM::UndistortDMAP(const String& path, const UndistortMaps& maps, const KMatrix& imageK)
 {
-	// Import depth-map
-	String imageFileName;
-	IIndexArr IDs;
-	cv::Size imageSize, depthSize;
-	KMatrix K;
-	RMatrix R;
-	CMatrix C;
-	float dMin, dMax;
-	Image32F depthMap, confMap;
-	Image32F3 normalMap;
-	Image8U4 viewsMap;
-	bool bConfAdjusted(false);
-	if (!ImportDepthDataRaw(depthMapFile, imageFileName, IDs, imageSize, depthSize, K, R, C, dMin, dMax,
-			depthMap, normalMap, confMap, viewsMap, 15/*all maps*/, &bConfAdjusted)) {
-		DEBUG("warning: failed to import depth-map from '%s'", depthMapFile.c_str());
-		return false;
-	}
-	if (!normalMap.empty()) {
-		DEBUG("warning: undistortion of normal-maps not implemented yet, skipping");
-	}
-	// Undistort depth-map using depth-aware interpolation at its native resolution
-	Image32F undistortedDepthMap;
-	maps.RemapDepth(depthMap, undistortedDepthMap);
-	// Undistort confidence and views-map if available (using nearest neighbor interpolation)
-	Image32F undistortedConfMap;
-	if (!confMap.empty())
-		maps.Remap(confMap, undistortedConfMap, cv::INTER_NEAREST);
-	Image8U4 undistortedViewsMap;
-	if (!viewsMap.empty())
-		maps.Remap(viewsMap, undistortedViewsMap, cv::INTER_NEAREST);
-	// Export undistorted depth-map to a temporary file first; undistortion resamples the
-	// confidence but does not change what it measures, so a recalibrated map stays
-	// recalibrated and keeps its CONF_ADJUSTED flag
-	const String tempDepthMapFile = depthMapFile + ".tmp";
-	if (!ExportDepthDataRaw(tempDepthMapFile, imageFileName, IDs, imageSize,
-			imageUndistortedK, R, C, dMin, dMax,
-			undistortedDepthMap, undistortedConfMap, undistortedViewsMap, bConfAdjusted)) {
-		DEBUG("warning: failed to export undistorted depth-map to '%s'", tempDepthMapFile.c_str());
-		return false;
-	}
-	// Rename temporary file to the original file
-	if (!File::renameFile(tempDepthMapFile, depthMapFile)) {
-		DEBUG("warning: failed to rename '%s' to '%s'", tempDepthMapFile.c_str(), depthMapFile.c_str());
-		// Try to remove the temporary file
-		File::deleteFile(tempDepthMapFile);
-	}
-	return true;
+	ASSERT(!path.empty() && !maps.map1.empty());
+	DistortedDepthMap depthMap;
+	return depthMap.Load(path) && depthMap.Undistort(path, maps, imageK);
 }
 
 // the camera matrix and the Brown distortion of the camera of an image, in the orientation of its file
@@ -104,81 +110,66 @@ static int FileOrientation(const Image& img)
 
 bool SFM::UndistortDepthMaps(const Scene& scene,
 	const CLISTDEF2(String)& depthMapFiles,
-	double alpha,
+	std::optional<double> alpha,
 	std::unordered_map<const Camera*, KMatrix>* undistortedIntrinsics)
 {
-	ASSERT(!depthMapFiles.empty());
+	ASSERT(!depthMapFiles.empty() && depthMapFiles.size() == scene.images.size());
+	ASSERT(!alpha || (*alpha >= 0 && *alpha <= 1));
+	ASSERT(alpha || !undistortedIntrinsics);
 	TD_TIMER_STARTD();
-	// per camera and orientation of the image files (rotated on load or not, View::IsRotated): the maps
-	// at the depth-map resolution and the undistorted K at the image resolution
-	std::unordered_map<const Camera*, std::pair<UndistortMaps,KMatrix>> undistortMaps[2];
-	undistortMaps[0].reserve(scene.cameras.size());
-
-	// For each image/depth-map, compute maps at the depth resolution using K scaled to that resolution
+	// A single camera can have both portrait and landscape files and several depth-map resolutions.
+	using MapKey = std::tuple<IIndex, bool, int, int>;
+	std::map<MapKey, std::pair<UndistortMaps,KMatrix>> cache;
+	int failures = 0;
 	#ifdef INTERFACEMVS_USE_OPENMP
-	#pragma omp parallel for schedule(dynamic)
+	#pragma omp parallel for schedule(dynamic) reduction(+:failures)
 	#endif
-	for (int_t _i = 0; _i < (int_t)scene.images.size(); ++_i) {
-		const IIndex i = static_cast<IIndex>(_i);
-		const String& dfile = depthMapFiles[i];
-		if (dfile.empty())
-			continue;
+	for (int_t i = 0; i < (int_t)scene.images.size(); ++i) {
 		const Image& img = scene.images[i];
-		if (!img.IsValid())
+		const String& path = depthMapFiles[i];
+		if (path.empty() || !img.IsValid() || img.pCamera->GetType() != CameraType::PINHOLE || !img.pCamera->HasDistortion())
 			continue;
-		const Camera* cam = img.pCamera;
-		if (cam->GetType() != CameraType::PINHOLE)
-			continue; // only pinhole supported
-		const PinholeCamera* pc = static_cast<const PinholeCamera*>(cam);
-		if (!pc->HasDistortion())
-			continue; // nothing to undistort for depth-map
-		// Check if undistortion maps already computed for this camera
-		const std::pair<UndistortMaps,KMatrix>& data = [&]() -> const std::pair<UndistortMaps,KMatrix>& {
-			std::pair<UndistortMaps,KMatrix>* pData = nullptr;
-			#ifdef INTERFACEMVS_USE_OPENMP
-			#pragma omp critical
-			#endif
-			{
-				pData = &undistortMaps[FileOrientation(img)][pc];
-				if (pData->first.map1.empty()) {
-					// read only the header to obtain the image size and depth-map resolution;
-					// flags=0 requests the meta-data alone, leaving the map arguments untouched
-					MVS::DepthDataRaw meta;
-					cv::Mat unusedMap;
-					if (!MVS::ImportDepthDataRaw(static_cast<const std::string&>(dfile), meta,
-							unusedMap, unusedMap, unusedMap, unusedMap, 0)) {
-						DEBUG("warning: failed to read depth header '%s'", dfile.c_str());
-						exit(EXIT_FAILURE);
-					}
-					const cv::Size imageSize((int)meta.header.imageWidth, (int)meta.header.imageHeight);
-					const cv::Size depthSize((int)meta.header.depthWidth, (int)meta.header.depthHeight);
-					// the undistorted camera of the images (the one the MVS scene uses), scaled
-					// to the depth-map resolution, so the depth-map lands on its pixel grid;
-					// the depth-map is in the orientation of the image file, so the camera and
-					// its undistorted camera are rotated back as ExportMVS does
-					KMatrix K(pc->GetK());
-					BrownDistortion<REAL> distortion(pc->GetDistortion());
-					KMatrix Ku(UndistortedK(K, distortion, pc->GetSize(), alpha));
-					if (undistortedIntrinsics)
-						undistortedIntrinsics->emplace(pc, Ku);
-					img.RevertRotation(&Ku);
-					const cv::Size fileSize(RevertRotation(img, K, distortion));
-					ASSERT(imageSize == fileSize);
-					pData->second = Ku;
-					pData->first.Init(ScaleK(K, imageSize, depthSize), distortion, depthSize, ScaleK(Ku, imageSize, depthSize));
-				}
-			}
-			return *pData;
-		}();
-		// Undistort DMAP with depth-aware interpolation and write back
-		if (!UndistortDMAP(dfile, data.first, data.second)) {
-			DEBUG("warning: undistort depth failed for '%s'", dfile.c_str());
+		DistortedDepthMap depthMap;
+		if (!depthMap.Load(path)) {
+			++failures;
 			continue;
 		}
-		DEBUG_EXTRA("Depth-map undistorted for image %d", i);
+		const cv::Size fileSize(img.GetOriginalSize()), depthSize(depthMap.depths.size());
+		if (depthMap.data.header.imageWidth != (uint32_t)fileSize.width || depthMap.data.header.imageHeight != (uint32_t)fileSize.height) {
+			VERBOSE("error: image dimensions differ from the header of '%s'", path.c_str());
+			++failures;
+			continue;
+		}
+		const std::pair<UndistortMaps,KMatrix>* entry;
+		#ifdef INTERFACEMVS_USE_OPENMP
+		#pragma omp critical(SFM_UndistortDepthMaps)
+		#endif
+		{
+			const auto [it, inserted] = cache.try_emplace(MapKey(img.cameraID, img.IsRotated(), depthSize.width, depthSize.height));
+			auto& [maps, Ku] = it->second;
+			if (inserted) {
+				const PinholeCamera& cam = *static_cast<const PinholeCamera*>(img.pCamera);
+				KMatrix K(cam.GetK());
+				BrownDistortion<REAL> distortion(cam.GetDistortion());
+				if (alpha) {
+					// Exported pixels are undistorted in the SfM working orientation, then rotated back.
+					Ku = UndistortedK(K, distortion, cam.GetSize(), *alpha);
+					if (undistortedIntrinsics)
+						undistortedIntrinsics->emplace(&cam, Ku);
+					img.RevertRotation(&Ku);
+				}
+				RevertRotation(img, K, distortion);
+				if (!alpha)
+					Ku = UndistortedK(K, distortion, fileSize); // native Brown loader uses the file orientation
+				maps.Init(ScaleK(K, fileSize, depthSize), distortion, depthSize, ScaleK(Ku, fileSize, depthSize));
+			}
+			entry = &it->second;
+		}
+		if (!depthMap.Undistort(path, entry->first, entry->second))
+			++failures;
 	}
-	DEBUG("Depth-maps undistorted successfully in %s", TD_TIMER_GET_FMT().c_str());
-	return true;
+	DEBUG("Depth-map undistortion finished with %d failures (%s)", failures, TD_TIMER_GET_FMT().c_str());
+	return failures == 0;
 }
 /*----------------------------------------------------------------*/
 
@@ -274,16 +265,14 @@ bool SFM::ImportMVS(const String& fileName, Scene& scene, bool loadColors)
 	}
 
 	const String basePath = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
-	std::unordered_map<PairIdx::PairIndex, IIndex> camToID;
+	std::unordered_map<PairIdx, IIndex> camToID;
 	camToID.reserve(iface.platforms.size());
 	const auto DeduceSize = [&](uint32_t pid, uint32_t cid)->cv::Size {
 		for (const auto& img : iface.images) {
 			if (img.platformID != pid || img.cameraID != cid)
 				continue;
-			IMAGEPTR pImage(CImage::Create(basePath + img.name, CImage::READ));
-			const bool valid = (pImage != NULL && pImage->ReadHeader());
-			pImage.Release();
-			if (valid)
+			IMAGEPTR pImage(CImage::Create(MAKE_PATH_FULL(basePath, img.name), CImage::READ));
+			if (pImage != NULL && pImage->ReadHeader())
 				return cv::Size(pImage->GetWidth(), pImage->GetHeight());
 		}
 		return cv::Size();
@@ -330,28 +319,34 @@ bool SFM::ImportMVS(const String& fileName, Scene& scene, bool loadColors)
 			pCamera->metadata.model = cam.bandName;
 			const IIndex camID = scene.cameras.size();
 			scene.cameras.emplace_back(pCamera);
-			camToID.emplace(PairIdx(pid, cid).idx, camID);
+			camToID.emplace(PairIdx(pid, cid), camID);
 		}
 	}
 
 	scene.images.reserve(iface.images.size());
+	std::vector<IIndex> imageIndices(iface.images.size(), NO_ID);
 	uint32_t posed = 0;
 	for (size_t i = 0; i < iface.images.size(); ++i) {
 		const auto& inImg = iface.images[i];
-		const auto key = PairIdx(inImg.platformID, inImg.cameraID).idx;
+		const auto key = PairIdx(inImg.platformID, inImg.cameraID);
 		auto itCam = camToID.find(key);
 		if (itCam == camToID.end()) {
 			VERBOSE("error: skipping image %zu (platform %u camera %u not found)", i, inImg.platformID, inImg.cameraID);
 			continue;
 		}
 		const IIndex camID = itCam->second;
-		const String imgPath = basePath + inImg.name;
+		const String imgPath = MAKE_PATH_FULL(basePath, inImg.name);
+		imageIndices[i] = scene.images.size();
 		Image& img = scene.images.emplace_back(
 		    (inImg.ID != MVS::NO_ID) ? inImg.ID : scene.images.size(),
 			imgPath);
 		img.cameraID = camID;
 		img.pCamera = scene.cameras[camID];
 		if (inImg.IsValid()) {
+			if (inImg.poseID >= iface.platforms[inImg.platformID].poses.size()) {
+				VERBOSE("error: invalid pose %u for image %zu", inImg.poseID, i);
+				return false;
+			}
 			const auto pose = iface.platforms[inImg.platformID].GetPose(inImg.cameraID, inImg.poseID);
 			img.R = pose.R;
 			img.C = pose.C;
@@ -367,9 +362,16 @@ bool SFM::ImportMVS(const String& fileName, Scene& scene, bool loadColors)
 		Track track(vx.X);
 		track.observations.reserve(vx.views.size());
 		for (const auto& vw : vx.views) {
-			if (vw.imageID >= scene.images.size())
+			if (vw.imageID >= imageIndices.size() || imageIndices[vw.imageID] == NO_ID)
 				continue;
-			track.observations.emplace_back(vw.imageID, NO_ID);
+			const IIndex imageID = imageIndices[vw.imageID];
+			IIndex featureID = NO_ID;
+			if (iface.HasObservations()) {
+				auto& keypoints = scene.images[imageID].keypoints;
+				featureID = (IIndex)keypoints.size();
+				keypoints.emplace_back(cv::Point2f(vw.x.x, vw.x.y), 1.f);
+			}
+			track.observations.emplace_back(imageID, featureID);
 		}
 		track.numInliers = (uint8_t)std::min<size_t>(track.observations.size(), (size_t)std::numeric_limits<uint8_t>::max());
 		if (!track.IsValid())
@@ -418,7 +420,7 @@ namespace {
 
 using SphereCubeMap::TangentFacesGeometry;
 
-// Phase 1: one rig Platform per spherical SFM camera, N face Cameras each.
+// One rig Platform per spherical SFM camera, N face Cameras each.
 void EmitSphericalPlatforms(
 	const Scene& scene,
 	const TangentFacesGeometry& geometry,
@@ -449,98 +451,48 @@ void EmitSphericalPlatforms(
 	}
 }
 
-// Phase 2: append pose + N face Image records for one spherical SFM image.
-// mvsImagePositions receives the array positions of the created records (used as
-// Vertex::View::imageID); the global IDs are drawn from nextID (unique per image,
-// required by depth-map file naming).
-void AppendSphericalFaceImages(
-	const Image& img,
-	const TangentFacesGeometry& geometry,
-	const String& basePath,
-	const String& extension,
-	uint32_t platformID,
-	MVS::Interface& iface,
-	std::vector<uint32_t>& mvsImagePositions,
-	uint32_t& nextID)
+// Write the faces and register the same paths in the interface scene. Global face IDs provide
+// unique names even when panoramas in different directories have the same basename.
+bool ExportSphericalFaces(const Image& img, const TangentFacesGeometry& geometry, const String& outputDir,
+	const String& sceneDir, const String& extension, uint32_t platformID, MVS::Interface& iface,
+	std::vector<uint32_t>& imageIndices, uint32_t& nextID)
 {
-	ASSERT(img.pCamera != NULL);
-	ASSERT(img.pCamera->GetType() == CameraType::SPHERICAL);
-	ASSERT(platformID < iface.platforms.size());
-	ASSERT(geometry.numFaces > 0);
-
-	MVS::Interface::Platform& platform = iface.platforms[platformID];
-	const uint32_t poseID = (uint32_t)platform.poses.size();
-	MVS::Interface::Platform::Pose& pose = platform.poses.emplace_back();
-	pose.R = img.R;
-	pose.C = img.C;
-
-	const String stem = Util::getFileName(img.fileName);
-	mvsImagePositions.clear();
-	mvsImagePositions.reserve(geometry.numFaces);
-	for (int k = 0; k < geometry.numFaces; ++k) {
-		MVS::Interface::Image& outImg = iface.images.emplace_back();
-		outImg.name = basePath + stem + String::FormatString(_T("_face%d"), k) + extension;
-		outImg.platformID = platformID;
-		outImg.cameraID   = (uint32_t)k;
-		outImg.poseID     = poseID;
-		outImg.ID         = nextID++;
-		mvsImagePositions.push_back((uint32_t)(iface.images.size() - 1));
+	ASSERT(img.pCamera != NULL && img.pCamera->GetType() == CameraType::SPHERICAL);
+	ASSERT(platformID < iface.platforms.size() && geometry.numFaces > 0 && imageIndices.empty());
+	Image8U3 pixels;
+	if (img.HasPixels())
+		pixels = img.GetImage8U3();
+	else if (!LoadImage(img.fileName, pixels, PF_R8G8B8)) {
+		VERBOSE("error: cannot read panorama '%s'", img.fileName.c_str());
+		return false;
 	}
-}
-
-// Phase 3: render + save N face images for every spherical source image.
-// Geometry is shared across all calls; each image pays only the per-pixel
-// render cost (not the rotation-table build). Fails on the first panorama
-// that can not be read or face that can not be written, since the exported
-// scene already references every face file.
-bool RenderAndSaveSphericalFaces(
-	const Scene& scene,
-	const TangentFacesGeometry& geometry,
-	const String& extension,
-	const String& outputDir)
-{
-	ASSERT(!outputDir.empty() && geometry.numFaces > 0);
-	String outDir = outputDir;
-	Util::ensureValidFolderPath(outDir);
-	Util::ensureFolder(outDir);
-	unsigned written = 0;
-	for (const Image& img : scene.images) {
-		if (img.pCamera == NULL || img.pCamera->GetType() != CameraType::SPHERICAL)
-			continue;
-
-		bool loadedHere = false;
-		if (!img.HasPixels()) {
-			const_cast<Image&>(img).LoadPixels();
-			loadedHere = true;
-		}
-		if (!img.HasPixels()) {
-			VERBOSE("error: can not read the panorama '%s' to render its cube-map faces", img.fileName.c_str());
+	const auto faces = SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(pixels, geometry);
+	MVS::Interface::Platform& platform = iface.platforms[platformID];
+	uint32_t poseID = MVS::NO_ID;
+	if (img.IsValid()) {
+		poseID = (uint32_t)platform.poses.size();
+		platform.poses.emplace_back(img.R, img.C);
+	}
+	const String stem(Util::getFileName(img.fileName));
+	imageIndices.reserve(faces.size());
+	for (int k = 0; k < geometry.numFaces; ++k) {
+		const String path(outputDir + String::FormatString("cube%u_", nextID) + stem + String::FormatString("_face%d", k) + extension);
+		if (!faces[k].Save(path)) {
+			VERBOSE("error: cannot write cube-map face '%s'", path.c_str());
 			return false;
 		}
-
-		// Normalize pixel format to BGR/8U if needed and
-		// render all N faces in one call, consuming the shared geometry
-		const std::vector<Image8U3> faces =
-			SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(img.GetImage8U3(), geometry);
-		if (loadedHere)
-			const_cast<Image&>(img).ReleasePixels();
-
-		const String stem = Util::getFileName(img.fileName);
-		for (int k = 0; k < (int)faces.size(); ++k) {
-			const String facePath = outDir + stem +
-				String::FormatString(_T("_face%d"), k) + extension;
-			if (!faces[k].Save(facePath)) {
-				VERBOSE("error: can not write the cube-map face '%s'", facePath.c_str());
-				return false;
-			}
-			++written;
-		}
+		imageIndices.push_back((uint32_t)iface.images.size());
+		auto& outImg = iface.images.emplace_back();
+		outImg.name = MAKE_PATH_REL(sceneDir, path);
+		outImg.platformID = platformID;
+		outImg.cameraID = (uint32_t)k;
+		outImg.poseID = poseID;
+		outImg.ID = nextID++;
 	}
-	DEBUG("SphereCubeMap: wrote %u face images to '%s'", written, outDir.c_str());
 	return true;
 }
 
-// Phase 4: push a Vertex::View entry for every face of one spherical image's
+// Add a Vertex::View entry for every face of one spherical image's
 // rig pose that sees the observation: the faces are decided by the direction
 // (panorama frame) of pFeatureRay, the ray of the feature, if given, mapped to
 // each face as the view observation (so it lies inside the face image),
@@ -622,14 +574,13 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 			config.sphericalNumFaces, config.sphericalFaceSize);
 	}
 
-	// Resolve the face output directory for cube-map images. Prefer the
-	// caller-provided undistort dir (mirrors the existing "outputs next to
-	// the .mvs file" contract); if empty default to the .mvs file's own
-	// directory so everything stays self-contained.
 	const String mvsFileDir = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
 	String cubeMapOutputDir;
-	if (cubeMap)
-		cubeMapOutputDir = config.undistortImageDir.empty() ? mvsFileDir : config.undistortImageDir;
+	if (cubeMap) {
+		cubeMapOutputDir = config.undistortImageDir.empty() ? mvsFileDir : MAKE_PATH_FULL(WORKING_FOLDER_FULL, config.undistortImageDir);
+		Util::ensureValidFolderPath(cubeMapOutputDir);
+		Util::ensureFolder(cubeMapOutputDir);
+	}
 
 	// Map each SFM camera pointer to its (possibly multi-camera) platform, per orientation of the image
 	// files: the images rotated on load (View::IsRotated) are portrait files sharing the landscape
@@ -648,11 +599,13 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 	const bool undistort = !config.undistortImageDir.empty();
 	std::unordered_map<const Camera*, KMatrix> undistortK;
 	CLISTDEF2(String) undistortedPaths;
-	if (undistort)
-		scene.UndistortImages(config.undistortImageDir, config.extension,
-		config.undistortAlpha, &undistortedPaths, &undistortK);
+	if (undistort && !scene.UndistortImages(config.undistortImageDir, config.extension,
+			config.undistortAlpha, &undistortedPaths, &undistortK)) {
+		VERBOSE("error: failed to undistort the images into '%s'", config.undistortImageDir.c_str());
+		return false;
+	}
 
-	// ----- Phase 1: platforms + cameras -----
+	// ----- Platforms and cameras -----
 	// Pinhole and native spherical: one platform with a single camera per SFM camera and orientation
 	// of its image files (FileOrientation).
 	// Cube-map spherical: one platform with N face cameras via EmitSphericalPlatforms.
@@ -711,27 +664,18 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 				outCam.height = (uint32_t)size.height;
 			}
 			outCam.K = K;
-			if (outCam.model == MVSCamera::BROWN) {
-				outCam.params = {distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3};
-				if (distortion.k4 != 0 || distortion.k5 != 0 || distortion.k6 != 0)
-					outCam.params.insert(outCam.params.end(), {distortion.k4, distortion.k5, distortion.k6});
-			}
+			if (outCam.model == MVSCamera::BROWN)
+				outCam.params = BrownDistortionToParams(distortion);
 		}
 	}
 	if (cubeMap)
 		EmitSphericalPlatforms(scene, sphericalGeom, iface, camToPlatform[0]);
 
-	// ----- Phase 2: images + poses -----
+	// ----- Images and poses -----
 	// sfmToMvsImage[i] holds the images-array positions produced for SFM image i
 	// (the values Vertex::View::imageID references, distinct from the global Image::ID).
 	// Pinhole images get 1 entry; spherical images get N (== numFaces).
 	const String basePath = mvsFileDir;
-	String faceBaseSlash;
-	if (cubeMap) {
-		faceBaseSlash = MAKE_PATH_REL(basePath, cubeMapOutputDir);
-		if (!faceBaseSlash.empty() && faceBaseSlash.back() != PATH_SEPARATOR)
-			faceBaseSlash += PATH_SEPARATOR;
-	}
 	std::vector<std::vector<uint32_t>> sfmToMvsImage(scene.images.size());
 	iface.images.reserve(scene.images.size());
 	// Global image IDs: pinhole images keep their SFM image ID so external per-image data
@@ -748,9 +692,9 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		ASSERT(cam != NULL);
 
 		if (cam->GetType() == CameraType::SPHERICAL && cubeMap) {
-			AppendSphericalFaceImages(
-				img, sphericalGeom, faceBaseSlash, config.extension,
-				camToPlatform[0][cam], iface, sfmToMvsImage[i], nextSyntheticID);
+			if (!ExportSphericalFaces(img, sphericalGeom, cubeMapOutputDir, basePath, config.extension,
+				camToPlatform[0].at(cam), iface, sfmToMvsImage[i], nextSyntheticID))
+				return false;
 			continue;
 		}
 
@@ -769,14 +713,11 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		MVS::Interface::Image outImg;
 		outImg.name = img.fileName;
 		if (undistortK.count(cam) != 0) {
-			if (!undistortedPaths[i].empty()) {
+			// UndistortImages fails on a posed image it can not undistort; an unposed image whose
+			// file can not be read is unused and keeps its path
+			ASSERT(!undistortedPaths[i].empty() || !img.IsValid());
+			if (!undistortedPaths[i].empty())
 				outImg.name = undistortedPaths[i];
-			} else if (img.IsValid()) {
-				// the image file could not be read for undistortion
-				VERBOSE("error: no undistorted image of '%s'", img.fileName.c_str());
-				return false;
-			}
-			// else an unposed image whose file can not be read: unused, it keeps its path
 		}
 		outImg.name = MAKE_PATH_REL(basePath, outImg.name);
 		outImg.platformID = platformID;
@@ -787,13 +728,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		iface.images.emplace_back(std::move(outImg));
 	}
 
-	// ----- Phase 3: render + write cube-map face pixels -----
-	if (cubeMap) {
-		if (!RenderAndSaveSphericalFaces(scene, sphericalGeom, config.extension, cubeMapOutputDir))
-			return false;
-	}
-
-	// ----- Phase 4: vertices (tracks) -----
+	// ----- Vertices -----
 	// For each inlier track, expand every observation through the
 	// sfmToMvsImage map: pinhole observations become a single view entry;
 	// spherical observations become one entry per face that sees the 3D
@@ -867,7 +802,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		}
 	}
 
-	// ----- Phase 5: serialize -----
+	// ----- Serialize -----
 	if (!MVS::ARCHIVE::SerializeSave(iface, fileName.c_str())) {
 		VERBOSE("error: failed serialization for '%s'", fileName.c_str());
 		return false;

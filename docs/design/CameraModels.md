@@ -125,7 +125,7 @@ own state and call the models. The depth-map algorithms built on the models are 
   thin-prism models are refused) and reads the observations from `images.bin/txt`; on export it writes a
   Brown camera as `OPENCV`/`FULL_OPENCV` and the stored observations, else the projections through the
   distortion (always the projections for a cloud replaced by `--pointcloud-file`), and fails on a camera
-  COLMAP can not hold. `InterfaceMetashape` makes the distorted Metashape and BlocksExchange sensors BROWN through
+  COLMAP can not hold. Rig cameras export with separate intrinsics and each image carries its composed world pose. `InterfaceMetashape` makes the distorted Metashape and BlocksExchange sensors BROWN through
   `Platform::Camera::SetBrownLens` (their `p1`/`p2` are OpenCV's `p2`/`p1`, `b1`/`b2` go into `fx` and the
   skew, the Agisoft r^8 `k4` is refused; the cameras XML `cx`/`cy` are offsets from the image center with
   the pixel centers at +0.5, while the BlocksExchange principal point and measurements already have them at
@@ -186,7 +186,7 @@ own state and call the models. The depth-map algorithms built on the models are 
 |---|---|
 | `Undistort(Distort(p))` residual (`TestCameraModels`, `apps/Tests/TestsMath.cpp`) | 3e-16 |
 | `TestCameraModels`: `Ray`/`Project` round trip, seam, poles, Jets | `Ray`∘`Project` ≤1e-8 px; axis/seam/pole conventions exact to 1e-9 px; Jet values 1e-9 px, derivatives 1e-5 relative |
-| Remap cost on load (`Tests undistortbench`, ETH3D 6048x4032 JPEG) | 10.5-10.8 ms per image vs 108-121 ms decode; 34-43 ms once per camera for the maps |
+| Remap cost on load (ETH3D 6048x4032 JPEG) | 10.5-10.8 ms per image vs 108-121 ms decode; 34-43 ms once per camera for the maps |
 | ETH3D F1@2cm, native Brown vs undistorted-on-export (pipes / office ICP-refined) | 0.7068 vs 0.7043 / 0.3106 vs 0.3104 |
 | v7 to v8 file size | + one byte per camera + 1 |
 | SfM reconstruct-only on 12 scenes against the pre-model code (same matches) | identical registrations, points within 0.02 % (CasaBatllo within its run-to-run spread), equal reprojection errors, equal BA cost and time |
