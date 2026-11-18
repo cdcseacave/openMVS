@@ -1201,7 +1201,7 @@ bool BundleAdjustmentPairConstraintTest()
 	TestScope scope("BundleAdjustmentPairConstraintTest");
 	constexpr REAL PAIR_CONSTRAINT_BEND = 10;                  // degrees the block is turned by
 	constexpr double MAX_ROTATION_ERROR = 0.5;                 // degrees
-	constexpr double MAX_CENTER_ERROR = 0.01;                  // 1% of the extent of the arc (PoseErrors)
+	constexpr double MAX_CENTER_ERROR = 1e-3;                  // of the extent of the arc (PoseErrors); the solves measure under 1e-7 (the old bar was 0.05 units, 0.0087 of this extent)
 	const IIndex farthestFromHinge = 7; // the camera at the far end of the turned block
 
 	// without them the bend survives the solve: no reprojection residual in either half of the chain is violated by it, and
