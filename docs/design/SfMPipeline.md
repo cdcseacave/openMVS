@@ -121,59 +121,59 @@ Dense matcher and match mode.
 
 | Combination | Behaviour | Where |
 |---|---|---|
-| no dense matcher, match modes 0, 1, 2, 3 | supported | `PairsMatcher.cpp:2088-2178` |
-| no dense matcher, mode 4 RETRIEVAL | supported only when every image already carries a global descriptor (a saved scene from an earlier `--dense-matcher` run); otherwise the matching fails with "RETRIEVAL matching needs a global descriptor on every image" | `PairsMatcher.cpp:741` |
+| no dense matcher, match modes 0, 1, 2, 3 | supported | `PairsMatcher.cpp` (`PairsMatcher::Match`) |
+| no dense matcher, mode 4 RETRIEVAL | supported only when every image already carries a global descriptor (a saved scene from an earlier `--dense-matcher` run); otherwise the matching fails with "RETRIEVAL matching needs a global descriptor on every image" | `PairsMatcher.cpp` (`PairsMatcher::BuildGlobalDescriptorsIndex`) |
 | mode -1 SKIP | supported only for a saved scene (`.sfm`) whose pairs hold matches (after `--match-images-only` or ExtractKeyframes): no matching runs and the scene's own matches are used; refused at start for any other source and with a `--dense-matcher` other than `none`, and refused by `Scene::Reconstruct` for a scene in which no pair holds a match | `CreateStructure.cpp:Application::Initialize`, `Scene.cpp:Scene::Reconstruct`, `Scene.cpp:Scene::MatchPairs` |
-| `--dense-matcher roma2\|flexglue` without `--dense-match` and with mode other than 4 | refused: "--dense-matcher <matcher> has nothing to do without --dense-match true or --match-mode 4" | `CreateStructure.cpp:401` |
-| `--dense-matcher roma2\|flexglue`, mode 4, no `--dense-match` | supported: dense descriptors rank the pairs, ordinary descriptor matching verifies them | `Scene.cpp:596-647` |
-| `--dense-match 1` with `--dense-matcher none` | refused | `CreateStructure.cpp:391` |
-| `--dense-matcher roma2\|flexglue --dense-match 1`, modes 0, 1, 2, 3, 4 | supported: the dense pass is the matching round of each candidate list | `PairsMatcher.cpp:2205` |
+| `--dense-matcher roma2\|flexglue` without `--dense-match` and with mode other than 4 | refused: "--dense-matcher <matcher> has nothing to do without --dense-match true or --match-mode 4" | `CreateStructure.cpp` (`Application::Initialize`) |
+| `--dense-matcher roma2\|flexglue`, mode 4, no `--dense-match` | supported: dense descriptors rank the pairs, ordinary descriptor matching verifies them | `Scene.cpp` (`Scene::MatchPairs`) |
+| `--dense-match 1` with `--dense-matcher none` | refused | `CreateStructure.cpp` (`Application::Initialize`) |
+| `--dense-matcher roma2\|flexglue --dense-match 1`, modes 0, 1, 2, 3, 4 | supported: the dense pass is the matching round of each candidate list | `PairsMatcher.cpp` (`PairsMatcher::Match`) |
 | an unknown `--dense-matcher` value | refused, naming the accepted values | `CreateStructure.cpp:Application::Initialize` |
-| `--flexglue-model` with `--dense-matcher roma2` or `none` | refused | `CreateStructure.cpp:349` |
+| `--flexglue-model` with `--dense-matcher roma2` or `none` | refused | `CreateStructure.cpp` (`Application::Initialize`) |
 | `--roma2-model` given with `--dense-matcher flexglue` | refused naming the option (the FlexGlue folder is `--flexglue-model`) | `CreateStructure.cpp:Application::Initialize` |
 | `--dense-min-covisibility` given with `--dense-matcher roma2` or `none` | refused naming the option (only FlexGlue gives a covisibility score; RoMa v2 is never gated) | `CreateStructure.cpp:Application::Initialize` |
 | `--roma2-model`, `--dense-slots`, `--dense-min-confidence`, `--dense-min-overlap`, `--dense-matches` or `--dense-provider` given with `--dense-matcher none` | refused naming the option (the dense matcher is off, nothing reads it) | `CreateStructure.cpp:Application::Initialize` |
-| `--dense-matcher roma2\|flexglue` in a build without ONNX Runtime | refused | `CreateStructure.cpp:357` |
-| `--dense-match 1` with no model folder resolvable | refused before any work | `CreateStructure.cpp:417` |
-| `--dense-matcher roma2\|flexglue --dense-match 1` on a scene already `MATCHED` | the model is not loaded and the dense options are ignored, but a missing model path is still refused | `Scene.cpp:618-627` |
+| `--dense-matcher roma2\|flexglue` in a build without ONNX Runtime | refused | `CreateStructure.cpp` (`Application::Initialize`) |
+| `--dense-match 1` with no model folder resolvable | refused before any work | `CreateStructure.cpp` (`Application::Initialize`) |
+| `--dense-matcher roma2\|flexglue --dense-match 1` on a scene already `MATCHED` | the model is not loaded and the dense options are ignored, but a missing model path is still refused | `Scene.cpp` (`Scene::MatchPairs`) |
 
 Dense matcher and camera type.
 
 | Combination | Behaviour | Where |
 |---|---|---|
 | dense matcher, perspective images | supported | `MatchDense.cpp:SampsonTest` |
-| dense matcher, spherical images | supported: the dense code has no camera-type branch; the networks read the equirectangular raster as an image, and a spherical or mixed pair is judged on bearings through the essential matrix | `MatchDense.cpp:470-500` (no `CameraType` test in `MatchDense.cpp`, `DenseMatcher.cpp`, `GlobalDescriptors.cpp`) |
+| dense matcher, spherical images | supported: the dense code has no camera-type branch; the networks read the equirectangular raster as an image, and a spherical or mixed pair is judged on bearings through the essential matrix | `MatchDense.cpp` (`CollectEligibleCells`) (no `CameraType` test in `MatchDense.cpp`, `DenseMatcher.cpp`, `GlobalDescriptors.cpp`) |
 
 Camera type and the rest of the pipeline.
 
 | Combination | Behaviour | Where |
 |---|---|---|
-| spherical images and `--focal-length`, `--k1`, `--k2` | refused: "spherical cameras not supported for forced parameters" | `Scene.cpp:510` |
-| spherical image whose width is not twice its height | that image fails to load ("equirectangular input requires width == 2 * height") and is left without a camera; the import itself does not return an error for it | `Image.cpp:331`, `Scene.cpp:405-407` |
-| spherical cameras and the lens fit, view-graph focal calibration | ignored: both skip every non-pinhole camera | `LensFit.cpp:837`, `ViewGraphCalibrator.cpp:266` |
+| spherical images and `--focal-length`, `--k1`, `--k2` | refused: "spherical cameras not supported for forced parameters" | `Scene.cpp` (`Scene::Import`) |
+| spherical image whose width is not twice its height | that image fails to load ("equirectangular input requires width == 2 * height") and is left without a camera; the import itself does not return an error for it | `Image.cpp` (`Image::LoadMetadata`), `Scene.cpp` (`Scene::Import`) |
+| spherical cameras and the lens fit, view-graph focal calibration | ignored: both skip every non-pinhole camera | `LensFit.cpp` (`FitLensesFromPairs`), `ViewGraphCalibrator.cpp` (`ViewGraphCalibrator::Reset`) |
 | spherical cameras and `--refine-intrinsics` | ignored for them: a spherical camera has no intrinsics block in the bundle adjustment | `SphericalCameras.md` |
 | perspective images and `--spherical-bottom-band` | ignored option | option help text |
-| spherical images and `--export-pose-quality` | supported, with a warning that the rows do not correlate with the cube-map faces of the MVS export | `BundleAdjustment.cpp:441-444` |
-| a scene mixing pinhole and spherical images | supported by the two-view verification (a mixed pair takes the bearing branch and carries no fundamental matrix) | `PairsMatcher.cpp:508-520` |
+| spherical images and `--export-pose-quality` | supported, with a warning that the rows do not correlate with the cube-map faces of the MVS export | `BundleAdjustment.cpp` (`ExportPoseUncertaintyCSV`) |
+| a scene mixing pinhole and spherical images | supported by the two-view verification (a mixed pair takes the bearing branch and carries no fundamental matrix) | `PairsMatcher.cpp` (`PairsMatcher::GeometricFilter`) |
 
 Solver.
 
 | Combination | Behaviour | Where |
 |---|---|---|
-| hierarchical (default), spherical or perspective | supported | `Scene.cpp:852-855` |
+| hierarchical (default), spherical or perspective | supported | `Scene.cpp` (`Scene::Reconstruct`) |
 | `--use-global-solver 1`, spherical or perspective | supported; no check refuses spherical cameras; see `GlobalSolver.md` | `Scene.cpp:Scene::Reconstruct` (the solver choice) |
 | `--use-global-solver 1` with `--max-views-per-cluster` or `--cluster-alignment` given | refused naming the option: the global solver never clusters or merges | `CreateStructure.cpp:Application::Initialize` (`Scene.cpp:Scene::ReconstructGlobal` reads neither) |
 | `--use-global-solver 1`: the triplet seed views | ignored, and not refused (the triplet filter's options still act on the view graph before the solver): only `ReconstructHierarchical` receives the seed views | `Scene.cpp:Scene::Reconstruct` (the solver choice) |
 | known poses (import mode 1 or 2 with a poses file) with `--use-global-solver 1` | refused: `ReconstructKnownPoses` is chosen first, so the global solver would never run | `CreateStructure.cpp:Application::Initialize`, `Scene.cpp:Scene::Reconstruct` (the solver choice) |
-| known poses with the cluster options or the star initializer | ignored: the known-poses solver never clusters, merges or builds a star | `Scene.cpp:1073-1200` |
-| known poses with fewer than 20 percent of the images posed (at least 2) | refused with an error, after matching has run | `Scene.cpp:1088-1112` |
-| known poses and `--match-mode` left at its default | the match mode becomes 3 KNOWN_POSES | `CreateStructure.cpp:528-531` |
-| known poses and an explicit `--match-mode` | supported, the explicit mode is used | `CreateStructure.cpp:528` |
+| known poses with the cluster options or the star initializer | ignored: the known-poses solver never clusters, merges or builds a star | `Scene.cpp` (`Scene::ReconstructGlobal`) |
+| known poses with fewer than 20 percent of the images posed (at least 2) | refused with an error, after matching has run | `Scene.cpp` (`Scene::ReconstructKnownPoses`) |
+| known poses and `--match-mode` left at its default | the match mode becomes 3 KNOWN_POSES | `CreateStructure.cpp` (`main`) |
+| known poses and an explicit `--match-mode` | supported, the explicit mode is used | `CreateStructure.cpp` (`main`) |
 | import mode 3 (positions only) | not a known-poses reconstruction: the standard solver runs, the match mode stays at its default | `Scene.h:ReconstructionConfig::HasKnownPoses` |
 | known poses with `--dense-matcher` | supported | no check |
-| known poses on a resumed scene with import mode 1 | the intrinsics in the file are ignored (warning), poses only | `Scene.cpp:458-468` |
+| known poses on a resumed scene with import mode 1 | the intrinsics in the file are ignored (warning), poses only | `Scene.cpp` (`Scene::Import`) |
 | `--match-images-only` | returns after stage 7, the scene at `PAIRS_FILTERED`; no solver runs | `Scene.cpp:Scene::Reconstruct`, the `matchImagesOnly` return |
-| a `.sfm` already `CALIBRATED` | `Reconstruct` returns false at once; `main` treats it as a partial result, writes the optional exports and does not rewrite the `.sfm` | `Scene.cpp:793-796`, `CreateStructure.cpp:535-545` |
+| a `.sfm` already `CALIBRATED` | `Reconstruct` returns false at once; `main` treats it as a partial result, writes the optional exports and does not rewrite the `.sfm` | `Scene.cpp` (`Scene::Reconstruct`), `CreateStructure.cpp` (`main`) |
 
 ### Saved-scene resume
 
@@ -227,7 +227,7 @@ structs of `libs/SFM`:
 | full bundle adjustment every | 25, 50, 100 registered images | `Resection.h:ResectionConfig::fullBAEvery` |
 | pair constraints in bundle adjustment: allowed distance of the model's relative pose from a verified pair | 1 degree rotation, 2 degrees baseline direction | `Scene.h:ReconstructionConfig::relativeRotationSigma` |
 
-`CreateStructure` sets `cfg.viewgraphCfg.maxTwoViewError = 0` (`CreateStructure.cpp:502`), which disables the pair
+`CreateStructure` sets `cfg.viewgraphCfg.maxTwoViewError = 0` (`CreateStructure.cpp` (`main`)), which disables the pair
 filtering of the view-graph focal calibration.
 
 ## Invariants
@@ -244,7 +244,7 @@ filtering of the view-graph focal calibration.
 
 ## Rejected alternatives
 
-- No fallback from the dense pass to descriptor matching for a rejected pair (`PairsMatcher.cpp:2205`).
+- No fallback from the dense pass to descriptor matching for a rejected pair (`PairsMatcher.cpp` (`PairsMatcher::Match`)).
 - No automatic switch of the match mode when a `--dense-matcher` is given without the dense pass or mode 4: the parser refuses it.
 
 ## Open items
