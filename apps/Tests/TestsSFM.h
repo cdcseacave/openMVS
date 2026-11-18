@@ -193,17 +193,11 @@ bool DenseFillCeilingTest();
 // and minOverlap 0 admits the first two
 bool DenseVerdictTest();
 
-// Guided sparse matching (MatchFeaturesGuided) without a geometry, the disc: a keypoint alone in
-// its disc whose lookalike sits elsewhere in the other image is refused by the outside reference,
-// one whose only close descriptor is inside the disc is accepted, and a scale duplicate inside it is
-// no rival; the same inputs give the same matches, in the same order
+// Guided sparse matching (MatchFeaturesGuided): the ratio against the best descriptor outside the
+// search disc (a lookalike elsewhere refuses, a scale duplicate inside is no rival), the epipolar
+// band (a rival off the line is no candidate, one on it refuses, a same-feature duplicate is no
+// rival), the fallback to the disc without a geometry or near the epipole, the same matches twice
 bool DenseGuidedMatchTest();
-
-// The epipolar band of the guided sparse matching (GuidedSearch): a rival off the epipolar line is
-// no candidate, an equally close rival on it refuses the match, a same-feature duplicate is no
-// rival, every winner answers to the reference outside its band, and the search is the disc
-// without a geometry or near the epipole
-bool DenseGuidedBandTest();
 
 // Pair assembly and storage (AssemblePairDense, StorePairDense): the union of the guided matches
 // and the dense fill is fitted once and splits into the pair's sparse and dense segments under one

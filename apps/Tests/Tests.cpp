@@ -345,7 +345,6 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(DenseFillCeilingTest),
 				SFM_TEST(DenseVerdictTest),
 				SFM_TEST(DenseGuidedMatchTest),
-				SFM_TEST(DenseGuidedBandTest),
 				SFM_TEST(BuildTracksConflictTest),
 				SFM_TEST(DenseAssemblyTest),
 				SFM_TEST(DenseFitWeightTest),

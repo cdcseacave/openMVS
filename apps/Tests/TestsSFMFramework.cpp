@@ -824,6 +824,33 @@ bool BundledImagesFeatures(Scene& scene, const ImportConfig& importCfg)
 }
 /*----------------------------------------------------------------*/
 
+Scene MakeRig(cv::Size size, REAL focal, const std::vector<Pose3D>& poses, REAL k1)
+{
+	ASSERT(size.area() > 0 && focal > 0 && !poses.empty());
+	Scene scene;
+	PinholeCamera* camera = new PinholeCamera(size, focal, focal, REAL(size.width) / 2, REAL(size.height) / 2);
+	camera->k1 = k1;
+	camera->trustIntrinsics = true;
+	scene.cameras.emplace_back(camera);
+	FOREACH(i, poses)
+		scene.images.emplace_back((IIndex)i, String::FormatString("%u.jpg", (unsigned)i), poses[i], 0, scene.cameras[0]);
+	scene.status.nCalibratedImages = scene.images.size();
+	return scene;
+}
+
+void ArmPair(ImagePair& pair, const Scene& scene)
+{
+	ASSERT(pair.ID1 < pair.ID2 && pair.ID2 < scene.images.size());
+	const Image& imgA = scene.images[pair.ID1];
+	const Image& imgB = scene.images[pair.ID2];
+	ASSERT(imgA.IsValid() && imgB.IsValid());
+	pair.relativePose = imgB / imgA;
+	pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
+	pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), imgA.GetK(), imgB.GetK());
+}
+/*----------------------------------------------------------------*/
+
+
 Scene MakeSphereScene(const std::vector<Point3>& centres, unsigned numPoints, uint32_t seed, cv::Size size)
 {
 	ASSERT(!centres.empty() && size.width == 2 * size.height);

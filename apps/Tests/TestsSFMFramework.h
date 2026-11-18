@@ -291,6 +291,20 @@ bool BundledImagesFeatures(Scene& scene, const ImportConfig& importCfg);
 
 
 // ===============================================================================
+// A rig of perspective images: one trusted pinhole camera of the given size and focal, principal point
+// at the frame centre and radial distortion k1, shared by one image per pose (named "<i>.jpg", posed,
+// counted calibrated), with no keypoints: the test adds what it observes. An image whose pose the test
+// does not read takes Pose3D::Identity().
+//   Scene scene(MakeRig(cv::Size(640, 480), 400, {Pose3D::Identity(), Pose3D(RMatrix::IDENTITY, CMatrix(0.4, 0.1, 0))}));
+// ===============================================================================
+Scene MakeRig(cv::Size size, REAL focal, const std::vector<Pose3D>& poses, REAL k1 = 0);
+// a pair of two posed images armed with their true geometry: relativePose = images[ID2] / images[ID1]
+// (the baseline at its true length), E and F composed from it and the two cameras
+void ArmPair(ImagePair& pair, const Scene& scene);
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
 // Panoramas looking at a sphere of points: one spherical camera of the given size shared by images at
 // the given centres (rotation identity, named ""), and numPoints points at directions drawn uniformly
 // over the sphere and distances 4.5-5.5 from the origin, each a track with a keypoint at its exact

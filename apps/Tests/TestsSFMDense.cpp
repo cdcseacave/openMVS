@@ -1172,19 +1172,10 @@ bool DenseFillCeilingTest()
 constexpr REAL DENSE_WEDGE_SEAM_Z = 3.0; // depth of the seam, on the optical axis of the first camera
 constexpr REAL DENSE_WEDGE_SLOPE = 1.6;  // how fast the two planes recede to either side of it
 
+// the camera trusted: the calibrated branch, so every fit here reports a relative pose
 static void MakeDenseWedgeScene(Scene& scene)
 {
-	const int width = 640, height = 480;
-	PinholeCamera* const camera = new PinholeCamera(cv::Size(width, height),
-		REAL(400), REAL(400), REAL(width)/2, REAL(height)/2);
-	camera->trustIntrinsics = true; // the calibrated branch, so every fit here reports a relative pose
-	scene.cameras.emplace_back(camera);
-	for (unsigned i = 0; i < 2; ++i) {
-		Pose3D pose;
-		pose.R = Matrix3x3::IDENTITY;
-		pose.C = Point3(i == 0 ? REAL(0) : REAL(0.4), i == 0 ? REAL(0) : REAL(0.1), REAL(0));
-		scene.images.emplace_back((IIndex)i, String::FormatString("%u.jpg", i), pose, (IIndex)0, scene.cameras[0]);
-	}
+	scene = MakeRig(cv::Size(640, 480), 400, {Pose3D::Identity(), Pose3D(RMatrix::IDENTITY, CMatrix(0.4, 0.1, 0))});
 }
 
 // Where the ray through pixel `pt` of `img` meets the wedge, in world coordinates; false when it
@@ -1670,283 +1661,140 @@ bool DenseVerdictTest()
 	return true;
 }
 
-// Guided sparse matching (MatchFeaturesGuided) on synthetic descriptors: the ratio is taken against
-// the best descriptor OUTSIDE the search disc, so a lookalike sitting anywhere else in imgB still
-// rejects the match, a keypoint whose only close descriptor is inside the disc is accepted, and a
-// scale duplicate on top of the true match inside the disc -- the classic ratio-test failure -- no
-// longer blocks it; the same inputs give the same matches, in the same order
+// Guided sparse matching (MatchFeaturesGuided) on synthetic binary descriptors, two perspective images of one rig (MakeRig)
+// whose geometry is given by hand: every query of A has a prediction in B at its own position plus (20, 10), the warp's, and
+// a "close descriptor" is an exact copy of the query's random 32-byte row, so the outcome is decided by positions alone.
+// 1. the disc (no geometry): the ratio is taken against the best descriptor OUTSIDE the search disc, so a lookalike anywhere
+//    else in B rejects the match, a keypoint whose only close descriptor is inside the disc is accepted, and a scale duplicate
+//    on top of the true match inside the disc (the classic ratio-test failure) no longer blocks it; the same lookalike moved
+//    inside the disc is accepted;
+// 2. the epipolar band: the region is a band along the query's epipolar line centred on the prediction, so a rival off the
+//    line no longer takes the disc from the true match, an ambiguous rival ON the line refuses it, a same-feature duplicate
+//    is no rival, every winner answers to the reference outside its band, and the search falls back to the disc without a
+//    geometry and within two band lengths of the epipole;
+// both give the same matches in the same order on a second run.
 bool DenseGuidedMatchTest()
 {
-	TD_TIMER_START();
-
-	Scene scene;
-	const int width = 640, height = 480;
-	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
-		REAL(400), REAL(400), REAL(width)/2, REAL(height)/2));
-	for (unsigned i = 0; i < 2; ++i) {
-		Image& img = scene.images.emplace_back((IIndex)i, String::FormatString("%u.jpg", i));
-		img.cameraID = 0;
-		img.pCamera = scene.cameras[0];
-	}
-	Image& imgA = scene.images[0];
-	Image& imgB = scene.images[1];
-
-	// four queries of imgA, each answering one question, and the keypoints of imgB the warp sends
-	// them to: the prediction of query i is its own position plus one fixed offset
-	const Point2f offset(20.f, 10.f);
-	const float positionsA[4][2] = { {100.f, 100.f}, {200.f, 100.f}, {300.f, 100.f}, {400.f, 100.f} };
-	for (const auto& pt : positionsA)
-		imgA.keypoints.emplace_back(pt[0], pt[1], 10.f);
-	// imgB: the true match of every query at its prediction, an equal-descriptor lookalike of query 0
-	// far away from it, a scale duplicate of query 2's match on top of that match, and distractors
-	const float positionsB[16][2] = {
-		{120.f, 110.f}, {500.f, 300.f}, {220.f, 110.f}, {320.f, 110.f}, {320.f, 110.f}, {420.f, 110.f},
-		{ 60.f, 300.f}, {160.f, 320.f}, {260.f, 340.f}, {360.f, 360.f}, {460.f, 380.f}, {560.f, 400.f},
-		{ 80.f, 420.f}, {180.f, 440.f}, {280.f, 460.f}, {380.f,  40.f}
-	};
-	for (const auto& pt : positionsB)
-		imgB.keypoints.emplace_back(pt[0], pt[1], 10.f);
-	// binary descriptors: one random 32-byte row per query of imgA, copied verbatim onto the imgB
-	// keypoints that stand for it, everything else random -- so a "close descriptor" is an exact
-	// duplicate and the ratio test is decided by positions alone
-	const int descBytes = 32;
-	std::mt19937 rng(20260903u);
-	imgA.descriptors.create((int)imgA.keypoints.size(), descBytes, CV_8U);
-	imgB.descriptors.create((int)imgB.keypoints.size(), descBytes, CV_8U);
-	for (int r = 0; r < imgA.descriptors.rows; ++r)
-		for (int b = 0; b < descBytes; ++b)
-			imgA.descriptors.at<uint8_t>(r, b) = (uint8_t)(rng() & 0xFF);
-	for (int r = 0; r < imgB.descriptors.rows; ++r)
-		for (int b = 0; b < descBytes; ++b)
-			imgB.descriptors.at<uint8_t>(r, b) = (uint8_t)(rng() & 0xFF);
-	const int copyDescriptor[6][2] = { {0,0}, {0,1}, {1,2}, {2,3}, {2,4}, {3,5} }; // {query of A, keypoint of B}
-	for (const auto& copy : copyDescriptor)
-		imgA.descriptors.row(copy[0]).copyTo(imgB.descriptors.row(copy[1]));
-
-	// the predictions the warp would produce, with query 3 left untracked
-	std::vector<Point2f> trackedB(imgA.keypoints.size());
-	std::vector<uchar> trackStatus(imgA.keypoints.size(), 1);
-	FOREACH(i, trackedB)
-		trackedB[i] = Point2f(imgA.keypoints[i].pt) + offset;
-	trackStatus[3] = 0;
-	// two warp cells of a 160-cell grid over imgB, the length the one pass passes in; with no
-	// geometry the search is the disc of that radius
+	TestScope scope("DenseGuidedMatchTest");
+	const cv::Size size(640, 480);
+	// two warp cells long and half a cell wide on a 160-cell grid over B, as the one pass sizes it
 	GuidedSearch search;
-	search.length = 2.f*(float)MAXF(width, height)/160.f;
-	search.halfWidth = 0.5f*(float)MAXF(width, height)/160.f;
+	search.length = 2.f*(float)MAXF(size.width, size.height)/160.f;
+	search.halfWidth = 0.5f*(float)MAXF(size.width, size.height)/160.f;
 	search.sameFeatureDistance = 3.f;
-
 	MatchConfig matchCfg;
 	matchCfg.descriptorsAreBinary = true;
 	matchCfg.crossCheck = false;      // the guided path refuses a cross-checking matcher (it needs k > 1)
 	matchCfg.useFlannMatcher = false; // exact k-NN: the LSH index is approximate, and this test compares exact sets
-	PairsMatcher matcher(scene, matchCfg);
-
-	// query 0 is rejected: its lookalike sits outside the disc, so the winner has nothing to beat.
-	// query 1 is accepted: its only close descriptor is the one inside the disc.
-	// query 2 is accepted despite the duplicate inside its disc, and elects the smaller train index.
-	// query 3 is untracked, so it never reaches a disc at all.
-	std::vector<DMatch> matches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, matches) != 2 ||
-		matches.size() != 2 ||
-		matches[0].queryIdx != 1 || matches[0].trainIdx != 2 ||
-		matches[1].queryIdx != 2 || matches[1].trainIdx != 3) {
-		VERBOSE("DenseGuidedMatchTest FAILED: %u matches, expected (1,2) and (2,3)", (unsigned)matches.size());
-		FOREACH(k, matches)
-			VERBOSE("DenseGuidedMatchTest:   match %u: (%u,%u)", k, matches[k].queryIdx, matches[k].trainIdx);
-		return false;
-	}
-
-	// the same query with the same lookalike moved INSIDE its disc is accepted: what rejected it was
-	// the lookalike's position, not its existence -- which is exactly the rule the outside-the-disc
-	// reference distance encodes
-	imgB.keypoints[1].pt = cv::Point2f(121.f, 110.f);
-	std::vector<DMatch> movedMatches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, movedMatches) != 3 ||
-		movedMatches[0].queryIdx != 0 || movedMatches[0].trainIdx != 0) {
-		VERBOSE("DenseGuidedMatchTest FAILED: the lookalike moved into the disc left %u matches, expected 3 starting with (0,0)",
-			(unsigned)movedMatches.size());
-		return false;
-	}
-	imgB.keypoints[1].pt = cv::Point2f(positionsB[1][0], positionsB[1][1]);
-
-	// the same inputs give the same matches in the same order, twice over
-	std::vector<DMatch> again;
-	MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, again);
-	if (again.size() != matches.size()) {
-		VERBOSE("DenseGuidedMatchTest FAILED: a second run returned %u matches instead of %u",
-			(unsigned)again.size(), (unsigned)matches.size());
-		return false;
-	}
-	FOREACH(k, again)
-		if (again[k].queryIdx != matches[k].queryIdx || again[k].trainIdx != matches[k].trainIdx) {
-			VERBOSE("DenseGuidedMatchTest FAILED: match %u is (%u,%u) and was (%u,%u)",
-				k, again[k].queryIdx, again[k].trainIdx, matches[k].queryIdx, matches[k].trainIdx);
-			return false;
+	// the rig's two images with the given keypoints, every descriptor random from seed and the copies {query of A, keypoint of B}
+	// made exact; returns the predictions of A's queries in B
+	struct Copy { int query, keypoint; };
+	const auto Rig = [&](Scene& scene, const std::vector<Point2f>& positionsA, const std::vector<Point2f>& positionsB,
+		const std::vector<Copy>& copies, uint32_t seed) {
+		scene = MakeRig(size, 400, {Pose3D::Identity(), Pose3D::Identity()});
+		Image& imgA = scene.images[0];
+		Image& imgB = scene.images[1];
+		for (const Point2f& pt : positionsA)
+			imgA.keypoints.emplace_back(pt.x, pt.y, 10.f);
+		for (const Point2f& pt : positionsB)
+			imgB.keypoints.emplace_back(pt.x, pt.y, 10.f);
+		std::mt19937 rng(seed);
+		for (Image* img : {&imgA, &imgB}) {
+			img->descriptors.create((int)img->keypoints.size(), 32, CV_8U);
+			for (int r = 0; r < img->descriptors.rows; ++r)
+				for (int b = 0; b < 32; ++b)
+					img->descriptors.at<uint8_t>(r, b) = (uint8_t)(rng() & 0xFF);
 		}
-
-	VERBOSE("DenseGuidedMatchTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// The epipolar band of the guided sparse matching: the search region is a band along the epipolar
-// line of the query, centred on the warp's prediction, a rival off the line no longer takes the
-// disc from the true match, an ambiguous rival ON the line refuses the match, a same-feature
-// duplicate does not count as a rival, every winner answers to the reference outside its band, and
-// the search falls back to the disc without a geometry or near the epipole.
-bool DenseGuidedBandTest()
-{
-	TD_TIMER_START();
-
-	Scene scene;
-	const int width = 640, height = 480;
-	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
-		REAL(400), REAL(400), REAL(width)/2, REAL(height)/2));
-	for (unsigned i = 0; i < 2; ++i) {
-		Image& img = scene.images.emplace_back((IIndex)i, String::FormatString("%u.jpg", i));
-		img.cameraID = 0;
-		img.pCamera = scene.cameras[0];
-	}
-	Image& imgA = scene.images[0];
-	Image& imgB = scene.images[1];
-
-	// every query of imgA sits on the row y = 100, and every geometry below puts the epipole of imgB
-	// on that same row, so every epipolar line is horizontal and "along" is x, "across" is y; the
-	// prediction of query i is its own position plus one fixed offset, the band is centred on it
-	const Point2f offset(20.f, 10.f);
-	const float positionsA[6][2] = { {100.f, 100.f}, {200.f, 100.f}, {300.f, 100.f}, {400.f, 100.f}, {500.f, 100.f}, {600.f, 100.f} };
-	for (const auto& pt : positionsA)
-		imgA.keypoints.emplace_back(pt[0], pt[1], 10.f);
-	// imgB, per query: 0) its true match at the prediction, an impostor 5 px ACROSS the line (inside
-	// the two-cell disc, outside the half-cell band) and a rival 5 px ALONG it; 1) its true match and
-	// an equal-descriptor rival 6 px along the line; 2) its true match and a same-feature duplicate
-	// 2 px along; 3) its true match alone, with a lookalike far away; 4) its true match, a rival 6 px
-	// along the line and a lookalike far away; 5) its true match and a rival 6 px along the line, no
-	// lookalike anywhere; then distractors
-	const float positionsB[19][2] = {
-		{120.f, 110.f}, {120.f, 115.f}, {125.f, 110.f},
-		{220.f, 110.f}, {226.f, 110.f},
-		{320.f, 110.f}, {322.f, 110.f},
-		{420.f, 110.f}, {500.f, 300.f},
-		{520.f, 110.f}, {526.f, 110.f}, {300.f, 400.f},
-		{620.f, 110.f}, {626.f, 110.f},
-		{ 60.f, 300.f}, {160.f, 320.f}, {260.f, 340.f}, {360.f, 360.f}, {380.f,  40.f}
+		for (const Copy& copy : copies)
+			imgA.descriptors.row(copy.query).copyTo(imgB.descriptors.row(copy.keypoint));
+		std::vector<Point2f> trackedB;
+		for (const auto& kp : imgA.keypoints)
+			trackedB.push_back(Point2f(kp.pt) + Point2f(20.f, 10.f));
+		return trackedB;
 	};
-	for (const auto& pt : positionsB)
-		imgB.keypoints.emplace_back(pt[0], pt[1], 10.f);
-	// binary descriptors: one random 32-byte row per query, copied onto the imgB keypoints that stand
-	// for it (query 0's true match one bit off, so its impostor is the closer descriptor), the rest
-	// random
-	const int descBytes = 32;
-	std::mt19937 rng(20260916u);
-	imgA.descriptors.create((int)imgA.keypoints.size(), descBytes, CV_8U);
-	imgB.descriptors.create((int)imgB.keypoints.size(), descBytes, CV_8U);
-	for (int r = 0; r < imgA.descriptors.rows; ++r)
-		for (int b = 0; b < descBytes; ++b)
-			imgA.descriptors.at<uint8_t>(r, b) = (uint8_t)(rng() & 0xFF);
-	for (int r = 0; r < imgB.descriptors.rows; ++r)
-		for (int b = 0; b < descBytes; ++b)
-			imgB.descriptors.at<uint8_t>(r, b) = (uint8_t)(rng() & 0xFF);
-	const int copyDescriptor[11][2] = { {0,0}, {0,1}, {1,3}, {1,4}, {2,5}, {2,6}, {3,7}, {3,8}, {4,9}, {4,11}, {5,12} }; // {query of A, keypoint of B}
-	for (const auto& copy : copyDescriptor)
-		imgA.descriptors.row(copy[0]).copyTo(imgB.descriptors.row(copy[1]));
-	imgB.descriptors.at<uint8_t>(0, 0) ^= 0x01; // the true match of query 0: Hamming distance 1
-
-	std::vector<Point2f> trackedB(imgA.keypoints.size());
-	std::vector<uchar> trackStatus(imgA.keypoints.size(), 1);
-	FOREACH(i, trackedB)
-		trackedB[i] = Point2f(imgA.keypoints[i].pt) + offset;
-
-	MatchConfig matchCfg;
-	matchCfg.descriptorsAreBinary = true;
-	matchCfg.crossCheck = false;
-	matchCfg.useFlannMatcher = false;
-	PairsMatcher matcher(scene, matchCfg);
-
-	// F = [e]x: the epipolar line of a point of imgA is the line through the epipole e and the same
-	// coordinates in imgB, and F^T e = 0
-	const auto Fundamental = [](float ex, float ey) {
-		Matrix3x3 F;
-		F(0,0) = 0;   F(0,1) = -1;  F(0,2) = ey;
-		F(1,0) = 1;   F(1,1) = 0;   F(1,2) = -ex;
-		F(2,0) = -ey; F(2,1) = ex;  F(2,2) = 0;
-		return F;
-	};
-	// two warp cells long and half a cell wide on a 160-cell grid over imgB, as the one pass sizes it
-	GuidedSearch search;
-	search.length = 2.f*(float)MAXF(width, height)/160.f;
-	search.halfWidth = 0.5f*(float)MAXF(width, height)/160.f;
-	search.F = Fundamental(2000.f, 100.f); // the epipole far off the frame: every band is horizontal
-	search.sameFeatureDistance = 3.f;
-	const auto Report = [](const char* what, const std::vector<DMatch>& matches) {
-		VERBOSE("DenseGuidedBandTest FAILED: %s (%u matches)", what, (unsigned)matches.size());
-		FOREACH(k, matches)
-			VERBOSE("DenseGuidedBandTest:   match %u: (%u,%u)", k, matches[k].queryIdx, matches[k].trainIdx);
+	// the matches of one run as "(q,t) (q,t) ..."
+	const auto List = [](const std::vector<DMatch>& matches) {
+		String list;
+		for (const DMatch& m : matches)
+			list += String::FormatString("%s(%u,%u)", list.empty() ? "" : " ", m.queryIdx, m.trainIdx);
+		return list;
 	};
 
-	// query 0 is refused: its impostor sits off the line, never a candidate, but closer in appearance
-	// than its true match, and the reference outside the band sees it.
-	// query 1 is refused: its rival on the line is exactly as close, the match is ambiguous.
-	// query 2 matches, electing the smaller index of its two same-feature duplicates; its closest
-	// keypoint outside the band is random.
-	// query 3 is refused: alone in its band, it has to beat the far lookalike and cannot.
-	// query 4 is refused: past its random rival, it has to beat the far lookalike and cannot.
-	// query 5 matches: its rival and its closest keypoint outside the band are random.
-	std::vector<DMatch> matches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, matches) != 2 ||
-		matches.size() != 2 ||
-		matches[0].queryIdx != 2 || matches[0].trainIdx != 5 ||
-		matches[1].queryIdx != 5 || matches[1].trainIdx != 12) {
-		Report("band: expected (2,5) and (5,12)", matches);
-		return false;
+	// 1. the disc. Four queries; B: the true match of every query at its prediction, an equal-descriptor lookalike of query 0 far
+	// away, a scale duplicate of query 2's match on top of it, distractors; query 3 untracked
+	{
+		Scene scene;
+		const std::vector<Point2f> trackedB = Rig(scene, {{100, 100}, {200, 100}, {300, 100}, {400, 100}},
+			{{120, 110}, {500, 300}, {220, 110}, {320, 110}, {320, 110}, {420, 110}, {60, 300}, {160, 320}, {260, 340}, {360, 360},
+			 {460, 380}, {560, 400}, {80, 420}, {180, 440}, {280, 460}, {380, 40}},
+			{{0, 0}, {0, 1}, {1, 2}, {2, 3}, {2, 4}, {3, 5}}, 20260903u);
+		Image& imgA = scene.images[0];
+		Image& imgB = scene.images[1];
+		std::vector<uchar> trackStatus(imgA.keypoints.size(), 1);
+		trackStatus[3] = 0;
+		PairsMatcher matcher(scene, matchCfg);
+		// query 0 rejected: its lookalike sits outside the disc, so the winner has nothing to beat; query 1 accepted: its only
+		// close descriptor is inside the disc; query 2 accepted despite the duplicate inside its disc, electing the smaller
+		// train index; query 3 untracked, never reaching a disc
+		std::vector<DMatch> matches, again, moved;
+		const unsigned numMatches = MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, matches);
+		TEST_CHECK(numMatches == 2 && List(matches) == "(1,2) (2,3)", "disc: %s, expected (1,2) (2,3)", List(matches).c_str());
+		// the lookalike moved INSIDE the disc of query 0 is accepted: what rejected the match was its position
+		imgB.keypoints[1].pt = cv::Point2f(121.f, 110.f);
+		TEST_CHECK(MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, moved) == 3 && moved[0].queryIdx == 0 &&
+			moved[0].trainIdx == 0, "disc: the lookalike moved into the disc left %s, expected 3 matches starting with (0,0)", List(moved).c_str());
+		imgB.keypoints[1].pt = cv::Point2f(500.f, 300.f);
+		MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, again);
+		TEST_CHECK(List(again) == List(matches), "disc: a second run gave %s, the first %s", List(again).c_str(), List(matches).c_str());
 	}
 
-	// without a geometry the search is the disc: query 0's impostor is a candidate again and wins
-	// (its true match becomes the in-disc rival the impostor beats by the ratio); everything else is
-	// as with the band, the disc holding the same keypoints along the line
-	search.F.reset();
-	std::vector<DMatch> discMatches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, discMatches) != 3 ||
-		discMatches.size() != 3 ||
-		discMatches[0].queryIdx != 0 || discMatches[0].trainIdx != 1 ||
-		discMatches[1].queryIdx != 2 || discMatches[1].trainIdx != 5 ||
-		discMatches[2].queryIdx != 5 || discMatches[2].trainIdx != 12) {
-		Report("disc: expected (0,1), (2,5) and (5,12)", discMatches);
-		return false;
+	// 2. the band. Six queries on the row y = 100 and every epipole on that row, so every epipolar line is horizontal ("along" is x,
+	// "across" is y). B, per query: 0) its true match one bit off, an impostor 5 px ACROSS the line (inside the two-cell disc,
+	// outside the half-cell band, the closer descriptor) and a rival 5 px ALONG it; 1) its true match and an equal-descriptor
+	// rival 6 px along; 2) its true match and a same-feature duplicate 2 px along; 3) its true match alone, a lookalike far away;
+	// 4) its true match, a rival 6 px along and a lookalike far away; 5) its true match and a random rival 6 px along; distractors
+	{
+		Scene scene;
+		const std::vector<Point2f> trackedB = Rig(scene, {{100, 100}, {200, 100}, {300, 100}, {400, 100}, {500, 100}, {600, 100}},
+			{{120, 110}, {120, 115}, {125, 110}, {220, 110}, {226, 110}, {320, 110}, {322, 110}, {420, 110}, {500, 300}, {520, 110},
+			 {526, 110}, {300, 400}, {620, 110}, {626, 110}, {60, 300}, {160, 320}, {260, 340}, {360, 360}, {380, 40}},
+			{{0, 0}, {0, 1}, {1, 3}, {1, 4}, {2, 5}, {2, 6}, {3, 7}, {3, 8}, {4, 9}, {4, 11}, {5, 12}}, 20260916u);
+		Image& imgA = scene.images[0];
+		Image& imgB = scene.images[1];
+		imgB.descriptors.at<uint8_t>(0, 0) ^= 0x01;
+		const std::vector<uchar> trackStatus(imgA.keypoints.size(), 1);
+		PairsMatcher matcher(scene, matchCfg);
+		// F = [e]x: the epipolar line of a point of A is the line through the epipole e and the same coordinates in B
+		const auto Fundamental = [](float ex, float ey) {
+			Matrix3x3 F;
+			F(0,0) = 0;   F(0,1) = -1;  F(0,2) = ey;
+			F(1,0) = 1;   F(1,1) = 0;   F(1,2) = -ex;
+			F(2,0) = -ey; F(2,1) = ex;  F(2,2) = 0;
+			return F;
+		};
+		const auto Run = [&](std::optional<Matrix3x3> F) {
+			search.F = F;
+			std::vector<DMatch> matches;
+			const unsigned numMatches = MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, matches);
+			// a returned count other than the matches' is part of the answer
+			return List(matches) + (numMatches == matches.size() ? String() : String::FormatString(" (%u returned)", numMatches));
+		};
+		// the epipole far off the frame: query 0 refused (its impostor, off the line, is never a candidate but the reference
+		// outside the band sees it), 1 refused (ambiguous on the line), 2 matches electing the smaller of its duplicates, 3 and
+		// 4 refused (they have to beat the far lookalike), 5 matches
+		const String band = Run(Fundamental(2000.f, 100.f));
+		TEST_CHECK(band == "(2,5) (5,12)", "band: %s, expected (2,5) (5,12)", band.c_str());
+		// no geometry: the disc, where query 0's impostor is a candidate again and wins
+		const String disc = Run(std::nullopt);
+		TEST_CHECK(disc == "(0,1) (2,5) (5,12)", "disc: %s, expected (0,1) (2,5) (5,12)", disc.c_str());
+		// the epipole 14 px from query 0's prediction: no usable line direction there, so that query searches the disc
+		const String nearEpipole = Run(Fundamental(130.f, 100.f));
+		TEST_CHECK(nearEpipole == "(0,1) (2,5) (5,12)", "near the epipole: %s, expected (0,1) (2,5) (5,12)", nearEpipole.c_str());
+		const String again = Run(Fundamental(2000.f, 100.f));
+		TEST_CHECK(again == band, "band: a second run gave %s, the first %s", again.c_str(), band.c_str());
 	}
-
-	// a prediction within two band lengths of the epipole has no usable line direction and searches
-	// the disc: the epipole 14 px from query 0's prediction turns that query's search into the disc
-	// (the impostor wins), and leaves the other queries' bands as they were
-	search.F = Fundamental(130.f, 100.f);
-	std::vector<DMatch> epipoleMatches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, epipoleMatches) != 3 ||
-		epipoleMatches.size() != 3 ||
-		epipoleMatches[0].queryIdx != 0 || epipoleMatches[0].trainIdx != 1 ||
-		epipoleMatches[1].queryIdx != 2 || epipoleMatches[1].trainIdx != 5) {
-		Report("near the epipole: expected (0,1), (2,5) and (5,12)", epipoleMatches);
-		return false;
-	}
-
-	// the same inputs give the same matches in the same order, twice over
-	search.F = Fundamental(2000.f, 100.f);
-	std::vector<DMatch> again;
-	MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, again);
-	if (again.size() != matches.size()) {
-		VERBOSE("DenseGuidedBandTest FAILED: a second run returned %u matches instead of %u",
-			(unsigned)again.size(), (unsigned)matches.size());
-		return false;
-	}
-	FOREACH(k, again)
-		if (again[k].queryIdx != matches[k].queryIdx || again[k].trainIdx != matches[k].trainIdx) {
-			VERBOSE("DenseGuidedBandTest FAILED: match %u is (%u,%u) and was (%u,%u)",
-				k, again[k].queryIdx, again[k].trainIdx, matches[k].queryIdx, matches[k].trainIdx);
-			return false;
-		}
-
-
-	VERBOSE("DenseGuidedBandTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
+	return scope.Pass("the ratio against the best descriptor outside the disc or band, the band along the epipolar line, its "
+		"fallbacks to the disc, and the same matches on a second run");
 }
 
 bool DenseAssemblyTest()
@@ -2396,9 +2244,7 @@ bool DenseFitWeightTest()
 		DenseMatchConfig config;
 		config.denseFitWeight = denseFitWeight;
 		ImagePair pair(0, 1);
-		pair.relativePose = poseGT;
-		pair.E = ImagePair::ComposeEssentialMatrix(poseGT);
-		pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), imgA.GetK(), imgB.GetK());
+		ArmPair(pair, scene);
 		DenseMatches dense;
 		if (!AssemblePairDense(matcher, imgA, imgB, verdict, guided, config, cells, pair, dense) || !pair.relativePose.has_value())
 			return false;
@@ -2710,10 +2556,7 @@ static IIndex StoreDenseWedgePair(Scene& scene, PairsMatcher& matcher, const Den
 		guided.emplace_back(idx, idx);
 	}
 	ImagePair pair(0, 1);
-	const Pose3D poseGT(imgB / imgA);
-	pair.relativePose = poseGT;
-	pair.E = ImagePair::ComposeEssentialMatrix(poseGT);
-	pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), imgA.GetK(), imgB.GetK());
+	ArmPair(pair, scene);
 	DenseMatches dense;
 	if (!AssemblePairDense(matcher, imgA, imgB, verdict, guided, config, cells, pair, dense))
 		return NO_ID;
