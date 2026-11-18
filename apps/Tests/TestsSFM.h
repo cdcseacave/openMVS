@@ -61,17 +61,14 @@ bool ImportMetadataDeterminismTest();
 bool ExifFocalUntrustedTest();
 
 // The camera model an import gives every image: read from the metadata by default, forced spherical or
-// pinhole by ImportConfig::cameraType (an equirectangular panorama that carries no projection tag)
+// pinhole by ImportConfig::cameraType (an equirectangular panorama that carries no projection tag); and
+// a spherical import of an image that is not 2:1 logs an error naming the image and leaves it without a
+// camera, like any image whose metadata fails
 bool CameraTypeImportTest();
 
-// A spherical import of an image that is not 2:1 logs an error naming the image and leaves it without a camera, like any image whose metadata fails.
-bool SphericalImageSizeImportTest();
-
-// Pose-frame detection: recover both the camera-axes convention and, for EXIF-rotated images,
-// the in-plane rotation of an imported frames.json from the matched pairs
-bool FramesPoseFrameDetectionTest();
-
-// Known-pose import, pair selection, and prior-frame alignment tests
+// The import of external poses (frames.json, pose CSV: names, intrinsics, duplicates, an invalid row
+// changing nothing) and the pose-frame detection that recovers both the camera-axes convention and, for
+// EXIF-rotated images, the in-plane rotation of an imported frames.json from the matched pairs
 bool KnownPosesImportTest();
 
 // TestsSFMFeatures.cpp ----------------------------------------
@@ -86,22 +83,12 @@ bool VocabularyTreeTest();
 // bar takes the veto, the cut can be switched off, and a conflict-free scene is untouched
 bool BuildTracksConflictTest();
 
-// Global-descriptor retrieval test: cosine ranking of the per-image global descriptors and its
-// deterministic tie order, PairsMatcher's RETRIEVAL-mode pair selection over the same
-// descriptors, the rankings CSV export, and the .sfm round-trip of the descriptors
-bool GlobalDescriptorsQueryTest();
-
-// RETRIEVAL match-mode test: candidate selection ranks purely by the global descriptors --
-// VOCABULARY and RETRIEVAL name two backends and neither consults a gate to borrow the
-// other's -- a missing descriptor is a hard error rather than a vocabulary-tree fallback, and
-// the mode dispatches correctly end-to-end through Match()
-bool RetrievalModeTest();
-
-// VOCABULARY/RETRIEVAL backend-isolation test: on a scene where the local descriptors and the
-// global descriptors cluster the 12 images into two different partitions, VOCABULARY's pair
-// set follows the local-descriptor clustering and RETRIEVAL's follows the global one -- the
-// two provably disagree, so neither mode can be silently ranking with the other's backend
-bool VocabularyIgnoresGlobalDescriptorsTest();
+// Global-descriptor retrieval on twelve images whose local and global descriptors cluster them in two
+// different partitions: the cosine ranking and its deterministic tie order, the RETRIEVAL match mode
+// (a connected view graph, a missing descriptor a hard error, end-to-end through Match()), VOCABULARY
+// following the local clustering where RETRIEVAL follows the global one (neither borrows the other's
+// backend), and the .sfm round-trip of the descriptors
+bool RetrievalTest();
 
 // Spherical bottom band of the feature extraction: with FeatureExtractionConfig::sphericalBottomBand
 // at 0.2 no keypoint of an equirectangular image lies in its bottom 20% of rows and the rest of the
@@ -109,25 +96,22 @@ bool VocabularyIgnoresGlobalDescriptorsTest();
 // keypoints and descriptors with the band at 0.2 or at 0.
 bool SphericalBottomBandTest();
 
-// The detector words of FeatureTypeFromString: AKAZE, ORB, SIFT and SIFTGPU in any letter case, any other word is NONE.
-bool FeatureTypeNameTest();
+// The detector words of FeatureTypeFromString (AKAZE, ORB, SIFT and SIFTGPU in any letter case, any other word is NONE)
+// and the one default detector the library and the application share, with the thresholds of each detector
+bool DetectorConfigTest();
 
 // The relative pose of two panoramas through PairsMatcher::MatchPair (bearing vectors) and MatchFeaturesGeometric
 // (angular epipolar filter, no F), back-hemisphere bearings admitted.
 bool SphericalPairGeometryTest();
 
-bool KnownPosePairSelectionTest();
+// The four ways a candidate pair is made or pruned: known poses with an unposed image, the sequential prior
+// (PairsMatcher::AddSequentialPairs), the SEQUENTIAL match mode, and the pre-match threshold
+bool PairSelectionTest();
 
-// PairsMatcher::AddSequentialPairs: the sequential prior added to the VOCABULARY/RETRIEVAL
-// candidates (MatchConfig::matchSequenceOverlap)
-bool SequentialPairsPriorTest();
-
-// Two-view geometry test: PairsMatcher and ImagePair matrix operations
-bool TwoViewTest();
-
-// The relative pose recovered from the fundamental matrix (GeometricFilter's F branch, then DecomposeFundamentalToPose)
-// is the true one for two cameras of different intrinsics and image sizes, as for two cameras of one size
-bool FundamentalPoseTwoCamerasTest();
+// Two-view geometry: PairsMatcher and ImagePair matrix operations, the two-view calibration refinement, and the
+// relative pose recovered from the fundamental matrix (GeometricFilter's F branch, then DecomposeFundamentalToPose)
+// for two cameras of different intrinsics and image sizes as for two of one size
+bool TwoViewGeometryTest();
 
 // The pipeline on the bundled images, each stage from the state the one before left: the refusals before any work
 // (SKIP without matches, a GPS weight with panoramas), the match-images-only run writing --export-pairs-csv right
@@ -135,20 +119,9 @@ bool FundamentalPoseTwoCamerasTest();
 // --use-global-solver (Scene::ReconstructGlobal), and the incremental reconstruction recovering wrong intrinsics
 bool RealImagesPipelineTest(bool verbose = false);
 
-// one default detector: every configuration starts from FeatureType::DEFAULT, MatchConfig's thresholds included
-bool DefaultDetectorTest();
-
-// PairsMatcher sequential mode test
-bool PairMatcherTest();
-
-// Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty
-bool MatchPairsFailureTest();
-
+// Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty, and
 // PairsMatcher::Match()'s fatal-round signal is not "this round stored nothing"
-bool MatchRoundFatalSignalTest();
-
-// Pre-matching optimization test
-bool PreMatchTest();
+bool MatchOutcomeSignalsTest();
 
 // TestsSFMDense.cpp -------------------------------------------
 
@@ -784,34 +757,15 @@ bool MergeRoundtripTest();
 
 // TestsSFMPipeline.cpp ----------------------------------------
 
-// EstimateSimilarityTransform recovers a known similarity from six exact correspondences: the scale to 1e-2 and
-// the mapped source points to 1e-6
-bool TestSimilarityTransform();
+// The alignment of a scene onto external positions: EstimateSimilarityTransform recovers a known similarity (and
+// refuses coincident destinations), Scene::AlignToPriorPoses realigns a circle and a collinear capture,
+// Scene::AlignToGPS rejects coincident and collinear fixes leaving the scene untouched and aligns spread ones
+bool SceneAlignmentTest();
 
-// GPS alignment degeneracy test: coincident/collinear GPS positions must be
-// rejected without modifying the scene; well-spread GPS must still align
-bool AlignToGPSDegenerateTest();
-
-// Phase 5 cube-map bridge tests: verify that SFM::ExportMVS can expand
-// every spherical source image into 6 (or 4) pinhole cube-map faces,
-// emit them as a rig platform in MVS::Interface format, and produce a
-// file tree that MVS::Scene::Load reads back without any pinhole
-// regression.
-bool CubeMapFaceRenderTest();
-
-bool CubeMapBridgeGeometryTest();
-
-bool CubeMapBridgeEndToEndTest();
-
-bool CubeMapBridgeMVSLoadTest();
-
-bool CubeMapBridgeMixedSceneTest();
-
-bool CubeMapBridgeDropTopBottomTest();
-
-bool AlignToPriorPosesTest();
-
-bool AlignToPriorPosesCollinearTest();
+// The cube-map bridge of SFM::ExportMVS: a panorama rendered into 6 pinhole faces, and one export read back as the
+// MVS::Interface (rig platform, face cameras, wiring, vertex views), as face files and as an MVS::Scene, plus the
+// mixed pinhole and spherical export and the 4-face export that drops the zenith and nadir tracks
+bool CubeMapExportTest();
 
 /*----------------------------------------------------------------*/
 
