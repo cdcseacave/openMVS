@@ -460,8 +460,8 @@ template<typename _Tp>
 inline bool Save(ArchiveSave& a, const std::vector<_Tp>& v) {
 	const uint64_t size(v.size());
 	Save(a, size);
-	for (uint64_t i=0; i<size; ++i)
-		Save(a, v[i]);
+	for (const auto& value: v)
+		Save(a, value);
 	return true;
 }
 template<typename _Tp>
@@ -474,9 +474,9 @@ inline bool Load(ArchiveLoad& a, std::vector<_Tp>& v) {
 	}
 	v.resize((size_t)size);
 	for (auto& value: v) {
+		Load(a, value);
 		if (!a.stream)
 			return false;
-		Load(a, value);
 	}
 	return bool(a.stream);
 }
@@ -735,7 +735,12 @@ struct Interface
 				// in the image file as it is on disk (distorted for a BROWN camera), pixel-center convention
 
 			template<class Archive>
-			void serialize(Archive& ar, const unsigned int /*version*/);
+			void serialize(Archive& ar, const unsigned int /*version*/) {
+				ar & imageID;
+				ar & confidence;
+				if (ar.flags & HAS_OBSERVATIONS)
+					ar & x;
+			}
 		};
 		typedef std::vector<View> ViewArr;
 
@@ -911,14 +916,6 @@ struct Interface
 		}
 	}
 };
-
-template<class Archive>
-void Interface::Vertex::View::serialize(Archive& ar, const unsigned int /*version*/) {
-	ar & imageID;
-	ar & confidence;
-	if (ar.flags & HAS_OBSERVATIONS)
-		ar & x;
-}
 /*----------------------------------------------------------------*/
 
 
