@@ -422,367 +422,157 @@ bool SceneClusterIDRemappingTest()
 	return true;
 }
 
-// Test 6: Small clusters are rescued/absorbed
-bool SceneClusterSmallClusterRescueTest()
+// The small-cluster pass of SceneCluster::Partition, on view graphs of two established clusters A and B and a small community W.
+// A and B are built as a hub and a chain (so the greedy assembles them one image at a time), W as a clique of weight 50 (3000 in
+// the graph's integer weights, so the hub/chain edges settle first); cluster bounds 15/10/5 with 5 over capacity unless said.
+// 1. rescue: on a generated 25-image scene with its computed weights, A = [0,12) and B = [12,22) strong, the three images of W
+//    joined weakly to A and to one another: no sub-scene under the minimum, every image of W assigned;
+// 2. sub-floor coupling: A 10 images at the target, B 11 (one past it), W joined to B by four pairs of 20 and to A by one of 4:
+//    the greedy cannot give W to B (past the target) and used to give it to A over that one pair because the coupling test
+//    skipped a side under the floor; the interface to A, 40, is far under minClusterCoupling of W's 3000, so W stays apart and
+//    the pass puts it with B, the neighbour it shares the most weight with;
+// 3. standalone community: W joined to B by one pair of 6 and to A by one of 4, 2% of its cohesion, so no neighbour is coupled
+//    to it: with 80 tracks seen by three W and three B cameras (a strong seam by the merge's bars: 75 tracks, 3 cameras a side
+//    with 30) it is a sub-scene of its own, with none it goes to B;
+// 4. coupled orphan: A [0,11) and B [11,22) at the cap with no slack (11 views, 0 over capacity), W [22,26) coupled to B by two
+//    pairs of 30 (600, well past minClusterCoupling) with the same strong seam: neither the pass nor the orphan rescue can place
+//    it, so W is no sub-scene at all -- it used to come out as a third whenever B had been extracted before the sub-scene builder
+//    looked at W again, the coupling test then no longer seeing the interface to B.
+bool SceneClusterSmallClusterPassTest()
 {
-	TD_TIMER_START();
-
-	// Create scene: 12 strongly connected + 10 strongly connected + 3 weakly connected to cluster A
-	Scene scene;
-	SceneConfig cfg;
-	cfg.numImages = 25;
-	cfg.numPoints = 100;
-	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
-	cfg.rotationAngleStep = 360.0 / 25;
-	cfg.generateDescriptors = true;
-	cfg.generatePairs = true;
-	GenerateTestScene(scene, cfg);
-	ComputePairsWeights(scene);
-
-	// Structure: A=[0,12), B=[12,22), weak=[22,25)
-	// Remove cross-group pairs except: weak images connect only to A (with low weight)
-	RFOREACH(i, scene.pairs) {
-		ImagePair& pair = scene.pairs[i];
-		const bool id1InA = pair.ID1 < 12;
-		const bool id2InA = pair.ID2 < 12;
-		const bool id1InB = pair.ID1 >= 12 && pair.ID1 < 22;
-		const bool id2InB = pair.ID2 >= 12 && pair.ID2 < 22;
-		const bool id1InW = pair.ID1 >= 22;
-		const bool id2InW = pair.ID2 >= 22;
-
-		const bool intraA = id1InA && id2InA;
-		const bool intraB = id1InB && id2InB;
-		const bool weakToA = (id1InW && id2InA) || (id1InA && id2InW);
-		const bool intraW = id1InW && id2InW;
-
-		if (intraA || intraB) {
-			pair.weightSpatial = 10.f;
-			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-			pair.weightConnectivity = 10.f;
-			pair.weightTriplet = 10.f;
-		} else if (weakToA) {
-			pair.weightSpatial = 2.f;
-			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-			pair.weightConnectivity = 2.f;
-			pair.weightTriplet = 0.f;
-		} else if (intraW) {
-			pair.weightSpatial = 1.f;
-			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-			pair.weightConnectivity = 1.f;
-			pair.weightTriplet = 0.f;
-		} else {
-			// Remove other cross-group pairs
-			scene.pairs.RemoveAtMove(i);
-		}
-	}
-
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 15;
-	clusterCfg.targetViewsPerCluster = 10;
-	clusterCfg.minViewsPerCluster = 5;
-	clusterCfg.maxOverCapacity = 5;
-
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	// Verify no output cluster has fewer than minViewsPerCluster
-	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		if (subScenes[s].images.size() < clusterCfg.minViewsPerCluster) {
-			VERBOSE("SceneClusterSmallClusterRescueTest FAILED: sub-scene %u has %u images < min %u",
-				s, (unsigned)subScenes[s].images.size(), clusterCfg.minViewsPerCluster);
-			return false;
-		}
-	}
-
-	// Verify the 3 weak images are assigned (not dropped)
-	std::set<IIndex> allAssigned;
-	for (const IIndexArr& mapping : localToGlobals)
-		for (IIndex gid : mapping)
-			allAssigned.insert(gid);
-	unsigned weakAssigned = 0;
-	for (unsigned w = 22; w < 25; ++w)
-		if (allAssigned.count(w))
-			++weakAssigned;
-	if (weakAssigned < 3) {
-		VERBOSE("SceneClusterSmallClusterRescueTest FAILED: only %u/3 weak images rescued", weakAssigned);
-		return false;
-	}
-
-	VERBOSE("SceneClusterSmallClusterRescueTest PASSED: %u sub-scenes, all weak images rescued (%s)",
-		(unsigned)subScenes.size(), TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// Two established clusters and a small, cohesive community: A holds 10 images at the target and B
-// 11, one past it; W's 4 images are joined to one another by 6 pairs of weight 50, to B by four
-// pairs of weight 20 and to A by a single pair of weight 4. The greedy merge cannot give W to B
-// (B is past the target), and used to give it to A over that one pair because the coupling test
-// skipped a side under the floor. The interface to A is 40 in the graph's integer weights against
-// W's own 3000, far under minClusterCoupling, so W stays apart and the small-cluster pass then
-// puts it with B, the neighbour it shares the most weight with.
-bool SceneClusterSubFloorCouplingTest()
-{
-	TD_TIMER_START();
-
-	Scene scene;
-	SceneConfig cfg;
-	cfg.numImages = 25;
-	cfg.numPoints = 0;
-	cfg.generatePairs = false;
-	cfg.generateDescriptors = false;
-	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
-	cfg.rotationAngleStep = 360.0 / 25;
-	GenerateTestScene(scene, cfg);
-	scene.pairs.clear();
-	scene.tracks.clear();
-
-	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.75 (0.25 + 0.75 = 1)
-	const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
-		ImagePair pair(a, b);
-		pair.weightedInliers = weight;
-		pair.weightSpatial = 1.f;
-		pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-		pair.weightConnectivity = 1.f;
-		pair.weightTriplet = 0.75f;
-		scene.pairs.emplace_back(std::move(pair));
+	TestScope scope("SceneClusterSmallClusterPassTest");
+	const auto Bounds = [](unsigned maxViews, unsigned overCapacity, bool everyCluster) {
+		ClusterConfig cfg;
+		cfg.maxViewsPerCluster = maxViews;
+		cfg.targetViewsPerCluster = 10;
+		cfg.minViewsPerCluster = 5;
+		cfg.maxOverCapacity = overCapacity;
+		if (everyCluster)
+			cfg.minClusterDegree = 0; // no tracks, so the seam rules would merge every leaf away
+		return cfg;
 	};
-	// A = [0,10): a hub at 0 and a chain, so the greedy assembles it one image at a time
-	for (IIndex k = 1; k < 10; ++k) AddPair(0, k, 200.f);
-	for (IIndex k = 1; k + 1 < 10; ++k) AddPair(k, k + 1, 100.f);
-	// B = [10,21): the same shape around a hub at 10, one image more than the target
-	for (IIndex k = 11; k < 21; ++k) AddPair(10, k, 200.f);
-	for (IIndex k = 11; k + 1 < 21; ++k) AddPair(k, k + 1, 100.f);
-	// W = [21,25): every pair among them
-	for (IIndex a = 21; a < 25; ++a) for (IIndex b = a + 1; b < 25; ++b) AddPair(a, b, 50.f);
-	// W's interfaces
-	for (IIndex k = 0; k < 4; ++k) AddPair(IIndex(21 + k), IIndex(10 + k), 20.f);
-	AddPair(21, 9, 4.f);
-
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 15;
-	clusterCfg.targetViewsPerCluster = 10;
-	clusterCfg.minViewsPerCluster = 5;
-	clusterCfg.maxOverCapacity = 5;
-	clusterCfg.minClusterDegree = 0; // no tracks here, so the seam rules would merge every leaf away
-
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	std::vector<int> subSceneOf(25, -1);
-	FOREACH(s, localToGlobals)
-		for (IIndex gid : localToGlobals[s])
-			subSceneOf[gid] = (int)s;
-	for (IIndex w = 21; w < 25; ++w) {
-		if (subSceneOf[w] < 0 || subSceneOf[w] != subSceneOf[10] || subSceneOf[w] == subSceneOf[0]) {
-			VERBOSE("SceneClusterSubFloorCouplingTest FAILED: image %u landed in sub-scene %d while B's hub is in %d and A's in %d; "
-				"a community joined to a cluster by a pair carrying a fraction of its own cohesion must not be absorbed by it",
-				w, subSceneOf[w], subSceneOf[10], subSceneOf[0]);
-			return false;
-		}
-	}
-	if (subSceneOf[0] == subSceneOf[10]) {
-		VERBOSE("SceneClusterSubFloorCouplingTest FAILED: A and B ended in one sub-scene, so the fixture does not exercise the merge");
-		return false;
-	}
-
-	VERBOSE("SceneClusterSubFloorCouplingTest PASSED: the community under the floor went to the cluster it shares its weight with, "
-		"not to the one a thin pair joined it to (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-// A small, cohesive community no neighbour is coupled to stands alone when the merge could place
-// it, and is absorbed as before when it could not. A (10 images at the target) and B (11) as in the
-// sub-floor coupling fixture; W's 4 images are joined to one another by 6 pairs of weight 50 (3000
-// in the graph's integer weights) and to the rest by one pair of 6 to B and one of 4 to A: its
-// heaviest interface, 60, is 2% of its own cohesion, so the greedy merge refuses it everywhere.
-// With 80 tracks seen by three W cameras and three B cameras -- a strong seam by the merge's own
-// bars (75 tracks, 3 cameras a side with 30) -- W is a sub-scene of its own; with no tracks it goes
-// to B, the neighbour it shares the most weight with, as every cluster under the floor used to.
-bool SceneClusterStandaloneCommunityTest()
-{
-	TD_TIMER_START();
-
-	const auto BuildScene = [](Scene& scene, bool withSeamTracks) {
-		SceneConfig cfg;
-		cfg.numImages = 25;
-		cfg.numPoints = 0;
-		cfg.generatePairs = false;
-		cfg.generateDescriptors = false;
-		cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
-		cfg.rotationAngleStep = 360.0 / 25;
-		GenerateTestScene(scene, cfg);
-		scene.pairs.clear();
-		scene.tracks.clear();
-		// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.75 (0.25 + 0.75 = 1)
-		const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
-			ImagePair pair(a, b);
-			pair.weightedInliers = weight;
-			pair.weightSpatial = 1.f;
-			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-			pair.weightConnectivity = 1.f;
-			pair.weightTriplet = 0.75f;
-			scene.pairs.emplace_back(std::move(pair));
-		};
-		// A = [0,10): a hub at 0 and a chain; B = [10,21): the same around a hub at 10
-		for (IIndex k = 1; k < 10; ++k) AddPair(0, k, 200.f);
-		for (IIndex k = 1; k + 1 < 10; ++k) AddPair(k, k + 1, 100.f);
-		for (IIndex k = 11; k < 21; ++k) AddPair(10, k, 200.f);
-		for (IIndex k = 11; k + 1 < 21; ++k) AddPair(k, k + 1, 100.f);
-		// W = [21,25): every pair among them, and two thin pairs out
-		for (IIndex a = 21; a < 25; ++a) for (IIndex b = a + 1; b < 25; ++b) AddPair(a, b, 50.f);
-		AddPair(21, 10, 6.f);
-		AddPair(21, 9, 4.f);
-		if (withSeamTracks) {
-			// 80 tracks each seen by W's 21, 22, 23 and B's 10, 11, 12: seam-usable on both sides,
-			// 80 >= 75 tracks, three cameras a side with >= 30 (Partition builds tracks only when
-			// the scene has none, so these are the seam's)
-			for (uint32_t t = 0; t < 80; ++t) {
-				Track& track = scene.tracks.emplace_back();
-				for (uint32_t img : {21u, 22u, 23u, 10u, 11u, 12u})
-					track.observations.emplace_back(img, t);
-				track.numInliers = (uint8_t)track.observations.size();
-			}
-		}
-	};
-
-	for (unsigned c = 0; c < 2; ++c) {
-		const bool withSeamTracks = c == 0;
-		Scene scene;
-		BuildScene(scene, withSeamTracks);
-		ClusterConfig clusterCfg;
-		clusterCfg.maxViewsPerCluster = 15;
-		clusterCfg.targetViewsPerCluster = 10;
-		clusterCfg.minViewsPerCluster = 5;
-		clusterCfg.maxOverCapacity = 5;
-		SceneCluster cluster(scene, clusterCfg);
+	// per image, the sub-scene the partition put it in (-1: none)
+	const auto SubSceneOf = [](Scene& scene, const ClusterConfig& cfg) {
 		std::vector<IIndexArr> localToGlobals;
-		std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-		std::vector<int> subSceneOf(25, -1);
+		ExtractBlocks(scene, SceneCluster(scene, cfg).Partition(), &localToGlobals);
+		std::vector<int> subSceneOf(scene.images.size(), -1);
 		FOREACH(s, localToGlobals)
 			for (IIndex gid : localToGlobals[s])
 				subSceneOf[gid] = (int)s;
-		if (subSceneOf[0] < 0 || subSceneOf[10] < 0 || subSceneOf[0] == subSceneOf[10]) {
-			VERBOSE("SceneClusterStandaloneCommunityTest FAILED: A and B must be two sub-scenes (%d, %d), the fixture does not exercise the small-cluster pass otherwise", subSceneOf[0], subSceneOf[10]);
-			return false;
-		}
-		for (IIndex w = 22; w < 25; ++w) {
-			if (subSceneOf[w] != subSceneOf[21]) {
-				VERBOSE("SceneClusterStandaloneCommunityTest FAILED: W was split, image %u in sub-scene %d and 21 in %d", w, subSceneOf[w], subSceneOf[21]);
-				return false;
-			}
-		}
-		if (withSeamTracks) {
-			if (subSceneOf[21] < 0 || subSceneOf[21] == subSceneOf[10] || subSceneOf[21] == subSceneOf[0]) {
-				VERBOSE("SceneClusterStandaloneCommunityTest FAILED: W landed in sub-scene %d (B's hub in %d, A's in %d) although no neighbour is coupled to it and its seam to B is strong; it must stand alone", subSceneOf[21], subSceneOf[10], subSceneOf[0]);
-				return false;
-			}
-		} else if (subSceneOf[21] != subSceneOf[10]) {
-			VERBOSE("SceneClusterStandaloneCommunityTest FAILED: W landed in sub-scene %d while B's hub is in %d; with no seam tracks the merge could not place it, so it goes to the neighbour it shares the most weight with", subSceneOf[21], subSceneOf[10]);
-			return false;
-		}
-	}
-
-	VERBOSE("SceneClusterStandaloneCommunityTest PASSED: a community no neighbour is coupled to stands alone when it has a strong seam, and is absorbed when it has none (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-// A and B as in the standalone-community fixture but both filled to the cap with no slack
-// (maxOverCapacity 0): A = [0,11) around hub 0, B = [11,22) around hub 11. W = [22,26) is joined to
-// one another by six pairs of weight 50 (3000 in the graph's integer weights, so the hub/chain
-// edges that assemble A and B settle first) and to B by two pairs of weight 30 (600, well past
-// minClusterCoupling of W's own cohesion: solidly coupled, not a standalone community), with 80
-// tracks seen by W's 22, 23, 24 and B's 11, 12, 13 giving that pair a strong seam by the merge's own
-// bars. Neither the small-cluster pass nor the orphan rescue can place W (B is already at the cap),
-// so W must come out of the split as no sub-scene at all -- it used to come out as a third one
-// whenever B's cluster had already been extracted by the time the sub-scene builder looked at W
-// again, because the coupling test it re-ran then no longer saw the interface to B and read the
-// same strong seam as if no neighbour were coupled to it.
-bool SceneClusterCoupledOrphanSkippedTest()
-{
-	TD_TIMER_START();
-
-	Scene scene;
-	SceneConfig cfg;
-	cfg.numImages = 26;
-	cfg.numPoints = 0;
-	cfg.generatePairs = false;
-	cfg.generateDescriptors = false;
-	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
-	cfg.rotationAngleStep = 360.0 / 26;
-	GenerateTestScene(scene, cfg);
-	scene.pairs.clear();
-	scene.tracks.clear();
-
-	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.75 (0.25 + 0.75 = 1)
-	const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
-		ImagePair pair(a, b);
-		pair.weightedInliers = weight;
-		pair.weightSpatial = 1.f;
-		pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-		pair.weightConnectivity = 1.f;
-		pair.weightTriplet = 0.75f;
-		scene.pairs.emplace_back(std::move(pair));
+		return subSceneOf;
 	};
-	// A = [0,11): a hub at 0 and a chain, so the greedy assembles it one image at a time
-	for (IIndex k = 1; k < 11; ++k) AddPair(0, k, 200.f);
-	for (IIndex k = 1; k + 1 < 11; ++k) AddPair(k, k + 1, 100.f);
-	// B = [11,22): the same shape around a hub at 11
-	for (IIndex k = 12; k < 22; ++k) AddPair(11, k, 200.f);
-	for (IIndex k = 12; k + 1 < 22; ++k) AddPair(k, k + 1, 100.f);
-	// W = [22,26): every pair among them, and two pairs into B lighter than the hub/chain edges so
-	// A and B assemble first, but well above the coupling floor
-	for (IIndex a = 22; a < 26; ++a) for (IIndex b = a + 1; b < 26; ++b) AddPair(a, b, 50.f);
-	AddPair(22, 11, 30.f);
-	AddPair(23, 12, 30.f);
-
-	// 80 tracks each seen by W's 22, 23, 24 and B's 11, 12, 13: seam-usable on both sides, well past
-	// the merge's strong-seam bars (75 tracks, 3 cameras a side with >= 30)
-	for (uint32_t t = 0; t < 80; ++t) {
-		Track& track = scene.tracks.emplace_back();
-		for (uint32_t img : {22u, 23u, 24u, 11u, 12u, 13u})
-			track.observations.emplace_back(img, t);
-		track.numInliers = (uint8_t)track.observations.size();
-	}
-
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 11;
-	clusterCfg.targetViewsPerCluster = 10;
-	clusterCfg.minViewsPerCluster = 5;
-	clusterCfg.maxOverCapacity = 0;
-
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	std::vector<int> subSceneOf(26, -1);
-	FOREACH(s, localToGlobals)
-		for (IIndex gid : localToGlobals[s])
-			subSceneOf[gid] = (int)s;
-
-	if (subSceneOf[0] < 0 || subSceneOf[11] < 0 || subSceneOf[0] == subSceneOf[11]) {
-		VERBOSE("SceneClusterCoupledOrphanSkippedTest FAILED: A and B must be two sub-scenes (%d, %d), the fixture does not exercise the floor rule otherwise", subSceneOf[0], subSceneOf[11]);
-		return false;
-	}
-	const int wScene = subSceneOf[22];
-	for (IIndex w = 23; w < 26; ++w) {
-		if (subSceneOf[w] != wScene) {
-			VERBOSE("SceneClusterCoupledOrphanSkippedTest FAILED: W was split, image %u in sub-scene %d and 22 in %d", w, subSceneOf[w], wScene);
-			return false;
+	// A = [0, endA] around hub 0, B = [endA+1, endB] around its first image
+	const auto TwoClusters = [](PairGraph& g, IIndex endA, IIndex endB) {
+		g.Hub(0, endA, 200); g.Chain(1, endA, 100);
+		g.Hub(endA + 1, endB, 200); g.Chain(endA + 2, endB, 100);
+	};
+	// 80 tracks each seen by the given six images (Partition builds tracks only when the scene has none, so these are the seam's)
+	const auto SeamTracks = [](Scene& scene, std::initializer_list<uint32_t> images) {
+		for (uint32_t t = 0; t < 80; ++t) {
+			Track& track = scene.tracks.emplace_back();
+			for (uint32_t img : images)
+				track.observations.emplace_back(img, t);
+			track.numInliers = (uint8_t)track.observations.size();
 		}
-	}
-	if (wScene != -1) {
-		VERBOSE("SceneClusterCoupledOrphanSkippedTest FAILED: W came out as sub-scene %d although it is coupled to B (sub-scene %d) and B has no room for it; a coupled cluster under the floor must be skipped, not mistaken for a standalone community",
-			wScene, subSceneOf[11]);
-		return false;
+	};
+
+	// 1. rescue
+	{
+		Scene scene;
+		SceneConfig cfg;
+		cfg.numImages = 25;
+		cfg.numPoints = 100;
+		cfg.rotationAngleStep = 360.0 / 25;
+		cfg.generateDescriptors = true;
+		cfg.generatePairs = true;
+		GenerateTestScene(scene, cfg);
+		ComputePairsWeights(scene);
+		const auto Group = [](IIndex id) { return id < 12 ? 0 : id < 22 ? 1 : 2; }; // A, B, W
+		RFOREACH(i, scene.pairs) {
+			ImagePair& pair = scene.pairs[i];
+			const int g1 = Group(pair.ID1), g2 = Group(pair.ID2);
+			const float weight = g1 == g2 ? (g1 == 2 ? 1.f : 10.f) : (g1 == 2 || g2 == 2) && (g1 == 0 || g2 == 0) ? 2.f : 0.f;
+			if (weight == 0.f) {
+				scene.pairs.RemoveAtMove(i); // B to W and A to B
+				continue;
+			}
+			pair.weightSpatial = pair.weightConnectivity = weight;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
+			pair.weightTriplet = weight == 10.f ? 10.f : 0.f;
+		}
+		const std::vector<int> subSceneOf = SubSceneOf(scene, Bounds(15, 5, false));
+		std::map<int, unsigned> sizes;
+		for (int sub : subSceneOf)
+			++sizes[sub];
+		for (const auto& [sub, size] : sizes)
+			TEST_CHECK(sub < 0 || size >= 5, "rescue: sub-scene %d has %u images, under the minimum of 5", sub, size);
+		TEST_CHECK(subSceneOf[22] >= 0 && subSceneOf[23] >= 0 && subSceneOf[24] >= 0, "rescue: the weak images were not all assigned "
+			"(sub-scenes %d, %d, %d)", subSceneOf[22], subSceneOf[23], subSceneOf[24]);
 	}
 
-	VERBOSE("SceneClusterCoupledOrphanSkippedTest PASSED: a coupled cluster under the floor that no neighbour can take is skipped whatever its place in the order (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
+	// 2. sub-floor coupling
+	{
+		Scene scene;
+		PairGraph g(scene, 25);
+		TwoClusters(g, 9, 20);
+		g.Clique(21, 24, 50);
+		for (IIndex k = 0; k < 4; ++k)
+			g.Pair(21 + k, 10 + k, 20);
+		g.Pair(21, 9, 4);
+		const std::vector<int> subSceneOf = SubSceneOf(scene, Bounds(15, 5, true));
+		TEST_CHECK(subSceneOf[0] != subSceneOf[10], "sub-floor coupling: A and B ended in one sub-scene, the fixture does not exercise the merge");
+		for (IIndex w = 21; w < 25; ++w)
+			TEST_CHECK(subSceneOf[w] >= 0 && subSceneOf[w] == subSceneOf[10], "sub-floor coupling: image %u landed in sub-scene %d while B's "
+				"hub is in %d and A's in %d; a community joined to a cluster by a pair carrying a fraction of its own cohesion must not be "
+				"absorbed by it", w, subSceneOf[w], subSceneOf[10], subSceneOf[0]);
+	}
+
+	// 3. standalone community, with and without its seam tracks
+	for (bool seam : {true, false}) {
+		Scene scene;
+		PairGraph g(scene, 25);
+		TwoClusters(g, 9, 20);
+		g.Clique(21, 24, 50);
+		g.Pair(21, 10, 6);
+		g.Pair(21, 9, 4);
+		if (seam)
+			SeamTracks(scene, {21, 22, 23, 10, 11, 12});
+		const std::vector<int> subSceneOf = SubSceneOf(scene, Bounds(15, 5, false));
+		TEST_CHECK(subSceneOf[0] >= 0 && subSceneOf[10] >= 0 && subSceneOf[0] != subSceneOf[10], "standalone community: A and B must be "
+			"two sub-scenes (%d, %d), the fixture does not exercise the small-cluster pass otherwise", subSceneOf[0], subSceneOf[10]);
+		for (IIndex w = 22; w < 25; ++w)
+			TEST_CHECK(subSceneOf[w] == subSceneOf[21], "standalone community: W was split, image %u in sub-scene %d and 21 in %d", w,
+				subSceneOf[w], subSceneOf[21]);
+		if (seam)
+			TEST_CHECK(subSceneOf[21] >= 0 && subSceneOf[21] != subSceneOf[10] && subSceneOf[21] != subSceneOf[0], "standalone community: "
+				"W landed in sub-scene %d (B's hub in %d, A's in %d) although no neighbour is coupled to it and its seam to B is strong; it "
+				"must stand alone", subSceneOf[21], subSceneOf[10], subSceneOf[0]);
+		else
+			TEST_CHECK(subSceneOf[21] == subSceneOf[10], "standalone community: W landed in sub-scene %d while B's hub is in %d; with no "
+				"seam tracks the merge could not place it, so it goes to the neighbour it shares the most weight with", subSceneOf[21], subSceneOf[10]);
+	}
+
+	// 4. coupled orphan
+	{
+		Scene scene;
+		PairGraph g(scene, 26);
+		TwoClusters(g, 10, 21);
+		g.Clique(22, 25, 50);
+		g.Pair(22, 11, 30);
+		g.Pair(23, 12, 30);
+		SeamTracks(scene, {22, 23, 24, 11, 12, 13});
+		const std::vector<int> subSceneOf = SubSceneOf(scene, Bounds(11, 0, false));
+		TEST_CHECK(subSceneOf[0] >= 0 && subSceneOf[11] >= 0 && subSceneOf[0] != subSceneOf[11], "coupled orphan: A and B must be two "
+			"sub-scenes (%d, %d), the fixture does not exercise the floor rule otherwise", subSceneOf[0], subSceneOf[11]);
+		for (IIndex w = 23; w < 26; ++w)
+			TEST_CHECK(subSceneOf[w] == subSceneOf[22], "coupled orphan: W was split, image %u in sub-scene %d and 22 in %d", w,
+				subSceneOf[w], subSceneOf[22]);
+		TEST_CHECK(subSceneOf[22] == -1, "coupled orphan: W came out as sub-scene %d although it is coupled to B (sub-scene %d) and B has "
+			"no room for it; a coupled cluster under the floor must be skipped, not mistaken for a standalone community", subSceneOf[22],
+			subSceneOf[11]);
+	}
+	return scope.Pass("weak images rescued; a community under the floor goes to the cluster it shares its weight with, stands alone "
+		"with a strong seam and no coupled neighbour, and is skipped when coupled to a full cluster");
 }
 /*----------------------------------------------------------------*/
 

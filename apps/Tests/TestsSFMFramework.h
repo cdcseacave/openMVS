@@ -160,6 +160,35 @@ void GenerateTwoClusterScene(
 
 
 // ===============================================================================
+// A view graph without geometry, the scene of the view-graph, clustering and star tests: numImages
+// images of one 640x480 pinhole of 600 px focal, without pose, and pairs added in call order (a test
+// may index them by that order; duplicates are allowed, the stages under test meet them):
+// - Pair: a pair whose composite weight is the given number (weightedInliers = weight, the three
+//   quality factors 1 and the triplet strength 0.75, so 0.25 + 0.75 = 1; the weighted inliers are
+//   capped at 1000 in the composite), no matches;
+// - Matched: a pair of numMatches track-forming matches on new keypoints at the centres of the first
+//   cellsA (cellsB) cells of a 10x10 grid over each image (100: full coverage, so the triplet strength
+//   equals the inlier count), numFilteredInliers set and F the identity standing in for the geometric
+//   verification when verified; no weight: the stage under test computes it;
+// - Hub, Chain, Clique: weighted pairs over the inclusive range [first, last].
+//   PairGraph g(scene, 25);
+//   g.Hub(0, 9, 200); g.Chain(1, 9, 100); g.Clique(21, 24, 50); g.Pair(21, 9, 4);
+// ===============================================================================
+struct PairGraph
+{
+	Scene& scene;
+
+	PairGraph(Scene& scene, IIndex numImages);
+	ImagePair& Pair(IIndex a, IIndex b, float weight);
+	ImagePair& Matched(IIndex a, IIndex b, unsigned numMatches, bool verified = true, unsigned cellsA = 100, unsigned cellsB = 100);
+	void Hub(IIndex hub, IIndex last, float weight);      // (hub, k) for k in (hub, last]
+	void Chain(IIndex first, IIndex last, float weight);  // (k, k + 1) for k in [first, last)
+	void Clique(IIndex first, IIndex last, float weight); // every two images of [first, last]
+};
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
 // An arc of posed cameras, the scene of the resection tests. Camera i sits on a circle of radius
 // RADIUS in the XZ plane at i*STEP degrees, looking at the origin, all sharing one 640x480 pinhole of
 // 500 px focal: consecutive centres are 0.8716 apart and seven of them span EXTENT world units, the

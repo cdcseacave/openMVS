@@ -451,6 +451,76 @@ void GenerateTwoClusterScene(
 /*----------------------------------------------------------------*/
 
 
+PairGraph::PairGraph(Scene& _scene, IIndex numImages)
+	:
+	scene(_scene)
+{
+	ASSERT(scene.images.empty() && numImages >= 2);
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(600), REAL(600), REAL(320), REAL(240)));
+	for (IIndex i = 0; i < numImages; ++i) {
+		Image& img = scene.images.emplace_back(i, String::FormatString("%u.jpg", i));
+		img.cameraID = 0;
+		img.pCamera = scene.cameras[0];
+	}
+}
+
+ImagePair& PairGraph::Pair(IIndex a, IIndex b, float weight)
+{
+	ASSERT(a != b && MAXF(a, b) < scene.images.size() && weight > 0.f);
+	ImagePair& pair = scene.pairs.emplace_back(a, b);
+	pair.weightedInliers = weight;
+	pair.weightSpatial = 1.f;
+	pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
+	pair.weightConnectivity = 1.f;
+	pair.weightTriplet = 0.75f;
+	return pair;
+}
+
+ImagePair& PairGraph::Matched(IIndex a, IIndex b, unsigned numMatches, bool verified, unsigned cellsA, unsigned cellsB)
+{
+	ASSERT(MAXF(a, b) < scene.images.size() && cellsA >= 1 && cellsA <= 100 && cellsB >= 1 && cellsB <= 100);
+	ImagePair& pair = scene.pairs.emplace_back(a, b);
+	// the constructor orders ID1 < ID2: the keypoints are added to the images the matches will be read against
+	Image& imageA = scene.images[pair.ID1];
+	Image& imageB = scene.images[pair.ID2];
+	const auto CellCentre = [](unsigned cell) {
+		return cv::Point2f((float)(cell % 10) * 64.f + 32.f, (float)(cell / 10) * 48.f + 24.f);
+	};
+	for (unsigned m = 0; m < numMatches; ++m) {
+		imageA.keypoints.emplace_back(CellCentre(m % cellsA), 1.f);
+		imageB.keypoints.emplace_back(CellCentre(m % cellsB), 1.f);
+		pair.matches.emplace_back((uint32_t)imageA.keypoints.size() - 1, (uint32_t)imageB.keypoints.size() - 1);
+	}
+	pair.numFilteredInliers = numMatches;
+	if (verified)
+		pair.F = Matrix3x3::IDENTITY;
+	return pair;
+}
+
+void PairGraph::Hub(IIndex hub, IIndex last, float weight)
+{
+	ASSERT(hub < last);
+	for (IIndex k = hub + 1; k <= last; ++k)
+		Pair(hub, k, weight);
+}
+
+void PairGraph::Chain(IIndex first, IIndex last, float weight)
+{
+	ASSERT(first < last);
+	for (IIndex k = first; k < last; ++k)
+		Pair(k, k + 1, weight);
+}
+
+void PairGraph::Clique(IIndex first, IIndex last, float weight)
+{
+	ASSERT(first < last);
+	for (IIndex a = first; a <= last; ++a)
+		for (IIndex b = a + 1; b <= last; ++b)
+			Pair(a, b, weight);
+}
+/*----------------------------------------------------------------*/
+
+
 ArcScene::ArcScene(unsigned numImages, uint32_t seed)
 	:
 	rng(seed)

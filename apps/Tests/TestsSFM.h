@@ -438,22 +438,11 @@ bool SceneClusterMemoryProtocolTest();
 
 bool SceneClusterIDRemappingTest();
 
-bool SceneClusterSmallClusterRescueTest();
-
-// A community under the floor is held to the same coupling test as an established cluster: the
-// greedy merge does not absorb it over an interface carrying less than minClusterCoupling of its
-// own internal weight, and the small-cluster pass then places it with the neighbour it shares the
-// most weight with (ClusterConfig::minClusterCoupling)
-bool SceneClusterSubFloorCouplingTest();
-
-// A small, cohesive community no neighbour is coupled to stands alone as its own sub-scene when it
-// has the strong seams the merge places a block by, and is absorbed into its heaviest neighbour as
-// before when it does not (SceneCluster::IsStandaloneCommunity)
-bool SceneClusterStandaloneCommunityTest();
-
-// A cluster under the floor that IS coupled to a neighbour but that no neighbour has room for stays
-// where it is; it must not come out as a sub-scene whatever position it holds in the cluster order
-bool SceneClusterCoupledOrphanSkippedTest();
+// The small-cluster pass: weak images rescued, a community under the floor held to the coupling test
+// (ClusterConfig::minClusterCoupling) and placed with the neighbour it shares the most weight with,
+// standing alone with a strong seam and no coupled neighbour (SceneCluster::IsStandaloneCommunity),
+// and skipped when coupled to a cluster with no room for it
+bool SceneClusterSmallClusterPassTest();
 
 // The balance pass never takes an image whose departure would leave part of its own cluster coupled
 // under minClusterCoupling, even when the image's own affinity favours the move
