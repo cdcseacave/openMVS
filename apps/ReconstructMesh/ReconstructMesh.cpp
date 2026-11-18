@@ -494,8 +494,11 @@ int main(int argc, LPCTSTR* argv)
 		scene.obb = initialOBB;
 
 		// remove the surface no camera ever observed
-		if (OPT::nRemoveUnseenFaces > 0 && !scene.mesh.IsEmpty())
+		if (OPT::nRemoveUnseenFaces > 0 && !scene.mesh.IsEmpty()) {
+			if (!scene.CheckPinholeOnly(_T("the removal of the unseen faces")))
+				return EXIT_FAILURE;
 			scene.RemoveUnseenMeshFaces(OPT::nRemoveUnseenFaces);
+		}
 
 		// save the final mesh
 		if (!scene.mesh.Save(baseFileName+OPT::strExportType))

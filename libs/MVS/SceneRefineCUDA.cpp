@@ -51,11 +51,7 @@ using namespace MVS;
 
 // MVS::Camera (double precision, OpenCV types) to MVS::CUDA::Camera (float precision, Eigen types)
 static MVS::CUDA::Camera MakeCUDACamera(const Camera& camera, const Image8U::Size& size) {
-	return MVS::CUDA::Camera(
-		Eigen::Map<const SEACAVE::Matrix3x3::EMat>(camera.K.val).cast<float>(),
-		Eigen::Map<const SEACAVE::Matrix3x3::EMat>(camera.R.val).cast<float>(),
-		Eigen::Map<const SEACAVE::Point3::EVec>(camera.C.ptr()).cast<float>(),
-		size.width, size.height);
+	return MVS::CUDA::Camera(Matrix3x3f(camera.K), Matrix3x3f(camera.R), Point3f(camera.C), size.width, size.height);
 }
 
 typedef Mesh::Vertex Vertex;
@@ -1014,6 +1010,8 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 	// simplification reads the views a scale prepares, so without one it has nothing to run on)
 	if (nScales == 0)
 		return true;
+	if (!CheckPinholeOnly(_T("the mesh refinement")))
+		return false;
 	// the externally controlled knobs, validated exactly like the CPU path (Scene::RefineMesh):
 	// their ASSERT twins inside the shared stepper are contracts, not input checks
 	if (!(fRegularityWeight >= 0 && fRegularityWeight*MeshRefineStep::StepMax <= 1.f)) {

@@ -64,6 +64,10 @@ bool ImageResizeCameraTest();
 bool MeshBipyramidFixtureTest();
 bool MeshTetraInteriorPointFixtureTest();
 
+// test the camera-model patch warp and depth geometry against the cached pinhole homography and
+// closed forms of the CPU PatchMatch estimator
+bool PatchWarpModelTest();
+
 // test MVS stages on a small sample dataset
 bool PipelineTest(bool forceCPU = false, bool verbose = false);
 
@@ -89,10 +93,36 @@ bool MeshUnseenFacesTest();
 // unit must change neither the scale nor the neighbors picked, and no neighbor the filter keeps
 // may carry a scale outside its bounds (an image is resampled by it)
 bool SelectNeighborViewsScaleTest();
+// the covered area of the neighbors of a spherical reference whose shared points lie past its seam,
+// and the feature observations a sub-scene keeps
+bool SelectNeighborViewsSphericalTest();
 
 // test that DMapCache::UseImage() keeps the depth-map it was asked for loaded even when it alone
 // exceeds the memory budget, ejecting the least recently used other depth-maps instead
 bool DMapCacheKeepsRequestedImageTest();
+
+// Interface v8: camera models (pinhole, Brown 5/8, spherical) and optional observations round trip,
+// a v7 stream loads, the v8 size identity (v7 + 1 byte per camera + 1 flags byte without observations),
+// MVS::Scene load/save round trip of the models, also through the native archive, the undistorted camera
+// K' rule shared by SfM and MVS, and a standalone spherical .dmap importing as a spherical camera
+bool InterfaceV8Test();
+
+// every size of an equirectangular image (load scale, resolution level, neighbor scale, pyramid) keeps
+// an even width, W = 2H, and the angular K of its camera
+bool SphericalImageSizeTest();
+
+// DepthMapsData::GapInterpolation fills a gap between two normals with unit normals within the angle between
+// them, for pinhole and spherical views, also across the seam of a spherical row
+bool GapInterpolationNormalsTest();
+
+// ModelCamera::WrapPixel wraps the columns of a spherical camera only, never rows
+bool WrapPixelTest();
+
+// EstimateConfidenceFromDepth/Normal read across the column seam of a spherical depth-map
+bool ConfidenceSeamTest();
+
+// Image::ComputeFOV spans 2pi x pi for a full equirectangular image, the pinhole angles otherwise
+bool ComputeFOVTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

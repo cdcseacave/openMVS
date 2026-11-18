@@ -48,6 +48,21 @@ GET_PATH_FULL(str)    // Get full path
 - Conversion: `D2R(degrees)`, `R2D(radians)`
 - Functions: `MINF`, `MAXF`, `FLOOR`, `CEIL`, `ROUND`, `POWI` (integer power), `LOG2I`
 
+## Eigen Interop of the Math Types (`Types.h`)
+`TPoint2`/`TPoint3`/`TMatrix`/`TDMatrix` and their typedefs (`Point2f`, `Point3`, `ImageRef`, `Normal`,
+`Matrix3x3`, `RMatrix`, `KMatrix`, `CMatrix`, `PMatrix`, ...) carry their own Eigen conversions; never build an
+`Eigen::Map` over `.val`/`.ptr()` nor copy components. See the permanent rule "Eigen Interop of the OpenMVS
+Math Types" in the root `AGENTS.md`. In short:
+
+| Need | Write |
+|---|---|
+| Eigen value type | `Point3f::EVec`, `Matrix3x3::EMat` (row-major) or the column-major `Eigen::Matrix<T,m,n>` |
+| no-copy view | `static_cast<Matrix3x3::CEMatMap>(R)`, `Matrix4x4::EMatMap map(T)` |
+| non-template Eigen parameter | the OpenMVS value itself: `model.Ray(Point2(x))`, `Rrel = Matrix3x3f(R)` |
+| template Eigen function | `static_cast<Point3f::EVec>(p)` (deduction does not see conversions) |
+| back from Eigen | `Point3f(v)`, `Point3(u.homogeneous())`, `Point2f(Point2(u))` |
+| change of scalar | `Matrix3x3f(R)`, `Point3f(C)`, `Cast<float>(x)`, then convert |
+
 ## Geometry Primitives (Eigen3-based)
 
 All geometry types are templated on `TYPE` (float/double) and `DIMS` (2/3).
@@ -67,13 +82,19 @@ All geometry types are templated on `TYPE` (float/double) and `DIMS` (2/3).
 Common typedefs: `AABB3f`, `OBB3f`, `Ray3f`, `Plane3f`, `Sphere3f`, `Line3f`, `Triangle3f` (float, 3D).
 
 ## Depth-Map Geometry (`DepthGeometry.h`)
-Host and CUDA device functions on Eigen types for a skew-free pinhole camera (focal `f`, principal
-point `pp`), the single implementation used by the CPU depth-map code and the CUDA kernels:
-`DepthSimilarity`/`IsDepthSimilar` (relative depth difference), `DepthPlaneFit` (least-squares depth
-plane from neighbor offsets), `FitDepthGradient` (that fit over the 3x3 depth-similar neighbors of a
-pixel, on any map indexed `(row,col)` with `rows`/`cols`), `NormalFromDepthGradient` (the plane's
-camera-facing normal) and `InterpolatePlaneDepth` (a neighbor's plane carried to a pixel, as in
-PatchMatch propagation). `HOST_DEVICE` (`Config.h`) marks functions compiled for both sides.
+Host and CUDA device functions on Eigen types, the single implementation used by the CPU depth-map
+code and the CUDA kernels: `DepthSimilarity`/`IsDepthSimilar` (relative depth difference),
+`DepthPlaneFit` (least-squares depth plane from neighbor offsets), `FitDepthGradient` (that fit over
+the 3x3 depth-similar neighbors of a pixel, on any map indexed `(row,col)` with `rows`/`cols`, the
+columns optionally wrapping for equirectangular maps),
+`NormalFromDepthGradient` (the plane's camera-facing normal), `InterpolatePlaneDepth` (a neighbor's
+plane carried to a pixel, as in PatchMatch propagation), `PlaneRayHomography` (the ray-to-ray
+homography `H` a plane induces between two camera frames) and `PlanePatchWarp` (the plane-induced
+patch warp between two views, `trg.PixelHomography(H*r0)*H*ref.RayFrame(x0)`). The camera-dependent ones
+take a camera model of `Math/Camera/CameraModels.h` (depth = distance along the model's ray): a
+generic version written with the model's `Ray`/`RayFrame`/`PixelHomography`, and a `Pinhole<T>`
+overload keeping the closed-form pinhole operations. `HOST_DEVICE` (`Config.h`) marks functions
+compiled for both sides.
 
 ## Threading & Synchronization
 

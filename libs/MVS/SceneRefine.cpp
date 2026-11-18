@@ -101,7 +101,7 @@ public:
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
 		BaryMap& baryMap;
-		FIndex idxFace;
+		FIndex idxFace = NO_ID;
 		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap, BaryMap& _baryMap)
 			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap), baryMap(_baryMap) {}
 		void Clear() {
@@ -1051,11 +1051,11 @@ void MeshRefine::ComputePhotometricGradient(
 
 	// the per-pixel geometry ReadPixelGeom below reads off the maps of image A alone
 	struct PixelGeom {
-		FIndex idxFace;
+		FIndex idxFace = NO_ID;
 		Point3 rayA;
 		Grad N, dA;
-		Real Nd, f;
-		Depth depth;
+		Real Nd = 0, f = 0;
+		Depth depth = 0;
 	};
 	// the part read off the maps of image A alone; false rejects a pixel too grazing to steer a
 	// vertex with (its 1/Nd would amplify whatever noise it holds)
@@ -1494,6 +1494,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 	// simplification reads the views a scale prepares, so without one it has nothing to run on)
 	if (nScales == 0)
 		return true;
+	if (!CheckPinholeOnly(_T("the mesh refinement")))
+		return false;
 	// the externally controlled knobs are validated here, at the entry point every caller goes
 	// through: their ASSERT twins inside the stepper are contracts, not input checks
 	if (bUseCeres) {

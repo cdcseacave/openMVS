@@ -46,7 +46,11 @@ enum class FeatureType : uint8_t {
 	ORB = 2,
 	SIFT = 3,
 	SIFTGPU = 4,
+	#ifdef _USE_SIFTGPU
 	DEFAULT = SIFTGPU
+	#else
+	DEFAULT = SIFT
+	#endif
 };
 
 
@@ -137,17 +141,18 @@ public:
 	 * @param image Image to extract features from
 	 * @param detector Feature detector to use (nullptr to create internally)
 	 * @param skipIO If true, skip OpenMVG import/export (used for internal calls on cube-map faces)
-	 * @return true if features were extracted successfully
+	 * @return true if the extraction ran, false on failure (ex. no pixels, unsupported detector);
+	 *         an image without any feature (ex. a black frame) is a success with empty keypoints
 	 */
 	bool ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO = false);
 
 	// Common to the drivers of every detector: whether the image still needs features, the
 	// OpenMVG import that replaces the extraction of an image whose features are on disk (true if
 	// imported), and the tail of every extraction (release the pixels, log, export to OpenMVG
-	// unless skipIO; returns true if the image got features).
+	// unless skipIO).
 	bool NeedsExtraction(const Image& image) const;
 	bool ImportImage(Image& image) const;
-	bool FinishImage(Image& image, bool skipIO) const;
+	void FinishImage(Image& image, bool skipIO) const;
 
 	/**
 	 * @brief Convert SIFT descriptors to RootSIFT and quantize to uint8_t

@@ -58,8 +58,8 @@ protected:
 	};
 
 	struct Node {
-		LabelID label;
-		EnergyType dataCost;
+		LabelID label = 0;
+		EnergyType dataCost = 0;
 		std::vector<LabelID> labels;
 		std::vector<EnergyType> dataCosts;
 		std::vector<EdgeID> incomingEdges;
@@ -70,7 +70,7 @@ protected:
 	// the messages of every directed edge in two flat buffers (one value per label of its target
 	// node), allocated once the labels are final, at the first optimization
 	std::vector<EnergyType> oldMsgs, newMsgs;
-	FncSmoothCost fncSmoothCost;
+	FncSmoothCost fncSmoothCost = NULL;
 	// >= 0 when fncSmoothCost is the Potts model with this cost (0 for two equal labels other than
 	// label 0, pottsCost otherwise): the messages then take O(labels) instead of O(labels^2)
 	EnergyType pottsCost = -1;

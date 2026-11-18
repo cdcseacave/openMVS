@@ -54,8 +54,17 @@ REAL Image::GetSizeScale(unsigned nMaxResolution) const
 // the image size must be already initialized
 cv::Size Image::GetSize(unsigned nMaxResolution) const
 {
-	return Image8U::computeResize(GetSize(), GetSizeScale(nMaxResolution));
+	return ComputeResize(GetSize(), GetSizeScale(nMaxResolution), IsSpherical());
 } // GetSize
+
+cv::Size Image::ComputeResize(const cv::Size& size, REAL scale, bool bSpherical)
+{
+	if (!bSpherical)
+		return Image8U::computeResize(size, scale);
+	ASSERT(size.width >= size.height && scale > 0);
+	const int width(2*MAXF(ROUND2INT((REAL)size.width*scale/2), 1));
+	return Image8U::computeResize(size, (REAL)width/size.width);
+} // ComputeResize
 /*----------------------------------------------------------------*/
 
 
@@ -95,20 +104,51 @@ bool Image::ReadImage(IMAGEPTR pImage, Image8U3& image)
 	}
 	return true;
 } // ReadImage
+
+IMAGEPTR Image::ReadPixels(Image8U3& pixels) const
+{
+	IMAGEPTR pImage(ReadImage(name, pixels));
+	if (pImage == NULL || !IsUndistortedOnRead())
+		return pImage;
+	if (pixels.size() != lens.size) {
+		LOG("error: image '%s' is %dx%d, its camera %dx%d", name.c_str(), pixels.width(), pixels.height(), lens.size.width, lens.size.height);
+		pImage.Release();
+		return pImage;
+	}
+	Image8U3 distorted;
+	cv::swap(distorted, pixels);
+	GetUndistortMaps()->Remap(distorted, pixels, cv::INTER_LINEAR);
+	return pImage;
+} // ReadPixels
+
+bool Image::LoadMask(Image8U& mask) const
+{
+	if (!mask.Load(GetMaskFileName()))
+		return false;
+	if (!IsUndistortedOnRead())
+		return true;
+	// the mask may be stored at another resolution than the image file
+	if (mask.size() != lens.size)
+		cv::resize(mask, mask, lens.size, 0, 0, cv::INTER_NEAREST);
+	Image8U distorted;
+	cv::swap(distorted, mask);
+	GetUndistortMaps()->Remap(distorted, mask, cv::INTER_NEAREST);
+	return true;
+} // LoadMask
+
+std::shared_ptr<const CameraUndistortMaps> Image::GetUndistortMaps() const
+{
+	ASSERT(IsUndistortedOnRead());
+	return GetCameraUndistortMaps(lens.K, lens.distortion, lens.size);
+} // GetUndistortMaps
 /*----------------------------------------------------------------*/
 
 
 bool Image::LoadImage(const String& fileName, unsigned nMaxResolution)
 {
 	name = fileName;
-	// open image file
-	IMAGEPTR pImage(OpenImage(fileName));
-	if (pImage == NULL) {
-		LOG("error: failed opening input image '%s'", name.c_str());
-		return false;
-	}
-	// create and fill image data
-	if (!ReadImage(pImage, image)) {
+	// read the image file
+	if (ReadPixels(image) == NULL) {
 		LOG("error: failed loading image '%s'", name.c_str());
 		return false;
 	}
@@ -120,7 +160,7 @@ bool Image::LoadImage(const String& fileName, unsigned nMaxResolution)
 // open the stored image file name and read again the image data
 bool Image::ReloadImage(unsigned nMaxResolution, bool bLoadPixels)
 {
-	IMAGEPTR pImage(bLoadPixels ? ReadImage(name, image) : ReadImageHeader(name));
+	IMAGEPTR pImage(bLoadPixels ? ReadPixels(image) : ReadImageHeader(name));
 	if (pImage == NULL) {
 		LOG("error: failed reloading image '%s'", name.c_str());
 		return false;
@@ -152,7 +192,7 @@ float Image::ResizeImage(unsigned nMaxResolution)
 		height = image.height();
 	}
 	const REAL scale(GetSizeScale(nMaxResolution));
-	const cv::Size scaledSize(Image8U::computeResize(GetSize(), scale));
+	const cv::Size scaledSize(ComputeResize(GetSize(), scale, IsSpherical()));
 	width = (uint32_t)scaledSize.width;
 	height = (uint32_t)scaledSize.height;
 	if (!image.empty())
@@ -190,7 +230,7 @@ unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize, u
 Image Image::GetImage(const PlatformArr& platforms, double scale, bool bUseImage) const
 {
 	Image scaledImage(*this);
-	const cv::Size scaledSize(Image8U::computeResize(GetSize(), scale));
+	const cv::Size scaledSize(ComputeResize(GetSize(), scale, IsSpherical()));
 	scaledImage.width = (unsigned)scaledSize.width;
 	scaledImage.height = (unsigned)scaledSize.height;
 	scaledImage.camera = GetCamera(platforms, scaledImage.GetSize());
@@ -233,12 +273,20 @@ Camera Image::GetCamera(const PlatformArr& platforms, const cv::Size& resolution
 
 void Image::UpdateCamera(const PlatformArr& platforms)
 {
+	const Platform::Camera& platformCamera = platforms[platformID].cameras[cameraID];
+	model = platformCamera.model;
+	lens = platformCamera.lens;
 	camera = GetCamera(platforms, cv::Size(width, height));
 } // UpdateCamera
 
 // computes camera's field of view for the given direction
 REAL Image::ComputeFOV(int dir) const
 {
+	if (IsSpherical()) {
+		// the angle the image spans: its size over the angular K (2pi x pi for a full panorama)
+		ASSERT(dir == 0 || dir == 1);
+		return dir == 0 ? REAL(width)/camera.K(0,0) : REAL(height)/camera.K(1,1);
+	}
 	switch (dir) {
 	case 0: // width
 		return 2*ATAN(REAL(width)/(camera.K(0,0)*2));

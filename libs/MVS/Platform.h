@@ -45,13 +45,55 @@
 
 namespace MVS {
 
+// the Brown lens of the image files of a camera: their camera matrix at their resolution and the
+// distortion coefficients; the pixels are undistorted when they are read (Image::ReadPixels) to
+// the pinhole camera UndistortedK(K, distortion, size), the one every consumer sees
+struct MVS_API CameraLens {
+	KMatrix K; // camera matrix of the distorted image files, at their resolution
+	BrownDistortion<REAL> distortion{}; // lens distortion of the image files
+	cv::Size size; // resolution of the image files
+};
+
 // a mobile platform with cameras attached to it
 class MVS_API Platform
 {
 public:
-	// structure describing a normalized camera mounted on a platform
-	typedef CameraIntern Camera;
-	typedef CLISTDEF0IDX(Camera,uint32_t) CameraArr;
+	// structure describing a normalized camera mounted on a platform;
+	// K is the camera matrix of the images as every consumer sees them:
+	//  - PINHOLE: the image files as they are
+	//  - BROWN: the undistorted images; lens describes the image files
+	//  - SPHERICAL: equirectangular images, K is the angular camera matrix (Interface::Platform::Camera)
+	struct MVS_API Camera : CameraIntern {
+		CameraModelType model; // projection model of the image files
+		CameraLens lens; // BROWN only
+
+		inline Camera() : model(CameraModelType::PINHOLE) {}
+		inline Camera(const Matrix3x3& _K, const Matrix3x3& _R, const Point3& _C) : CameraIntern(_K, _R, _C), model(CameraModelType::PINHOLE) {}
+
+		// make it a BROWN camera of the image files of the given resolution and pixel camera matrix:
+		// K becomes the normalized UndistortedK, the camera every consumer sees
+		void SetBrownLens(const KMatrix& fileK, const BrownDistortion<REAL>& distortion, const cv::Size& size);
+
+		#ifdef _USE_BOOST
+		// implement BOOST serialization
+		template <class Archive>
+		void serialize(Archive& ar, const unsigned int /*version*/) {
+			ar & K;
+			ar & R;
+			ar & C;
+			uint8_t modelID(static_cast<uint8_t>(model));
+			ar & modelID;
+			model = static_cast<CameraModelType>(modelID);
+			if (model == CameraModelType::BROWN) {
+				ar & lens.K;
+				ar & lens.distortion.k1 & lens.distortion.k2 & lens.distortion.p1 & lens.distortion.p2;
+				ar & lens.distortion.k3 & lens.distortion.k4 & lens.distortion.k5 & lens.distortion.k6;
+				ar & lens.size.width & lens.size.height;
+			}
+		}
+		#endif
+	};
+	typedef CLISTDEFIDX(Camera,uint32_t) CameraArr;
 
 	// structure describing a pose along the trajectory of a platform
 	struct Pose {
@@ -75,7 +117,7 @@ public:
 public:
 	inline Platform() {}
 
-	Camera GetCamera(uint32_t cameraID, uint32_t poseID) const;
+	CameraIntern GetCamera(uint32_t cameraID, uint32_t poseID) const;
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

@@ -113,13 +113,12 @@ bool MVS::PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 }
 
 // per-view keep-mask, called right after PrepareRefineImage -- see the doc comment in
-// SceneRefineCommon.h; leaves keepMask empty unless masking is enabled and the image has a mask
+// SceneRefineCommon.h; leaves keepMask empty unless masking is enabled and the image has a mask,
+// or the image is undistorted on read (its pixels without a source are masked)
 void MVS::PrepareRefineImageMask(const Image& imageData, const cv::Size& size, BitMatrix& keepMask)
 {
 	keepMask.release();
-	if (OPTREFINE::nIgnoreMaskLabel < 0)
-		return;
-	DepthEstimator::ImportIgnoreMask(imageData, size, (uint8_t)OPTREFINE::nIgnoreMaskLabel, keepMask);
+	DepthEstimator::ImportIgnoreMask(imageData, size, OPTREFINE::nIgnoreMaskLabel, keepMask);
 }
 
 // the largest finite value of a per-vertex field, the stand-in for the vertices no view saw

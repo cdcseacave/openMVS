@@ -43,4 +43,21 @@ class LiteWindowEGL : public LiteWindow {
   void* _surface;
 };
 
+#if defined(__APPLE__)
+// Offscreen CGL context: needs neither a window, nor a window server session,
+// nor the main thread (SiftGPU renders only into framebuffer objects)
+class LiteWindowCGL : public LiteWindow {
+ public:
+  LiteWindowCGL();
+  ~LiteWindowCGL() override;
+
+  int IsValid() const override;
+  void MakeCurrent() override;
+  void Create(int x = -1, int y = -1, const char* display = NULL) override;
+
+ private:
+  void* _context;
+};
+#endif
+
 #endif

@@ -1051,17 +1051,12 @@ FUNCTION(OpenMVS_GenerateOpencv4Overlay overlay_ports_var)
 # and have OpenCV detect it via pkg-config (system apt libav*-dev) instead
 # of pulling vcpkg's hermetic ffmpeg port. See <openmvs>/build/Utils.cmake.
 #
-# PKG_CONFIG_PATH ordering matters here. We need pkg-config to find:
-#   - libav*.pc only on the system (vcpkg's ffmpeg port isn't installed)
-#   - gtk+-3.0.pc, fontconfig.pc, etc. from vcpkg (newer versions than
-#     Ubuntu 24.04 ships — e.g. fontconfig 2.17.1 vs system 2.15.0; pango
-#     refuses anything < 2.17.0)
-#   - x11.pc / xext.pc / xrender.pc only on the system (vcpkg's gtk3 chain
-#     hard-requires these and vcpkg never ships them)
-# pkg-config searches PKG_CONFIG_PATH left-to-right then PKG_CONFIG_LIBDIR.
-# Putting vcpkg's pkgconfig dirs FIRST in PATH prevents the system's older
-# fontconfig from shadowing vcpkg's newer one and breaking the gtk chain;
-# the system dirs follow so ffmpeg / x11 remain reachable.
+# PKG_CONFIG_PATH ordering matters here: libav*.pc exist only on the system
+# (vcpkg's ffmpeg port isn't installed), while the image codecs OpenCV links
+# (libpng, libjpeg, libtiff, libwebp, libjxl, zlib) must resolve to vcpkg's
+# copies, not to whatever versions the distribution ships. pkg-config
+# searches PKG_CONFIG_PATH left-to-right, so vcpkg's pkgconfig dirs go
+# FIRST and the system dirs follow only to make FFmpeg reachable.
 foreach(_p
     \"\${CURRENT_INSTALLED_DIR}/lib/pkgconfig\"
     \"\${CURRENT_INSTALLED_DIR}/share/pkgconfig\"

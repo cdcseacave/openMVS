@@ -83,6 +83,7 @@ private:
 
 	// Embedded resources
 	Texture emptySceneIcon;
+	Texture crossSplat; // marks the reprojection of the selected point in its patches
 
 	// Observations of the selected point (Point Observations panel)
 	PointObservations pointObservations;

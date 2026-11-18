@@ -270,6 +270,11 @@ if(OpenMVS_USE_CUDA)
 		SET(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
 		SET(CMAKE_CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 		SET(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
+		# the static CUDA libraries (cudart_static, cudadevrt) are built against the static CRT and
+		# request LIBCMT, while the targets link the DLL CRT, which provides all they need
+		if(MSVC AND NOT CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "^MultiThreaded(Debug)?$")
+			ADD_LINK_OPTIONS("$<HOST_LINK:/NODEFAULTLIB:LIBCMT>")
+		endif()
 		# Add OpenMP support to CUDA host compiler
 		if(_USE_OPENMP)
 			SET(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler ${OpenMP_CXX_FLAGS}")
@@ -373,6 +378,18 @@ if(OpenCV_FOUND)
 	MESSAGE(STATUS "OpenCV ${OpenCV_VERSION} found")
 else()
 	MESSAGE(STATUS "Can't find OpenCV. Please specify OpenCV directory using OpenCV_DIR variable")
+endif()
+
+# Optional SiftGPU support via vcpkg manifest feature; detected here so that
+# _USE_SIFTGPU lands in ConfigLocal.h and every library and app sees the same value
+if(OpenMVS_USE_SIFTGPU)
+	find_exported_dependency(siftgpu CONFIG QUIET)
+	if(siftgpu_FOUND)
+		SET(_USE_SIFTGPU TRUE)
+		MESSAGE(STATUS "SiftGPU found")
+	else()
+		MESSAGE(STATUS "Can't find SiftGPU. Continuing without it.")
+	endif()
 endif()
 
 # vcpkg's ceres carries a bare `gflags` in the ceres target's INTERFACE_LINK_LIBRARIES

@@ -48,16 +48,16 @@ struct ViewProjectionData {
 	Eigen::Matrix4f projection;
 	Eigen::Matrix4f viewProjection;
 	Eigen::Vector3f cameraPos;
-	float padding; // Alignment
+	float padding = 0; // Alignment
 };
 
 struct LightingData {
 	Eigen::Vector3f lightDirection;
-	float lightIntensity;
+	float lightIntensity = 0;
 	Eigen::Vector3f lightColor;
-	float ambientStrength;
+	float ambientStrength = 0;
 	Eigen::Vector3f ambientColor;
-	float padding; // Alignment
+	float padding = 0; // Alignment
 };
 
 class Renderer {
@@ -123,8 +123,6 @@ private:
 	struct CameraLayerRange
 	{
 		uint32_t layerID{NO_ID};
-		size_t offset{0}; // first camera slot (indexes the image-overlay quads)
-		size_t count{0};
 		size_t pointIndexOffset{0}; // sub-range in the point block of the camera EBO
 		size_t pointIndexCount{0};
 		size_t lineIndexOffset{0}; // sub-range in the line block of the camera EBO
@@ -141,12 +139,18 @@ private:
 	std::vector<uint32_t> ellipsoidLayerIDs; // owning layer per accepted ellipsoid, aligned with ellipsoidCenters
 	std::vector<uint32_t> ellipsoidDrawOrder; // reused scratch for the per-frame back-to-front sort
 
-	// 3D image overlay rendering (pre-computed for all images with valid textures)
+	// Image overlay rendering: the photo of a camera is a static unit mesh placed at the camera by the
+	// shader's model matrix; the pinhole image is the unit quad, the spherical one the unit sphere of its rays.
+	// Vertices are 3D position + texture coordinate (5 floats), drawn with the image overlay shader.
+	struct OverlayMesh {
+		std::unique_ptr<VAO> vao;
+		std::unique_ptr<VBO> vbo;
+		std::unique_ptr<VBO> ebo;
+		size_t indexCount = 0;
+	};
 	std::unique_ptr<Shader> imageOverlayShader;
-	std::unique_ptr<VAO> imageOverlayVAO;
-	std::unique_ptr<VBO> imageOverlayVBO;
-	std::unique_ptr<VBO> imageOverlayEBO;
-	size_t imageOverlayIndexCount;
+	OverlayMesh imageOverlayQuad; // (u,v,1) with texture coordinate (u,v), the image plane at unit depth
+	OverlayMesh imageOverlaySphere;
 
 	// Selection rendering
 	std::unique_ptr<Shader> selectionShader;
@@ -180,9 +184,9 @@ private:
 	std::unique_ptr<Shader> gizmoShader;
 	std::unique_ptr<VAO> gizmoVAO;
 	std::unique_ptr<VBO> gizmoVBO, gizmoEBO;
-	size_t gizmoCircleIndexCount; // Circle rendering indices
-	size_t gizmoCenterAxesBaseVertex; // Starting vertex for center axes
-	size_t gizmoCenterAxesVertexCount; // Number of center axes vertices
+	size_t gizmoCircleIndexCount = 0; // Circle rendering indices
+	size_t gizmoCenterAxesBaseVertex = 0; // Starting vertex for center axes
+	size_t gizmoCenterAxesVertexCount = 0; // Number of center axes vertices
 
 	// Picker FBO (ID-only rendering)
 	std::unique_ptr<Shader> pickerMeshShader;
@@ -221,7 +225,9 @@ public:
 	void RenderMesh(const Window& window);
 	void RenderCameras(const Window& window);
 	void RenderUncertaintyEllipsoids(const Window& window);
-	void RenderImageOverlays(const Window& window);
+	// the loaded panoramas on the globes of their cameras, and the photo of the camera view mode
+	// (the latter only in the pass showing the active layer)
+	void RenderImageOverlays(const Window& window, bool bActiveLayerPass);
 	void RenderSelection(const Window& window);
 	void RenderSelectionOverlay(const Window& window);
 	void RenderSelectedGeometry(const Window& window);
@@ -240,7 +246,7 @@ public:
 		uint32_t index{NO_ID};
 		uint32_t layerID{NO_ID};
 		Point3f points[3];
-		bool isPoint;
+		bool isPoint{false};
 		bool IsValid() const { return index != NO_ID && layerID != NO_ID; }
 	};
 	PickResult PickPrimitiveAt(const Point2f& screenPos, int radius, const Window& window);
@@ -299,7 +305,6 @@ private:
 	void ReleasePickerBuffers();
 
 	const LayerIndexRange* FindPointLayerRange(uint32_t layerID) const;
-	const CameraLayerRange* FindCameraLayerRange(uint32_t layerID) const;
 	const LayerFaceMap* FindMeshLayerMap(uint32_t layerID) const;
 	bool MapGlobalPoint(size_t globalIndex, uint32_t& layerID, uint32_t& localIndex) const;
 	bool MapGlobalFace(size_t globalIndex, uint32_t& layerID, uint32_t& localIndex) const;

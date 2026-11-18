@@ -61,9 +61,10 @@ DEFINE_LOG_NAME(lt, _T("Scene   "));
 //  - sampling: sampling density per squared unit area (if >0), or
 //              absolute number of points (if <0), or
 //              use existing vertices as samples (if ==0)
+// pinhole cameras only (CheckPinholeOnly)
 void Scene::SampleMeshWithVisibility(REAL sampling, unsigned maxResolution)
 {
-	ASSERT(!mesh.IsEmpty());
+	ASSERT(!mesh.IsEmpty() && !HasSphericalImages());
 	pointcloud.Release();
 	if (sampling < 0) {
 		// absolute number of points
@@ -125,6 +126,8 @@ void Scene::SampleMeshWithVisibility(REAL sampling, unsigned maxResolution)
 bool Scene::ExportMeshToDepthMaps(const String& baseName)
 {
 	ASSERT(!images.empty() && !mesh.IsEmpty());
+	if (!CheckPinholeOnly(_T("the mesh depth-map export")))
+		return false;
 	const String ext(Util::getFileExt(baseName).ToLower());
 	const int nType(ext == _T(".dmap") ? 2 : (ext == _T(".pfm") ? 1 : 0));
 	if (nType == 2)
@@ -211,15 +214,48 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 			}
 		}
 	};
+	// a pair with a panorama has no viewing directions to intersect: a grid over the whole first
+	// image, at depths spread log-uniformly over two orders of magnitude around the depth where
+	// the directions normal to the baseline meet at the optimal triangulation angle, seen by the
+	// second image if it projects inside it
+	const auto ProjectSphereGridToImage = [&](IIndex idI, IIndex idJ) {
+		const Image& imageData = images[idI];
+		const Image& imageData2 = images[idJ];
+		const ModelCamera camera(imageData.GetModelCamera()), camera2(imageData2.GetModelCamera());
+		const REAL depth(norm(imageData.camera.C - imageData2.camera.C) / (2*TAN(D2R(REAL(OPTDENSE::fOptimAngle))/2)));
+		const REAL logMinDepth(LOGN(depth*REAL(0.1))), logMaxDepth(LOGN(depth*REAL(10)));
+		const unsigned rows(imageData.IsSpherical() ? maxResolution/2 : maxResolution);
+		const float stepW((float)imageData.width / maxResolution);
+		const float stepH((float)imageData.height / rows);
+		for (unsigned r = 0; r < rows; ++r) {
+			for (unsigned c = 0; c < maxResolution; ++c) {
+				const Point2f x(c*stepW + stepW/2, r*stepH + stepH/2);
+				const Point3 X(camera.TransformPointI2W(Point2(x), EXP(randomRange(logMinDepth, logMaxDepth))));
+				const auto [x2, depth2] = camera2.ProjectPointP(X);
+				ImageRef ir2;
+				if (depth2 <= 0 || !camera2.GetPixel(x2, imageData2.GetSize(), ir2))
+					continue;
+				pointcloud.points.emplace_back(X);
+				pointcloud.pointViews.emplace_back(idI < idJ ? PointCloud::ViewArr{idI, idJ} : PointCloud::ViewArr{idJ, idI});
+			}
+		}
+	};
 	pointcloud.Release();
 	FOREACH(i, images) {
 		const Image& imageData = images[i];
 		if (!imageData.IsValid())
 			continue;
 		FOREACH(j, images) {
-			if (i == j)
-				continue;
 			const Image& imageData2 = images[j];
+			// no pair with an invalid view, nor with one at the same center (the cameras of a rig, the faces
+			// of a cubemap, up to the precision their poses were stored with): there is no baseline to
+			// intersect the views over
+			if (i == j || !imageData2.IsValid() || ISZERO(norm(imageData.camera.C - imageData2.camera.C)))
+				continue;
+			if (imageData.IsSpherical() || imageData2.IsSpherical()) {
+				ProjectSphereGridToImage(i, j);
+				continue;
+			}
 			Point3 X;
 			TriangulatePoint3D(
 				imageData.camera.K, imageData2.camera.K,
@@ -282,7 +318,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		if (views.FindFirst(ID) == PointCloud::ViewArr::NO_INDEX)
 			continue;
 		const PointCloud::Point& point = pointcloud.points[idx];
-		const Depth depth((float)imageData.camera.PointDepth(point));
+		const Depth depth((float)imageData.PointDepth(Cast<REAL>(point)));
 		ASSERT(depth > 0);
 		if (depth <= 0)
 			continue;
@@ -301,7 +337,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			if (view == ID)
 				continue;
 			const Image& imageData2 = images[view];
-			const Depth depth2((float)imageData2.camera.PointDepth(point));
+			const Depth depth2((float)imageData2.PointDepth(Cast<REAL>(point)));
 			ASSERT(depth2 > 0);
 			if (depth2 <= 0)
 				continue;
@@ -346,6 +382,9 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 
 	// select best neighborViews
 	if (neighbors.empty()) {
+		const auto ProjectPoint = [](const Image& image, const PointCloud::Point& X, Point2f& x) {
+			return image.GetModelCamera().ProjectPointInside(X, image.GetSize(), x);
+		};
 		Point2fArr projs(0, points.size());
 		FOREACH(IDB, images) {
 			const Image& imageDataB = images[IDB];
@@ -357,7 +396,6 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			ASSERT(ID != IDB);
 			// compute how well the matched features are spread out (image covered area)
 			const Point2f boundsA(imageData.GetSize());
-			const Point2f boundsB(imageDataB.GetSize());
 			ASSERT(projs.empty());
 			for (uint32_t idx: points) {
 				const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
@@ -366,11 +404,11 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
 					continue;
 				const PointCloud::Point& point = pointcloud.points[idx];
-				Point2f ptB = std::get<0>(imageDataB.camera.ProjectPointP(point));
-				if (!imageDataB.camera.IsInside(ptB, boundsB))
+				Point2f ptB;
+				if (!ProjectPoint(imageDataB, point, ptB))
 					continue;
-				Point2f& ptA = projs.emplace_back(std::get<0>(imageData.camera.ProjectPointP(point)));
-				if (!imageData.camera.IsInside(ptA, boundsA))
+				Point2f& ptA = projs.emplace_back();
+				if (!ProjectPoint(imageData, point, ptA))
 					projs.RemoveLast();
 			}
 			ASSERT(projs.size() <= score.points);

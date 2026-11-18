@@ -77,6 +77,14 @@ public:
 	bool IsValid() const;
 	bool IsEmpty() const;
 	bool ImagesHaveNeighbors() const;
+	// the scene has equirectangular images (Image::IsSpherical)
+	bool HasSphericalImages() const;
+	// the stages that project through the pinhole camera only (the mesh reconstruction, refinement and
+	// texturing, the neighbor views from a mesh) refuse a scene with spherical images: false, with an
+	// error naming the stage and the cube-map export, if the scene has any
+	bool CheckPinholeOnly(LPCTSTR stage) const;
+	// how a scene with spherical images reaches those stages, for their error and the Viewer notice
+	static constexpr LPCTSTR PINHOLE_ONLY_HINT = _T("convert the panoramas to cube-map faces (an OpenMVS SfM scene is exported so with CreateStructure --spherical-export cubemap) to run the mesh pipeline");
 	bool IsBounded() const { return obb.IsValid(); }
 	bool HasTransform() const { return transform != Matrix4x4::IDENTITY; }
 
@@ -124,7 +132,7 @@ public:
 	// Transform scene
 	bool Center(const Point3* pCenter=NULL);
 	bool Scale(const REAL* pScale=NULL);
-	bool ScaleImages(unsigned nMaxResolution=0, REAL scale=0, const String& folderName={});
+	bool ScaleImages(unsigned nMaxResolution, REAL scale, const String& folderName);
 	Matrix4x4 ComputeNormalizationTransform(bool bScale = false) const;
 	void Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale);
 	void Transform(const Matrix3x4& transform);
@@ -214,7 +222,7 @@ public:
 	// sees a face when a pixel of its rasterization survives the z-buffer depth test or, the
 	// sub-pixel case, when its centroid projects unoccluded into that image. The mesh is
 	// rendered at the resolution nResolutionLevel/nMinResolution select; only the cameras are
-	// used, no image pixels are read
+	// used, no image pixels are read; pinhole cameras only (CheckPinholeOnly)
 	unsigned RemoveUnseenMeshFaces(unsigned nMinViews=1, unsigned nResolutionLevel=0, unsigned nMinResolution=640);
 
 	// Mesh refinement: fThPlanarVertex > 0 removes the vertices of planar patches as the
@@ -264,7 +272,7 @@ public:
 		float score() const { return 100.f * completeness * ssim; }
 	};
 	struct ImageScore : Score {
-		IIndex idxImage;
+		IIndex idxImage = NO_ID;
 	};
 	struct ReconstructionQuality : Score {
 		CLISTDEFIDX(ImageScore, IIndex) imageScores;

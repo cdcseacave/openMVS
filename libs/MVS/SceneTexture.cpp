@@ -169,9 +169,9 @@ struct MeshTexture {
 	struct RasterMesh : TRasterMesh<RasterMesh> {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
-		FIndex idxFace;
+		FIndex idxFace = NO_ID;
 		Image8U mask; // valid pixels of the image at its working resolution (empty: all valid)
-		bool validFace;
+		bool validFace = false;
 		const float scaleMaskX, scaleMaskY; // working resolution over rendering resolution
 		const int border; // keeps the vertices at least 2 px inside the working image, as GenerateTexture requires
 
@@ -208,8 +208,8 @@ struct MeshTexture {
 
 	// used to store info about a face (view, quality)
 	struct FaceData {
-		IIndex idxView;// the view seeing this face
-		float quality; // how well the face is seen by this view
+		IIndex idxView = NO_ID; // the view seeing this face
+		float quality = 0; // how well the face is seen by this view
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 		Color color; // additionally store mean color (used to remove outliers)
 		#endif
@@ -225,7 +225,7 @@ struct MeshTexture {
 
 	// represents a texture patch
 	struct TexturePatch {
-		Label label; // view index
+		Label label = NO_ID; // view index
 		Mesh::FaceIdxArr faces; // indices of the faces contained by the patch
 		cv::Rect rect; // the bounding box in the view containing the patch
 	};
@@ -233,7 +233,7 @@ struct MeshTexture {
 
 	struct PatchRect {
 		cv::Rect rect;
-		uint32_t patchIdx;
+		uint32_t patchIdx = NO_ID;
 		bool rotated = false; // the patch is stored turned by cv::ROTATE_90_COUNTERCLOCKWISE (set by the footprint packer)
 	};
 	using PatchRectArr = std::vector<PatchRect>;
@@ -311,10 +311,10 @@ struct MeshTexture {
 	struct SeamVertex {
 		struct Patch {
 			struct Edge {
-				uint32_t idxSeamVertex; // the other vertex of this edge
-				FIndex idxFace; // the face containing this edge in this patch
+				uint32_t idxSeamVertex = NO_ID; // the other vertex of this edge
+				FIndex idxFace = NO_ID; // the face containing this edge in this patch
 
-				inline Edge() {}
+				Edge() = default;
 				inline Edge(uint32_t _idxSeamVertex) : idxSeamVertex(_idxSeamVertex) {}
 				inline bool operator == (uint32_t _idxSeamVertex) const {
 					return (idxSeamVertex == _idxSeamVertex);
@@ -322,7 +322,7 @@ struct MeshTexture {
 			};
 			typedef cList<Edge,const Edge&,0,4,uint32_t> Edges;
 
-			uint32_t idxPatch; // the patch containing this vertex
+			uint32_t idxPatch = NO_ID; // the patch containing this vertex
 			Point2f proj; // the projection of this vertex in this patch
 			Edges edges; // the edges starting from this vertex, contained in this patch (exactly two for manifold meshes)
 
@@ -334,7 +334,7 @@ struct MeshTexture {
 		};
 		typedef cList<Patch,const Patch&,1,4,uint32_t> Patches;
 
-		VIndex idxVertex; // the index of this vertex
+		VIndex idxVertex = NO_ID; // the index of this vertex
 		Patches patches; // the patches meeting at this vertex (two or more)
 
 		inline SeamVertex() {}
@@ -504,17 +504,21 @@ static Image8U DetectInvalidImageRegions(const Image8U3& image)
 
 // compute the mask of the valid pixels of the given image, at the resolution of its loaded pixels;
 // nIgnoreMaskLabel selects the source of the mask: the label to ignore in the mask stored
-// with the image (>= 0), the regions invalidated by the lens undistortion (-1), or none (-2);
-// the returned mask is set to zero for invalid pixels, and is empty if masking is disabled
+// with the image (>= 0), the regions invalidated by the lens undistortion detected in the image (-1),
+// or none (-2); an image undistorted on read always masks the pixels without a source in its file;
+// the returned mask is set to zero for invalid pixels, and is empty if there is nothing to mask
 static Image8U ComputeValidityMask(const Image& imageData, int nIgnoreMaskLabel)
 {
 	ASSERT(!imageData.image.empty());
 	Image8U mask;
-	if (nIgnoreMaskLabel >= 0) {
-		BitMatrix bmask;
-		DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), (uint8_t)nIgnoreMaskLabel, bmask, &mask);
-	} else if (nIgnoreMaskLabel == -1) {
-		mask = DetectInvalidImageRegions(imageData.image);
+	BitMatrix bmask;
+	DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), nIgnoreMaskLabel, bmask, &mask);
+	if (nIgnoreMaskLabel == -1) {
+		const Image8U detected(DetectInvalidImageRegions(imageData.image));
+		if (mask.empty())
+			mask = detected;
+		else
+			cv::bitwise_and(mask, detected, mask);
 	}
 	ASSERT(mask.empty() || mask.size() == imageData.image.size());
 	return mask;
@@ -1646,7 +1650,7 @@ void MeshTexture::GlobalSeamLeveling()
 		imageAdj.memset(0);
 		// interpolate color adjustments over the whole patch
 		struct RasterPatch {
-			const TexCoord* tri;
+			const TexCoord* tri = NULL;
 			Color colors[3];
 			ColorMap& image;
 			inline RasterPatch(ColorMap& _image) : image(_image) {}
@@ -2096,8 +2100,8 @@ void MeshTexture::LocalSeamLeveling()
 struct PatchApprox {
 	Point3f centroid;
 	Point3f U, V;
-	float uMin, uMax, vMin, vMax;
-	float surfaceArea; // OBB surface area: (uMax - uMin) * (vMax - vMin)
+	float uMin = 0, uMax = 0, vMin = 0, vMax = 0;
+	float surfaceArea = 0; // OBB surface area: (uMax - uMin) * (vMax - vMin)
 };
 typedef CLISTDEF0IDX(PatchApprox, uint32_t) PatchApproxArr;
 
@@ -2511,6 +2515,8 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight,
 	int nIgnoreMaskLabel, int maxTextureSize, const IIndexArr& views)
 {
+	if (!CheckPinholeOnly(_T("the mesh texturing")))
+		return false;
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// assign the best view to each face
@@ -2546,7 +2552,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 bool Scene::ComputeVertexColors(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras,
 	float fOutlierThreshold, float fRatioDataSmoothness, Pixel8U colEmpty, int nIgnoreMaskLabel, const IIndexArr& views)
 {
-	if (mesh.IsEmpty())
+	if (mesh.IsEmpty() || !CheckPinholeOnly(_T("the mesh vertex coloring")))
 		return false;
 
 	// assign the best view to each face

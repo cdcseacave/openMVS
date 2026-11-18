@@ -102,6 +102,37 @@ FOREACH(index, container) {
 ```
 Similarly, RFOREACH macro iterates in reverse order.
 
+### Eigen Interop of the OpenMVS Math Types — permanent rule
+`TPoint2`, `TPoint3`, `TMatrix` (and every type derived from them: `Point2/2f/3/3f`, `ImageRef`, `Normal`,
+`Matrix3x3/3x4/4x4`, `KMatrix`, `RMatrix`, `CMatrix`, `PMatrix`, ...) and `TDMatrix` convert to and from Eigen
+by themselves (`libs/Common/Types.h`). **Never** wrap them in `Eigen::Map<...>(x.val)` / `Eigen::Map<...>(x.ptr())`
+and never copy them component by component (`Eigen::Vector3d(p.x, p.y, p.z)`, `Point3(v.x(), v.y(), v.z())`).
+- Each type has `EVec`/`EMat` (a `TMatrix` with more than one column is **row-major**; it also converts
+  implicitly to the column-major `Eigen::Matrix<TYPE,m,n>`), `CEVecMap`/`EVecMap`, `CEMatMap`/`EMatMap`
+  (no-copy views), and constructors and `operator=` from Eigen.
+- Non-template Eigen parameter or assignment: pass the type itself — `camera.Ray(Point2(x0))`,
+  `ProjectFast(trg, X1, x)`, `Rrel = Matrix3x3f(R)`, `const Eigen::Vector3d X(Xc)`.
+- Template Eigen functions cannot deduce through a conversion: cast explicitly —
+  `static_cast<Point3f::EVec>(p)` or, without a copy, `static_cast<Matrix3x3::CEMatMap>(R)`.
+- From Eigen: `Point3f(v)`, `Point2f(Point2(u))`, `Point3(u.homogeneous())`, `Normal(n.cast<float>())`.
+- Another scalar type: convert the OpenMVS type first (`Matrix3x3f(R)`, `Point3f(C)`, `Cast<float>(x)`),
+  then let it convert to Eigen.
+- A view to write into: `PMatrix::EMatMap mapP(P); mapP.leftCols<3>() = R;`.
+- Beware the vexing parse: `const Eigen::Vector2d v(Point2(x0));` declares a function; write
+  `const Eigen::Vector2d v = Point2(x0);`.
+- `Eigen::Map` stays for raw buffers only (Ceres parameter/residual arrays, strided channel arrays) and for
+  the `libs/IO/Interface.h` types, which are plain OpenCV types without Eigen support by design.
+- CUDA host code builds the kernels' Eigen types the same way:
+  `CUDA::Camera(Matrix3x3f(K), Matrix3x3f(R), Point3f(C), width, height)`.
+
+### Camera Models on the GPU — permanent rule
+The camera models are `libs/Math/Camera/CameraModels.h` (`Pinhole<T>`, `Spherical<T>`, `HOST_DEVICE`). GPU code
+uses them directly: `CUDA::Camera` (`libs/MVS/CUDA/Camera.h`) stores only the model-neutral intrinsics
+`fx, fy, cx, cy` (plus pose and size) and the kernel builds the model it knows with
+`camera.Model<PinholeModel>()` / `Model<SphericalModel>()`. Do not add camera classes or pinhole helpers
+(`K()`, `TransformPointI2C`, ...) that duplicate the models; the Metal shader mirrors the same models in its
+one hand-mirror block (`AsPinhole`/`AsSpherical`), covered by `MetalModelMathTest`.
+
 `SEACAVE::PairIdx` (in `libs/Common/Types.h`) packs two `uint32_t` indices into a single `uint64_t` via a union. Use it — never hand-rolled `(uint64_t(a) << 32) | b` bit-packing — whenever you need a composite key from two 32-bit indices. Common cases: `(imageID, featureID)` for per-observation lookups, `(platformID, cameraID)`, or image-pair buckets. Two forms:
 - `PairIdx(a, b)` — raw constructor; stores the two fields in order, no reordering. Use this when `a` and `b` have *different meaning* (e.g. image vs feature). Works as an `unordered_map` key out-of-the-box since `std::hash<PairIdx>` is already specialized in `Types.inl`.
 - `MakePairIdx(a, b)` — asserts `a != b` and swaps so the smaller index comes first. Use this only for *symmetric* pairs where `(a,b)` and `(b,a)` should hash to the same bucket, e.g. image-pair buckets in match graphs.

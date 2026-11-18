@@ -49,6 +49,7 @@
 #include "DisjointSet.h"
 #include "RobustNorms.h"
 #include "SimilarityTransform.h"
+#include "Camera/CameraModels.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////

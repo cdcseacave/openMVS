@@ -76,15 +76,14 @@ public:
 			return finish(false);
 		Image& image = layer->images[idx];
 		ASSERT(image.idx != NO_ID);
-		MVS::Image& imageData = layer->scene.images[image.idx];
+		// decode into a copy: the pixels are for display, the scene image keeps its resolution and camera
+		MVS::Image imageData(layer->scene.images[image.idx]);
 		ASSERT(imageData.IsValid());
 		if (imageData.image.empty() && !imageData.ReloadImage(nMaxResolution)) {
 			image.CancelImageLoading();
 			return finish(false);
 		}
-		imageData.UpdateCamera(layer->scene.platforms);
 		image.AssignImage(imageData.image);
-		imageData.ReleaseImage();
 		glfwPostEmptyEvent();
 		return finish(true);
 	}
@@ -515,7 +514,7 @@ bool Scene::SetViewFromFile(const String& viewFileName) {
 }
 
 // Set the view camera to exactly match an active-layer scene camera's pose and FOV.
-bool Scene::SetViewFromCamera(unsigned camIndex) {
+bool Scene::SetViewFromCamera(unsigned camIndex, bool bCameraViewMode) {
 	Layer* layer = GetActiveLayer();
 	if (layer == NULL || layer->images.empty()) {
 		DEBUG("error: no scene cameras to set the view from");
@@ -523,8 +522,13 @@ bool Scene::SetViewFromCamera(unsigned camIndex) {
 	}
 	if (camIndex >= layer->images.size())
 		camIndex = layer->images.size() / 2;
-	const MVS::Image& imageData = layer->scene.images[layer->images[camIndex].idx];
-	window.GetCamera().SetCameraFromSceneData(imageData);
+	if (bCameraViewMode) {
+		// the camera view mode: the view of the camera with its image overlaid
+		window.GetCamera().SetCameraViewMode(camIndex);
+	} else {
+		const MVS::Image& imageData = layer->scene.images[layer->images[camIndex].idx];
+		window.GetCamera().SetCameraFromSceneData(imageData);
+	}
 	DEBUG("View set from scene camera %u", camIndex);
 	return true;
 }
@@ -534,7 +538,8 @@ void Scene::ClearLayers()
 	ASSERT(!HasPendingImageLoads());
 	layers.clear();
 	activeLayerIndex = -1;
-	nextLayerID = 1;
+	// nextLayerID keeps counting: a layer ID names one layer for the whole session, so the state kept
+	// per layer ID elsewhere (renderer buffers, observation image cache) never meets a later scene's layer
 	workflowLayerID = NO_ID;
 }
 
@@ -635,6 +640,7 @@ void Scene::RefreshLayerState(Layer& layer, bool rebuildImages)
 		layer.sceneSize = Point3f(bounds.GetSize().cast<float>());
 	layer.sceneDistance = layer.images.empty() ? 1.f : scene.ComputeDistanceCameras2Scene(0.1f, true);
 	layer.pointConfidence.Reset(scene.pointcloud);
+	layer.hasSphericalImages = scene.HasSphericalImages();
 	if (layer.label.empty()) {
 		layer.label = Util::getFileNameExt(layer.sceneName);
 	}
@@ -1693,7 +1699,7 @@ void Scene::PrecomputeTrackBasedNeighbors() {
 			if (views.FindFirst(refMVS) == MVS::PointCloud::ViewArr::NO_INDEX)
 				continue;
 			const MVS::PointCloud::Point& point = pointcloud.points[p];
-			const float refDepth = (float)refImage.camera.PointDepth(point);
+			const float refDepth = (float)refImage.PointDepth(Cast<REAL>(point));
 			if (refDepth <= 0)
 				continue;
 			const Point3f V1 = refImage.camera.C - Cast<REAL>(point);
@@ -1705,7 +1711,7 @@ void Scene::PrecomputeTrackBasedNeighbors() {
 				++stat.points;
 				stat.sharedPoints.emplace_back(p);
 				const MVS::Image& otherImage = scene.images[view];
-				const float otherDepth = (float)otherImage.camera.PointDepth(point);
+				const float otherDepth = (float)otherImage.PointDepth(Cast<REAL>(point));
 				if (otherDepth <= 0)
 					continue;
 				const Point3f V2(otherImage.camera.C - Cast<REAL>(point));
@@ -1729,14 +1735,12 @@ void Scene::PrecomputeTrackBasedNeighbors() {
 
 			float area = 0.f;
 			if (!stat.sharedPoints.empty()) {
-				const Point2f boundsB(otherImage.GetSize());
 				projs.Empty();
 				for (const auto pointIdx : stat.sharedPoints) {
 					const MVS::PointCloud::Point& point = pointcloud.points[pointIdx];
-					if (!otherImage.camera.IsInsideProjectionP(point, boundsB))
-						continue;
-					const auto [ptA, depth] = refImage.camera.ProjectPointP(point);
-					if (depth > 0 && refImage.camera.IsInside(ptA, boundsA))
+					Point2f ptA, ptB;
+					if (otherImage.GetModelCamera().ProjectPointInside(point, otherImage.GetSize(), ptB) &&
+						refImage.GetModelCamera().ProjectPointInside(point, refImage.GetSize(), ptA))
 						projs.emplace_back(ptA);
 				}
 				if (!projs.empty())
@@ -1982,9 +1986,9 @@ void Scene::OnCastRay(const Point2f& screenPos, const Ray3d& ray, int button, in
 								continue;
 							}
 							const MVS::Image& imageData = scene.images[idxImage];
-							const Point3 x(imageData.camera.TransformPointW2I3(Cast<REAL>(window.selectionPoints[0])));
+							const auto [x, depth] = imageData.GetModelCamera().ProjectPointP(Cast<REAL>(window.selectionPoints[0]));
 							const float conf = scene.pointcloud.pointWeights.empty() ? 0.f : scene.pointcloud.pointWeights[newSelectionIdx][v];
-							strViews += String::FormatString("\n\t\t%s (%.2f %.2f pixel, %.2f depth, %.2f conf)", Util::getFileNameExt(imageData.name).c_str(), x.x, x.y, x.z, conf);
+							strViews += String::FormatString("\n\t\t%s (%.2f %.2f pixel, %.2f depth, %.2f conf)", Util::getFileNameExt(imageData.name).c_str(), x.x, x.y, depth, conf);
 						}
 						return strViews;
 					}().c_str()
@@ -2040,7 +2044,8 @@ void Scene::OnSetCameraViewMode(MVS::IIndex camID) {
 		// Load image asynchronously
 		image.SetImageLoading();
 		pendingImageLoads.fetch_add(1);
-		events.AddEvent(new EVTLoadImage(this, layer->id, camID, IMAGE_MAX_RESOLUTION));
+		// a panorama spreads its width over the whole turn: 4x the resolution for the same detail in a view
+		events.AddEvent(new EVTLoadImage(this, layer->id, camID, imageData.IsSpherical() ? 4*IMAGE_MAX_RESOLUTION : IMAGE_MAX_RESOLUTION));
 	}
 
 	// Update camera with the scene data and viewport

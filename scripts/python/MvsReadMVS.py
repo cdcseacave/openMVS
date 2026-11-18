@@ -25,8 +25,8 @@ def main():
       image_max = max(camera['width'], camera['height'])
       fx = camera['K'][0][0] / image_max
       fy = camera['K'][1][1] / image_max
-      poses_size = len(camera['poses'])
-      print('Camera model loaded: platform {}; camera {}; f {:.3f}x{:.3f}; poses {}'.format(platform_index, camera_index, fx, fy, poses_size))
+      poses_size = len(mvs['platforms'][platform_index]['poses'])
+      print('Camera model loaded: platform {}; camera {}; model {}; f {:.3f}x{:.3f}; poses {}'.format(platform_index, camera_index, camera.get('model', 0), fx, fy, poses_size))
   
   os.makedirs(os.path.dirname(args.output), exist_ok = True)
   

@@ -69,6 +69,9 @@ struct SFM_API KeyframeConfig
 	// Output directory for keyframe images
 	String outputDirectory { "keyframes" };
 
+	// Keyframe image file format, as its lowercase extension without the dot: jxl, jpg or png
+	String imageFormat { "jxl" };
+
 	enum RefineCalibrationType {
 		// No refinement of intrinsics
 		NONE = 0,

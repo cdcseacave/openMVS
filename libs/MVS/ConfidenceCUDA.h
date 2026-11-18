@@ -22,7 +22,7 @@
 // definitions (ConfidenceCUDA.cu) are compiled only in CUDA builds, and every call site is guarded
 // with #ifdef _USE_CUDA, so a non-CUDA build never references the missing symbols.
 
-#include "ConfidenceRefine.h"
+#include "ConfidenceGPU.h"
 
 #include <cstdint>
 #include <vector>
@@ -30,40 +30,9 @@
 namespace MVS {
 namespace CUDA {
 
-// Host-side descriptor for one confirming neighbor view: the fused single-precision projection
-// transforms (row-major 3x3 A/Rrel, 3-vectors b/cn, built exactly as the CPU NeighborProj) plus
-// HOST pointers to that neighbor's depth/conf/normal maps (row-major, contiguous). conf/normal may
-// be null (treated as "no confidence" / "no normal gate", matching the CPU).
-struct ConfNeighborHost {
-	float A[9], b[3], Rrel[9];
-	float cn[3];           // neighbor centre in the reference camera frame (triangulation angle)
-	const float* depth;    // width*height
-	const float* conf;     // width*height, or null
-	const float* normal;   // 3*width*height (interleaved x,y,z), or null
-	int width, height;
-	int srcImage;          // index of this neighbor in depthDataRef.images[] (>=1)
-	// optional resident depth texture (a cudaTextureObject_t handle, kept as an integer so this
-	// header stays CUDA-free): when nonzero the FUSED launcher reads the neighbor depth from it via
-	// exact texel-center tex2D fetches instead of uploading `depth`. Set only by the fused call site
-	// (PatchMatch::EstimateDepthMap) and only when the resident texture holds the UNRESIZED map
-	// (view.depthMap.size() == image.size()), so texture and host buffer are byte-identical; the
-	// standalone/epilogue path (RunConfidenceCUDA) always leaves it 0 and uploads.
-	unsigned long long texDepth;
-};
-
-// Everything the fused in-estimation confidence launch needs, prepared by the dispatch layer
-// (DepthMapsData::EstimateDepthMap) and consumed inside PatchMatch::EstimateDepthMap after the
-// last geometric-consistency kernels. The neighbor host pointers reference this reference's own
-// depthDataRef.images[] maps -- the raw PREVIOUS-iteration snapshots loaded by InitViews
-// (loadDepthMaps==2), preserving the raw-neighbor-confidence invariant (single Jacobi pass,
-// order-independent).
-struct ConfAdjustRequest {
-	std::vector<ConfNeighborHost> neighbors;
-	ConfRefine::Params params;             // single-precision OPTDENSE snapshot
-	float fx, fy, cx, cy;                  // reference camera intrinsics (skew-free)
-	// outputs
-	bool done = false;                     // fused kernels ran and confMap holds the adjusted conf
-};
+// the host descriptors shared with the Metal backend (ConfidenceGPU.h)
+using MVS::ConfNeighborHost;
+using MVS::ConfAdjustRequest;
 
 // Compute the intra-map prior + one-hop multi-view confirmation on the GPU for one reference view,
 // writing the recalibrated confidence into confOut (host buffer, W*H). All input pointers are HOST
@@ -72,7 +41,7 @@ struct ConfAdjustRequest {
 bool RunConfidenceCUDA(
 	int W, int H,
 	const float* refDepth, const float* refNormal /*3*W*H or null*/, const float* refConf,
-	float fx, float fy, float cx, float cy,
+	float fx, float fy, float cx, float cy, const float* refTrig /*a spherical reference: (sin,cos) of its W columns then H rows (ComputeSphericalTrig), host; null for pinhole*/,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const ConfRefine::Params& params,
 	float* confOut);
@@ -83,12 +52,16 @@ bool RunConfidenceCUDA(
 // host unpack loop applies). Launches on the caller's stream (pass the instance's cudaStream_t as
 // void* to keep this header CUDA-free) so it is ordered after the estimation kernels, and
 // synchronizes that stream before returning. Only the prior/output buffers and the neighbor maps
-// are allocated/uploaded here. Returns false on any CUDA error (caller falls back to the epilogue
-// re-upload path or the CPU sweep).
+// are allocated/uploaded here. hostKeepMask is the ignore mask of the reference (with the validity
+// mask of an image undistorted on read), one bit per pixel r*W+c set where the depth is kept, as the
+// little-endian words of a BitMatrix, or null: the masked depths are the ones the estimation discards
+// right after, so the recalibration treats them as missing, as the CPU estimation never produces
+// them. Returns false on any CUDA error (caller falls back to the epilogue re-upload path or the CPU
+// sweep).
 bool RunConfidenceFusedCUDA(
 	int W, int H,
-	const void* devDepthNormals, const float* devCosts,
-	float fx, float fy, float cx, float cy,
+	const void* devDepthNormals, const float* devCosts, const uint32_t* hostKeepMask,
+	float fx, float fy, float cx, float cy, const float* devRefTrig /*the same table, on the device (the estimation's)*/,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const ConfRefine::Params& params,
 	void* stream,

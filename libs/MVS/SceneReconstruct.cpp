@@ -737,6 +737,8 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 {
 	using namespace DELAUNAY;
 	ASSERT(pointcloud.IsValid());
+	if (!CheckPinholeOnly(_T("the mesh reconstruction")))
+		return false;
 	mesh.Release();
 	const float distInsert(params.distInsert);
 	const bool bUseFreeSpaceSupport(params.bUseFreeSpaceSupport);
@@ -1405,7 +1407,7 @@ unsigned Scene::RemoveUnseenMeshFaces(unsigned nMinViews, unsigned nResolutionLe
 {
 	ASSERT(nMinViews > 0);
 	ASSERT(!mesh.vertices.IsEmpty() && !mesh.faces.IsEmpty());
-	ASSERT(!images.IsEmpty() && !platforms.IsEmpty());
+	ASSERT(!images.IsEmpty() && !platforms.IsEmpty() && !HasSphericalImages());
 	TD_TIMER_START();
 	// relative depth tolerance of the centroid visibility probe
 	constexpr float kUnseenDepthTol = 0.01f;

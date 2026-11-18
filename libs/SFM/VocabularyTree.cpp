@@ -883,10 +883,10 @@ std::vector<std::pair<uint32_t, float>> VocabularyTree::Query(const Image& image
 namespace {
 struct VocabArchive
 {
-	int K, L, dimBytes, dtype;
-	int softAssignmentK;
-	unsigned queryExpansionImages;
-	unsigned maxDescriptorsPerImage;
+	int K = 0, L = 0, dimBytes = 0, dtype = 0;
+	int softAssignmentK = 0;
+	unsigned queryExpansionImages = 0;
+	unsigned maxDescriptorsPerImage = 0;
 	std::vector<uint32_t> nodeChildOffsets;
 	std::vector<int> nodeChildren;
 	std::vector<int> nodeWordId;
