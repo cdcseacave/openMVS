@@ -281,8 +281,12 @@ struct RingFixture
 // pair matched at the thresholds of AKAZE.
 // ===============================================================================
 ReconstructionConfig BundledImagesConfig();
-// import the bundled images; false (and the reason logged) unless all four were imported
-bool ImportBundledImages(Scene& scene, const ImportConfig& importCfg);
+// the bundled images imported with importCfg (only its forced focal, k1 and k2 may differ from the defaults) and their
+// features extracted with BundledImagesConfig(), computed once per process for each such import and copied into
+// scene, which must be empty and keeps its own thread count; false (and the reason logged) unless all four imported
+//   Scene scene(1);
+//   TEST_CHECK(BundledImagesFeatures(scene, importCfg), "the bundled images were not imported");
+bool BundledImagesFeatures(Scene& scene, const ImportConfig& importCfg);
 /*----------------------------------------------------------------*/
 
 

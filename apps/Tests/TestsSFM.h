@@ -271,23 +271,11 @@ bool ResolveModelPathTest();
 // narrow the execution provider and the preset it exercises
 bool RoMa2OnnxParityTest();
 
-// ROMA2 reconstruct test: runs the full in-process path on the bundled 4-image scene through
-// Scene::MatchPairs, four times. The per-image global retrieval descriptor (2048-D, the graph's
-// own on-device pooling) is checked, EXHAUSTIVE geometric matching still connecting and verifying
-// every pair; a run with the dense matching pass on is compared against a baseline run with it off
-// (the same pair set, every pair carrying a dense segment of its own and a sparse segment the
-// guided matching produced), survives an .sfm round-trip of the descriptors and the pairs,
-// and then goes through RealImagesPipelineTest's own reconstruction stage; and two runs of one awkward
-// configuration (single thread, a slot pool too small for the scene) must match identical pairs,
-// which is what pins the determinism of the pass. Skipped unless OPENMVS_ROMA2_MODEL_PATH points
-// at an exported model folder; OPENMVS_ROMA2_PROVIDER and OPENMVS_ROMA2_SETTING narrow the
-// execution provider and the preset it exercises
-bool ROMA2ReconstructTest();
-
-// FlexGlue as the dense matcher on the same bundled 4-image scene: 256-D unit retrieval descriptors, a covisibility score and a coarse relative pose
-// on every pair (the pose close to the pair's own), the pairs CSV columns, the covisibility gate, and RealImagesPipelineTest's reconstruction stage,
-// with no RoMa2 model reachable. Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at a FlexGlue bundle
-bool FlexGlueReconstructTest();
+// The dense matchers (RoMa2, FlexGlue) in the import/AKAZE/RETRIEVAL pipeline on the bundled images, each half skipped unless
+// its model variable (OPENMVS_ROMA2_MODEL_PATH, OPENMVS_FLEXGLUE_MODEL_PATH) is set: retrieval descriptors, every pair verified,
+// RoMa2's one pass against the descriptor batch with its round trip and determinism, FlexGlue's covisibility, pose prior, CSV
+// and gate, and the reconstruction stage of RealImagesPipelineTest on each
+bool DenseMatcherReconstructTest();
 
 // Spherical bottom band of the dense matching: with DenseMatchConfig::sphericalBottomBand at 0.2 neither warp draw
 // (the verdict's sample and the fill) has an end of a sample in the bottom 20% of rows of a spherical image,

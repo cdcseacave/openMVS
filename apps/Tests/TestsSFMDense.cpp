@@ -3956,384 +3956,149 @@ static DensePairSummaries SummarizePairs(const Scene& scene)
 	return summaries;
 }
 
-// One configuration of ROMA2ReconstructTest: import the bundled 4-image scene, extract AKAZE features,
-// then MatchPairs with the in-process ROMAv2 model describing every image and, when bUseMatching
-// is set, matching every candidate pair in the one dense pass INSTEAD of the descriptor batch --
-// the verdict on its bidirectional warp, the guided sparse matching of what the verdict admits,
-// the dense fill and the store. Checks the global retrieval descriptors the describe pass stores
-// and that RETRIEVAL matching (every pair, on four images) connects and geometrically verifies every pair, and hands the
-// matched pairs back so the caller can compare whole runs against each other. The caller varies
-// nThreads and slotBudget so that both the describe pass's prefetch ring (MINF(2*nThreads, 8)
-// buffers) and the dense pass's slot pool have to reuse a buffer/slot mid-pass at least once
-// (nThreads=1 -> 2 buffers < 4 images; slotBudget=2 -> 8 loads for the 6 pairs of 4 images, i.e.
-// 4 reloads); the pairwise-distinctness check below, and the pair checks, are what would catch a
-// stale-buffer or stale-slot bug.
-// bViewGraphCalibration turns off the post-matching view-graph calibration, which these runs
-// keep off: it optimizes one focal length per camera and then recomputes every relative pose from
-// it, so its result depends on how Scene::Import grouped the images into cameras, and that is one
-// more moving part between two runs that are compared pair by pair. (The grouping itself is now
-// stable: the intermittent EXIF sensor-size parse that used to yield inf/-inf on one of the two
-// HEIC images and split the shared camera was an uninitialized read in the container-EXIF path of
-// Image::LoadMetadata, fixed there and pinned by ImportMetadataDeterminismTest.)
-// With it off, the stored pairs are exactly what the matching produced.
-static bool DenseReconstructScene(Scene& scene, DenseMatchConfig denseCfg,
-	int expectedDim, bool bViewGraphCalibration, DensePairSummaries& pairSummaries, bool bStaleDescriptors = false)
+// One matching run of DenseMatcherReconstructTest: the bundled images and their AKAZE features (BundledImagesFeatures) at the
+// images' own focal, given and so trusted (720.51 px, no distortion), then MatchPairs in RETRIEVAL mode with the dense matcher
+// of denseCfg attached, the describe pass and (useMatching) the one pass in one model load. Unlike RealImagesPipelineTest, which
+// forces a wrong 900 px / k1 0.6 / k2 -0.09 and leans on the view-graph calibrator to recover them from the fundamental
+// matrices, this run cannot feed that recovery: warp-guided matching keeps, per keypoint of A, the descriptor-best keypoint of
+// B inside a disc around the position the warp predicts, so the stored correspondences fit a whole family of F near the warp's
+// own geometry and the focal a calibrator extracts from them is wildly unstable (measured at turbo with the forced 900 px: 690
+// px from the descriptor matches, 133 px from the guided ones on the CPU provider, a rejected 34450 px estimate on CUDA). With
+// the intrinsics trusted the pairs carry a relative pose straight from matching, which the reconstruction stage consumes. The
+// focal is given, not left to the import: the images carry only a 35 mm-equivalent focal (720.51 px on the 640x479 frame),
+// which the import takes as an untrusted guess for the lens fit, and four images give the fit too few pairs to trust it, so no
+// pair would carry a relative pose. The view-graph calibration is off: it re-solves a focal per camera and re-filters every
+// pair's inliers through it, one more moving part between two runs compared pair by pair.
+// Checks: the GLOBAL_DESCRIPTORS state; every image's global descriptor 1 x expectedDim and unit; no two images' descriptors
+// near-identical (cosine under 1-1e-6: the four close-up shots measure up to 0.99994838 by content alone, a descriptor
+// described twice from one reused prefetch buffer comes out within float rounding of 1); every candidate pair stored (a
+// covisibility gate may drop some: then at least one and no more) and geometrically verified on minMatches of evidence (the
+// track-forming set when the one pass ran, its dense fill counting). Hands the stored pairs back as summaries.
+// staleDescriptors: the scene first carries global descriptors of another matcher (2048-D), which MatchPairs must replace.
+static bool DenseReconstructScene(const TestScope& scope, Scene& scene, DenseMatchConfig denseCfg, int expectedDim,
+	DensePairSummaries& pairSummaries, bool staleDescriptors = false)
 {
-	const String& setting = denseCfg.setting;
-	const String& provider = denseCfg.provider;
-	const bool bUseMatching = denseCfg.useMatching;
-	const unsigned slotBudget = denseCfg.slotBudget;
-	// the images' own focal, given and so trusted (720.51 px, no distortion), unlike RealImagesPipelineTest,
-	// which forces a deliberately wrong 900 px / k1=0.6 / k2=-0.09 and leans on the view-graph
-	// calibrator to recover them from the fundamental matrices. That recovery is exactly what
-	// warp-guided matching cannot feed: it keeps, per keypoint of A, the descriptor-best keypoint
-	// of B inside a disc around the position the warp predicts, so the stored correspondences are
-	// consistent with a whole family of F near the warp's own geometry and the focal a calibrator
-	// extracts from them is wildly unstable (measured on these 4 images at turbo with the forced
-	// 900 px: 690 px from the descriptor matches, 133 px from the guided ones on the CPU provider,
-	// which then drags the bundle to f=315, and a rejected 34450 px estimate on CUDA). With the
-	// intrinsics trusted the pairs carry a relative pose straight from matching, which is what the
-	// reconstruction stage below actually consumes.
-	// The focal is given, not left to the import: the images carry only a 35 mm-equivalent focal
-	// (39 mm on the 640x479 frame, 720.51 px), which the import takes as a guess, untrusted, for the
-	// lens fit to estimate (Image::LoadMetadata, CalibrateFocalsAndFitLenses); four images give the
-	// fit 4 eligible pairs of the MatchConfig::lensFitMinPairs it needs, so it leaves the camera
-	// untrusted with its pairs back to their F, and with the view-graph calibration off
-	// (bViewGraphCalibration) no pair would carry a relative pose: the star initializer would find
-	// no reference view.
 	ImportConfig importCfg;
 	importCfg.focalLength = 720.51f;
-	if (!scene.Import(MAKE_PATH("images"), importCfg)) {
-		VERBOSE("ROMA2ReconstructTest FAILED: Import failed");
-		return false;
-	}
-	// two of the four bundled images are HEIC, which only libheif can decode (OpenCV has no
-	// HEIF codec), so a build without it enumerates just the two JPGs (RealImagesPipelineTest carries
-	// the same guard); every pair-count expectation below is expressed in terms of however
-	// many images were actually enumerated, so this test still asserts real numbers either way
-	#ifdef _IMAGE_HEIF
-	constexpr const char* reason = "";
-	constexpr IIndex expectedImages = 4;
-	#else
-	constexpr const char* reason = " (built without libheif, so the two HEIC images were skipped)";
-	constexpr IIndex expectedImages = 2;
-	#endif
-	if (scene.images.size() != expectedImages) {
-		VERBOSE("ROMA2ReconstructTest FAILED: Expected %u images, got %u%s", expectedImages, (unsigned)scene.images.size(), reason);
-		return false;
-	}
+	TEST_CHECK(BundledImagesFeatures(scene, importCfg), "the bundled images were not imported");
 	const IIndex nImages = (IIndex)scene.images.size();
 	const size_t expectedPairs = (size_t)nImages*(nImages-1)/2;
-
-	FeatureExtractionConfig featuresCfg;
-	featuresCfg.detectorType = FeatureType::AKAZE;
-	featuresCfg.maxFeaturesPerCell = 900;
-	featuresCfg.minFeaturesPerCell = 400;
-	if (!scene.ExtractFeatures(featuresCfg)) {
-		VERBOSE("ROMA2ReconstructTest FAILED: ExtractFeatures failed");
-		return false;
-	}
-	if (bStaleDescriptors) {
-		// the scene already carries global descriptors of another matcher (2048-D, RoMa2's size): MatchPairs must describe the images again
+	if (staleDescriptors) {
 		FOREACH(i, scene.images) {
 			scene.images[i].globalDescriptor = cv::Mat::zeros(1, 2048, CV_32F);
 			scene.images[i].globalDescriptor.at<float>(0, i) = 1.f;
 		}
 		scene.status.nState.set(Scene::Status::STATE::GLOBAL_DESCRIPTORS);
 	}
-
-	MatchConfig matchCfg;
-	matchCfg.mode = MatchConfig::RETRIEVAL; // the describe pass and the dense pass, one model load
-	matchCfg.DefaultsForFeatureType(featuresCfg.detectorType);
-	matchCfg.viewGraphCalibrationEnabled = bViewGraphCalibration;
-
+	MatchConfig matchCfg = BundledImagesConfig().matchCfg;
+	matchCfg.mode = MatchConfig::RETRIEVAL; // the describe pass and the dense pass, one model load; on four images every pair
+	matchCfg.viewGraphCalibrationEnabled = false;
 	denseCfg.enabled = true;
-	// MatchPairs runs the describe pass for RETRIEVAL mode alone (the match mode decides it), not
-	// merely because ROMA2 is enabled; on four images the retrieval proposes every pair, so this
-	// test exercises both of ROMA2's passes together in one model load over the whole graph
-	if (!scene.MatchPairs(matchCfg, denseCfg, ViewGraphCalibratorConfig())) {
-		VERBOSE("ROMA2ReconstructTest FAILED: MatchPairs failed");
-		return false;
-	}
-
-	if (!scene.status.nState.isSet(Scene::Status::STATE::GLOBAL_DESCRIPTORS)) {
-		VERBOSE("ROMA2ReconstructTest FAILED: GLOBAL_DESCRIPTORS state not set");
-		return false;
-	}
-	FOREACH(i, scene.images) {
-		const Image& img = scene.images[i];
-		if (!img.HasGlobalDescriptor()) {
-			VERBOSE("ROMA2ReconstructTest FAILED: image %u has no global descriptor", img.ID);
-			return false;
-		}
-		if (img.globalDescriptor.rows != 1 || img.globalDescriptor.cols != expectedDim) {
-			VERBOSE("ROMA2ReconstructTest FAILED: image %u global descriptor is %dx%d, expected 1x%d",
-				img.ID, img.globalDescriptor.rows, img.globalDescriptor.cols, expectedDim);
-			return false;
-		}
-		const double descNorm = cv::norm(img.globalDescriptor, cv::NORM_L2);
-		if (ABS(descNorm - 1.0) > 1e-4) {
-			VERBOSE("ROMA2ReconstructTest FAILED: image %u global descriptor norm %.6f, expected 1", img.ID, descNorm);
-			return false;
-		}
-	}
-
-	// every image's descriptor must actually depend on its own pixels, not on whichever image
-	// last occupied a reused prefetch-ring slot: two images described from the same planar
-	// buffer would carry bit-for-bit (or near bit-for-bit) identical descriptors, i.e. cosine
-	// (== dot product, both unit-norm) essentially 1: the graph is deterministic, so describing
-	// twice from one buffer returns the very same vector and the cosine lands within float
-	// rounding of exactly 1. The 4 bundled images are close-up shots of the same small scene
-	// (RealImagesPipelineTest reconstructs ~2000 shared tracks from them), so even genuinely distinct
-	// descriptors sit close to 1 by content similarity alone -- measured empirically at up to
-	// 0.99985546 (turbo) and 0.99994838 (base) across both providers here, on this dataset.
-	// The worst of those sits 5.2e-5 below 1, so 1-1e-6
-	// leaves ~50x of margin above the measured ceiling while still catching a duplicate, which
-	// cannot come out below 1-1e-7. The measured maximum is logged so every run carries the
-	// evidence for that margin.
+	TEST_CHECK(scene.MatchPairs(matchCfg, denseCfg, ViewGraphCalibratorConfig()), "%s: MatchPairs failed", denseCfg.matcher.c_str());
+	TEST_CHECK(scene.status.nState.isSet(Scene::Status::STATE::GLOBAL_DESCRIPTORS), "%s: GLOBAL_DESCRIPTORS state not set", denseCfg.matcher.c_str());
 	double maxCosine = 0.0;
-	for (IIndex i = 0; i < nImages; ++i) {
-		for (IIndex j = i + 1; j < nImages; ++j) {
-			const double cosine = scene.images[i].globalDescriptor.dot(scene.images[j].globalDescriptor);
+	FOREACH(i, scene.images) {
+		const cv::Mat& desc = scene.images[i].globalDescriptor;
+		TEST_CHECK(desc.rows == 1 && desc.cols == expectedDim && ABS(cv::norm(desc, cv::NORM_L2) - 1.0) <= 1e-4,
+			"%s: image %u's global descriptor is %dx%d of norm %.6f, expected 1x%d of norm 1", denseCfg.matcher.c_str(), (unsigned)i,
+			desc.rows, desc.cols, desc.empty() ? 0.0 : cv::norm(desc, cv::NORM_L2), expectedDim);
+		for (IIndex j = 0; j < i; ++j) {
+			const double cosine = desc.dot(scene.images[j].globalDescriptor);
 			maxCosine = MAXF(maxCosine, cosine);
-			if (cosine >= 1.0 - 1e-6) {
-				VERBOSE("ROMA2ReconstructTest FAILED: images %u and %u global descriptors are near-identical (cosine %.8f)",
-					scene.images[i].ID, scene.images[j].ID, cosine);
-				return false;
-			}
+			TEST_CHECK(cosine < 1.0 - 1e-6, "%s: images %u and %u have near-identical global descriptors (cosine %.8f)",
+				denseCfg.matcher.c_str(), j, (unsigned)i, cosine);
 		}
 	}
-
-	// exhaustive matching: all n*(n-1)/2 candidate pairs, unaffected by the describe pass. The one
-	// pass never proposes a pair outside the candidate list it was handed, and on these four
-	// close-up shots of one small scene its verdict admits every one of them, so the count is the
-	// same either way -- what differs is the evidence each pair carries
-	// (a covisibility gate drops pairs on purpose: the caller then checks which ones)
-	const bool bGated = denseCfg.matcher == "flexglue" && denseCfg.minCovisibility > 0.f;
-	if (bGated ? (scene.pairs.empty() || scene.pairs.size() > expectedPairs) : scene.pairs.size() != expectedPairs) {
-		VERBOSE("ROMA2ReconstructTest FAILED: expected %u geometrically matched pairs, got %u",
-			(unsigned)expectedPairs, (unsigned)scene.pairs.size());
-		return false;
-	}
+	const bool gated = denseCfg.matcher == "flexglue" && denseCfg.minCovisibility > 0.f;
+	TEST_CHECK(gated ? !scene.pairs.empty() && scene.pairs.size() <= expectedPairs : scene.pairs.size() == expectedPairs,
+		"%s: %u pairs matched, %u candidates", denseCfg.matcher.c_str(), (unsigned)scene.pairs.size(), (unsigned)expectedPairs);
 	for (const ImagePair& pair : scene.pairs) {
-		// the one pass's evidence may be dense as well as sparse (a pair whose guided matching
-		// found little is still stored, its dense fill its whole evidence), so the bar there is the
-		// track-forming set rather than the descriptor inliers alone
-		const unsigned numEvidence = bUseMatching ? pair.GetNumTrackFormingMatches() : pair.GetNumFilteredInliers();
-		if (!pair.HasGeometricVerification() || numEvidence < matchCfg.minMatches) {
-			VERBOSE("ROMA2ReconstructTest FAILED: pair (% 4u, % 4u) not geometrically verified (%u sparse + %u dense, %s geometry)",
-				pair.ID1, pair.ID2, pair.GetNumFilteredInliers(), pair.GetNumDenseInliers(),
-				pair.HasGeometricVerification() ? "with" : "without");
-			return false;
-		}
+		const unsigned numEvidence = denseCfg.useMatching ? pair.GetNumTrackFormingMatches() : pair.GetNumFilteredInliers();
+		TEST_CHECK(pair.HasGeometricVerification() && numEvidence >= matchCfg.minMatches, "%s: pair (%u, %u) not geometrically "
+			"verified (%u sparse + %u dense, %s geometry)", denseCfg.matcher.c_str(), pair.ID1, pair.ID2, pair.GetNumFilteredInliers(),
+			pair.GetNumDenseInliers(), pair.HasGeometricVerification() ? "with" : "without");
 	}
 	pairSummaries = SummarizePairs(scene);
-	DEBUG("ROMA2ReconstructTest[%s]: %u images described (%d-D, %s provider, %u threads, max pairwise cosine %.8f), %u pairs matched (dense matching %s, %u slots)",
-		setting.c_str(), (unsigned)scene.images.size(), expectedDim, provider.c_str(), scene.nMaxThreads, maxCosine,
-		(unsigned)scene.pairs.size(), bUseMatching ? "on" : "off", slotBudget);
+	DEBUG("DenseMatcherReconstructTest[%s %s]: %u images described (%d-D, %s provider, %u threads, max pairwise cosine %.8f), %u pairs "
+		"matched (one pass %s, %u slots)", denseCfg.matcher.c_str(), denseCfg.setting.c_str(), nImages, expectedDim,
+		denseCfg.provider.c_str(), scene.nMaxThreads, maxCosine, (unsigned)scene.pairs.size(), denseCfg.useMatching ? "on" : "off",
+		denseCfg.slotBudget);
 	return true;
 }
-#endif // _USE_ONNXRUNTIME
 
-// ROMA2 reconstruct test: runs the whole import/AKAZE/RETRIEVAL pipeline of RealImagesPipelineTest
-// with the in-process ROMAv2 model attached, and checks both of its passes -- the describe pass
-// (per-image global retrieval descriptors, 2048-D, the graph's own on-device pooling) and the ONE
-// PASS that replaces the descriptor batch outright when --dense-match is on: every candidate pair
-// judged on its bidirectional warp, the admitted ones guided, filled densely and stored. The one
-// pass is measured against a baseline run of the very same configuration with it switched off, so
-// what is asserted is what the warps actually produced; the run is then repeated on a fresh scene
-// to prove determinism (design decision 11), round-tripped through Scene::Save/Load, and finished
-// with RealImagesPipelineTest's own reconstruction stage. Configured by the environment like
-// RoMa2OnnxParityTest: OPENMVS_ROMA2_MODEL_PATH (unset => skipped), OPENMVS_ROMA2_SETTING
-// (default "base", matching DenseMatchConfig::setting's own default and the published model bundle),
-// OPENMVS_ROMA2_PROVIDER (default "auto")
-bool ROMA2ReconstructTest()
+// The RoMa2 half of DenseMatcherReconstructTest, on the model at modelPath (OPENMVS_ROMA2_SETTING picks the preset, default
+// "base"; OPENMVS_ROMA2_PROVIDER the provider, default "auto"):
+// 1. a baseline run with the one pass off (the descriptor matching) against a run with it on: the same pair set, a dense segment
+//    on every pair and a sparse segment of another size than the descriptor batch's on most (the guided matching tests each
+//    keypoint of A against the best one OUTSIDE its disc, a different and stricter selection, so no more inliers are asked for);
+// 2. the dense run survives a Scene::Save/Load round trip (global descriptors bit for bit, the same pairs), and the
+//    reconstruction stage of RealImagesPipelineTest passes on it: 5000-12000 tracks (the fill hands the track builder several
+//    times the ~2.2k of the descriptor-only run, measured ~7.7k at turbo on CUDA under the flat cap the density rule replaced, so
+//    the window is loose at its top; a model, preset or budget change moves it: re-measure) and up to 20 px of residual
+//    distortion (the warp's bias absorbed by the bundle into a scene that has none, measured 10.1 px; the focal given at import
+//    already meets the 100 px bound, so here it checks the focal stays, not that it is recovered);
+// 3. determinism (design decision 11): two runs on one thread with a slot pool of 2, so the describe pass reuses a prefetch
+//    buffer (2 buffers for 4 images) and the one pass reloads evicted slots (8 loads for 6 pairs), store the very same pairs,
+//    sparse and dense segments alike. Both start from the same cached features: what is compared is the matching.
+static bool RoMa2Reconstruct(const TestScope& scope, const String& modelPath)
 {
-	#ifndef _USE_ONNXRUNTIME
-	VERBOSE("ROMA2ReconstructTest: skipped (built without ONNX Runtime)");
-	return true;
-	#else
-	if (!RoMa2Onnx::IsAvailable()) {
-		VERBOSE("ROMA2ReconstructTest: skipped (no ONNX Runtime support in this build)");
-		return true;
-	}
-	const char* const envModelPath = getenv("OPENMVS_ROMA2_MODEL_PATH");
-	if (envModelPath == NULL || *envModelPath == 0) {
-		VERBOSE("ROMA2ReconstructTest: skipped (OPENMVS_ROMA2_MODEL_PATH not set)");
-		return true;
-	}
-	TD_TIMER_STARTD();
 	const char* const envSetting = getenv("OPENMVS_ROMA2_SETTING");
-	const String setting(envSetting != NULL && *envSetting != 0 ? String(envSetting) : String("base"));
 	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
-	const String provider(envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto"));
-	const auto denseConfig = [&](bool bUseMatching, unsigned slotBudget) {
+	const auto Config = [&](bool useMatching, unsigned slotBudget) {
 		DenseMatchConfig cfg;
-		cfg.setting = setting;
-		cfg.provider = provider;
-		cfg.useMatching = bUseMatching;
+		cfg.modelPath = modelPath;
+		cfg.setting = envSetting != NULL && *envSetting != 0 ? String(envSetting) : String("base");
+		cfg.provider = envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto");
+		cfg.useMatching = useMatching;
 		cfg.slotBudget = slotBudget;
 		return cfg;
 	};
-
-	// 1) baseline: the same run with the one pass switched off, i.e. the ordinary descriptor
-	// matching, so that comparing it against the dense run below isolates exactly what the warps
-	// produced. Both runs keep the view-graph calibration off, like the determinism runs and for
-	// the same reason: it re-solves a focal per camera and then re-filters every pair's inliers
-	// through it (Scene.cpp:604-613), so how the import grouped the images into cameras would move
-	// inlier counts on its own -- and inlier counts are exactly what the assertions below read.
-	// (The grouping no longer varies between runs: the intermittent import camera split that
-	// originally forced this choice was an uninitialized read in Image::LoadMetadata's
-	// container-EXIF path, fixed there and pinned by ImportMetadataDeterminismTest.)
-	DensePairSummaries baseline;
+	DensePairSummaries baseline, guided;
 	{
 		Scene scene(2);
-		if (!DenseReconstructScene(scene, denseConfig(false, 64), 2048, false, baseline)) {
-			VERBOSE("ROMA2ReconstructTest FAILED: baseline run (one pass off)");
+		if (!DenseReconstructScene(scope, scene, Config(false, 64), 2048, baseline))
 			return false;
-		}
 	}
-
-	// 2) the same scene through the one pass
-	DensePairSummaries guided;
+	Scene scene(2);
+	if (!DenseReconstructScene(scope, scene, Config(true, 64), 2048, guided))
+		return false;
+	TEST_CHECK(baseline.size() == guided.size(), "roma2: %u pairs through the one pass, %u through descriptor matching",
+		(unsigned)guided.size(), (unsigned)baseline.size());
+	unsigned numDenseFilled = 0, numSparseDiffers = 0;
+	FOREACH(i, guided) {
+		TEST_CHECK(guided[i].ID1 == baseline[i].ID1 && guided[i].ID2 == baseline[i].ID2, "roma2: the one pass stored a different pair set");
+		if (guided[i].numDenseInliers > 0)
+			++numDenseFilled;
+		if (guided[i].numFilteredInliers != baseline[i].numFilteredInliers)
+			++numSparseDiffers;
+	}
+	TEST_CHECK(numDenseFilled == guided.size() && 2*numSparseDiffers > guided.size(), "roma2: %u of the %u stored pairs carry a dense "
+		"segment and %u a sparse segment of another size than the descriptor batch's, expected all and most", numDenseFilled,
+		(unsigned)guided.size(), numSparseDiffers);
 	{
-		Scene scene(2);
-		if (!DenseReconstructScene(scene, denseConfig(true, 64), 2048, false, guided)) {
-			VERBOSE("ROMA2ReconstructTest FAILED: one-pass dense matching");
-			return false;
+		const ScopedTempDir tmpDir(_T("DenseMatcherReconstructTest"));
+		TEST_CHECK(tmpDir.IsValid(), "no temporary folder");
+		const String sfmPath(tmpDir(_T("dense_matched.sfm")));
+		Scene loaded(2);
+		TEST_CHECK(scene.Save(sfmPath) && loaded.Load(sfmPath), "roma2: cannot save and load back '%s'", sfmPath.c_str());
+		TEST_CHECK(loaded.images.size() == scene.images.size() && loaded.status.nState.isSet(Scene::Status::STATE::GLOBAL_DESCRIPTORS),
+			"roma2: the round trip lost the images or the GLOBAL_DESCRIPTORS state");
+		FOREACH(i, loaded.images) {
+			const cv::Mat& saved = scene.images[i].globalDescriptor;
+			const cv::Mat& read = loaded.images[i].globalDescriptor;
+			TEST_CHECK(read.size() == saved.size() && read.type() == saved.type() && cv::norm(read, saved, cv::NORM_INF) == 0.0,
+				"roma2: the round trip lost image %u's global descriptor", (unsigned)i);
 		}
-		// the pass is judged on the pairs it stored, read off the two runs' summaries: every
-		// candidate of these four close-up shots is co-visible, so the verdict admits them all and
-		// the pair set is the baseline's (both summaries are sorted by pair identity, so this is a
-		// plain set comparison), while the evidence is the pass's own -- a dense segment on every
-		// pair, and a sparse segment that came from the guided matching rather than the descriptor
-		// batch, so it cannot be the baseline's. Nothing here demands MORE sparse inliers than the
-		// baseline: the guided pass restricts each keypoint of A to a disc around the warp's
-		// prediction and tests it against the best keypoint OUTSIDE that disc, which is a different
-		// -- and stricter -- selection, not a superset of the descriptor batch's.
-		if (baseline.size() != guided.size()) {
-			VERBOSE("ROMA2ReconstructTest FAILED: %u pairs through the one pass, %u through descriptor matching",
-				(unsigned)guided.size(), (unsigned)baseline.size());
-			return false;
-		}
-		unsigned numDenseFilled = 0, numSparseDiffers = 0, numDense = 0;
-		FOREACH(i, guided) {
-			if (guided[i].ID1 != baseline[i].ID1 || guided[i].ID2 != baseline[i].ID2) {
-				VERBOSE("ROMA2ReconstructTest FAILED: the one pass stored a different pair set");
-				return false;
-			}
-			if (guided[i].numDenseInliers > 0)
-				++numDenseFilled;
-			if (guided[i].numFilteredInliers != baseline[i].numFilteredInliers)
-				++numSparseDiffers;
-			numDense += guided[i].numDenseInliers;
-		}
-		// the sparse segment is compared on its own count, not on the whole summary tuple: the
-		// baseline carries no dense correspondence at all, so any tuple comparison would report
-		// every pair as different whatever the guided matching did, and say nothing about it
-		if (numDenseFilled != guided.size() || 2*numSparseDiffers <= guided.size()) {
-			VERBOSE("ROMA2ReconstructTest FAILED: %u of the %u stored pairs carry a dense segment and %u a sparse "
-				"segment of a different size than the descriptor batch's, expected all and most "
-				"(see the 'ROMA2 one pass' summary line above)",
-				numDenseFilled, (unsigned)guided.size(), numSparseDiffers);
-			return false;
-		}
-		DEBUG("ROMA2ReconstructTest: the one pass stored %u pairs with %u dense correspondences, %u of them "
-			"carrying a sparse segment of a different size than the descriptor batch's",
-			(unsigned)guided.size(), numDense, numSparseDiffers);
-
-		// the global descriptors and the matched pairs survive a scene file round-trip
-		{
-			const ScopedTempDir tmpDir(_T("ROMA2ReconstructTest"));
-			if (!tmpDir.IsValid())
-				return false;
-			const String sfmPath(tmpDir(_T("dense_matched.sfm")));
-			if (!scene.Save(sfmPath)) {
-				VERBOSE("ROMA2ReconstructTest FAILED: cannot save '%s'", sfmPath.c_str());
-				return false;
-			}
-			Scene loaded(2);
-			if (!loaded.Load(sfmPath)) {
-				VERBOSE("ROMA2ReconstructTest FAILED: cannot load back '%s'", sfmPath.c_str());
-				return false;
-			}
-			if (loaded.images.size() != scene.images.size() ||
-				!loaded.status.nState.isSet(Scene::Status::STATE::GLOBAL_DESCRIPTORS)) {
-				VERBOSE("ROMA2ReconstructTest FAILED: round-trip lost the images or the GLOBAL_DESCRIPTORS state");
-				return false;
-			}
-			FOREACH(i, loaded.images) {
-				const cv::Mat& saved = scene.images[i].globalDescriptor;
-				const cv::Mat& read = loaded.images[i].globalDescriptor;
-				if (read.size() != saved.size() || read.type() != saved.type() || cv::norm(read, saved, cv::NORM_INF) != 0.0) {
-					VERBOSE("ROMA2ReconstructTest FAILED: round-trip lost image %u's global descriptor", loaded.images[i].ID);
-					return false;
-				}
-			}
-			if (SummarizePairs(loaded) != guided) {
-				VERBOSE("ROMA2ReconstructTest FAILED: round-trip changed the matched pairs");
-				return false;
-			}
-		}
-
-		// the rest of the RealImagesPipelineTest flow still passes on the one-pass scene; it needs all four
-		// bundled images (the star initializer asks for three views per track), so it only runs in
-		// a build that can decode the two HEIC ones.
-		// RealImagesPipelineTest's expectations, at two bounds this path has to set for itself:
-		//  - THE TRACK COUNT. The dense fill draws --dense-matches correspondences per full
-		//    frame of the overlap its guided matches did not already cover, each one a keypoint in
-		//    both images, so the pass hands the track builder several times what the descriptor
-		//    batch does: ~7.7k inlier tracks (turbo, CUDA) against the ~2.2k of the descriptor-only
-		//    run. [5000, 12000] is that measurement with margin either side, and nothing more: the
-		//    dense and guided correspondences of six pairs merge into tracks at a ratio nothing here
-		//    bounds, so the fill's budget does not derive the window. Both numbers were measured
-		//    under the flat per-pair cap the density rule replaced, and the density draws strictly
-		//    less, so the window is loose at its top rather than wrong -- re-measure it. A model,
-		//    preset or budget change moves it too: re-measure against the track count this stage
-		//    prints and the cap, pitch and dense total the line above reports, and set the window
-		//    to the new measurement rather than reasoning about it.
-		//  - THE RESIDUAL DISTORTION. Guided matching keeps, per keypoint of A, the descriptor-best
-		//    keypoint of B inside a disc around the warp's prediction, and the dense segment is the
-		//    warp itself, so the correspondences carry that warp's bias and the bundle absorbs it
-		//    into the distortion coefficients of a scene that has none: measured at 10.1 px (turbo,
-		//    CUDA) against the 1.5 px of RealImagesPipelineTest. 20 px keeps the check meaningful (a
-		//    blown-up distortion is still caught) while leaving room above the measured value.
-		// Note what the focal check means here, which differs from RealImagesPipelineTest: the focal given
-		// at import is 720.51 px, so the `focal_error > 100` bound is already satisfied before the
-		// bundle runs and this stage asserts that the one-pass scene keeps the focal stable, not
-		// that it recovers it -- recovery from a deliberately wrong 900 px is what RealImagesPipelineTest
-		// still tests, on the descriptor matches that can support it.
-		#ifdef _IMAGE_HEIF
-		if (!ReconstructMatchedScene(scene, "ROMA2ReconstructTest", 5000, 12000, 20))
-			return false;
-		#endif
+		TEST_CHECK(SummarizePairs(loaded) == guided, "roma2: the round trip changed the matched pairs");
 	}
-
-	// 3+4) determinism (design decision 11): the very same configuration run twice on two fresh
-	// scenes must store the very same pairs, sparse and dense segments alike, the pairs being
-	// stored serially in (ID1, ID2) order however the pool interleaved them. The configuration is
-	// deliberately the awkward one: a single thread, with a slot pool too small to hold the scene,
-	// so that the describe pass reuses a prefetch buffer and the one pass reloads evicted slots (see the
-	// DenseReconstructScene comment) -- the paths where a stale buffer or slot would show up as a
-	// difference. The view-graph calibration is off here so that the comparison sees the matching
-	// alone (again, see DenseReconstructScene).
+	TEST_CHECK(ReconstructMatchedScene(scene, "DenseMatcherReconstructTest[roma2]", 5000, 12000, 20), "roma2: the reconstruction stage");
 	DensePairSummaries tightPool, repeated;
-	{
+	for (DensePairSummaries* summaries : {&tightPool, &repeated}) {
 		Scene scene(1);
-		if (!DenseReconstructScene(scene, denseConfig(true, 2), 2048, false, tightPool)) {
-			VERBOSE("ROMA2ReconstructTest FAILED: 2-slot pool run");
+		if (!DenseReconstructScene(scope, scene, Config(true, 2), 2048, *summaries))
 			return false;
-		}
-	}
-	{
-		Scene scene(1);
-		if (!DenseReconstructScene(scene, denseConfig(true, 2), 2048, false, repeated)) {
-			VERBOSE("ROMA2ReconstructTest FAILED: determinism run");
-			return false;
-		}
 	}
 	if (repeated != tightPool) {
-		VERBOSE("ROMA2ReconstructTest FAILED: two runs of the same configuration matched different pairs");
 		FOREACH(i, repeated)
 			if (i >= tightPool.size() || !(repeated[i] == tightPool[i]))
 				VERBOSE("  pair (% 4u, % 4u): %u matches / %u sparse / %u dense, was (% 4u, % 4u): %u matches / %u sparse / %u dense",
@@ -4341,180 +4106,143 @@ bool ROMA2ReconstructTest()
 					i < tightPool.size() ? tightPool[i].ID1 : NO_ID, i < tightPool.size() ? tightPool[i].ID2 : NO_ID,
 					i < tightPool.size() ? tightPool[i].numMatches : 0, i < tightPool.size() ? tightPool[i].numFilteredInliers : 0,
 					i < tightPool.size() ? tightPool[i].numDenseInliers : 0);
-		return false;
+		TEST_CHECK(false, "roma2: two runs of the same configuration matched different pairs (listed above)");
 	}
-	VERBOSE("ROMA2ReconstructTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
-	#endif
 }
 
-#ifdef _USE_ONNXRUNTIME
-// The angle in degrees of the rotation R
-static double RotationAngleDeg(const Matrix3x3f& R)
+// The FlexGlue half of DenseMatcherReconstructTest, on the bundle at modelPath (docs/design/DenseMatching.md), with no RoMa2 model
+// reachable (its explicit path names a folder that does not exist and OPENMVS_ROMA2_MODEL_PATH is unset for the duration): the
+// describe pass, the retrieval and the matching load the FlexGlue bundle alone, on scenes carrying stale 2048-D descriptors.
+// 1. every pair kept: each carries a covisibility score in [0,1], a pose prior that is a rotation and a unit direction, close to
+//    the pose its own matches give (12 deg in rotation, 30 in direction: a convention error of the pose head, a transposed
+//    rotation, the baseline's sign or frame, is far from that on pairs of 5-14 deg), and the pairs CSV carries both (25 fields);
+// 2. the covisibility gate at the median score keeps the pairs clearly above it and drops those clearly below (a second GPU run
+//    moves a score by about 1e-5);
+// 3. the reconstruction stage of RealImagesPipelineTest on the ungated scene (4000-12000 tracks, 20 px of distortion).
+static bool FlexGlueReconstruct(const TestScope& scope, const String& modelPath)
 {
-	return R2D(acos(CLAMP(((double)R(0,0) + R(1,1) + R(2,2) - 1.0) * 0.5, -1.0, 1.0)));
-}
-#endif
-
-// FlexGlue as the dense matcher, on the bundled 4-image scene through Scene::MatchPairs (docs/design/DenseMatching.md): the 256-D retrieval
-// descriptors its backbone pools (unit, distinct per image), every pair stored with its covisibility score and its coarse relative pose
-// (a rotation, a unit baseline direction, close to the pose the pair's own matches give: the check of the pose head's convention),
-// the pairs CSV carrying both, the covisibility gate dropping exactly the pairs below it, and RealImagesPipelineTest's
-// reconstruction stage on the matched scene. The run sees no RoMa2 model at all (its explicit path names a folder that does not exist and
-// OPENMVS_ROMA2_MODEL_PATH is unset for the duration): the describe pass, the retrieval and the matching load the FlexGlue bundle alone.
-// Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at a FlexGlue bundle (flexglue_base.json and its two graphs); OPENMVS_ROMA2_PROVIDER
-// narrows the execution provider
-bool FlexGlueReconstructTest()
-{
-	#ifndef _USE_ONNXRUNTIME
-	VERBOSE("FlexGlueReconstructTest: skipped (built without ONNX Runtime)");
-	return true;
-	#else
-	if (!RoMa2Onnx::IsAvailable()) {
-		VERBOSE("FlexGlueReconstructTest: skipped (no ONNX Runtime support in this build)");
-		return true;
-	}
-	const char* const envModelPath = getenv("OPENMVS_FLEXGLUE_MODEL_PATH");
-	if (envModelPath == NULL || *envModelPath == 0) {
-		VERBOSE("FlexGlueReconstructTest: skipped (OPENMVS_FLEXGLUE_MODEL_PATH not set)");
-		return true;
-	}
-	TD_TIMER_STARTD();
 	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
 	DenseMatchConfig cfg;
 	cfg.matcher = "flexglue";
-	cfg.flexglueModelPath = envModelPath;
+	cfg.flexglueModelPath = modelPath;
 	cfg.provider = envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto");
 	cfg.useMatching = true;
 	cfg.slotBudget = 64;
 	cfg.minCovisibility = 0.f;
-	// no RoMa2 model reachable: a RoMa2 load anywhere on the FlexGlue route fails the matching below
 	cfg.modelPath = "/nonexistent/roma2-model";
-	const String prevRoMa2Path(getenv("OPENMVS_ROMA2_MODEL_PATH") ? getenv("OPENMVS_ROMA2_MODEL_PATH") : "");
-	const bool bHadRoMa2Path = getenv("OPENMVS_ROMA2_MODEL_PATH") != NULL;
+	const char* const envRoMa2 = getenv("OPENMVS_ROMA2_MODEL_PATH");
+	const String prevRoMa2Path(envRoMa2 != NULL ? envRoMa2 : "");
+	const bool hadRoMa2Path = envRoMa2 != NULL;
 	#ifdef _MSC_VER
 	_putenv_s("OPENMVS_ROMA2_MODEL_PATH", "");
 	#else
 	unsetenv("OPENMVS_ROMA2_MODEL_PATH");
 	#endif
-
-	// 1) every pair kept: covisibility, pose prior and the CSV
 	DensePairSummaries summaries;
 	Scene scene(2);
-	const bool bMatched = DenseReconstructScene(scene, cfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, summaries, true);
-	if (bHadRoMa2Path) {
+	const bool matched = DenseReconstructScene(scope, scene, cfg, FlexGlueMatcher::RETRIEVAL_SIZE, summaries, true);
+	if (hadRoMa2Path) {
 		#ifdef _MSC_VER
 		_putenv_s("OPENMVS_ROMA2_MODEL_PATH", prevRoMa2Path.c_str());
 		#else
 		setenv("OPENMVS_ROMA2_MODEL_PATH", prevRoMa2Path.c_str(), 1);
 		#endif
 	}
-	if (!bMatched) {
-		VERBOSE("FlexGlueReconstructTest FAILED: matching with FlexGlue (no RoMa2 model reachable)");
+	if (!matched)
 		return false;
-	}
 	std::vector<float> scores;
 	for (const ImagePair& pair : scene.pairs) {
-		if (!pair.covisibility || !(*pair.covisibility >= 0.f && *pair.covisibility <= 1.f) || !pair.posePrior || !pair.relativePose) {
-			VERBOSE("FlexGlueReconstructTest FAILED: pair (%u, %u) lacks a covisibility score in [0,1], a pose prior or its own relative pose", pair.ID1, pair.ID2);
-			return false;
-		}
+		TEST_CHECK(pair.covisibility && *pair.covisibility >= 0.f && *pair.covisibility <= 1.f && pair.posePrior && pair.relativePose,
+			"flexglue: pair (%u, %u) lacks a covisibility score in [0,1], a pose prior or its own relative pose", pair.ID1, pair.ID2);
 		scores.push_back(*pair.covisibility);
 		const PosePrior& prior = *pair.posePrior;
-		const Matrix3x3f RtR(prior.R.t() * prior.R);
-		const double orthonormality = cv::norm(RtR - Matrix3x3f::IDENTITY), norm = cv::norm(prior.t);
-		if (orthonormality > 1e-4 || ABS(cv::determinant(prior.R) - 1.0) > 1e-4 || ABS(norm - 1.0) > 1e-4) {
-			VERBOSE("FlexGlueReconstructTest FAILED: pair (%u, %u) pose prior is not a rotation and a unit direction (orthonormality %g, |t| %g)", pair.ID1, pair.ID2, orthonormality, norm);
-			return false;
-		}
-		// the prior against the pose the pair's own matches give, both in the pair's convention x2 = R*x1 + s*t: a convention error of the head
-		// (a transposed rotation, the baseline's sign, the frame of t) is far from a few degrees on these pairs of 5 to 14 degrees of rotation and a baseline
-		const Matrix3x3f own(pair.relativePose->R);
-		const double rotationError = RotationAngleDeg(own.t() * prior.R);
+		const double orthonormality = cv::norm(Matrix3x3f(prior.R.t() * prior.R) - Matrix3x3f::IDENTITY), tNorm = cv::norm(prior.t);
+		TEST_CHECK(orthonormality <= 1e-4 && ABS(cv::determinant(prior.R) - 1.0) <= 1e-4 && ABS(tNorm - 1.0) <= 1e-4, "flexglue: pair "
+			"(%u, %u)'s pose prior is not a rotation and a unit direction (orthonormality %g, |t| %g)", pair.ID1, pair.ID2, orthonormality, tNorm);
+		// both in the pair's convention x2 = R*x1 + s*t
+		const double rotationError = RotationErrorDeg(RMatrix(pair.relativePose->R), RMatrix(Matrix3x3(prior.R)));
 		const CMatrix t(pair.relativePose->GetT());
 		const double directionError = R2D(acos(CLAMP((t.x*prior.t.x + t.y*prior.t.y + t.z*prior.t.z) / cv::norm(t), -1.0, 1.0)));
-		DEBUG_EXTRA("FlexGlueReconstructTest: pair (%u, %u) covisibility %.4f, prior %.2f deg in rotation and %.2f deg in direction from the pair's own pose", pair.ID1, pair.ID2, *pair.covisibility, rotationError, directionError);
-		if (rotationError > 12. || directionError > 30.) {
-			VERBOSE("FlexGlueReconstructTest FAILED: pair (%u, %u) pose prior is %.1f deg in rotation and %.1f deg in direction from the pair's own pose", pair.ID1, pair.ID2, rotationError, directionError);
-			return false;
-		}
+		DEBUG_EXTRA("DenseMatcherReconstructTest[flexglue]: pair (%u, %u) covisibility %.4f, prior %.2f deg in rotation and %.2f deg in "
+			"direction from the pair's own pose", pair.ID1, pair.ID2, *pair.covisibility, rotationError, directionError);
+		TEST_CHECK(rotationError <= 12. && directionError <= 30., "flexglue: pair (%u, %u)'s pose prior is %.1f deg in rotation and "
+			"%.1f deg in direction from the pair's own pose", pair.ID1, pair.ID2, rotationError, directionError);
 	}
 	{
-		const ScopedTempDir tmpDir(_T("FlexGlueReconstructTest"));
-		if (!tmpDir.IsValid())
-			return false;
+		const ScopedTempDir tmpDir(_T("DenseMatcherReconstructTest"));
+		TEST_CHECK(tmpDir.IsValid(), "no temporary folder");
 		const String csvPath(tmpDir(_T("pairs.csv")));
-		if (!PairsMatcher::ExportPairsCSV(scene, csvPath, 0.f, 0.f, PairsWeightingConfig())) {
-			VERBOSE("FlexGlueReconstructTest FAILED: cannot export the pairs CSV");
-			return false;
-		}
+		TEST_CHECK(PairsMatcher::ExportPairsCSV(scene, csvPath, 0.f, 0.f, PairsWeightingConfig()), "flexglue: cannot export the pairs CSV");
 		std::ifstream ifs(csvPath);
 		std::string header, row;
 		std::getline(ifs, header);
-		const auto numFields = [](const std::string& line) { return (size_t)std::count(line.begin(), line.end(), ',') + 1; };
-		if (header.find(",Covisibility,PriorQw,PriorQx,PriorQy,PriorQz,PriorTx,PriorTy,PriorTz") == std::string::npos || numFields(header) != 25) {
-			VERBOSE("FlexGlueReconstructTest FAILED: the pairs CSV header lacks the covisibility and pose prior columns: %s", header.c_str());
-			return false;
-		}
+		const auto NumFields = [](const std::string& line) { return (size_t)std::count(line.begin(), line.end(), ',') + 1; };
+		TEST_CHECK(header.find(",Covisibility,PriorQw,PriorQx,PriorQy,PriorQz,PriorTx,PriorTy,PriorTz") != std::string::npos &&
+			NumFields(header) == 25, "flexglue: the pairs CSV header lacks the covisibility and pose prior columns: %s", header.c_str());
 		size_t numRows = 0;
-		while (std::getline(ifs, row)) {
-			if (numFields(row) != 25) {
-				VERBOSE("FlexGlueReconstructTest FAILED: a pairs CSV row has %u fields, expected 25", (unsigned)numFields(row));
-				return false;
-			}
-			++numRows;
-		}
-		if (numRows != scene.pairs.size()) {
-			VERBOSE("FlexGlueReconstructTest FAILED: the pairs CSV has %u rows for %u pairs", (unsigned)numRows, (unsigned)scene.pairs.size());
-			return false;
-		}
+		for (; std::getline(ifs, row); ++numRows)
+			TEST_CHECK(NumFields(row) == 25, "flexglue: a pairs CSV row has %u fields, expected 25", (unsigned)NumFields(row));
+		TEST_CHECK(numRows == scene.pairs.size(), "flexglue: the pairs CSV has %u rows for %u pairs", (unsigned)numRows, (unsigned)scene.pairs.size());
 	}
-
-	// 2) the gate keeps the pairs at or above its bar: the median score of the first run, the scores of a second run moving a little with the GPU
 	std::vector<float> sorted(scores);
 	std::sort(sorted.begin(), sorted.end());
 	const float bar = 0.5f * (sorted[sorted.size()/2 - 1] + sorted[sorted.size()/2]);
-	if (!(sorted.front() < bar && bar < sorted.back())) {
-		VERBOSE("FlexGlueReconstructTest FAILED: the six scores do not spread (%g .. %g), the gate has nothing to separate", sorted.front(), sorted.back());
-		return false;
-	}
+	TEST_CHECK(sorted.front() < bar && bar < sorted.back(), "flexglue: the scores do not spread (%g .. %g), the gate has nothing to separate",
+		sorted.front(), sorted.back());
 	{
 		Scene gated(2);
 		DenseMatchConfig gateCfg(cfg);
 		gateCfg.minCovisibility = bar;
 		DensePairSummaries gatedSummaries;
-		if (!DenseReconstructScene(gated, gateCfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, gatedSummaries)) {
-			VERBOSE("FlexGlueReconstructTest FAILED: matching with the covisibility gate at %g", bar);
+		if (!DenseReconstructScene(scope, gated, gateCfg, FlexGlueMatcher::RETRIEVAL_SIZE, gatedSummaries))
 			return false;
-		}
-		if (gated.pairs.empty() || gated.pairs.size() >= scene.pairs.size()) {
-			VERBOSE("FlexGlueReconstructTest FAILED: the gate at %g kept %u of %u pairs", bar, (unsigned)gated.pairs.size(), (unsigned)scene.pairs.size());
-			return false;
-		}
-		// both ways: every pair the first run scored clearly above the bar is kept, every one clearly below it is gone (a second GPU run moves a score
-		// by around 1e-5, so the pairs within that of the bar are not judged)
+		TEST_CHECK(!gated.pairs.empty() && gated.pairs.size() < scene.pairs.size(), "flexglue: the gate at %g kept %u of %u pairs", bar,
+			(unsigned)gated.pairs.size(), (unsigned)scene.pairs.size());
 		constexpr float noise = 2e-5f;
 		for (const ImagePair& pair : scene.pairs) {
-			const bool bKept = std::any_of(gated.pairs.begin(), gated.pairs.end(), [&](const ImagePair& g) { return g.ID1 == pair.ID1 && g.ID2 == pair.ID2; });
-			if ((*pair.covisibility > bar + noise && !bKept) || (*pair.covisibility < bar - noise && bKept)) {
-				VERBOSE("FlexGlueReconstructTest FAILED: with the gate at %g pair (%u, %u) of covisibility %g was %s", bar, pair.ID1, pair.ID2, *pair.covisibility, bKept ? "kept" : "dropped");
-				return false;
-			}
+			const bool kept = std::any_of(gated.pairs.begin(), gated.pairs.end(), [&](const ImagePair& g) { return g.ID1 == pair.ID1 && g.ID2 == pair.ID2; });
+			TEST_CHECK(!(*pair.covisibility > bar + noise && !kept) && !(*pair.covisibility < bar - noise && kept), "flexglue: with the "
+				"gate at %g pair (%u, %u) of covisibility %g was %s", bar, pair.ID1, pair.ID2, *pair.covisibility, kept ? "kept" : "dropped");
 		}
 		for (const ImagePair& pair : gated.pairs)
-			if (!pair.covisibility || *pair.covisibility < bar) {
-				VERBOSE("FlexGlueReconstructTest FAILED: the gate at %g kept pair (%u, %u) of covisibility %g", bar, pair.ID1, pair.ID2, pair.covisibility ? *pair.covisibility : -1.f);
-				return false;
-			}
+			TEST_CHECK(pair.covisibility && *pair.covisibility >= bar, "flexglue: the gate at %g kept pair (%u, %u) of covisibility %g", bar,
+				pair.ID1, pair.ID2, pair.covisibility ? *pair.covisibility : -1.f);
 	}
-
-	// 3) the reconstruction stage of RealImagesPipelineTest on the matched scene
-	#ifdef _IMAGE_HEIF
-	if (!ReconstructMatchedScene(scene, "FlexGlueReconstructTest", 4000, 12000, 20))
-		return false;
-	#endif
-	VERBOSE("FlexGlueReconstructTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	TEST_CHECK(ReconstructMatchedScene(scene, "DenseMatcherReconstructTest[flexglue]", 4000, 12000, 20), "flexglue: the reconstruction stage");
 	return true;
+}
+#endif // _USE_ONNXRUNTIME
+
+// The dense matchers in the whole import/AKAZE/RETRIEVAL pipeline on the bundled images, each half run when its model is given
+// (OPENMVS_ROMA2_MODEL_PATH, OPENMVS_FLEXGLUE_MODEL_PATH) and skipped otherwise: the shared checks of every matching run
+// (DenseReconstructScene: the describe pass's retrieval descriptors, every pair verified) and each matcher's own (RoMa2Reconstruct:
+// the one pass against the descriptor batch, the round trip, determinism; FlexGlueReconstruct: covisibility, pose prior, CSV,
+// the gate), each finished with RealImagesPipelineTest's reconstruction stage
+bool DenseMatcherReconstructTest()
+{
+	#ifndef _USE_ONNXRUNTIME
+	VERBOSE("DenseMatcherReconstructTest: skipped (built without ONNX Runtime)");
+	return true;
+	#else
+	if (!RoMa2Onnx::IsAvailable()) {
+		VERBOSE("DenseMatcherReconstructTest: skipped (no ONNX Runtime support in this build)");
+		return true;
+	}
+	TestScope scope("DenseMatcherReconstructTest");
+	String ran;
+	const auto Half = [&](const char* matcher, const char* variable, bool (*Run)(const TestScope&, const String&)) {
+		const char* const path = getenv(variable);
+		if (path == NULL || *path == 0) {
+			ran += String::FormatString("%s%s skipped (%s not set)", ran.empty() ? "" : ", ", matcher, variable);
+			return true;
+		}
+		ran += String::FormatString("%s%s", ran.empty() ? "" : ", ", matcher);
+		return Run(scope, String(path));
+	};
+	if (!Half("roma2", "OPENMVS_ROMA2_MODEL_PATH", RoMa2Reconstruct) || !Half("flexglue", "OPENMVS_FLEXGLUE_MODEL_PATH", FlexGlueReconstruct))
+		return false;
+	return scope.Pass("%s", ran.c_str());
 	#endif
 }
 

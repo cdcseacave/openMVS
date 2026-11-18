@@ -783,22 +783,43 @@ ReconstructionConfig BundledImagesConfig()
 	return cfg;
 }
 
-bool ImportBundledImages(Scene& scene, const ImportConfig& importCfg)
+bool BundledImagesFeatures(Scene& scene, const ImportConfig& importCfg)
 {
-	ASSERT(scene.images.empty());
-	if (!scene.Import(MAKE_PATH("images"), importCfg)) {
-		VERBOSE("error: the bundled images were not imported");
-		return false;
+	const ImportConfig defaults;
+	ASSERT(scene.images.empty() && importCfg.imageIndicesStr.empty() && importCfg.importPosesFile.empty() &&
+		importCfg.cameraType == defaults.cameraType && importCfg.importPosesMode == defaults.importPosesMode &&
+		importCfg.defaultFocalRatio == defaults.defaultFocalRatio);
+	// the scenes featured so far in this process, by forced focal, k1 and k2
+	struct Featured { float focal, k1, k2; Scene scene; };
+	static std::list<Featured> featured;
+	auto it = std::find_if(featured.begin(), featured.end(), [&importCfg](const Featured& f) {
+		return f.focal == importCfg.focalLength && f.k1 == importCfg.k1 && f.k2 == importCfg.k2;
+	});
+	if (it == featured.end()) {
+		Scene source(2);
+		if (!source.Import(MAKE_PATH("images"), importCfg)) {
+			VERBOSE("error: the bundled images were not imported");
+			return false;
+		}
+		if (source.images.size() != 4) {
+			#ifdef _IMAGE_HEIF
+			constexpr const char* reason = "";
+			#else
+			constexpr const char* reason = " (built without libheif, so the two HEIC images were skipped)";
+			#endif
+			VERBOSE("error: %u of the 4 bundled images imported%s", (unsigned)source.images.size(), reason);
+			return false;
+		}
+		if (!source.ExtractFeatures(BundledImagesConfig().featuresCfg)) {
+			VERBOSE("error: no features extracted from the bundled images");
+			return false;
+		}
+		it = featured.insert(featured.end(), Featured{importCfg.focalLength, importCfg.k1, importCfg.k2, std::move(source)});
 	}
-	if (scene.images.size() != 4) {
-		#ifdef _IMAGE_HEIF
-		constexpr const char* reason = "";
-		#else
-		constexpr const char* reason = " (built without libheif, so the two HEIC images were skipped)";
-		#endif
-		VERBOSE("error: %u of the 4 bundled images imported%s", (unsigned)scene.images.size(), reason);
-		return false;
-	}
+	scene = it->scene;
+	// the copy shares the descriptors' memory with the cache: a caller writing them would change every later copy
+	for (Image& img : scene.images)
+		img.descriptors = img.descriptors.clone();
 	return true;
 }
 /*----------------------------------------------------------------*/

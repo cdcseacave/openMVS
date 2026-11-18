@@ -953,6 +953,12 @@ bool RealImagesPipelineTest(bool verbose)
 		return numLines;
 	};
 
+	// the deliberately wrong intrinsics the reconstruction of case 6 recovers from (900 px, k1 0.6, k2 -0.09)
+	ImportConfig forced;
+	forced.focalLength = 900.f;
+	forced.k1 = 0.60f;
+	forced.k2 = -0.09f;
+
 	// 1. refused before any work
 	const auto Refused = [](Camera* camera, const ReconstructionConfig& cfg) {
 		Scene scene;
@@ -1005,8 +1011,7 @@ bool RealImagesPipelineTest(bool verbose)
 		const String featuredPath(tmpDir(_T("featured.sfm")));
 		{
 			Scene featured(2);
-			TEST_CHECK(featured.Import(MAKE_PATH("images"), skipCfg.importCfg) && featured.ExtractFeatures(skipCfg.featuresCfg) &&
-				featured.Save(featuredPath), "cannot save the scene with features");
+			TEST_CHECK(BundledImagesFeatures(featured, forced) && featured.Save(featuredPath), "cannot save the scene with features");
 		}
 		Scene unmatched(2);
 		TEST_CHECK(!unmatched.Reconstruct(featuredPath, skipCfg), "a saved scene without matches was not refused by SKIP");
@@ -1020,15 +1025,9 @@ bool RealImagesPipelineTest(bool verbose)
 
 	// 6. the incremental reconstruction recovering wrong intrinsics
 	Scene scene(2);
-	ImportConfig forced;
-	forced.focalLength = 900.f;
-	forced.k1 = 0.60f;
-	forced.k2 = -0.09f;
-	const ReconstructionConfig reconstructCfg = BundledImagesConfig();
-	TEST_CHECK(ImportBundledImages(scene, forced), "the bundled images were not imported");
+	TEST_CHECK(BundledImagesFeatures(scene, forced), "the bundled images were not imported");
 	static_cast<PinholeCamera*>(scene.cameras[0])->trustIntrinsics = false;
-	TEST_CHECK(scene.ExtractFeatures(reconstructCfg.featuresCfg) && scene.MatchPairs(reconstructCfg.matchCfg),
-		"the features of the bundled images were not extracted and matched");
+	TEST_CHECK(scene.MatchPairs(BundledImagesConfig().matchCfg), "the features of the bundled images were not matched");
 	// tracks, the star and the adjustment; the focal within 100 px of 700, at most 10 px of distortion
 	TEST_CHECK(ReconstructMatchedScene(scene, "RealImagesPipelineTest", 1500, 3000, 10), "the reconstruction from the wrong intrinsics");
 	if (verbose) {
