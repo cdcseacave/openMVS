@@ -126,36 +126,16 @@ bool MatchOutcomeSignalsTest();
 // TestsSFMDense.cpp -------------------------------------------
 
 // The warp grid's pixel <-> cell convention (align_corners=False cell centres) end to end: keypoint
-// tracking, the draws' cell positions, the occupancy rounding and the verdict's cells
+// tracking and its overlap gate, the draws' cell positions, the occupancy rounding and the verdict's cells
 bool DenseWarpGridConventionTest();
 
-// ROMA2 warp helpers test: keypoint tracking through an identity warp (the
-// pixel<->grid<->normalized coordinate conventions), the confidence gate, and the dense append
-bool DenseWarpTrackingTest();
-
-// Coverage-uniform warp sampling, the sample the verdict fits its geometry on: the sample budget,
-// the spread the bucket stratification buys over a plain top-confidence selection, the coverage a
-// genuinely one-sided sample reports, and the determinism of the draw
-bool DenseCoverageSampleTest();
-
-// The complementary dense draw, the fill of an admitted pair: it is drawn only where that pair's
-// guided sparse matches are NOT, capped at the pair's dense budget, thinned when over budget by the
-// pair-independent lattice key rather than by confidence -- so a tighter budget keeps a subset of
-// what a looser one keeps -- identical across two pairs sharing an image, and deterministic
-bool DenseComplementaryDrawTest();
-
-// The dense fill's bucket pitch (DenseFillGridSide): a function of the density and the warp side
-// alone, not of the pair, so the draw it feeds is a density over the overlap the sparse matches did
-// not cover rather than a fixed count per pair -- a larger confident region draws proportionally
-// more, an occupied bucket still yields nothing so the sparse share comes out of the same draw, and
-// two pairs sharing an image stratify it on the same grid and so agree on the pixels they sample,
-// an agreement that survives the one term of the draw that IS per-pair: two pairs whose ceilings
-// thin that agreement to different sizes keep nested samples of it rather than divergent ones
-bool DenseFillDensityTest();
-
-// The dense fill ceiling (DenseFillCeiling): the configured density over the SMALLER of the
-// verdict's two inlier areas, symmetric in A and B, and linear in the density knob
-bool DenseFillCeilingTest();
+// The warp draws on an identity warp: the coverage-uniform sample the verdict fits its geometry on
+// (budget, spread, one winner per bucket, no ranking by confidence), the complementary fill of an admitted
+// pair (drawn only where its guided matches are not, capped at the pair's dense budget, thinned by the
+// pair-independent lattice key so that a tighter budget keeps a subset of a looser one and two pairs
+// sharing an image agree on the pixels they sample), the fill's pitch, density and ceiling, and the
+// spherical bottom band neither draw has an end in; every draw is pure
+bool DenseWarpSamplingTest();
 
 // The pair verdict (JudgePairDense) on the exact bidirectional warp of two pinhole cameras looking
 // at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
@@ -172,18 +152,14 @@ bool DenseVerdictTest();
 // rival), the fallback to the disc without a geometry or near the epipole, the same matches twice
 bool DenseGuidedMatchTest();
 
-// Pair assembly and storage (AssemblePairDense, StorePairDense): the union of the guided matches
-// and the dense fill is fitted once and splits into the pair's sparse and dense segments under one
-// relative pose, a pair with no guided match is still assembled as a dense-only pair, a fill too
-// small to fit leaves the verdict's geometry untouched, and the store appends the dense keypoints
-// past each image's described prefix with reproducible indices, inserting the dense block ahead of
-// a pair's rejected tail rather than past it
+// Pair assembly and storage (AssemblePairDense, StorePairDense, AppendDenseMatches): the union of the
+// guided matches and the dense fill is fitted once and splits into the pair's sparse and dense segments
+// under one relative pose, a pair with no guided match is still assembled as a dense-only pair, a fill
+// too small to fit leaves the verdict's geometry untouched, the store and the append put the dense
+// keypoints past each image's described prefix with reproducible indices and insert the dense block
+// ahead of a pair's rejected tail, and the weighted refinement that closes the assembly follows the
+// sparse matches at DenseMatchConfig::denseFitWeight where the dense bias wins at full weight
 bool DenseAssemblyTest();
-
-// The weighted refinement that closes a pair's assembly: with the dense fill displaced 2 px across
-// the epipolar lines and the guided matches exact, the pose follows the sparse matches at
-// DenseMatchConfig::denseFitWeight and the dense bias at full weight
-bool DenseFitWeightTest();
 
 // The planar twin switch (SwitchPlanarTwinsDense): a floor pair stored at its wrong planar twin
 // switches to the true pose its neighbours' rotation loops close with (not with the switch off or a
@@ -206,7 +182,8 @@ bool DenseReverifyPartitionTest();
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
 // index tests read it, and PairsMatcher::FilterRedundantKeypoints moves it through the same remap
-// it applies to the keypoint indices
+// it applies to the keypoint indices (the partition of the matches, the dense-on-described collapse,
+// the two-hop chain, the strict weak ordering of the dedup, the segment-aware winner)
 bool DenseKeypointBoundaryTest();
 
 // RoMa2 CPU preprocessing test: a constant image maps to constant planes with the expected
@@ -214,22 +191,12 @@ bool DenseKeypointBoundaryTest();
 // F.interpolate(mode="bicubic", align_corners=False, antialias=True) to within 1e-5
 bool RoMa2PreprocessTest();
 
-// RoMa2 manifest format-version test: a manifest declaring format_version 1 loads, and one
-// declaring format_version 3 is rejected. Pure JSON parsing, so it needs neither ONNX Runtime
-// nor OPENMVS_ROMA2_MODEL_PATH.
-bool RoMa2ManifestVersionTest();
-
-// FlexGlue manifest test: a format_version 1 manifest with its two graphs and the H1 pose head loads with its sizes; another
-// version, another model, a missing key and another pose head are rejected. Pure JSON parsing, needs no model.
-bool FlexGlueManifestTest();
-
-// DenseMatchConfig::ResolveModelPath precedence test, for each matcher (roma2, flexglue): its explicit path wins over everything
-// (including a set environment variable); with it empty, its $OPENMVS_<MATCHER>_MODEL_PATH wins; with both absent, the result
-// falls back to this build's install-prefix directory share/openMVS/<matcher> when that directory actually exists on disk, else
-// it is empty -- read with the same File::isFolder check the implementation uses, so this test does not create anything under the
-// install prefix; and neither matcher ever resolves to the other one's path or variable. Pure config logic, so it needs neither
-// ONNX Runtime nor an actual model.
-bool ResolveModelPathTest();
+// The model files of the dense matchers, which need neither ONNX Runtime nor a model: a table of RoMa2 and
+// FlexGlue manifest cases (the valid ones load with their sizes; another format version, another model, a
+// missing key and another pose head are rejected), and the DenseMatchConfig::ResolveModelPath precedence of
+// each matcher (its explicit path over its environment variable over the install-prefix copy, never the
+// other matcher's path or variable)
+bool DenseModelFilesTest();
 
 // RoMa2 ONNX parity test: runs the exported descriptor and coarse-match graphs through
 // RoMa2Onnx and compares them to the Python reference dumps shipped with the models.
@@ -243,11 +210,6 @@ bool RoMa2OnnxParityTest();
 // RoMa2's one pass against the descriptor batch with its round trip and determinism, FlexGlue's covisibility, pose prior, CSV
 // and gate, and the reconstruction stage of RealImagesPipelineTest on each
 bool DenseMatcherReconstructTest();
-
-// Spherical bottom band of the dense matching: with DenseMatchConfig::sphericalBottomBand at 0.2 neither warp draw
-// (the verdict's sample and the fill) has an end of a sample in the bottom 20% of rows of a spherical image,
-// the rows above keep the samples they have without the band, and a perspective pair is unaffected.
-bool SphericalBottomBandDenseTest();
 
 // TestsSFMCalibration.cpp -------------------------------------
 
