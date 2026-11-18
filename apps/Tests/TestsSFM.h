@@ -296,6 +296,11 @@ bool BAIntrinsicFlagsTest();
 // relativeTranslationSigma) put it back, in the global solve and in a local window alike
 bool BundleAdjustmentPairConstraintTest();
 
+// The reprojection error a budgeted solve reports is the mean over the observations it used: on a scene whose
+// image 0 is left out of the solve, with one of its observations a million pixels off, the mean over the others
+// is the 0.5 px they carry, and the unfiltered mean is dominated by the left-out outlier
+bool ReprojectionReportOverUsedTest();
+
 // The per-image cap on the observations a solve takes does not move the solution: on a scene whose
 // images carry far more of them than the cap allows, and which holds both the tracks the cap must
 // top back up and the ones it may let go entirely, the capped solve recovers the poses the uncapped

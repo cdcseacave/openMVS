@@ -524,11 +524,11 @@ std::pair<float, bool> SFM::ComputeReprojectionErrorPixels(const Camera& camera,
 	return std::make_pair((float)norm(projected - Cast<REAL>(kpPt)), true);
 }
 
-std::pair<float, float> SFM::ComputeTracksMeanReprojectionError(Scene& scene)
+std::pair<float, float> SFM::ComputeTracksMeanReprojectionError(Scene& scene, const ObservationFilter& isUsed)
 {
 	// Compute average reprojection errors
 	double sumAngularError = 0.0, sumPixelError = 0.0;
-	uint32_t numTracks = 0, numErrors = 0;
+	uint32_t numTracks = 0, numErrors = 0, numLeftOut = 0;
 	for (const Track& track : scene.tracks) {
 		if (!track.IsInlier())
 			continue;
@@ -545,6 +545,10 @@ std::pair<float, float> SFM::ComputeTracksMeanReprojectionError(Scene& scene)
 			if (!valid)
 				continue;
 			const double pixelError = norm(projected - kppt);
+			if (isUsed && !isUsed(obs.imageID, obs.featureID)) {
+				++numLeftOut;
+				continue;
+			}
 			sumPixelError += pixelError;
 			// Angular error
 			const Point3 observedRay = img.pCamera->UnprojectNormalized(kppt);
@@ -559,8 +563,13 @@ std::pair<float, float> SFM::ComputeTracksMeanReprojectionError(Scene& scene)
 		avgAngular = R2D(ACOS(sumAngularError / numErrors));
 		avgPixel = sumPixelError / numErrors;
 	}
-	DEBUG_EXTRA("Mean reprojection error: %.2f pixels (%.2f deg) from %u tracks (%.2f views/track)",
-		avgPixel, avgAngular, numTracks, numErrors / (double)MAXF(numTracks, 1u));
+	if (!isUsed) {
+		DEBUG_EXTRA("Mean reprojection error: %.2f pixels (%.2f deg) from %u tracks (%.2f views/track)",
+			avgPixel, avgAngular, numTracks, numErrors / (double)MAXF(numTracks, 1u));
+	} else {
+		DEBUG_EXTRA("Mean reprojection error: %.2f pixels (%.2f deg) from %u tracks (%.2f views/track), over the %u observations the solve used (the budget left out %u more of these tracks)",
+			avgPixel, avgAngular, numTracks, numErrors / (double)MAXF(numTracks, 1u), numErrors, numLeftOut);
+	}
 	return std::make_pair(avgPixel, avgAngular);
 }
 

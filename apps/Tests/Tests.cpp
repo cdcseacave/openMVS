@@ -328,6 +328,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::BundleAdjustmentPairConstraintTest())
 				return false;
+			if (!SFM::ReprojectionReportOverUsedTest())
+				return false;
 			if (!SFM::BAObservationCapTest())
 				return false;
 			if (!SFM::BAObservationCapWideViewTest())

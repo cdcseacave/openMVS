@@ -15202,6 +15202,50 @@ unsigned CountSceneObservations(const Scene& scene)
 	return numObservations;
 }
 
+bool ReprojectionReportOverUsedTest()
+{
+	TD_TIMER_START();
+	// a posed synthetic scene whose observations are exact: every error below is one this test put there. The
+	// observations of image 0 stand for those a per-image budget leaves out of a solve
+	constexpr IIndex LEFT_OUT = 0;
+	constexpr float USED_ERROR = 0.5f, LEFT_OUT_ERROR = 1.f, HUGE_ERROR = 1e6f;
+	Scene scene;
+	SceneConfig cfg;
+	cfg.numImages = 4;
+	cfg.numPoints = 200;
+	GenerateTestScene(scene, cfg);
+	unsigned numLeftOut = 0, numUsed = 0;
+	for (const Track& track : scene.tracks) {
+		for (const Observation& obs : track) {
+			cv::KeyPoint& kp = scene.images[obs.imageID].keypoints[obs.featureID];
+			if (obs.imageID != LEFT_OUT) {
+				kp.pt.x += USED_ERROR;
+				++numUsed;
+			} else {
+				kp.pt.x += numLeftOut++ == 0 ? HUGE_ERROR : LEFT_OUT_ERROR;
+			}
+		}
+	}
+	if (numLeftOut == 0 || numUsed == 0) {
+		VERBOSE("ReprojectionReportOverUsedTest FAILED: the scene holds %u observations of image %u and %u of the others", numLeftOut, (unsigned)LEFT_OUT, numUsed);
+		return false;
+	}
+	const auto [meanUsed, angUsed] = ComputeTracksMeanReprojectionError(scene, [](uint32_t imageID, uint32_t) { return imageID != LEFT_OUT; });
+	if (ABS(meanUsed - USED_ERROR) > 0.01f || !ISFINITE(angUsed)) {
+		VERBOSE("ReprojectionReportOverUsedTest FAILED: the mean over the used observations is %.4f px, expected the %.2f px they carry", (double)meanUsed, (double)USED_ERROR);
+		return false;
+	}
+	// the mean over every observation, as a solve without a budget reports it, is the one the left-out outlier dominates
+	const float meanAll = ComputeTracksMeanReprojectionError(scene).first;
+	if (meanAll < 10.f * USED_ERROR) {
+		VERBOSE("ReprojectionReportOverUsedTest FAILED: the mean over every observation is %.4f px, expected the left-out outlier to dominate it", (double)meanAll);
+		return false;
+	}
+	VERBOSE("ReprojectionReportOverUsedTest PASSED: %.3f px over the %u used observations (%u left out) against %.1f px over all (%s)",
+		(double)meanUsed, numUsed, numLeftOut, (double)meanAll, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool BAObservationCapTest()
 {
 	TD_TIMER_START();

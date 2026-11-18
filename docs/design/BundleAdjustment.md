@@ -117,6 +117,13 @@ frame already fix its pose, so each image contributes at most `maxObservationsPe
   out of the solve. Two kept views that close fix the point's depth too weakly, so the point slides
   along their rays and takes every view that sees it wide, the dropped ones included, off by many
   pixels. `minTriangulationAngle` must be positive wherever the budget can apply.
+- The `Mean reprojection error` line a whole-scene adjustment logs (`ComputeTracksMeanReprojectionError`,
+  debug-extra level) is, when the budget applied, the mean over the observations the solve used, and the
+  line says so: `Mean reprojection error: X pixels (Y deg) from N tracks (V views/track), over the U observations
+  the solve used (the budget left out L more of these tracks)`, V counting the used views. The observations
+  left out are not adjusted, so a point close to a camera can carry errors of millions of pixels there and
+  would dominate a mean over all of them. Without the budget every observation is used and the line ends after
+  the views per track; a local window's line always averages over every observation of the scene's inlier tracks.
 
 ### The pair residuals
 

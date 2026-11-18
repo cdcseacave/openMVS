@@ -15,6 +15,8 @@
 
 #include "Image.h"
 
+#include <functional>
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -155,11 +157,19 @@ struct SFM_API TrackConflictConfig {
  */
 SFM_API void BuildTracks(Scene& scene, float minPairWeight = 0, const TrackConflictConfig& conflict = TrackConflictConfig());
 
+/// whether the solve behind a report used the observation of keypoint featureID in image imageID
+typedef std::function<bool(uint32_t imageID, uint32_t featureID)> ObservationFilter;
+
 /**
- * @brief Compute mean reprojection error for inlier tracks
- * @return mean reprojection error in pixels (first) and degrees (second)
+ * @brief Compute mean reprojection error for inlier tracks and log it
+ *
+ * Without isUsed every observation of the inlier tracks counts. With it (a solve whose per-image budget
+ * left observations out) the means, and the views per track of the log line, are taken over the
+ * observations isUsed accepts, and the line adds how many it left out: those are not adjusted, and a
+ * point close to a camera can carry an unbounded pixel error there that would dominate the mean.
+ * @return mean reprojection error in pixels (first) and degrees (second), over the used observations when isUsed is set
  */
-SFM_API std::pair<float, float> ComputeTracksMeanReprojectionError(Scene& scene);
+SFM_API std::pair<float, float> ComputeTracksMeanReprojectionError(Scene& scene, const ObservationFilter& isUsed = nullptr);
 
 /**
  * @brief Pixel reprojection error of an already camera-space point against an observed keypoint,

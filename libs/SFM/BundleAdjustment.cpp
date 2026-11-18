@@ -1673,8 +1673,11 @@ bool BundleAdjustment::Adjust()
 	DEBUG("Bundle adjustment complete: %u reprojection residuals, %u GPS residuals, %.4g -> %.4g cost (%s)",
 	    numReprojResiduals, numGPSResiduals, summary.initial_cost, summary.final_cost, TD_TIMER_GET_FMT().c_str());
 
-	// Report average reprojection errors
-	ComputeTracksMeanReprojectionError(scene);
+	// Report average reprojection errors, over the observations this solve used where the budget left some out
+	if (capStats.applied)
+		ComputeTracksMeanReprojectionError(scene, [&obsCap](uint32_t imgID, uint32_t featureID) { return obsCap.Keeps(imgID, featureID); });
+	else
+		ComputeTracksMeanReprojectionError(scene);
 	return true;
 }
 
