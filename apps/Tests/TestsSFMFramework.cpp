@@ -801,4 +801,300 @@ bool ImportBundledImages(Scene& scene, const ImportConfig& importCfg)
 }
 /*----------------------------------------------------------------*/
 
+// ===============================================================================
+// Helpers that two or more topic files use (moved unchanged from the single TestsSFM.cpp)
+// ===============================================================================
+// Whether a pair's sparse segment is all described keypoints and its dense segment all dense ones
+bool HasDensePartition(const Scene& scene, const ImagePair& pair)
+{
+	const Image& imgA = scene.images[pair.ID1];
+	const Image& imgB = scene.images[pair.ID2];
+	const unsigned numSparse = pair.GetNumFilteredInliers(), numDense = pair.GetNumDenseInliers();
+	for (unsigned k = 0; k < numSparse + numDense; ++k) {
+		const DMatch& m = pair.matches[k];
+		const bool dense = k >= numSparse;
+		if (imgA.IsDenseKeypoint(m.queryIdx) != dense || imgB.IsDenseKeypoint(m.trainIdx) != dense)
+			return false;
+	}
+	return true;
+}
+
+// ===============================================================================
+// Helper: Build a synthetic full-sphere scene for PairsMatcher / Resection tests.
+// Two (or more) spherical cameras are placed in a cluster near the origin; 3D
+// points are distributed uniformly on a sphere of radius 5 around origin so
+// every camera sees ~50% back-hemisphere observations. Keypoints and pair
+// matches are populated from the ground-truth projections.
+// ===============================================================================
+void BuildSphericalTwoViewScene(Scene& scene, Pose3D& poseRel)
+{
+	const int width = 2048, height = 1024;
+	scene.cameras.emplace_back(new SphericalCamera(cv::Size(width, height)));
+
+	// Two spherical cameras in a tight cluster — baseline chosen so the
+	// relative pose has a well-defined translation direction but both
+	// cameras still see essentially the whole sphere.
+	const Point3 camCenters[2] = {
+		Point3(-0.5, 0.0, 0.0),
+		Point3( 0.5, 0.0, 0.2),
+	};
+	for (unsigned i = 0; i < 2; ++i) {
+		Pose3D pose;
+		pose.C = camCenters[i];
+		pose.R = Matrix3x3::IDENTITY;
+		scene.images.emplace_back(static_cast<IIndex>(i), String(), pose, 0, scene.cameras[0]);
+	}
+	scene.status.nCalibratedImages = scene.images.size();
+
+	// Relative pose from img0 to img1 (ground truth)
+	poseRel = scene.images[1] / scene.images[0];
+
+	// Uniform sphere sampling: 120 points on a sphere of radius ~5 around origin.
+	const unsigned numPoints = 120;
+	std::mt19937 rng(2027);
+	std::uniform_real_distribution<REAL> cosThetaDist(REAL(-1), REAL(1));
+	std::uniform_real_distribution<REAL> phiDist(REAL(-M_PI), REAL(M_PI));
+	std::uniform_real_distribution<REAL> radiusDist(REAL(4.5), REAL(5.5));
+	for (unsigned p = 0; p < numPoints; ++p) {
+		const REAL r = radiusDist(rng);
+		const REAL ct = cosThetaDist(rng);
+		const REAL st = SQRT(REAL(1) - ct*ct);
+		const REAL ph = phiDist(rng);
+		const Point3 X(r * st * COS(ph), r * ct, r * st * SIN(ph));
+
+		Track track(X);
+		for (unsigned v = 0; v < scene.images.size(); ++v) {
+			Image& img = scene.images[v];
+			const auto [proj, valid] = img.ProjectPoint(X);
+			if (!valid || !Image8U::isInside(proj, img.GetSize()))
+				continue;
+			const uint32_t featID = static_cast<uint32_t>(img.keypoints.size());
+			img.keypoints.emplace_back(Cast<float>(proj), 0.f, 0.f, 10.f);
+			track.observations.emplace_back(img.ID, featID);
+		}
+		if (track.observations.size() < 2) {
+			for (const auto& obs : track.observations)
+				scene.images[obs.imageID].keypoints.pop_back();
+			continue;
+		}
+		track.numInliers = static_cast<uint8_t>(track.observations.size());
+		scene.tracks.emplace_back(std::move(track));
+	}
+	scene.status.nTracks = scene.tracks.size();
+	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
+}
+
+// Reconstruction stage of RealImagesPipelineTest: build the tracks of an already matched scene of the
+// four bundled images, initialize it, and check what that produced -- all images calibrated, the
+// forced intrinsics refined back to the truth, and a plausible number of inlier tracks.
+// Shared with ROMA2ReconstructTest, which runs it on the same scene matched through the ROMAv2
+// dense warps, so that both hold a matched scene to exactly the same expectations.
+// testName prefixes the messages; minTracks/maxTracks bound the expected inlier track count and
+// maxDistortion the residual lens distortion the refined intrinsics may still carry (in pixels).
+bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned minTracks, unsigned maxTracks, REAL maxDistortion)
+{
+	// Build tracks
+	BuildTracks(scene);
+	VERBOSE("%s: Built %u tracks", testName, (unsigned)scene.tracks.size());
+
+	// Initialize with star initializer
+	StarInitConfig initCfg;
+	initCfg.minViews = 3;
+	if (!StarInitializer::Initialize(scene, initCfg)) {
+		VERBOSE("%s: StarInitializer::Initialize failed", testName);
+		return false;
+	}
+	VERBOSE("%s: Initialized scene with %u calibrated images", testName, (unsigned)scene.status.nCalibratedImages);
+
+	// The star refines only the focal length (StarInitConfig::refineFocalLength); reproduce the
+	// distortion-refining bundle adjustment the pipeline's resection runs right after it
+	// (ResectionConfig::DeriveBAConfigs) so this helper still exercises the calibration recovery
+	// its callers below check for
+	BAConfig fullBaConfig;
+	fullBaConfig.RefineMainIntrinsics();
+	if (!BundleAdjustment::Adjust(scene, fullBaConfig)) {
+		VERBOSE("%s: post-star bundle adjustment with intrinsics refinement failed", testName);
+		return false;
+	}
+
+	// Sample colors for tracks
+	if (!scene.SampleColors() || scene.colors.size() != scene.tracks.size()) {
+		VERBOSE("%s: SampleColors failed", testName);
+		return false;
+	}
+
+	// Test 1: All 4 images should be valid
+	unsigned numValidImages = 0;
+	for (const Image& img : scene.images) {
+		if (img.IsValid())
+			++numValidImages;
+	}
+	if (numValidImages != 4 || scene.status.nCalibratedImages != 4) {
+		VERBOSE("%s: Expected 4 valid images, got %u (%u)", testName, numValidImages, scene.status.nCalibratedImages);
+		return false;
+	}
+
+	// Test 2: Intrinsics should be close to f=700, k1=0, k2=0
+	if (scene.cameras.empty()) {
+		VERBOSE("%s: No cameras found", testName);
+		return false;
+	}
+	const PinholeCamera* cam = dynamic_cast<PinholeCamera*>(scene.cameras[0]);
+	if (!cam) {
+		VERBOSE("%s: Camera is not PinholeCamera", testName);
+		return false;
+	}
+	const REAL focal_error = ABS(cam->fx - 700.f);
+	const REAL k1_error = ABS(cam->k1 - 0.f);
+	const REAL k2_error = ABS(cam->k2 - 0.f);
+	const REAL max_distortion = cam->ComputeMaxDistortion();
+	VERBOSE("%s: Refined intrinsics: f=%.2f (err=%.2f), k1=%.4g (err=%.4g), k2=%.4g (err=%.4g), max_distortion=%.4g",
+	    testName, cam->fx, focal_error, cam->k1, k1_error, cam->k2, k2_error, max_distortion);
+	if (focal_error > 100.f) { // Allow 100 pixels error
+		VERBOSE("%s: focal length error too large (%.2f)", testName, focal_error);
+		return false;
+	}
+	if (max_distortion > maxDistortion) {
+		VERBOSE("%s: distortion error too large (k1_err=%.4g, k2_err=%.4g, max_distortion=%.4g > %.4g)",
+			testName, k1_error, k2_error, max_distortion, maxDistortion);
+		return false;
+	}
+
+	// Test 3: the inlier track count, in the range the caller's matching produces
+	VERBOSE("%s: Found %u inlier tracks (expected [%u, %u])", testName, scene.status.nTracks, minTracks, maxTracks);
+	if (scene.status.nTracks < minTracks || scene.status.nTracks > maxTracks) {
+		VERBOSE("%s: number of inlier tracks out of range [%u, %u]", testName, minTracks, maxTracks);
+		return false;
+	}
+	return true;
+}
+
+void AddTripletImages(Scene& scene, IIndex numImages)
+{
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(600), REAL(600), REAL(320), REAL(240)));
+	for (IIndex i = 0; i < numImages; ++i) {
+		scene.images.emplace_back(i, String::FormatString("%u.jpg", i));
+		scene.images[i].cameraID = 0;
+		scene.images[i].pCamera = scene.cameras[0];
+	}
+}
+
+// A pair of numInliers track-forming matches whose keypoints occupy the first cellsA (cellsB)
+// cells of a 10x10 grid over each 640x480 image, walked row by row from the top left; 100 cells
+// is full coverage, which leaves the pair's triplet strength equal to its inlier count -- what
+// every scene below relies on unless it says otherwise.
+void AddTripletPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers, bool verified,
+	unsigned cellsA, unsigned cellsB)
+{
+	ASSERT(cellsA >= 1 && cellsA <= 100 && cellsB >= 1 && cellsB <= 100);
+	ImagePair pair(idA, idB);
+	// ImagePair's constructor orders ID1 < ID2, swapping when idA > idB: every later reader
+	// (ComputePairCoverage included) looks up images by pair.ID1/pair.ID2, so the match indices
+	// recorded below must be built against those, not against idA/idB directly, or a swapped call
+	// (idA > idB) would store queryIdx/trainIdx into the wrong image's keypoints.
+	Image& imageA = scene.images[pair.ID1];
+	Image& imageB = scene.images[pair.ID2];
+	const auto cellCentre = [](unsigned cell) {
+		return cv::Point2f((float)(cell % 10) * 64.f + 32.f, (float)(cell / 10) * 48.f + 24.f);
+	};
+	for (unsigned m = 0; m < numInliers; ++m) {
+		imageA.keypoints.emplace_back(cellCentre(m % cellsA), 1.f);
+		imageB.keypoints.emplace_back(cellCentre(m % cellsB), 1.f);
+		pair.matches.emplace_back((uint32_t)imageA.keypoints.size() - 1, (uint32_t)imageB.keypoints.size() - 1);
+	}
+	pair.numFilteredInliers = numInliers;
+	if (verified)
+		pair.F = Matrix3x3::IDENTITY; // stands in for the geometric verification
+	scene.pairs.emplace_back(std::move(pair));
+}
+
+Pose3D ResectionArcPose(REAL angleDegrees)
+{
+	const REAL angle = D2R(angleDegrees);
+	Pose3D pose;
+	pose.C = Point3(RESECTION_ARC_RADIUS * COS(angle), 0, RESECTION_ARC_RADIUS * SIN(angle));
+	pose.R.LookAt(pose.C, Point3(0, 0, 0), Point3(0, 1, 0));
+	return pose;
+}
+
+// The arc's images, all posed, sharing one pinhole camera
+void BuildResectionArc(Scene& scene, unsigned numImages)
+{
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(500), REAL(500), REAL(320), REAL(240)));
+	for (unsigned i = 0; i < numImages; ++i) {
+		scene.images.emplace_back(IIndex(i), String::FormatString("%u.jpg", i),
+			ResectionArcPose(i * RESECTION_ARC_STEP), IIndex(0), scene.cameras[0]);
+	}
+	scene.status.nCalibratedImages = numImages;
+}
+
+// One track at the given point, observed by the given images at its exact projection; false (and
+// nothing added) when the point does not project inside all of them
+bool AddResectionTrack(Scene& scene, const Point3& X, const std::vector<IIndex>& imageIDs)
+{
+	std::vector<Point2> projections;
+	for (IIndex imageID : imageIDs) {
+		const Image& img = scene.images[imageID];
+		const auto [proj, valid] = img.ProjectPoint(X);
+		if (!valid || !Image8U::isInside(proj, img.GetSize()))
+			return false;
+		projections.push_back(proj);
+	}
+	Track track(X);
+	FOREACH(i, imageIDs) {
+		Image& img = scene.images[imageIDs[i]];
+		track.observations.emplace_back(imageIDs[i], (uint32_t)img.keypoints.size());
+		img.keypoints.emplace_back(cv::Point2f((float)projections[i].x, (float)projections[i].y), 1.f);
+	}
+	scene.tracks.emplace_back(std::move(track));
+	return true;
+}
+
+// numTracks tracks observed by the given images, at points drawn from a 2-unit box around the origin
+void AddResectionTracks(Scene& scene, const std::vector<IIndex>& imageIDs, unsigned numTracks, std::mt19937& rng)
+{
+	std::uniform_real_distribution<REAL> coord(-1, 1);
+	for (unsigned i = 0; i < numTracks; ) {
+		if (AddResectionTrack(scene, Point3(coord(rng), coord(rng), coord(rng)), imageIDs))
+			++i;
+	}
+}
+
+// A verified pair carrying the ground-truth relative pose of its two images and a chosen strength.
+// The resection reads only the relative pose and the weighted inliers off a pair, so no matches are
+// needed; the two weights are what makes the pair's composite weight non-zero, i.e. valid.
+void AddResectionPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers)
+{
+	ImagePair pair(idA, idB);
+	pair.relativePose = scene.images[pair.ID2] / scene.images[pair.ID1];
+	pair.weightedInliers = (float)numInliers;
+	pair.weightSpatial = 1.f;
+	pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
+	pair.weightConnectivity = 1.f;
+	scene.pairs.emplace_back(std::move(pair));
+}
+
+// ===============================================================================
+// Phase 1: Scene Clustering Tests
+// ===============================================================================
+
+// The blocks of a partition as the reconstruction extracts them (SceneBlocks::Extract), handed out
+// as the sub-scenes and their local-to-global maps the merge reads
+std::vector<Scene> ExtractBlocks(Scene& scene, const ScenePartition& partition, std::vector<IIndexArr>* localToGlobals)
+{
+	SceneBlocks sceneBlocks(scene);
+	sceneBlocks.Extract(partition);
+	if (localToGlobals)
+		*localToGlobals = std::move(sceneBlocks.localToGlobal);
+	return std::move(sceneBlocks.blocks);
+}
+
+// The middle value of a sample, its own numbers left in place
+REAL Median(std::vector<REAL>& values)
+{
+	ASSERT(!values.empty());
+	std::nth_element(values.begin(), values.begin() + values.size() / 2, values.end());
+	return values[values.size() / 2];
+}
+
 } // namespace SFM

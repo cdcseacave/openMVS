@@ -37,8 +37,128 @@
 
 namespace SFM {
 
+// TestsSFMImport.cpp ------------------------------------------
+
+#ifdef _IMAGE_HEIF
+// HEIF/HEIC integration at the SFM layer (the reader itself is covered by CImageHEIF::Test):
+// the decoded resolution the MVS camera is paired against, the EXIF metadata bridge (focal
+// length agreeing with the classic stream scan, GPS), the "don't rotate twice" orientation
+// guard for a container 'irot' that duplicates an EXIF Orientation, and the LoadPixels
+// fallback for a format cv::imread cannot decode -- in both color and gray, the latter being
+// what feature extraction uses. Pixel content as a whole is covered by RealImagesPipelineTest and the
+// MVS PipelineTest, two of whose four images are HEIC.
+bool HEIFMetadataTest();
+#endif
+
+// Import determinism: repeated Scene::Import of the bundled 2 JPG + 2 HEIC folder, with the
+// metadata loop running in parallel, must yield finite/positive focals, finite/non-negative
+// sensor sizes, and the very same per-image cameras and camera count every time; then the same
+// per-file read once more on a deliberately dirtied stack, which is what pins the metadata to
+// the file rather than to whatever the process did before it
+bool ImportMetadataDeterminismTest();
+
+// An EXIF 35 mm-equivalent focal seeds the camera's focal untrusted (Image::LoadMetadata)
+bool ExifFocalUntrustedTest();
+
+// The camera model an import gives every image: read from the metadata by default, forced spherical or
+// pinhole by ImportConfig::cameraType (an equirectangular panorama that carries no projection tag)
+bool CameraTypeImportTest();
+
+// A spherical import of an image that is not 2:1 logs an error naming the image and leaves it without a camera, like any image whose metadata fails.
+bool SphericalImageSizeImportTest();
+
+// Pose-frame detection: recover both the camera-axes convention and, for EXIF-rotated images,
+// the in-plane rotation of an imported frames.json from the matched pairs
+bool FramesPoseFrameDetectionTest();
+
+// Known-pose import, pair selection, and prior-frame alignment tests
+bool KnownPosesImportTest();
+
+// TestsSFMFeatures.cpp ----------------------------------------
+
 // VocabularyTree save/load roundtrip test
 bool VocabularyTreeTest();
+
+// The track builder on a component holding one image twice (BuildTracks, TrackConflictConfig): the
+// cut removes the least-supported link on the path between the two keypoints and keeps the
+// corroborated side where the pair-order veto keeps whichever arrived first, two keypoints within
+// the merge distance are one feature and the one with more links stays, a component above the size
+// bar takes the veto, the cut can be switched off, and a conflict-free scene is untouched
+bool BuildTracksConflictTest();
+
+// Global-descriptor retrieval test: cosine ranking of the per-image global descriptors and its
+// deterministic tie order, PairsMatcher's RETRIEVAL-mode pair selection over the same
+// descriptors, the rankings CSV export, and the .sfm round-trip of the descriptors
+bool GlobalDescriptorsQueryTest();
+
+// RETRIEVAL match-mode test: candidate selection ranks purely by the global descriptors --
+// VOCABULARY and RETRIEVAL name two backends and neither consults a gate to borrow the
+// other's -- a missing descriptor is a hard error rather than a vocabulary-tree fallback, and
+// the mode dispatches correctly end-to-end through Match()
+bool RetrievalModeTest();
+
+// VOCABULARY/RETRIEVAL backend-isolation test: on a scene where the local descriptors and the
+// global descriptors cluster the 12 images into two different partitions, VOCABULARY's pair
+// set follows the local-descriptor clustering and RETRIEVAL's follows the global one -- the
+// two provably disagree, so neither mode can be silently ranking with the other's backend
+bool VocabularyIgnoresGlobalDescriptorsTest();
+
+// Spherical bottom band of the feature extraction: with FeatureExtractionConfig::sphericalBottomBand
+// at 0.2 no keypoint of an equirectangular image lies in its bottom 20% of rows and the rest of the
+// image keeps its features, at 0 the band has features; a perspective image extracts the same
+// keypoints and descriptors with the band at 0.2 or at 0.
+bool SphericalBottomBandTest();
+
+// The detector words of FeatureTypeFromString: AKAZE, ORB, SIFT and SIFTGPU in any letter case, any other word is NONE.
+bool FeatureTypeNameTest();
+
+// Integration test for the PairsMatcher -> poselib::estimate_relative_pose_bearings
+// path on a full-sphere spherical scene. Validates RANSAC scoring with
+// cheirality disabled for spherical cameras, plus the Sampson-on-sphere
+// refinement in refine_relpose_bearing.
+bool PairsMatcherSphericalTest();
+
+// Integration test for MatchFeaturesGeometric on a spherical pair. Exercises
+// the post-RANSAC epipolar-constrained descriptor matching step which must
+// fall back to Sampson-on-sphere + angular threshold when pair.F is absent
+// (pure spherical pairs don't have a meaningful fundamental matrix).
+bool MatchGeometricSphericalTest();
+
+bool KnownPosePairSelectionTest();
+
+// PairsMatcher::AddSequentialPairs: the sequential prior added to the VOCABULARY/RETRIEVAL
+// candidates (MatchConfig::matchSequenceOverlap)
+bool SequentialPairsPriorTest();
+
+// Two-view geometry test: PairsMatcher and ImagePair matrix operations
+bool TwoViewTest();
+
+// The relative pose recovered from the fundamental matrix (GeometricFilter's F branch, then DecomposeFundamentalToPose)
+// is the true one for two cameras of different intrinsics and image sizes, as for two cameras of one size
+bool FundamentalPoseTwoCamerasTest();
+
+// The pipeline on the bundled images, each stage from the state the one before left: the refusals before any work
+// (SKIP without matches, a GPS weight with panoramas), the match-images-only run writing --export-pairs-csv right
+// after the matching (from the images and from the saved .sfm), --match-mode -1 (SKIP) from the saved matches,
+// --use-global-solver (Scene::ReconstructGlobal), and the incremental reconstruction recovering wrong intrinsics
+bool RealImagesPipelineTest(bool verbose = false);
+
+// one default detector: every configuration starts from FeatureType::DEFAULT, MatchConfig's thresholds included
+bool DefaultDetectorTest();
+
+// PairsMatcher sequential mode test
+bool PairMatcherTest();
+
+// Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty
+bool MatchPairsFailureTest();
+
+// PairsMatcher::Match()'s fatal-round signal is not "this round stored nothing"
+bool MatchRoundFatalSignalTest();
+
+// Pre-matching optimization test
+bool PreMatchTest();
+
+// TestsSFMDense.cpp -------------------------------------------
 
 // The warp grid's pixel <-> cell convention (align_corners=False cell centres) end to end: keypoint
 // tracking, the draws' cell positions, the occupancy rounding and the verdict's cells
@@ -93,13 +213,6 @@ bool DenseGuidedMatchTest();
 // without a geometry or near the epipole
 bool DenseGuidedBandTest();
 
-// The track builder on a component holding one image twice (BuildTracks, TrackConflictConfig): the
-// cut removes the least-supported link on the path between the two keypoints and keeps the
-// corroborated side where the pair-order veto keeps whichever arrived first, two keypoints within
-// the merge distance are one feature and the one with more links stays, a component above the size
-// bar takes the veto, the cut can be switched off, and a conflict-free scene is untouched
-bool BuildTracksConflictTest();
-
 // Pair assembly and storage (AssemblePairDense, StorePairDense): the union of the guided matches
 // and the dense fill is fitted once and splits into the pair's sparse and dense segments under one
 // relative pose, a pair with no guided match is still assembled as a dense-only pair, a fill too
@@ -120,40 +233,6 @@ bool DenseFitWeightTest();
 // gain first, where one pass on the stored poses would leave it)
 bool PlanarTwinSwitchTest();
 
-// The inlier tests of a RoMa2 pair through a lens (SampsonTest): on two views through a barrel lens
-// the camera knows, every guided match on the true geometry is a sparse inlier, the corner ones
-// included, while the pixel fundamental matrix of the same geometry, composed without the lens, puts
-// the corner ones past the matcher's epipolar bar
-bool DenseLensInlierTest();
-
-// The keyframe extractor's geometric match through a lens (MatchFeaturesGeometric): every corner
-// correspondence of the same two views is matched, though the pixel F's epipolar line misses it by
-// more than the bar the match is held to
-bool MatchGeometricLensTest();
-
-// The lens fit from pairs (FitLensesFromPairs) recovers the lenses that rendered them: one camera
-// from 40 pairs that turn and move, to 2 px over the radii its matches reach, the lens set on the
-// camera, also where the first joint fit falls far short of the lens and the pose re-estimation
-// takes more than three rounds to reach it, and where it is held short of the lens from no lens, a
-// barrel lens and a pincushion of 160 px, which the fit started again reaches; two cameras with
-// different lenses joined only by 40 cross pairs, each fitted, the weak lens to 2 px and the strong one
-// to 5 px
-bool LensFitRecoveryTest();
-// The focal check of the lens fit corrects a trusted focal its pairs clearly reject and keeps a right one
-bool LensFitFocalTest();
-
-// The lens fit refuses what no lens explains: pairs of a camera without a lens, forward pairs that
-// hide a strong lens, and exact positions whose error is float rounding, without a lens or through one
-// too faint to matter (1e-3 px at the corner); every refused camera is left without a lens
-bool LensFitRefusalTest();
-
-// A camera the lens fit cannot hold leaves it with every pair it has: one under the minimum of
-// eligible pairs, one whose given lens has terms past k1 and k2, one whose focal is not trusted and
-// one whose given lens folds within its frame are each left as they are, and the camera they pair
-// with is fitted from its own pairs alone; a camera given its true lens as k1, k2 alone is held, and
-// its cross pairs, either camera first, inform the fitted camera
-bool LensFitMinimumPairsTest();
-
 // The re-verification a camera's change sets off (PairsMatcher::ComputeRelativePoses) keeps a RoMa2
 // pair's partition: on the wedge, with nothing about the cameras changed, the pair comes back with
 // the same sparse inliers, the same dense segment of dense keypoints and the same outliers, a pair
@@ -165,56 +244,11 @@ bool LensFitMinimumPairsTest();
 // GeometricFilter at full weight follows the bias
 bool DenseReverifyPartitionTest();
 
-// A RoMa2 pair matched through the pinhole and re-verified once its camera knows its lens
-// (ReverifyPairDense): with the pinhole geometry of the true pose kept at matching, the guided matches
-// at the corners the pinhole rejected come back as sparse inliers, and the dense samples the pinhole
-// bar let through off the true geometry are dropped while the true ones stay
-bool DenseReverifyLensTest();
-
-// The lens stage of the matching (FitLensesAndReverifyPairs): on 40 pairs of one camera verified
-// through the pinhole, whose rotations come out degrees off the truth, the lens is fitted and set and
-// every pair verified again through it lands within half a degree of its true rotation and, in the
-// median, half a degree of its true baseline direction; a second run, the camera now carrying its
-// lens, holds it and fits nothing
-bool LensFitStageTest();
-// The lens stage also verifies again the pairs of a camera whose focal the check moved, with no lens kept
-// at it: a camera without a lens given a focal 15% short has its pairs' rotations come out within half a
-// degree of the true ones
-bool LensFitFocalStageTest();
-// An untrusted focal fitted with its lens straight from its import focal, and its fallbacks
-bool LensFitUntrustedFocalTest();
-
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
 // index tests read it, and PairsMatcher::FilterRedundantKeypoints moves it through the same remap
 // it applies to the keypoint indices
 bool DenseKeypointBoundaryTest();
-
-// Dense supplementation is real evidence, not noise to filter around: on a supplemented pair,
-// FilterMatches' meanRayAngle and ComputeIntrinsicWeight's grid occupancy are both measured over the
-// whole track-forming set (sparse + dense), the minimum-support floor reads that same set so a pair
-// under the sparse-only bar still counts, and GetNumWeightedInliers() scales the dense share to the
-// matcher's frame target (PairsWeightingConfig::denseFrameInliers) rather than dropping or fully
-// counting it. A degenerate all-dense baseline is still demoted, because the angle term finally has
-// something to measure.
-bool SupplementEvidenceIsolationTest();
-
-// Global-descriptor retrieval test: cosine ranking of the per-image global descriptors and its
-// deterministic tie order, PairsMatcher's RETRIEVAL-mode pair selection over the same
-// descriptors, the rankings CSV export, and the .sfm round-trip of the descriptors
-bool GlobalDescriptorsQueryTest();
-
-// RETRIEVAL match-mode test: candidate selection ranks purely by the global descriptors --
-// VOCABULARY and RETRIEVAL name two backends and neither consults a gate to borrow the
-// other's -- a missing descriptor is a hard error rather than a vocabulary-tree fallback, and
-// the mode dispatches correctly end-to-end through Match()
-bool RetrievalModeTest();
-
-// VOCABULARY/RETRIEVAL backend-isolation test: on a scene where the local descriptors and the
-// global descriptors cluster the 12 images into two different partitions, VOCABULARY's pair
-// set follows the local-descriptor clustering and RETRIEVAL's follows the global one -- the
-// two provably disagree, so neither mode can be silently ranking with the other's backend
-bool VocabularyIgnoresGlobalDescriptorsTest();
 
 // RoMa2 CPU preprocessing test: a constant image maps to constant planes with the expected
 // R/G/B channel swap, and resampling a real fixture image reproduces torch's own
@@ -263,15 +297,316 @@ bool ROMA2ReconstructTest();
 // with no RoMa2 model reachable. Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at a FlexGlue bundle
 bool FlexGlueReconstructTest();
 
+// Spherical bottom band of the dense matching: with DenseMatchConfig::sphericalBottomBand at 0.2 neither warp draw
+// (the verdict's sample and the fill) has an end of a sample in the bottom 20% of rows of a spherical image,
+// the rows above keep the samples they have without the band, and a perspective pair is unaffected.
+bool SphericalBottomBandDenseTest();
+
+// TestsSFMCalibration.cpp -------------------------------------
+
+// The inlier tests of a RoMa2 pair through a lens (SampsonTest): on two views through a barrel lens
+// the camera knows, every guided match on the true geometry is a sparse inlier, the corner ones
+// included, while the pixel fundamental matrix of the same geometry, composed without the lens, puts
+// the corner ones past the matcher's epipolar bar
+bool DenseLensInlierTest();
+
+// The keyframe extractor's geometric match through a lens (MatchFeaturesGeometric): every corner
+// correspondence of the same two views is matched, though the pixel F's epipolar line misses it by
+// more than the bar the match is held to
+bool MatchGeometricLensTest();
+
+// The lens fit from pairs (FitLensesFromPairs) recovers the lenses that rendered them: one camera
+// from 40 pairs that turn and move, to 2 px over the radii its matches reach, the lens set on the
+// camera, also where the first joint fit falls far short of the lens and the pose re-estimation
+// takes more than three rounds to reach it, and where it is held short of the lens from no lens, a
+// barrel lens and a pincushion of 160 px, which the fit started again reaches; two cameras with
+// different lenses joined only by 40 cross pairs, each fitted, the weak lens to 2 px and the strong one
+// to 5 px
+bool LensFitRecoveryTest();
+
+// The focal check of the lens fit corrects a trusted focal its pairs clearly reject and keeps a right one
+bool LensFitFocalTest();
+
+// The lens fit refuses what no lens explains: pairs of a camera without a lens, forward pairs that
+// hide a strong lens, and exact positions whose error is float rounding, without a lens or through one
+// too faint to matter (1e-3 px at the corner); every refused camera is left without a lens
+bool LensFitRefusalTest();
+
+// A camera the lens fit cannot hold leaves it with every pair it has: one under the minimum of
+// eligible pairs, one whose given lens has terms past k1 and k2, one whose focal is not trusted and
+// one whose given lens folds within its frame are each left as they are, and the camera they pair
+// with is fitted from its own pairs alone; a camera given its true lens as k1, k2 alone is held, and
+// its cross pairs, either camera first, inform the fitted camera
+bool LensFitMinimumPairsTest();
+
+// A RoMa2 pair matched through the pinhole and re-verified once its camera knows its lens
+// (ReverifyPairDense): with the pinhole geometry of the true pose kept at matching, the guided matches
+// at the corners the pinhole rejected come back as sparse inliers, and the dense samples the pinhole
+// bar let through off the true geometry are dropped while the true ones stay
+bool DenseReverifyLensTest();
+
+// The lens stage of the matching (FitLensesAndReverifyPairs): on 40 pairs of one camera verified
+// through the pinhole, whose rotations come out degrees off the truth, the lens is fitted and set and
+// every pair verified again through it lands within half a degree of its true rotation and, in the
+// median, half a degree of its true baseline direction; a second run, the camera now carrying its
+// lens, holds it and fits nothing
+bool LensFitStageTest();
+
+// The lens stage also verifies again the pairs of a camera whose focal the check moved, with no lens kept
+// at it: a camera without a lens given a focal 15% short has its pairs' rotations come out within half a
+// degree of the true ones
+bool LensFitFocalStageTest();
+
+// An untrusted focal fitted with its lens straight from its import focal, and its fallbacks
+bool LensFitUntrustedFocalTest();
+
+// View graph calibrator test: Refine focal length using view graph optimization
+bool ViewGraphCalibratorTest();
+
+// TestsSFMViewGraph.cpp ---------------------------------------
+
+// Dense supplementation is real evidence, not noise to filter around: on a supplemented pair,
+// FilterMatches' meanRayAngle and ComputeIntrinsicWeight's grid occupancy are both measured over the
+// whole track-forming set (sparse + dense), the minimum-support floor reads that same set so a pair
+// under the sparse-only bar still counts, and GetNumWeightedInliers() scales the dense share to the
+// matcher's frame target (PairsWeightingConfig::denseFrameInliers) rather than dropping or fully
+// counting it. A degenerate all-dense baseline is still demoted, because the angle term finally has
+// something to measure.
+bool SupplementEvidenceIsolationTest();
+
+// The camera-triplet view-graph filter of Manam & Govindu (CVPR 2024): the scores, the yield
+// rule and both modes on hand-computed graphs.
+bool TripletFilterTest();
+
+// Test function for rotation estimation
+bool RotationEstimatorTest();
+
+// The rotation averaging gives the same rotations, and the same pairs past its bar, whatever the
+// absolute scale of the pair weights (GlobalRotationEstimatorOptions::weightMedian)
+bool RotationWeightScaleTest();
+
+// The contradiction cut's rotation stage: the look-alikes of a symmetric ring, the cross-face pairs of
+// a roof (the tree check) and a wrong pair at the weight cap go, a bridge and a pendant pair never,
+// the unscored start is the symmetric mode, and the translation stage's bar takes 0 and 180
+bool ContradictionCutTest();
+
+// The contradiction cut's translation stage: a flipped and a turned baseline go at the default bar,
+// a bridge and a pair under the near-duplicate ray angle are never judged, bar 0 is the rotation
+// stage alone, and a graph under a scale component's pairs removes nothing
+bool TranslationCutTest();
+
+// A matched scene is filtered once (the triplet filter, the contradiction cut and its repair), on load as on a fresh
+// run, and a scene saved after the filters is reloaded with its pairs, repair marks and seed views and not filtered again
+bool FilteredSceneReloadTest();
+
+// The flat pair-scale build equals the node-map one it replaced
+bool PairScalesTest();
+
+// Test function for global scale estimation
+bool ScaleEstimatorTest();
+
+// Test function for global translation estimation
+bool TranslationEstimatorTest();
+
+// The translation estimator's normal-equations solve factors the graph Laplacian of the pairs and
+// gives the SparseQR solution of their incidence matrix
+bool TranslationNormalEquationsTest();
+
+// The scale estimator solves every connected component of its equations on its own: the one holding the
+// fixed index (given, or the best-connected index when none is) pinned at it, any other at mean zero log
+// scale (the dense SVD's minimum-norm answer), an index no equation names at scale 1
+bool ScaleComponentsTest();
+
+// The scale estimator's solve (conjugate gradients on the normal equations, started from the previous
+// solve) gives the sparse Cholesky solution of the gauge-pinned system, converged, and a near start saves iterations
+bool ScaleConjugateGradientsTest();
+
+// Pairs weighting test
+bool PairsWeightingTest();
+
+// A pair's dense inliers count as evidence in proportion to the matcher's frame target
+// (PairsWeightingConfig::denseFrameInliers over denseMatchesPerFrame): two dense-only pairs of one
+// image keep the order of their counts, a whole dense frame is a modest descriptor pair's evidence,
+// and the connectivity counts the dense matches at the same scale
+bool PairsWeightingDenseFrameEvidenceTest();
+
+// The composite weight of a hand-set pair equals its formula term by term (ImagePair::GetCompositeWeight)
+bool PairCompositeWeightTest();
+
+bool GlobalAlignmentRotationAveragingExtendedTest();
+
+bool GlobalAlignmentScaleAveragingExtendedTest();
+
+bool GlobalAlignmentScaleAveragingFallbackTest();
+
+bool GlobalAlignmentTranslationAveragingExtendedTest();
+
+bool RobustAveragingScaleTest();
+
+bool RobustAveragingTranslationTest();
+
+// TestsSFMCluster.cpp -----------------------------------------
+
+// Phase 1: Scene Clustering tests
+bool SceneClusterSingleClusterTest();
+
+bool SceneClusterSizeConstraintsTest();
+
+bool SceneClusterDisconnectedComponentsTest();
+
+bool SceneClusterTargetSizeTest();
+
+bool SceneClusterSeamTracksTest();
+
+bool SceneClusterLeafMergeTest();
+
+bool SceneClusterMemoryProtocolTest();
+
+bool SceneClusterIDRemappingTest();
+
+bool SceneClusterSmallClusterRescueTest();
+
+// A community under the floor is held to the same coupling test as an established cluster: the
+// greedy merge does not absorb it over an interface carrying less than minClusterCoupling of its
+// own internal weight, and the small-cluster pass then places it with the neighbour it shares the
+// most weight with (ClusterConfig::minClusterCoupling)
+bool SceneClusterSubFloorCouplingTest();
+
+// A small, cohesive community no neighbour is coupled to stands alone as its own sub-scene when it
+// has the strong seams the merge places a block by, and is absorbed into its heaviest neighbour as
+// before when it does not (SceneCluster::IsStandaloneCommunity)
+bool SceneClusterStandaloneCommunityTest();
+
+// A cluster under the floor that IS coupled to a neighbour but that no neighbour has room for stays
+// where it is; it must not come out as a sub-scene whatever position it holds in the cluster order
+bool SceneClusterCoupledOrphanSkippedTest();
+
+// The balance pass never takes an image whose departure would leave part of its own cluster coupled
+// under minClusterCoupling, even when the image's own affinity favours the move
+// (SceneCluster::RefineClustersBalance, SceneCluster::KeepsCoupling)
+bool SceneClusterBalanceCouplingTest();
+
+// The thin-waist check weighs every prefix cut along the Fiedler order, not only the balanced one: a
+// stretch too small to stand on its own moves whole to the cluster it is most coupled to when one
+// holds it at the floor, and otherwise stays; a stretch large enough to stand is split off as before
+// (SceneCluster::RefineClustersSplitThinWaist)
+bool SceneClusterThinStretchTest();
+
+// TestsSFMBlock.cpp -------------------------------------------
+
+// Triplet star-initialization test: 3-view scene with tracks + StarInitializer + BA
+bool TripletStarInitTest();
+
+// The star initializer's reference view is chosen among the seed views the caller names -- the
+// triplet filter's largest ceiling piece -- and only among every image when none is named, or
+// none of the named has a valid pair. After the filter, the seed's side of a symmetric building
+// becomes the model, and the heaviest image overall sits in the densest cluster of look-alike
+// views, which is the worst place to start.
+bool StarReferenceViewTest();
+
+// The star initializer lists a neighbour of the reference view by the inliers that fix its distance,
+// those whose ray angle at the pair's pose reaches the reconstruction's triangulation bar, not by
+// all of them: a far view that shares only far points with the reference is no arm of the star,
+// whatever its inlier count, and its unit baseline guesses a distance no match backs. The reference
+// stays chosen by inlier count.
+bool StarEvidenceTest();
+
+bool StarScaleGaugeTest();
+
+bool NearDuplicateYardstickTest();
+
+// A resected pose enters the model only when its support is credible: enough of its 2D-3D correspondences agree
+// with it (ResectionConfig::minInlierRatio), and a weakly supported one also agrees with the rotation the quorum of
+// its verified pairs to registered images composes (maxRelativeRotationError: one pair among several cannot speak for
+// the image), with the baseline direction each link predicts, weighed in weighted inliers with the pose's own inliers
+// voting for it and forgiven by the larger of the pair's ray angle and the model's parallax (maxLinkDirectionError),
+// and with the rotation all its links predict, weighted (maxLinkRotationDisagreement); one pair's direction tolerance
+// follows its ray angle (MeasurePairDisagreement)
+bool ResectionLinkChecksTest();
+
+// The resection's next image is the candidate whose verified pairs to registered images weigh most
+// (their composite weight), among every image holding ResectionConfig::minCorrespondences 2D-3D
+// correspondences, whatever its share of the best correspondence count; the candidates are tried
+// down that list until one registers, and the list is read again after each registration. An image
+// whose evidence lies almost entirely in unregistered images is tried last and registered all the
+// same, its pose right
+bool ResectionWeakEvidenceTest();
+
+bool ResectionNextImageOrderTest();
+
+bool ResectionTriesEveryCandidateTest();
+
+// The average inlier ratio that forces a full bundle adjustment when it falls under
+// ResectionConfig::avgInliersRatioForceBA reads the registered images alone: an image whose pose is
+// refused adds nothing to it, so the refusals of one candidate force no full adjustment while the
+// images registered after it hold the average above the bar
+bool ResectionRefusedAverageTest();
+
+// A resection that stalls -- no image holds minCorrespondences correspondences, or every candidate
+// failed -- with images registered since its last full adjustment runs that adjustment and tries
+// again, and stops at a stall that follows no registration; it always closes with its full
+// adjustment, even when it registered nothing since the last one
+bool ResectionStallRetryTest();
+
+// The full adjustment that ends a resection runs whether or not the resection had an image to try
+// -- every image holds a pose, or the only ones without are withheld by ImagesRemoved -- and brings
+// back the tracks the final adjustment's tighter bar dropped
+bool ResectionClosingAlwaysTest();
+
+// Images a filter removed right before a resection count as a change of the model since its last
+// full adjustment: a stall that follows runs the adjustment and another pass, which registers the
+// image the re-triangulated tracks hold; a stall with nothing removed or registered ends the resection
+bool ResectionRemovalStallTest();
+
+// The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
+// (dense) keypoint on a full-resolution image, several pixels off its projection, and not only one
+// measured with a detected keypoint's: an image seen through such correspondences alone reaches a
+// nearly complete inlier share, the share the resection reads its model's health from, where a 4 px
+// bar counts barely half of them (ResectionConfig::ransac.threshold).
+bool ResectionInlierBarTest();
+
+// The polish that closes an image's absolute pose weighs each dense (warp-sampled) correspondence at
+// ResectionConfig::denseFitWeight against a described one's 1: dense correspondences that share a
+// systematic error and outnumber the described ones pull the pose of the robust fit over all of
+// them, and the weighted polish brings it back to the described ones.
+bool ResectionDenseFitWeightTest();
+
+bool ResectionWeightedInlierBarTest();
+
+// The shared walks: an image's 2D-3D correspondences to a model's inlier tracks (its first keypoint on
+// each, in track order), its observation counts, and the links of a model (its registered pairs carrying
+// a relative pose) seen from their other side, strongest first
+bool LinkWalksTest();
+
+// An image is tried for resection only once it has a link (a verified pair with a relative pose to a
+// registered image): one whose pairs with a relative pose go to unregistered images waits until one
+// of them is registered, however many 2D-3D correspondences it holds; the candidates are tried in the order
+// of their links' weight, a pair without a relative pose counting for nothing
+bool ResectionLinkGateTest();
+
+// The image filter tells the images it removed for contradicting the model (their verified pairs to
+// the kept images disagree with the pose the model gives them, by more inlier weight than agrees)
+// apart from the ones it removed for want of evidence: only the former are withheld from the
+// resection that follows, the latter get another chance once the model has grown.
+bool ContradictingImagesTest();
+
+bool SceneBlocksInsertReleaseTest();
+
+bool SceneBlocksInsertRebuildTest();
+
+bool PoolResectionWrongClusterTest();
+
+// A pool image is offered only to the blocks it has links in (verified pairs with a relative pose to their
+// registered images): pairs without a relative pose, however heavy, do not send it to a block
+bool PoolResectionLinkOnlyTest();
+
+// TestsSFMBundleAdjustment.cpp --------------------------------
+
 // PinholeReprojectionErrorAnalytic's hand-written Jacobians match the ones auto-diff derives from
 // the same projection, over randomized poses, points and full 12-parameter intrinsics (the whole
 // distortion model live, k3/p1/p2 and the rational denominator k4-k6 included); the quaternion
 // columns are compared in the manifold's tangent space, the only place the solver sees them
 bool BAPinholeReprojectionJacobianTest();
-
-// EstimateSimilarityTransform recovers a known similarity from six exact correspondences: the scale to 1e-2 and
-// the mapped source points to 1e-6
-bool TestSimilarityTransform();
 
 // ComputeObservationSigmas recovers the displacement the BULK of a synthetic scene's described and
 // dense observations carry, with a tenth of each population thrown far out and a tenth left almost
@@ -338,204 +673,21 @@ bool GPSPriorPoseUncertaintyTest();
 // correlated by, world-transform covariance mapping, and .sfm serialization
 bool PoseUncertaintyExportTest();
 
-// GPS alignment degeneracy test: coincident/collinear GPS positions must be
-// rejected without modifying the scene; well-spread GPS must still align
-bool AlignToGPSDegenerateTest();
-
 // Full-hemisphere spherical reconstruction regression test: exercises the
 // Triangulation + BA pipeline on a spherical scene with 3D points distributed
 // across the entire sphere (front AND back hemispheres). Pins the correctness
 // of the Unproject / TriangulateDLT path for spherical cameras.
 bool ReconstructSphericalSyntheticTest();
 
-// Spherical bottom band of the feature extraction: with FeatureExtractionConfig::sphericalBottomBand
-// at 0.2 no keypoint of an equirectangular image lies in its bottom 20% of rows and the rest of the
-// image keeps its features, at 0 the band has features; a perspective image extracts the same
-// keypoints and descriptors with the band at 0.2 or at 0.
-bool SphericalBottomBandTest();
-
-// Spherical bottom band of the dense matching: with DenseMatchConfig::sphericalBottomBand at 0.2 neither warp draw
-// (the verdict's sample and the fill) has an end of a sample in the bottom 20% of rows of a spherical image,
-// the rows above keep the samples they have without the band, and a perspective pair is unaffected.
-bool SphericalBottomBandDenseTest();
-
-// The detector words of FeatureTypeFromString: AKAZE, ORB, SIFT and SIFTGPU in any letter case, any other word is NONE.
-bool FeatureTypeNameTest();
-
-// Integration test for the PairsMatcher -> poselib::estimate_relative_pose_bearings
-// path on a full-sphere spherical scene. Validates RANSAC scoring with
-// cheirality disabled for spherical cameras, plus the Sampson-on-sphere
-// refinement in refine_relpose_bearing.
-bool PairsMatcherSphericalTest();
-
-// Integration test for MatchFeaturesGeometric on a spherical pair. Exercises
-// the post-RANSAC epipolar-constrained descriptor matching step which must
-// fall back to Sampson-on-sphere + angular threshold when pair.F is absent
-// (pure spherical pairs don't have a meaningful fundamental matrix).
-bool MatchGeometricSphericalTest();
-
-// Phase 5 cube-map bridge tests: verify that SFM::ExportMVS can expand
-// every spherical source image into 6 (or 4) pinhole cube-map faces,
-// emit them as a rig platform in MVS::Interface format, and produce a
-// file tree that MVS::Scene::Load reads back without any pinhole
-// regression.
-bool CubeMapFaceRenderTest();
-bool CubeMapBridgeGeometryTest();
-bool CubeMapBridgeEndToEndTest();
-bool CubeMapBridgeMVSLoadTest();
-bool CubeMapBridgeMixedSceneTest();
-bool CubeMapBridgeDropTopBottomTest();
-
-// Triplet star-initialization test: 3-view scene with tracks + StarInitializer + BA
-bool TripletStarInitTest();
-
-#ifdef _IMAGE_HEIF
-// HEIF/HEIC integration at the SFM layer (the reader itself is covered by CImageHEIF::Test):
-// the decoded resolution the MVS camera is paired against, the EXIF metadata bridge (focal
-// length agreeing with the classic stream scan, GPS), the "don't rotate twice" orientation
-// guard for a container 'irot' that duplicates an EXIF Orientation, and the LoadPixels
-// fallback for a format cv::imread cannot decode -- in both color and gray, the latter being
-// what feature extraction uses. Pixel content as a whole is covered by RealImagesPipelineTest and the
-// MVS PipelineTest, two of whose four images are HEIC.
-bool HEIFMetadataTest();
-#endif
-
-// Import determinism: repeated Scene::Import of the bundled 2 JPG + 2 HEIC folder, with the
-// metadata loop running in parallel, must yield finite/positive focals, finite/non-negative
-// sensor sizes, and the very same per-image cameras and camera count every time; then the same
-// per-file read once more on a deliberately dirtied stack, which is what pins the metadata to
-// the file rather than to whatever the process did before it
-bool ImportMetadataDeterminismTest();
-// An EXIF 35 mm-equivalent focal seeds the camera's focal untrusted (Image::LoadMetadata)
-bool ExifFocalUntrustedTest();
-// The camera model an import gives every image: read from the metadata by default, forced spherical or
-// pinhole by ImportConfig::cameraType (an equirectangular panorama that carries no projection tag)
-bool CameraTypeImportTest();
-// A spherical import of an image that is not 2:1 logs an error naming the image and leaves it without a camera, like any image whose metadata fails.
-bool SphericalImageSizeImportTest();
-
-// Pose-frame detection: recover both the camera-axes convention and, for EXIF-rotated images,
-// the in-plane rotation of an imported frames.json from the matched pairs
-bool FramesPoseFrameDetectionTest();
-
-// Known-pose import, pair selection, and prior-frame alignment tests
-bool KnownPosesImportTest();
-bool KnownPosePairSelectionTest();
-bool AlignToPriorPosesTest();
-bool AlignToPriorPosesCollinearTest();
-
-// PairsMatcher::AddSequentialPairs: the sequential prior added to the VOCABULARY/RETRIEVAL
-// candidates (MatchConfig::matchSequenceOverlap)
-bool SequentialPairsPriorTest();
-
-// Two-view geometry test: PairsMatcher and ImagePair matrix operations
-bool TwoViewTest();
-
-// The relative pose recovered from the fundamental matrix (GeometricFilter's F branch, then DecomposeFundamentalToPose)
-// is the true one for two cameras of different intrinsics and image sizes, as for two cameras of one size
-bool FundamentalPoseTwoCamerasTest();
-
-// The pipeline on the bundled images, each stage from the state the one before left: the refusals before any work
-// (SKIP without matches, a GPS weight with panoramas), the match-images-only run writing --export-pairs-csv right
-// after the matching (from the images and from the saved .sfm), --match-mode -1 (SKIP) from the saved matches,
-// --use-global-solver (Scene::ReconstructGlobal), and the incremental reconstruction recovering wrong intrinsics
-bool RealImagesPipelineTest(bool verbose = false);
-
-// one default detector: every configuration starts from FeatureType::DEFAULT, MatchConfig's thresholds included
-bool DefaultDetectorTest();
-
-// The camera-triplet view-graph filter of Manam & Govindu (CVPR 2024): the scores, the yield
-// rule and both modes on hand-computed graphs.
-bool TripletFilterTest();
-
-// The star initializer's reference view is chosen among the seed views the caller names -- the
-// triplet filter's largest ceiling piece -- and only among every image when none is named, or
-// none of the named has a valid pair. After the filter, the seed's side of a symmetric building
-// becomes the model, and the heaviest image overall sits in the densest cluster of look-alike
-// views, which is the worst place to start.
-bool StarReferenceViewTest();
-
-// The star initializer lists a neighbour of the reference view by the inliers that fix its distance,
-// those whose ray angle at the pair's pose reaches the reconstruction's triangulation bar, not by
-// all of them: a far view that shares only far points with the reference is no arm of the star,
-// whatever its inlier count, and its unit baseline guesses a distance no match backs. The reference
-// stays chosen by inlier count.
-bool StarEvidenceTest();
-bool StarScaleGaugeTest();
-bool NearDuplicateYardstickTest();
-
-// A resected pose enters the model only when its support is credible: enough of its 2D-3D correspondences agree
-// with it (ResectionConfig::minInlierRatio), and a weakly supported one also agrees with the rotation the quorum of
-// its verified pairs to registered images composes (maxRelativeRotationError: one pair among several cannot speak for
-// the image), with the baseline direction each link predicts, weighed in weighted inliers with the pose's own inliers
-// voting for it and forgiven by the larger of the pair's ray angle and the model's parallax (maxLinkDirectionError),
-// and with the rotation all its links predict, weighted (maxLinkRotationDisagreement); one pair's direction tolerance
-// follows its ray angle (MeasurePairDisagreement)
-bool ResectionLinkChecksTest();
-
-// The resection's next image is the candidate whose verified pairs to registered images weigh most
-// (their composite weight), among every image holding ResectionConfig::minCorrespondences 2D-3D
-// correspondences, whatever its share of the best correspondence count; the candidates are tried
-// down that list until one registers, and the list is read again after each registration. An image
-// whose evidence lies almost entirely in unregistered images is tried last and registered all the
-// same, its pose right
-bool ResectionWeakEvidenceTest();
-bool ResectionNextImageOrderTest();
-bool ResectionTriesEveryCandidateTest();
-
-// The average inlier ratio that forces a full bundle adjustment when it falls under
-// ResectionConfig::avgInliersRatioForceBA reads the registered images alone: an image whose pose is
-// refused adds nothing to it, so the refusals of one candidate force no full adjustment while the
-// images registered after it hold the average above the bar
-bool ResectionRefusedAverageTest();
-
-// A resection that stalls -- no image holds minCorrespondences correspondences, or every candidate
-// failed -- with images registered since its last full adjustment runs that adjustment and tries
-// again, and stops at a stall that follows no registration; it always closes with its full
-// adjustment, even when it registered nothing since the last one
-bool ResectionStallRetryTest();
-
-// The full adjustment that ends a resection runs whether or not the resection had an image to try
-// -- every image holds a pose, or the only ones without are withheld by ImagesRemoved -- and brings
-// back the tracks the final adjustment's tighter bar dropped
-bool ResectionClosingAlwaysTest();
-
-// Images a filter removed right before a resection count as a change of the model since its last
-// full adjustment: a stall that follows runs the adjustment and another pass, which registers the
-// image the re-triangulated tracks hold; a stall with nothing removed or registered ends the resection
-bool ResectionRemovalStallTest();
-
-// The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
-// (dense) keypoint on a full-resolution image, several pixels off its projection, and not only one
-// measured with a detected keypoint's: an image seen through such correspondences alone reaches a
-// nearly complete inlier share, the share the resection reads its model's health from, where a 4 px
-// bar counts barely half of them (ResectionConfig::ransac.threshold).
-bool ResectionInlierBarTest();
-
-// The polish that closes an image's absolute pose weighs each dense (warp-sampled) correspondence at
-// ResectionConfig::denseFitWeight against a described one's 1: dense correspondences that share a
-// systematic error and outnumber the described ones pull the pose of the robust fit over all of
-// them, and the weighted polish brings it back to the described ones.
-bool ResectionDenseFitWeightTest();
-bool ResectionWeightedInlierBarTest();
-
-// The shared walks: an image's 2D-3D correspondences to a model's inlier tracks (its first keypoint on
-// each, in track order), its observation counts, and the links of a model (its registered pairs carrying
-// a relative pose) seen from their other side, strongest first
-bool LinkWalksTest();
-
-// An image is tried for resection only once it has a link (a verified pair with a relative pose to a
-// registered image): one whose pairs with a relative pose go to unregistered images waits until one
-// of them is registered, however many 2D-3D correspondences it holds; the candidates are tried in the order
-// of their links' weight, a pair without a relative pose counting for nothing
-bool ResectionLinkGateTest();
 // A full adjustment fits the observations within ResectionConfig::fullBAInputErrorFactor x the reprojection bar of the
 // model and runs again while some camera's input to the next solve differs enough from what it gave this one
 // (AdjustRepeated): a camera whose observations all lie between the bar and 3x it comes back in one solve, which a
 // single solve fed by the inlier prefix alone does not do, one whose input grows once it is back takes a second
 // solve, and with ResectionConfig::fullBARepeats 0 the adjustment is one solve of the wider input
 bool RepeatedFullAdjustmentTest();
+
 bool CappedAdjustmentTriangulationTest();
+
 // A global solve with the per-image observation cap, one camera held and no GPS, keeps the cameras' scale, so the
 // tracks the cap left out of it are still where their observations see them after it
 bool CappedSolveScaleTest();
@@ -560,139 +712,18 @@ bool FilterTracksUntriangulatedTrackTest();
 // track with no inliers: IsInlier() is what the adjustments that follow read, and the caller counts the track
 // as failed.
 bool TriangulationFailureTest();
+
 // TriangulateSkewLLS on spherical cameras determines a point whose bearing lies across the optical axis (dz near 0),
 // which the two rows of [d]x R it once kept did not.
 bool SphericalTriangulationTest();
 
-// The image filter tells the images it removed for contradicting the model (their verified pairs to
-// the kept images disagree with the pose the model gives them, by more inlier weight than agrees)
-// apart from the ones it removed for want of evidence: only the former are withheld from the
-// resection that follows, the latter get another chance once the model has grown.
-bool ContradictingImagesTest();
-
-
-// Test function for rotation estimation
-bool RotationEstimatorTest();
-
-// The rotation averaging gives the same rotations, and the same pairs past its bar, whatever the
-// absolute scale of the pair weights (GlobalRotationEstimatorOptions::weightMedian)
-bool RotationWeightScaleTest();
-
-// The contradiction cut's rotation stage: the look-alikes of a symmetric ring, the cross-face pairs of
-// a roof (the tree check) and a wrong pair at the weight cap go, a bridge and a pendant pair never,
-// the unscored start is the symmetric mode, and the translation stage's bar takes 0 and 180
-bool ContradictionCutTest();
-
-// The contradiction cut's translation stage: a flipped and a turned baseline go at the default bar,
-// a bridge and a pair under the near-duplicate ray angle are never judged, bar 0 is the rotation
-// stage alone, and a graph under a scale component's pairs removes nothing
-bool TranslationCutTest();
-
-// A matched scene is filtered once (the triplet filter, the contradiction cut and its repair), on load as on a fresh
-// run, and a scene saved after the filters is reloaded with its pairs, repair marks and seed views and not filtered again
-bool FilteredSceneReloadTest();
-
-// The flat pair-scale build equals the node-map one it replaced
-bool PairScalesTest();
-
-// Test function for global scale estimation
-bool ScaleEstimatorTest();
-
-// Test function for global translation estimation
-bool TranslationEstimatorTest();
-
-// The translation estimator's normal-equations solve factors the graph Laplacian of the pairs and
-// gives the SparseQR solution of their incidence matrix
-bool TranslationNormalEquationsTest();
-
-// The scale estimator solves every connected component of its equations on its own: the one holding the
-// fixed index (given, or the best-connected index when none is) pinned at it, any other at mean zero log
-// scale (the dense SVD's minimum-norm answer), an index no equation names at scale 1
-bool ScaleComponentsTest();
-
-// The scale estimator's solve (conjugate gradients on the normal equations, started from the previous
-// solve) gives the sparse Cholesky solution of the gauge-pinned system, converged, and a near start saves iterations
-bool ScaleConjugateGradientsTest();
-
-// Pairs weighting test
-bool PairsWeightingTest();
-
-// A pair's dense inliers count as evidence in proportion to the matcher's frame target
-// (PairsWeightingConfig::denseFrameInliers over denseMatchesPerFrame): two dense-only pairs of one
-// image keep the order of their counts, a whole dense frame is a modest descriptor pair's evidence,
-// and the connectivity counts the dense matches at the same scale
-bool PairsWeightingDenseFrameEvidenceTest();
-
-// The composite weight of a hand-set pair equals its formula term by term (ImagePair::GetCompositeWeight)
-bool PairCompositeWeightTest();
-
-// PairsMatcher sequential mode test
-bool PairMatcherTest();
-
-// Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty
-bool MatchPairsFailureTest();
-
-// PairsMatcher::Match()'s fatal-round signal is not "this round stored nothing"
-bool MatchRoundFatalSignalTest();
-
-// Pre-matching optimization test
-bool PreMatchTest();
-
-// View graph calibrator test: Refine focal length using view graph optimization
-bool ViewGraphCalibratorTest();
-
-// Phase 1: Scene Clustering tests
-bool SceneClusterSingleClusterTest();
-bool SceneClusterSizeConstraintsTest();
-bool SceneClusterDisconnectedComponentsTest();
-bool SceneClusterTargetSizeTest();
-bool SceneClusterSeamTracksTest();
-bool SceneClusterLeafMergeTest();
-bool SceneClusterMemoryProtocolTest();
-bool SceneClusterIDRemappingTest();
-bool SceneClusterSmallClusterRescueTest();
-
-// A community under the floor is held to the same coupling test as an established cluster: the
-// greedy merge does not absorb it over an interface carrying less than minClusterCoupling of its
-// own internal weight, and the small-cluster pass then places it with the neighbour it shares the
-// most weight with (ClusterConfig::minClusterCoupling)
-bool SceneClusterSubFloorCouplingTest();
-
-// A small, cohesive community no neighbour is coupled to stands alone as its own sub-scene when it
-// has the strong seams the merge places a block by, and is absorbed into its heaviest neighbour as
-// before when it does not (SceneCluster::IsStandaloneCommunity)
-bool SceneClusterStandaloneCommunityTest();
-
-// A cluster under the floor that IS coupled to a neighbour but that no neighbour has room for stays
-// where it is; it must not come out as a sub-scene whatever position it holds in the cluster order
-bool SceneClusterCoupledOrphanSkippedTest();
-
-// The balance pass never takes an image whose departure would leave part of its own cluster coupled
-// under minClusterCoupling, even when the image's own affinity favours the move
-// (SceneCluster::RefineClustersBalance, SceneCluster::KeepsCoupling)
-bool SceneClusterBalanceCouplingTest();
-
-// The thin-waist check weighs every prefix cut along the Fiedler order, not only the balanced one: a
-// stretch too small to stand on its own moves whole to the cluster it is most coupled to when one
-// holds it at the floor, and otherwise stays; a stretch large enough to stand is split off as before
-// (SceneCluster::RefineClustersSplitThinWaist)
-bool SceneClusterThinStretchTest();
-bool SceneBlocksInsertReleaseTest();
-bool SceneBlocksInsertRebuildTest();
-bool PoolResectionWrongClusterTest();
-// A pool image is offered only to the blocks it has links in (verified pairs with a relative pose to their
-// registered images): pairs without a relative pose, however heavy, do not send it to a block
-bool PoolResectionLinkOnlyTest();
+// TestsSFMMerge.cpp -------------------------------------------
 
 // Phase 3: Global Alignment tests
 bool GlobalAlignmentBuildGlobalToLocalMapTest();
-bool GlobalAlignmentRotationAveragingExtendedTest();
-bool GlobalAlignmentScaleAveragingExtendedTest();
-bool GlobalAlignmentScaleAveragingFallbackTest();
-bool GlobalAlignmentTranslationAveragingExtendedTest();
-bool RobustAveragingScaleTest();
-bool RobustAveragingTranslationTest();
+
 bool SeamGraphConsensusTest();
+
 // The selection over planted block graphs: a reading weighs the supporting cameras of its weaker side
 // times its verified pairs' share; a chord heavier than any one true seam and wrong by 30 degrees
 // across two cycles is left off; of the two directions of a block pair no cycle tests (a bridge), the
@@ -701,26 +732,42 @@ bool SeamGraphConsensusTest();
 // lighter copy that a least-squares solve would sit between; a reading cut by one round's averaging
 // is judged again in the next
 bool ReadingWeightCamerasTest();
+
 bool HeavyWrongChordTest();
+
 bool TwoDirectionBridgeTest();
+
 bool SymmetricBridgePairsTest();
+
 bool OneCameraReadingTest();
+
 bool ReweightingStartTest();
+
 bool BarsReEntryTest();
+
 bool RingPlacementTest();
+
 // The cross-block track join: seam matches first, every match on the duplicate-image and length guards, the merged
 // model's adjustment keeping the right observations
 bool CrossBlockJoinTest();
+
 bool MergeJoinReprojectionTest();
+
 bool MergeTrackLengthTest();
+
 bool PooledSeamReadingTest();
+
 // The merge in rounds: a block kept whole, the regrouping around the merged model, the release (driven by hand); the
 // merge's own loop (SceneBlocks::MergeInRounds) releasing at the fixed point; a seam through pool-registered cameras
 // alone refused; from round 2 on the merged model is the one holding block 0, whatever the other models weigh
 bool MergeRoundsTest();
+
 bool UnobservableScaleTest();
+
 bool UnobservableScalePairTest();
+
 bool AmbiguousPairTest();
+
 // A seam its cameras carry but the verified image pairs across it contradict places no block
 // (GlobalAlignmentConfig::maxPairRotationResidual)
 bool ContradictedPlacementTest();
@@ -728,39 +775,92 @@ bool ContradictedPlacementTest();
 // The verified pairs across a seam decide by inlier weight over all of them, not by counting pairs:
 // two thin disagreeing pairs cannot outvote twenty-four heavy agreeing ones.
 bool PairAgreementWeightTest();
+
 bool RingLoopClosureTest();
+
 bool BiasedClosingSeamTest();
+
 bool WeakClosingSeamTest();
+
 // A ring pair carrying the true reading and a heavier copy of one block's structure one period
 // along the wall: the cycle the pair closes chooses the true one by the translation it implies
 bool RivalModesOnCycleTest();
+
 // A seam one camera holds on its side weighs one camera, however many correspondences it carries,
 // and no block is placed on it
 bool OneCameraSideTest();
+
 // A direction seen by one camera gives no reading; a block joined by single cameras only is released
 bool OneCameraDirectionTest();
+
 bool RigScaleTwoCamerasTest();
+
 // The correspondences a ring of bent blocks leaves past the bar and within the loose bar join their
 // tracks at the merge and end inliers within the bar after the final adjustment
 bool BentBlockClosureTest();
+
 bool SecondModelTest();
+
 bool FoldedBlockTest();
+
 // A ring of blocks bent half a degree each keeps every seam between neighbours and ends on the truth
 bool BentRingKeepsSeamsTest();
+
 // A block folded by 45 degrees does not put the rest of the model wrong
 bool FoldedBlock45Test();
+
 bool FalseChordTest();
+
 bool SeamInliersBecomeTracksTest();
+
 bool UnplacedBlocksReportedTest();
+
 bool BentBlocksAdjustmentTest();
+
 bool GlobalAlignmentMergeSingleSceneTest();
+
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();
+
 bool GlobalAlignmentTrackMerge3DProximityGuardTest();
+
 bool HierarchicalCameraAlignmentTest();
 
 // End-to-end hierarchical SFM tests
 bool HierarchicalSFMSplitMergeRoundtripTest();
+
 bool HierarchicalSFMWithRandomTransformTest();
+
+// TestsSFMPipeline.cpp ----------------------------------------
+
+// EstimateSimilarityTransform recovers a known similarity from six exact correspondences: the scale to 1e-2 and
+// the mapped source points to 1e-6
+bool TestSimilarityTransform();
+
+// GPS alignment degeneracy test: coincident/collinear GPS positions must be
+// rejected without modifying the scene; well-spread GPS must still align
+bool AlignToGPSDegenerateTest();
+
+// Phase 5 cube-map bridge tests: verify that SFM::ExportMVS can expand
+// every spherical source image into 6 (or 4) pinhole cube-map faces,
+// emit them as a rig platform in MVS::Interface format, and produce a
+// file tree that MVS::Scene::Load reads back without any pinhole
+// regression.
+bool CubeMapFaceRenderTest();
+
+bool CubeMapBridgeGeometryTest();
+
+bool CubeMapBridgeEndToEndTest();
+
+bool CubeMapBridgeMVSLoadTest();
+
+bool CubeMapBridgeMixedSceneTest();
+
+bool CubeMapBridgeDropTopBottomTest();
+
+bool AlignToPriorPosesTest();
+
+bool AlignToPriorPosesCollinearTest();
+
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

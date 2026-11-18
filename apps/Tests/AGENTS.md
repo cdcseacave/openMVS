@@ -49,7 +49,7 @@ the global `operator new`/`operator delete` for this; outside such a scope they 
 `malloc`/`free`. It reaches the libraries' allocations where they bind to the executable's operator
 new (shared objects on Linux), and has no effect where they do not.
 
-## SFM Tests (`TestsSFM.h` / `TestsSFM.cpp`)
+## SFM Tests (`TestsSFM.h`, ten topic files `TestsSFM<Topic>.cpp`)
 
 All in `namespace SFM`. Called sequentially when `argv[1] == 1`.
 
@@ -166,7 +166,7 @@ Keeps the depth maps on disk (`OPTDENSE::bRemoveDmaps = false`) for `SceneSplitT
 Each file defines its own log name:
 ```cpp
 DEFINE_LOG_NAME(lt, "Test    ")  // Tests.cpp
-DEFINE_LOG_NAME(lt, "TestSFM ")  // TestsSFM.cpp
+DEFINE_LOG_NAME(lt, "TestSFM ")  // every TestsSFM*.cpp
 DEFINE_LOG_NAME(lt, "TestMVS ")  // TestsMVS.cpp
 ```
 
