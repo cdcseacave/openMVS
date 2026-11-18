@@ -291,7 +291,19 @@ public:
 	 */
 	std::tuple<unsigned, unsigned, unsigned> RegisterImage(IIndex imageID);
 
+	// What the last RegisterImages did
+	struct Stats {
+		struct Attempt {
+			IIndex imageID;
+			bool registered; // false: the pose was refused or not estimated
+		};
+		std::vector<Attempt> attempts; // every image tried, in the order tried
+		unsigned numFullAdjustments = 0; // full adjustments run, the stall retries' and the closing one included
+	};
+	const Stats& GetStats() const { return stats; }
+
 private:
+	Stats stats;
 	Scene& scene;
 	ResectionConfig config;
 	std::unordered_set<IIndex> excludedImages;

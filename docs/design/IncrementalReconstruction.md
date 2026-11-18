@@ -235,6 +235,10 @@ while the observations within 3 x `maxReprojError` of the model, its next input,
 share; after every solve the model is filtered at the bar and its pointless tracks triangulated again, the last
 allowed solve included, so a capped adjustment ends as a converged one does.
 
+`Resection::GetStats()` reports the last `RegisterImages`: `attempts`, every image tried in the order tried with
+whether it registered, and `numFullAdjustments`, the full adjustments it ran (stall retries and the closing one
+included).
+
 Between the adjustments, the tracks are triangulated and filtered against `maxReprojError` (4 px) and
 `minAngleThreshold`. `FilterTracks` and `TriangulateTracks` hold a dense (warp-sampled) observation to
 `ResectionConfig::denseReprojErrorFactor` times that bar (1 by default, so described and dense observations answer

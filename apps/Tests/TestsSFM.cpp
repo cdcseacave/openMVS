@@ -11948,13 +11948,13 @@ void BuildResectionEvidenceScene(Scene& scene, std::vector<Pose3D>& truePoses, s
 	TriangulateTracks(scene, false, 4.f, 1.f);
 }
 
-// Where the log records the first attempt that registered or failed the given image (String::npos
+// Where the resection's attempts hold the first one that registered or failed the given image (String::npos
 // when there was none): the order of two attempts is the order of these positions
-size_t LogFirstAttempt(const LogCapture& log, IIndex imageID, bool registered)
+size_t FirstAttempt(const Resection::Stats& stats, IIndex imageID, bool registered)
 {
-	return log.text.find(registered ?
-		String::FormatString("Image %u registered:", imageID) :
-		String::FormatString("failed to register image %u (", imageID));
+	const auto it = std::find_if(stats.attempts.begin(), stats.attempts.end(),
+		[&](const Resection::Stats::Attempt& a) { return a.imageID == imageID && a.registered == registered; });
+	return it == stats.attempts.end() ? String::npos : size_t(it - stats.attempts.begin());
 }
 
 } // namespace
@@ -12150,7 +12150,6 @@ bool ResectionWeakEvidenceTest()
 	Scene scene;
 	std::vector<Pose3D> truePoses;
 	BuildResectionEvidenceScene(scene, truePoses, rng);
-	LogCapture log;
 	Resection resection(scene, ResectionConfig());
 	resection.RegisterImages();
 	for (IIndex imageID : {IIndex(4), IIndex(6), IIndex(7)}) {
@@ -12165,8 +12164,8 @@ bool ResectionWeakEvidenceTest()
 			return false;
 		}
 	}
-	const size_t at4 = LogFirstAttempt(log, 4, true), at6 = LogFirstAttempt(log, 6, true), at7 = LogFirstAttempt(log, 7, true);
-	if (!(at6 < at7 && at7 < at4) || LogFirstAttempt(log, 4, false) != String::npos) {
+	const size_t at4 = FirstAttempt(resection.GetStats(), 4, true), at6 = FirstAttempt(resection.GetStats(), 6, true), at7 = FirstAttempt(resection.GetStats(), 7, true);
+	if (!(at6 < at7 && at7 < at4) || FirstAttempt(resection.GetStats(), 4, false) != String::npos) {
 		VERBOSE("ResectionWeakEvidenceTest FAILED: images 6, 7 and 4 were not registered in that order (registered pair "
 			"weights 300, 200 and 20), or image 4 failed an attempt");
 		return false;
@@ -12205,7 +12204,6 @@ bool ResectionNextImageOrderTest()
 	scene.status.nCalibratedImages = 4;
 	TriangulateTracks(scene, false, 4.f, 1.f);
 
-	LogCapture log;
 	Resection resection(scene, ResectionConfig());
 	resection.RegisterImages();
 	if (scene.images[4].HasPose()) {
@@ -12219,8 +12217,8 @@ bool ResectionNextImageOrderTest()
 			scene.images[5].HasPose() ? "registered off its true pose" : "left out");
 		return false;
 	}
-	const size_t failed4 = LogFirstAttempt(log, 4, false);
-	if (failed4 == String::npos || LogFirstAttempt(log, 5, true) > failed4) {
+	const size_t failed4 = FirstAttempt(resection.GetStats(), 4, false);
+	if (failed4 == String::npos || FirstAttempt(resection.GetStats(), 5, true) > failed4) {
 		VERBOSE("ResectionNextImageOrderTest FAILED: image 4 was %s; image 5, whose pairs to registered images weigh 300 "
 			"against image 4's 20, is the one to try first", failed4 == String::npos ? "never tried" : "tried before image 5");
 		return false;
@@ -12239,10 +12237,9 @@ bool ResectionNextImageOrderTest()
 			scene.images[imageID].InvalidatePose();
 		scene.status.nCalibratedImages = 4;
 		TriangulateTracks(scene, false, 4.f, 1.f);
-		LogCapture log;
 		Resection resection(scene, ResectionConfig());
 		resection.RegisterImages();
-		const size_t at4 = LogFirstAttempt(log, 4, true), at5 = LogFirstAttempt(log, 5, true), at6 = LogFirstAttempt(log, 6, true);
+		const size_t at4 = FirstAttempt(resection.GetStats(), 4, true), at5 = FirstAttempt(resection.GetStats(), 5, true), at6 = FirstAttempt(resection.GetStats(), 6, true);
 		if (at4 == String::npos || at5 == String::npos || at6 == String::npos || !(at4 < at6 && at6 < at5)) {
 			VERBOSE("ResectionNextImageOrderTest FAILED: images 4, 6 and 5 were not registered in that order; once image 4 is "
 				"registered, image 6's pair of 1000 to it outweighs image 5's 100, so the list read again puts image 6 next");
@@ -12280,7 +12277,6 @@ bool ResectionTriesEveryCandidateTest()
 	scene.status.nCalibratedImages = 4;
 	TriangulateTracks(scene, false, 4.f, 1.f);
 
-	LogCapture log;
 	Resection resection(scene, ResectionConfig());
 	resection.RegisterImages();
 	if (scene.images[4].HasPose() || scene.images[5].HasPose()) {
@@ -12294,8 +12290,8 @@ bool ResectionTriesEveryCandidateTest()
 			scene.images[6].HasPose() ? "registered off its true pose" : "left out");
 		return false;
 	}
-	const size_t registered6 = LogFirstAttempt(log, 6, true);
-	if (LogFirstAttempt(log, 4, false) > registered6 || LogFirstAttempt(log, 5, false) > registered6) {
+	const size_t registered6 = FirstAttempt(resection.GetStats(), 6, true);
+	if (FirstAttempt(resection.GetStats(), 4, false) > registered6 || FirstAttempt(resection.GetStats(), 5, false) > registered6) {
 		VERBOSE("ResectionTriesEveryCandidateTest FAILED: image 6 was tried before images 4 and 5, whose pairs to registered "
 			"images weigh more");
 		return false;
@@ -12340,7 +12336,6 @@ bool ResectionRefusedAverageTest()
 	scene.status.nCalibratedImages = 4;
 	TriangulateTracks(scene, false, 4.f, 1.f);
 
-	LogCapture log;
 	Resection resection(scene, ResectionConfig());
 	resection.RegisterImages();
 	if (scene.images[REFUSED].HasPose()) {
@@ -12354,7 +12349,7 @@ bool ResectionRefusedAverageTest()
 			return false;
 		}
 	}
-	const unsigned numFullAdjustments = log.Count("Full adjustment ran");
+	const unsigned numFullAdjustments = resection.GetStats().numFullAdjustments;
 	if (numFullAdjustments != 2) {
 		VERBOSE("ResectionRefusedAverageTest FAILED: %u full adjustments ran, expected only the stall retry's and the one "
 			"that closes the resection: the refusals of image %u pulled the average inlier ratio under its bar",
@@ -12423,7 +12418,6 @@ bool ResectionStallRetryTest()
 			}
 		}
 
-		LogCapture log;
 		Resection resection(scene, ResectionConfig());
 		resection.RegisterImages();
 		if (!scene.images[4].HasPose() || RotationErrorDeg(scene.images[4].R, truePoses[4].R) > 1.0) {
@@ -12442,7 +12436,7 @@ bool ResectionStallRetryTest()
 				return false;
 			}
 		}
-		const unsigned numFullAdjustments = log.Count("Full adjustment ran");
+		const unsigned numFullAdjustments = resection.GetStats().numFullAdjustments;
 		if (numFullAdjustments != 2) {
 			VERBOSE("ResectionStallRetryTest FAILED: %u full adjustments ran where %s, expected the retry's and the one that "
 				"closes the resection", numFullAdjustments, c.why);
@@ -12461,7 +12455,6 @@ bool ResectionStallRetryTest()
 		scene.images[4].InvalidatePose();
 		scene.status.nCalibratedImages = 4;
 		TriangulateTracks(scene, false, 4.f, 1.f);
-		LogCapture log;
 		Resection resection(scene, ResectionConfig());
 		resection.RegisterImages();
 		if (scene.images[4].HasPose()) {
@@ -12469,7 +12462,7 @@ bool ResectionStallRetryTest()
 				"pose the problem");
 			return false;
 		}
-		const unsigned numFullAdjustments = log.Count("Full adjustment ran");
+		const unsigned numFullAdjustments = resection.GetStats().numFullAdjustments;
 		if (numFullAdjustments != 1) {
 			VERBOSE("ResectionStallRetryTest FAILED: %u full adjustments ran in a resection that registered nothing, expected "
 				"the one that closes it", numFullAdjustments);
@@ -12570,7 +12563,7 @@ bool ResectionClosingAlwaysTest()
 				"at %g px", c.what, numClosed, NUM_GOOD + NUM_BAD, NUM_BAD, FINE_BAR, config.maxReprojError);
 			return false;
 		}
-		const unsigned numFullAdjustments = log.Count("Full adjustment ran");
+		const unsigned numFullAdjustments = resection.GetStats().numFullAdjustments;
 		if (numFullAdjustments != 1) {
 			VERBOSE("ResectionClosingAlwaysTest FAILED: %s, and %u full adjustments ran, expected the one that closes the "
 				"resection", c.what, numFullAdjustments);
@@ -12665,7 +12658,7 @@ bool ResectionRemovalStallTest()
 			return false;
 		}
 		const unsigned numRemovalStalls = log.Count("registered since the last full adjustment, images removed)");
-		const unsigned numFullAdjustments = log.Count("Full adjustment ran");
+		const unsigned numFullAdjustments = resection.GetStats().numFullAdjustments;
 		if (numRemovalStalls != (c.removed ? 1u : 0u) || numFullAdjustments != (c.removed ? 3u : 1u)) {
 			VERBOSE("ResectionRemovalStallTest FAILED: %s, and %u stalls ran their adjustment for the removal and %u full "
 				"adjustments ran, expected %s", c.what, numRemovalStalls, numFullAdjustments,
@@ -13010,8 +13003,8 @@ bool ResectionLinkGateTest()
 	const auto atTruePose = [](const Scene& scene, const std::vector<Pose3D>& truePoses, IIndex i) {
 		return scene.images[i].HasPose() && RotationErrorDeg(scene.images[i].R, truePoses[i].R) < 1.0;
 	};
-	const auto firstAttempt = [](const LogCapture& log, IIndex i) {
-		return MINF(LogFirstAttempt(log, i, true), LogFirstAttempt(log, i, false));
+	const auto firstAttempt = [](const Resection& resection, IIndex i) {
+		return MINF(FirstAttempt(resection.GetStats(), i, true), FirstAttempt(resection.GetStats(), i, false));
 	};
 	std::vector<Pose3D> truePoses;
 
@@ -13020,10 +13013,9 @@ bool ResectionLinkGateTest()
 		std::mt19937 rng(20261105);
 		Scene scene;
 		build(scene, truePoses, true, false, rng);
-		LogCapture log;
 		Resection resection(scene, ResectionConfig());
 		resection.RegisterImages();
-		const size_t registered5 = LogFirstAttempt(log, 5, true), tried4 = firstAttempt(log, 4);
+		const size_t registered5 = FirstAttempt(resection.GetStats(), 5, true), tried4 = firstAttempt(resection, 4);
 		if (!atTruePose(scene, truePoses, 5) || !atTruePose(scene, truePoses, 4) || registered5 == String::npos || tried4 < registered5) {
 			VERBOSE("ResectionLinkGateTest FAILED: image 4, whose only pair with a relative pose goes to unregistered image 5, "
 				"was %s; it must wait until image 5 is registered and then register at its true pose (image 5 %s)",
@@ -13038,10 +13030,9 @@ bool ResectionLinkGateTest()
 		std::mt19937 rng(20261105);
 		Scene scene;
 		build(scene, truePoses, true, true, rng);
-		LogCapture log;
 		Resection resection(scene, ResectionConfig());
 		resection.RegisterImages();
-		const size_t registered5 = LogFirstAttempt(log, 5, true), tried4 = firstAttempt(log, 4);
+		const size_t registered5 = FirstAttempt(resection.GetStats(), 5, true), tried4 = firstAttempt(resection, 4);
 		if (!atTruePose(scene, truePoses, 4) || !atTruePose(scene, truePoses, 5) || registered5 == String::npos || tried4 < registered5) {
 			VERBOSE("ResectionLinkGateTest FAILED: image 5, whose link to image 3 (200) outweighs image 4's link to image 2 (100), was %s; "
 				"image 4's pair of 1000 to image 0 has no relative pose and must not count in the order (image 4 %s)",
@@ -13057,10 +13048,9 @@ bool ResectionLinkGateTest()
 		Scene scene;
 		build(scene, truePoses, false, false, rng);
 		{
-			LogCapture log;
 			Resection resection(scene, ResectionConfig());
 			resection.RegisterImages();
-			if (scene.images[4].HasPose() || firstAttempt(log, 4) != String::npos) {
+			if (scene.images[4].HasPose() || firstAttempt(resection, 4) != String::npos) {
 				VERBOSE("ResectionLinkGateTest FAILED: image 4, which holds 40 correspondences but no link, was %s",
 					scene.images[4].HasPose() ? "registered" : "tried");
 				return false;
@@ -13071,10 +13061,9 @@ bool ResectionLinkGateTest()
 		static_cast<Pose3D&>(img5) = truePoses[5];
 		AddResectionCorrespondences(scene, 5, 40, 0, rng);
 		img5.InvalidatePose();
-		LogCapture log;
 		Resection resection(scene, ResectionConfig());
 		resection.RegisterImages();
-		const size_t registered5 = LogFirstAttempt(log, 5, true), tried4 = firstAttempt(log, 4);
+		const size_t registered5 = FirstAttempt(resection.GetStats(), 5, true), tried4 = firstAttempt(resection, 4);
 		if (!atTruePose(scene, truePoses, 5) || !atTruePose(scene, truePoses, 4) || registered5 == String::npos || tried4 < registered5) {
 			VERBOSE("ResectionLinkGateTest FAILED: once image 5 holds its correspondences, it was %s and image 4 %s",
 				atTruePose(scene, truePoses, 5) ? "registered" : "not registered at its true pose",

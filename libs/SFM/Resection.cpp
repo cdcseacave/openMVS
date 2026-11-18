@@ -399,6 +399,7 @@ unsigned SFM::AdjustRepeated(Scene& scene, const BAConfig& baConfig, const Resec
 bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 {
 	TD_TIMER_STARTD();
+	stats = Stats();
 
 	// Collect unregistered images
 	IIndexScores unregistered;
@@ -427,6 +428,7 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 		const bool refineExtended = config.minRefineExtIntrs > 0 &&
 			scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs;
 		AdjustRepeated(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig, config);
+		++stats.numFullAdjustments;
 		lastRegistered.clear();
 		avgInliersRatio.Clear();
 		sinceFullBA = 0;
@@ -465,6 +467,7 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 			// Attempt to register next image
 			const IIndex nextID = nextIDs[n];
 			const auto [numInliers, numPoints, numDescribed] = RegisterImage(nextID);
+			stats.attempts.push_back({nextID, numInliers > 0});
 			if (numInliers == 0) {
 				DEBUG("warning: failed to register image %u (%u/%u correspondences), retrying later", nextID, numInliers, numPoints);
 				nextIDs.RemoveAtMove(n);
@@ -532,6 +535,7 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
 		config.extendedBAConfig.maxIterations = 100;
 		AdjustRepeated(scene, config.extendedBAConfig, config);
+		++stats.numFullAdjustments;
 	}
 
 	// Update scene status
