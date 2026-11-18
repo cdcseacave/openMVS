@@ -336,12 +336,12 @@ bool BundledImagesFeatures(Scene& scene, const ImportConfig& importCfg);
 
 // ===============================================================================
 // A rig of perspective images: one trusted pinhole camera of the given size and focal, principal point
-// at the frame centre and radial distortion k1, shared by one image per pose (named "<i>.jpg", posed,
+// at the frame centre and no distortion, shared by one image per pose (named "<i>.jpg", posed,
 // counted calibrated), with no keypoints: the test adds what it observes. An image whose pose the test
 // does not read takes Pose3D::Identity().
 //   Scene scene(MakeRig(cv::Size(640, 480), 400, {Pose3D::Identity(), Pose3D(RMatrix::IDENTITY, CMatrix(0.4, 0.1, 0))}));
 // ===============================================================================
-Scene MakeRig(cv::Size size, REAL focal, const std::vector<Pose3D>& poses, REAL k1 = 0);
+Scene MakeRig(cv::Size size, REAL focal, const std::vector<Pose3D>& poses);
 // a pair of two posed images armed with their true geometry: relativePose = images[ID2] / images[ID1]
 // (the baseline at its true length), E and F composed from it and the two cameras
 void ArmPair(ImagePair& pair, const Scene& scene);
@@ -388,33 +388,14 @@ PoseError PoseErrors(const Scene& scene, const std::vector<Pose3D>& truth, const
 
 
 // ===============================================================================
-// Helpers that two or more topic files use (moved unchanged from the single TestsSFM.cpp)
+// Helpers that two or more topic files use
 // ===============================================================================
 // A pair's sparse segment is all described keypoints and its dense segment all dense ones
 bool HasDensePartition(const Scene& scene, const ImagePair& pair);
-// A synthetic full-sphere scene with two spherical cameras in a tight cluster
-void BuildSphericalTwoViewScene(Scene& scene, Pose3D& poseRel);
 // The reconstruction stage of RealImagesPipelineTest (tracks, star initialization, colors and the
-// checks on what they produce), shared with ROMA2ReconstructTest so that both hold a matched
+// checks on what they produce), shared with DenseMatcherReconstructTest so that both hold a matched
 // scene to exactly the same expectations
 bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned minTracks, unsigned maxTracks, REAL maxDistortion);
-// A scene of numImages images without pose sharing one camera, and a pair of numInliers track-forming matches
-void AddTripletImages(Scene& scene, IIndex numImages);
-void AddTripletPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers, bool verified = true,
-	unsigned cellsA = 100, unsigned cellsB = 100);
-// The resection arc scenes
-// Scenes for the two resection tests. Cameras sit on a 5-unit circle in the XZ plane, one every
-// 10 degrees, all looking at the origin, so consecutive centres are 2*5*sin(5 deg) = 0.8716 apart
-// and the seven of a full arc span 2*5*sin(30 deg) = 5.0000 world units -- the scene extent the
-// position tolerances below are a share of. The points they see fill a 2-unit box around the
-// origin, which projects well inside a 640x480 frame of 500-pixel focal from every one of them.
-constexpr REAL RESECTION_ARC_RADIUS = 5;
-constexpr REAL RESECTION_ARC_STEP = 10; // degrees between consecutive cameras
-Pose3D ResectionArcPose(REAL angleDegrees);
-void BuildResectionArc(Scene& scene, unsigned numImages);
-bool AddResectionTrack(Scene& scene, const Point3& X, const std::vector<IIndex>& imageIDs);
-void AddResectionTracks(Scene& scene, const std::vector<IIndex>& imageIDs, unsigned numTracks, std::mt19937& rng);
-void AddResectionPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers);
 // The blocks of a partition as the reconstruction extracts them, with their local-to-global maps
 std::vector<Scene> ExtractBlocks(Scene& scene, const ScenePartition& partition, std::vector<IIndexArr>* localToGlobals = NULL);
 // The middle value of a sample, its own numbers left in place
