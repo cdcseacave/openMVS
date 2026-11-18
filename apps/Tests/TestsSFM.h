@@ -90,6 +90,14 @@ bool BuildTracksConflictTest();
 // backend), and the .sfm round-trip of the descriptors
 bool RetrievalTest();
 
+// The four ways a candidate pair is made or pruned: known poses with an unposed image, the sequential prior
+// (PairsMatcher::AddSequentialPairs), the SEQUENTIAL match mode, and the pre-match threshold
+bool PairSelectionTest();
+
+// Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty, and
+// PairsMatcher::Match()'s fatal-round signal is not "this round stored nothing"
+bool MatchOutcomeSignalsTest();
+
 // Spherical bottom band of the feature extraction: with FeatureExtractionConfig::sphericalBottomBand
 // at 0.2 no keypoint of an equirectangular image lies in its bottom 20% of rows and the rest of the
 // image keeps its features, at 0 the band has features; a perspective image extracts the same
@@ -104,30 +112,12 @@ bool DetectorConfigTest();
 // (angular epipolar filter, no F), back-hemisphere bearings admitted.
 bool SphericalPairGeometryTest();
 
-// The four ways a candidate pair is made or pruned: known poses with an unposed image, the sequential prior
-// (PairsMatcher::AddSequentialPairs), the SEQUENTIAL match mode, and the pre-match threshold
-bool PairSelectionTest();
-
 // Two-view geometry: PairsMatcher and ImagePair matrix operations, the two-view calibration refinement, and the
 // relative pose recovered from the fundamental matrix (GeometricFilter's F branch, then DecomposeFundamentalToPose)
 // for two cameras of different intrinsics and image sizes as for two of one size
 bool TwoViewGeometryTest();
 
-// The pipeline on the bundled images, each stage from the state the one before left: the refusals before any work
-// (SKIP without matches, a GPS weight with panoramas), the match-images-only run writing --export-pairs-csv right
-// after the matching (from the images and from the saved .sfm), --match-mode -1 (SKIP) from the saved matches,
-// --use-global-solver (Scene::ReconstructGlobal), and the incremental reconstruction recovering wrong intrinsics
-bool RealImagesPipelineTest(bool verbose = false);
-
-// Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty, and
-// PairsMatcher::Match()'s fatal-round signal is not "this round stored nothing"
-bool MatchOutcomeSignalsTest();
-
 // TestsSFMDense.cpp -------------------------------------------
-
-// The warp grid's pixel <-> cell convention (align_corners=False cell centres) end to end: keypoint
-// tracking and its overlap gate, the draws' cell positions, the occupancy rounding and the verdict's cells
-bool DenseWarpGridConventionTest();
 
 // The warp draws on an identity warp: the coverage-uniform sample the verdict fits its geometry on
 // (budget, spread, one winner per bucket, no ranking by confidence), the complementary fill of an admitted
@@ -136,6 +126,10 @@ bool DenseWarpGridConventionTest();
 // sharing an image agree on the pixels they sample), the fill's pitch, density and ceiling, and the
 // spherical bottom band neither draw has an end in; every draw is pure
 bool DenseWarpSamplingTest();
+
+// The warp grid's pixel <-> cell convention (align_corners=False cell centres) end to end: keypoint
+// tracking and its overlap gate, the draws' cell positions, the occupancy rounding and the verdict's cells
+bool DenseWarpGridConventionTest();
 
 // The pair verdict (JudgePairDense) on the exact bidirectional warp of two pinhole cameras looking
 // at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
@@ -259,10 +253,6 @@ bool ViewGraphCalibratorTest();
 
 // TestsSFMViewGraph.cpp ---------------------------------------
 
-// The camera-triplet view-graph filter of Manam & Govindu (CVPR 2024): the scores, the yield
-// rule and both modes on hand-computed graphs.
-bool TripletFilterTest();
-
 // The pair weights (ComputePairsWeights, ImagePair::GetCompositeWeight): the spatial, connectivity and triplet terms of
 // hand-built pairs, the composite formula term by term, the dense inliers counted in proportion to the matcher's frame target
 // (PairsWeightingConfig::denseFrameInliers over denseMatchesPerFrame), and the dense supplement of a pair as real evidence:
@@ -270,6 +260,10 @@ bool TripletFilterTest();
 // minimum-support floor reads that same set, GetNumWeightedInliers() scales the dense share, and a degenerate all-dense
 // baseline is still demoted
 bool PairWeightTest();
+
+// The camera-triplet view-graph filter of Manam & Govindu (CVPR 2024): the scores, the yield
+// rule and both modes on hand-computed graphs.
+bool TripletFilterTest();
 
 // The rotation estimator on the 16-camera ring, and its independence of the absolute scale of the pair weights
 // (GlobalRotationEstimatorOptions::weightMedian): the same rotations and the same pairs past the bar at weights x1, x1/128, x128
@@ -308,14 +302,9 @@ bool RobustAveragingTest();
 
 // TestsSFMCluster.cpp -----------------------------------------
 
-// Phase 1: Scene Clustering tests
 // The clustering into sub-scenes: a single one within the view limit and with the limit off, the size constraints,
 // disconnected groups never mixed, the memory protocol (keypoints moved, cross-pairs left) and the ID remapping
 bool SceneClusterBasicsTest();
-
-// Clustering for the merge on chains of images: the sub-scene sizes aimed at the target with a strong seam between every
-// two that touch, the seam-usable tracks counted as the merge counts them, a weakly joined tail merged into the last sub-scene
-bool SceneClusterSeamTest();
 
 // The small-cluster pass: weak images rescued, a community under the floor held to the coupling test
 // (ClusterConfig::minClusterCoupling) and placed with the neighbour it shares the most weight with,
@@ -329,6 +318,10 @@ bool SceneClusterSmallClusterPassTest();
 // the cluster that holds it at the floor, otherwise stays, and one large enough to stand is split off
 // (SceneCluster::RefineClustersSplitThinWaist)
 bool SceneClusterRefinePassesTest();
+
+// Clustering for the merge on chains of images: the sub-scene sizes aimed at the target with a strong seam between every
+// two that touch, the seam-usable tracks counted as the merge counts them, a weakly joined tail merged into the last sub-scene
+bool SceneClusterSeamTest();
 
 // TestsSFMBlock.cpp -------------------------------------------
 
@@ -460,8 +453,6 @@ bool BAInnerIterationOrderTest();
 
 // TestsSFMMerge.cpp -------------------------------------------
 
-// Phase 3: Global Alignment tests
-
 // The selection of the seam graph over planted block graphs (a 16-block graph with a false chord, a rival and two lone pairs;
 // reading weights by cameras; a heavy wrong chord across two cycles; a turned direction of a bridge; a symmetric copy judged
 // by the verified pairs; a one-camera side; the inverse-error reweighting; a reading cut in one round judged again in the next)
@@ -506,10 +497,10 @@ bool UnplacedBlocksReportedTest();
 // final adjustment, which straightens the cameras to under half the rigid block poses' error
 bool BentRingTest();
 
-bool HierarchicalCameraAlignmentTest();
-
 // A scene split into blocks at the true poses and merged back, in the true frame and moved by random similarities
 bool MergeRoundtripTest();
+
+bool HierarchicalCameraAlignmentTest();
 
 // TestsSFMPipeline.cpp ----------------------------------------
 
@@ -522,6 +513,12 @@ bool SceneAlignmentTest();
 // MVS::Interface (rig platform, face cameras, wiring, vertex views), as face files and as an MVS::Scene, plus the
 // mixed pinhole and spherical export and the 4-face export that drops the zenith and nadir tracks
 bool CubeMapExportTest();
+
+// The pipeline on the bundled images, each stage from the state the one before left: the refusals before any work
+// (SKIP without matches, a GPS weight with panoramas), the match-images-only run writing --export-pairs-csv right
+// after the matching (from the images and from the saved .sfm), --match-mode -1 (SKIP) from the saved matches,
+// --use-global-solver (Scene::ReconstructGlobal), and the incremental reconstruction recovering wrong intrinsics
+bool RealImagesPipelineTest(bool verbose = false);
 
 /*----------------------------------------------------------------*/
 
