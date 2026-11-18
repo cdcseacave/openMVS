@@ -359,15 +359,13 @@ bool RotationEstimatorTest();
 // absolute scale of the pair weights (GlobalRotationEstimatorOptions::weightMedian)
 bool RotationWeightScaleTest();
 
-// The contradiction cut's rotation stage: the look-alikes of a symmetric ring, the cross-face pairs of
-// a roof (the tree check) and a wrong pair at the weight cap go, a bridge and a pendant pair never,
-// the unscored start is the symmetric mode, and the translation stage's bar takes 0 and 180
+// The contradiction cut: its rotation stage (the look-alikes of a symmetric ring, the cross-face pairs
+// of a roof and a wrong pair at the weight cap go, a bridge and a pendant pair never, the unscored
+// start is the symmetric mode, the translation stage's bar takes 0 and 180) and its translation stage
+// (a flipped and a turned baseline go at the default bar, a bridge and a pair under the near-duplicate
+// ray angle are never judged, bar 0 is the rotation stage alone, the repair, a graph under a scale
+// component's pairs removes nothing, two components solved apart)
 bool ContradictionCutTest();
-
-// The contradiction cut's translation stage: a flipped and a turned baseline go at the default bar,
-// a bridge and a pair under the near-duplicate ray angle are never judged, bar 0 is the rotation
-// stage alone, and a graph under a scale component's pairs removes nothing
-bool TranslationCutTest();
 
 // A matched scene is filtered once (the triplet filter, the contradiction cut and its repair), on load as on a fresh
 // run, and a scene saved after the filters is reloaded with its pairs, repair marks and seed views and not filtered again

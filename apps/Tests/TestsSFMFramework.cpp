@@ -358,6 +358,19 @@ void GenerateTestScene(Scene& scene, const SceneConfig& cfg, Scene* scenePerturb
 /*----------------------------------------------------------------*/
 
 
+SceneConfig RingConfig(unsigned numPoints)
+{
+	ASSERT(numPoints > 0);
+	SceneConfig cfg;
+	cfg.numImages = 16;
+	cfg.numPoints = numPoints;
+	cfg.rotationAngleStep = 16.0;
+	cfg.generatePairs = true;
+	return cfg;
+}
+/*----------------------------------------------------------------*/
+
+
 // ===============================================================================
 // Helper: Generate a scene with known 2-cluster structure for clustering tests
 // ===============================================================================

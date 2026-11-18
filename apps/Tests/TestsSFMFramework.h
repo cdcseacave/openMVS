@@ -146,6 +146,12 @@ Matrix3x3 GenerateRandomRotation(std::mt19937& rng, REAL angleRng = 0.3);
 // GenerateTestScene: Returns ground truth scene, optionally perturbed scene
 void GenerateTestScene(Scene& scene, const SceneConfig& cfg, Scene* scenePerturbed = nullptr);
 
+// The arc of the view-graph tests: 16 cameras every 16 degrees on the default circle (240 degrees of
+// it), numPoints points, and every pair generated with its true relative pose
+//   Scene sceneGT, scene;
+//   GenerateTestScene(sceneGT, RingConfig(300), &scene);
+SceneConfig RingConfig(unsigned numPoints);
+
 // Helper: Generate a scene with known 2-cluster structure for clustering tests
 void GenerateTwoClusterScene(
 	Scene& scene,

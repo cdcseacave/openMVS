@@ -689,29 +689,33 @@ bool RotationWeightScaleTest()
 	return true;
 }
 
-// The contradiction cut (FilterPairsByContradiction), its rotation stage: (1) an eight-fold symmetric
-// ring, the Palace case -- four look-alike pairs between opposite images claim the same view, heavier
-// in composite weight than the true neighbour pairs of the ring, lighter once weighted by their triplet
-// score -- lands in the true basin from the score-weighted tree and removes exactly the look-alikes,
-// while the same graph unscored starts in the symmetric mode; (2) a bridge, the only pair joining
-// two consistent groups, is fitted exactly and never removed, however far its rotation is from
-// anything; (3) a wrong pair whose inlier count is far past the weight cap weighs what the cap
-// says (1000) before its triplet score scales it, and the ring of right pairs outvotes it; (4) the
-// cross-face pairs of a four-fold symmetric roof, a quarter and a half turn off and too weak to be
-// usable themselves, are judged against the rotations the other pairs give and removed, a pair
-// a few degrees off, a loop's drift, stays; (5) the translation stage's bar takes both its ends.
+// The contradiction cut (FilterPairsByContradiction).
+// Its rotation stage, on hand-made view graphs (PairGraph) of pairs of a given relative rotation about the vertical axis and
+// composite weight: (1) an eight-fold symmetric ring, the Palace case -- four look-alike pairs between opposite images claim
+// the same view, heavier in composite weight than the true neighbour pairs, lighter once weighted by their triplet score --
+// lands in the true basin from the score-weighted tree and removes exactly the look-alikes, while the same graph unscored
+// starts in the symmetric mode; (2) a bridge, the only pair joining two consistent groups, is fitted exactly and never
+// removed, however far its rotation is from anything; (3) a wrong pair whose inlier count is far past the weight cap weighs
+// what the cap says (1000) before its triplet score scales it, and the ring of right pairs outvotes it; (4) on the 16-camera
+// arc (RingConfig), the cross-face pairs of a four-fold symmetric roof, a quarter and a half turn off and too weak to be
+// usable themselves, are judged against the rotations the other pairs give and removed, a pair a few degrees off, a loop's
+// drift, stays; (5) the translation stage's bar takes both its ends.
+// Its translation stage (bar above 0), on the arc with exact relative poses and every ray angle 10 degrees: (6) a pair whose
+// baseline sign is flipped and one whose baseline is turned 120 degrees, the rotation exact, are removed at the default bar
+// (45) and nothing else is; (7) the one pair joining two groups of cameras, its baseline flipped, is a bridge and is never
+// removed; (8) a pair under 2 degrees of ray angle is never judged (the same pair at 10 degrees is removed); (9) with the bar
+// 0 the cut is the rotation stage alone: a pair 30 degrees off in rotation goes at either bar, the flipped and the turned
+// baselines only at 45; (10) with the repair on, the planted pairs whose matches still agree come back with the exact pose,
+// none counted as removed, the weights final before it, and a pair whose matches agree with nothing stays removed; (11) a
+// connected graph of fewer pairs than a scale component needs is not solved and removes nothing; (12) two components are
+// averaged and solved apart, the flipped pair of the smaller judged by its own solve.
 bool ContradictionCutTest()
 {
-	TD_TIMER_START();
-	// a scene of numImages images and no pair
-	const auto makeScene = [](Scene& scene, IIndex numImages) {
-		AddTripletImages(scene, numImages);
-	};
+	TestScope scope("ContradictionCutTest");
 	// add a pair of the given relative rotation about the vertical axis (degrees) and composite weight
-	// (inlier count at full quality)
-	const auto addPair = [](Scene& scene, IIndex a, IIndex b, REAL degrees, unsigned numInliers) {
-		AddTripletPair(scene, a, b, MINF(numInliers, 40u));
-		ImagePair& pair = scene.pairs.back();
+	// (inlier count at full quality; the matches, which nothing here reads, capped at 40)
+	const auto addPair = [](PairGraph& g, IIndex a, IIndex b, REAL degrees, unsigned numInliers) {
+		ImagePair& pair = g.Matched(a, b, MINF(numInliers, 40u));
 		if (a > b) // the pair holds its smaller index first: the rotation from it is the inverse
 			degrees = -degrees;
 		pair.relativePose = Pose3D(RMatrix(Point3(0, D2R(degrees), 0)), CMatrix(1, 0, 0));
@@ -734,11 +738,11 @@ bool ContradictionCutTest()
 	// weight takes for the truth
 	const std::set<std::pair<IIndex,IIndex>> lookAlikes{{0,4}, {1,5}, {2,6}, {3,7}};
 	const auto buildOctagon = [&](Scene& scene) {
-		makeScene(scene, 8);
+		PairGraph g(scene, 8);
 		for (IIndex k = 0; k < 8; ++k)
-			addPair(scene, k, (k + 1) % 8, k == 7 ? REAL(-315) : REAL(45), 20);
+			addPair(g, k, (k + 1) % 8, k == 7 ? REAL(-315) : REAL(45), 20);
 		for (const auto& ids : lookAlikes)
-			addPair(scene, ids.first, ids.second, 0, 100);
+			addPair(g, ids.first, ids.second, 0, 100);
 	};
 	{
 		Scene scene; buildOctagon(scene);
@@ -747,15 +751,9 @@ bool ContradictionCutTest()
 			if (lookAlikes.count({scene.pairs[idxPair].ID1, scene.pairs[idxPair].ID2}))
 				scores[idxPair] = 0.05f;
 		const unsigned removed = FilterPairsByContradiction(scene, scores, minPairWeight, 0.f, weightingCfg);
-		if (removed != lookAlikes.size() || keptPairs(scene).size() != 8) {
-			VERBOSE("ERROR: ContradictionCutTest: the scored octagon removed %u pairs, expected %zu look-alikes", removed, lookAlikes.size());
-			return false;
-		}
+		TEST_CHECK(!(removed != lookAlikes.size() || keptPairs(scene).size() != 8), "the scored octagon removed %u pairs, expected %zu look-alikes", removed, lookAlikes.size());
 		for (const auto& ids : lookAlikes)
-			if (keptPairs(scene).count(ids)) {
-				VERBOSE("ERROR: ContradictionCutTest: look-alike pair (%u,%u) kept", ids.first, ids.second);
-				return false;
-			}
+			TEST_CHECK(!(keptPairs(scene).count(ids)), "look-alike pair (%u,%u) kept", ids.first, ids.second);
 	}
 	{
 		// unscored, the same graph starts in the symmetric mode and cuts the true ring instead
@@ -765,51 +763,39 @@ bool ContradictionCutTest()
 		bool allLookAlikes = true;
 		for (const auto& ids : lookAlikes)
 			allLookAlikes = allLookAlikes && !keptPairs(scene).count(ids);
-		if (allLookAlikes) {
-			VERBOSE("ERROR: ContradictionCutTest: the unscored octagon removed the look-alikes: the start no longer decides the basin");
-			return false;
-		}
+		TEST_CHECK(!(allLookAlikes), "the unscored octagon removed the look-alikes: the start no longer decides the basin");
 	}
 
 	// (2) a bridge: two rings of four images (true 90 degrees each) joined by the one pair (3,4), claiming
 	// a rotation of 100 degrees; and an image hanging on one pair
 	{
 		Scene scene;
-		makeScene(scene, 9);
+		PairGraph g(scene, 9);
 		for (IIndex k = 0; k < 4; ++k) {
-			addPair(scene, k, (k + 1) % 4, k == 3 ? REAL(-270) : REAL(90), 200);
-			addPair(scene, 4 + k, 4 + (k + 1) % 4, k == 3 ? REAL(-270) : REAL(90), 200);
+			addPair(g, k, (k + 1) % 4, k == 3 ? REAL(-270) : REAL(90), 200);
+			addPair(g, 4 + k, 4 + (k + 1) % 4, k == 3 ? REAL(-270) : REAL(90), 200);
 		}
-		addPair(scene, 3, 4, 100, 5);
-		addPair(scene, 8, 0, 179, 4);
+		addPair(g, 3, 4, 100, 5);
+		addPair(g, 8, 0, 179, 4);
 		const size_t numPairs = scene.pairs.size();
 		const std::vector<float> scores(numPairs, 1.f);
-		if (FilterPairsByContradiction(scene, scores, 0.f, 0.f, weightingCfg) != 0 || scene.pairs.size() != numPairs) {
-			VERBOSE("ERROR: ContradictionCutTest: a bridge or a pendant pair was removed");
-			return false;
-		}
+		TEST_CHECK(!(FilterPairsByContradiction(scene, scores, 0.f, 0.f, weightingCfg) != 0 || scene.pairs.size() != numPairs), "a bridge or a pendant pair was removed");
 	}
 
 	// (3) a capped-weight pair: eight right pairs of a ring (50000 inliers each, weight 1000 at the cap) against
 	// one wrong pair of 400000 inliers (also 1000 at the cap) scoring 0.05
 	{
 		Scene scene;
-		makeScene(scene, 8);
+		PairGraph g(scene, 8);
 		for (IIndex k = 0; k < 8; ++k)
-			addPair(scene, k, (k + 1) % 8, k == 7 ? REAL(-315) : REAL(45), 50000);
-		addPair(scene, 0, 4, 0, 400000);
-		if (scene.pairs.back().GetCompositeWeight() != 1000.f) {
-			VERBOSE("ERROR: ContradictionCutTest: the weight of a pair past the cap is %g, expected 1000", scene.pairs.back().GetCompositeWeight());
-			return false;
-		}
+			addPair(g, k, (k + 1) % 8, k == 7 ? REAL(-315) : REAL(45), 50000);
+		addPair(g, 0, 4, 0, 400000);
+		TEST_CHECK(!(scene.pairs.back().GetCompositeWeight() != 1000.f), "the weight of a pair past the cap is %g, expected 1000", scene.pairs.back().GetCompositeWeight());
 		// its score of 0.05 leaves it 50 against the ring's 1000; read at the raw count it would weigh 20000
 		std::vector<float> scores(scene.pairs.size(), 1.f);
 		scores.back() = 0.05f;
 		const unsigned removed = FilterPairsByContradiction(scene, scores, minPairWeight, 0.f, weightingCfg);
-		if (removed != 1 || keptPairs(scene).count({0, 4}) || keptPairs(scene).size() != 8) {
-			VERBOSE("ERROR: ContradictionCutTest: the capped wrong pair: %u pairs removed, expected only the wrong one", removed);
-			return false;
-		}
+		TEST_CHECK(!(removed != 1 || keptPairs(scene).count({0, 4}) || keptPairs(scene).size() != 8), "the capped wrong pair: %u pairs removed, expected only the wrong one", removed);
 	}
 
 	// (4) the tree check: the cross-face pairs of a four-fold roof (images 0-15 over a 240 degree arc), two a
@@ -819,12 +805,7 @@ bool ContradictionCutTest()
 	// minimum pair weight (10), so that they are not in it at all and are judged all the same.
 	for (const float weightBar : {minPairWeight, 10.f}) {
 		Scene sceneGT, scene;
-		SceneConfig cfg;
-		cfg.numImages = 16;
-		cfg.numPoints = 200;
-		cfg.rotationAngleStep = 16.0;
-		cfg.generatePairs = true;
-		GenerateTestScene(sceneGT, cfg, &scene);
+		GenerateTestScene(sceneGT, RingConfig(200), &scene);
 		ComputePairsWeights(scene);
 		const RMatrix quarterTurn(Point3(0, D2R(REAL(90)), 0));
 		const RMatrix halfTurn(Point3(0, D2R(REAL(180)), 0));
@@ -843,19 +824,10 @@ bool ContradictionCutTest()
 		const std::vector<float> scores(scene.pairs.size(), TripletScores::unscored);
 		const unsigned removed = FilterPairsByContradiction(scene, scores, weightBar, 0.f, weightingCfg);
 		const auto kept = keptPairs(scene);
-		if (removed != crossFace.size() || scene.pairs.size() != numPairs - crossFace.size()) {
-			VERBOSE("ERROR: ContradictionCutTest: the roof at minimum weight %g: removed %u pairs, expected %zu", weightBar, removed, crossFace.size());
-			return false;
-		}
+		TEST_CHECK(!(removed != crossFace.size() || scene.pairs.size() != numPairs - crossFace.size()), "the roof at minimum weight %g: removed %u pairs, expected %zu", weightBar, removed, crossFace.size());
 		for (const auto& ids : crossFace)
-			if (kept.count(ids)) {
-				VERBOSE("ERROR: ContradictionCutTest: the roof at minimum weight %g: cross-face pair (%u,%u) kept", weightBar, ids.first, ids.second);
-				return false;
-			}
-		if (!kept.count(drifting)) {
-			VERBOSE("ERROR: ContradictionCutTest: the roof at minimum weight %g: the pair 8 degrees off was removed", weightBar);
-			return false;
-		}
+			TEST_CHECK(!(kept.count(ids)), "the roof at minimum weight %g: cross-face pair (%u,%u) kept", weightBar, ids.first, ids.second);
+		TEST_CHECK(!(!kept.count(drifting)), "the roof at minimum weight %g: the pair 8 degrees off was removed", weightBar);
 	}
 
 	// (5) the bar of the translation stage: 0 (no translation stage) and 180 (every direction is within it) are both
@@ -867,44 +839,15 @@ bool ContradictionCutTest()
 			if (lookAlikes.count({scene.pairs[idxPair].ID1, scene.pairs[idxPair].ID2}))
 				scores[idxPair] = 0.05f;
 		const unsigned removed = FilterPairsByContradiction(scene, scores, minPairWeight, bar, weightingCfg);
-		if (removed != lookAlikes.size()) {
-			VERBOSE("ERROR: ContradictionCutTest: bar %g: %u pairs removed, expected the %zu look-alikes", bar, removed, lookAlikes.size());
-			return false;
-		}
+		TEST_CHECK(!(removed != lookAlikes.size()), "bar %g: %u pairs removed, expected the %zu look-alikes", bar, removed, lookAlikes.size());
 	}
-	VERBOSE("ContradictionCutTest passed (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
 
-// The translation stage of the contradiction cut (FilterPairsByContradiction, its bar above 0): on a
-// ring of cameras with exact relative poses, (1) a pair whose baseline sign is flipped and one whose
-// baseline is turned 120 degrees, both with the rotation exact, are removed at the default bar and
-// nothing else is; (2) the one pair joining two groups of cameras, its baseline flipped, is a bridge
-// and is never removed; (3) a pair under 2 degrees of ray angle is never judged, whatever its baseline
-// says (the same pair at 10 degrees is removed); (4) the scale solve gives the least squares of its
-// equations, a dense SVD's; (5) with the bar 0 the cut is the rotation stage alone: a pair 30 degrees
-// off in rotation goes at either bar, the flipped and the turned baselines only at 45; (6) a connected
-// graph of fewer pairs than a scale component needs is not solved and removes nothing; (7) with the
-// repair on, the planted pairs whose matches still agree come back with the exact pose and a pair
-// whose matches agree with nothing stays removed.
-bool TranslationCutTest()
-{
-	TD_TIMER_START();
-	constexpr float minPairWeight = 3.f;
-	const PairsWeightingConfig weightingCfg;
+	// the translation stage
 	const float maxDirectionResidual = ReconstructionConfig().maxPairDirectionResidual;
-	if (!ISEQUAL(maxDirectionResidual, 45.f)) {
-		VERBOSE("ERROR: TranslationCutTest: the default bar of the translation stage is %g degrees, expected 45", maxDirectionResidual);
-		return false;
-	}
+	TEST_CHECK(!(!ISEQUAL(maxDirectionResidual, 45.f)), "the default bar of the translation stage is %g degrees, expected 45", maxDirectionResidual);
 	const auto build = [&](Scene& scene) {
 		Scene sceneGT;
-		SceneConfig cfg;
-		cfg.numImages = 16;
-		cfg.numPoints = 300;
-		cfg.rotationAngleStep = 16.0;
-		cfg.generatePairs = true;
-		GenerateTestScene(sceneGT, cfg, &scene);
+		GenerateTestScene(sceneGT, RingConfig(300), &scene);
 		ComputePairsWeights(scene);
 		for (ImagePair& pair : scene.pairs)
 			pair.meanRayAngle = D2R(10.f);
@@ -919,12 +862,6 @@ bool TranslationCutTest()
 	const auto turn = [](ImagePair& pair) {
 		pair.relativePose->C = RMatrix(Point3(D2R(REAL(70)), D2R(REAL(70)), D2R(REAL(70)))) * pair.relativePose->C;
 	};
-	const auto keptPairs = [](const Scene& scene) {
-		std::set<std::pair<IIndex,IIndex>> kept;
-		for (const ImagePair& pair : scene.pairs)
-			kept.emplace(pair.ID1, pair.ID2);
-		return kept;
-	};
 	const auto run = [&](Scene& scene, float bar, bool repair = false) {
 		const std::vector<float> scores(scene.pairs.size(), TripletScores::unscored);
 		return FilterPairsByContradiction(scene, scores, minPairWeight, bar, weightingCfg, repair);
@@ -934,23 +871,14 @@ bool TranslationCutTest()
 		const size_t numPairs = scene.pairs.size();
 		ImagePair* pFlipped = findPair(scene, 3, 9);
 		ImagePair* pTurned = findPair(scene, 2, 11);
-		if (pFlipped == NULL || pTurned == NULL) {
-			VERBOSE("ERROR: TranslationCutTest: the ring has no pair (3,9) or (2,11)");
-			return false;
-		}
+		TEST_CHECK(!(pFlipped == NULL || pTurned == NULL), "the ring has no pair (3,9) or (2,11)");
 		flip(*pFlipped);
 		turn(*pTurned);
 		const unsigned removed = run(scene, maxDirectionResidual);
 		const auto kept = keptPairs(scene);
-		if (removed != 2 || kept.size() != numPairs - 2 || kept.count({3, 9}) || kept.count({2, 11})) {
-			VERBOSE("ERROR: TranslationCutTest: the planted flipped and turned pairs: %u removed of %zu, expected exactly those two", removed, numPairs);
-			return false;
-		}
+		TEST_CHECK(!(removed != 2 || kept.size() != numPairs - 2 || kept.count({3, 9}) || kept.count({2, 11})), "the planted flipped and turned pairs: %u removed of %zu, expected exactly those two", removed, numPairs);
 		Scene clean; build(clean);
-		if (run(clean, maxDirectionResidual) != 0) {
-			VERBOSE("ERROR: TranslationCutTest: the ring with exact poses lost pairs");
-			return false;
-		}
+		TEST_CHECK(!(run(clean, maxDirectionResidual) != 0), "the ring with exact poses lost pairs");
 	}
 	{
 		// two groups (images 0-7, 8-15) joined by the one pair (7,8), its baseline flipped
@@ -962,67 +890,19 @@ bool TranslationCutTest()
 				scene.pairs.RemoveAt(idxPair);
 		}
 		ImagePair* pBridge = findPair(scene, 7, 8);
-		if (pBridge == NULL) {
-			VERBOSE("ERROR: TranslationCutTest: the ring has no pair (7,8)");
-			return false;
-		}
+		TEST_CHECK(!(pBridge == NULL), "the ring has no pair (7,8)");
 		flip(*pBridge);
 		const unsigned removed = run(scene, maxDirectionResidual);
-		if (removed != 0 || !keptPairs(scene).count({7, 8})) {
-			VERBOSE("ERROR: TranslationCutTest: the bridge was removed (%u pairs)", removed);
-			return false;
-		}
+		TEST_CHECK(!(removed != 0 || !keptPairs(scene).count({7, 8})), "the bridge was removed (%u pairs)", removed);
 	}
 	for (const bool shortRay : {true, false}) {
 		Scene scene; build(scene);
 		ImagePair* pPair = findPair(scene, 4, 12);
-		if (pPair == NULL) {
-			VERBOSE("ERROR: TranslationCutTest: the ring has no pair (4,12)");
-			return false;
-		}
+		TEST_CHECK(!(pPair == NULL), "the ring has no pair (4,12)");
 		flip(*pPair);
 		pPair->meanRayAngle = D2R(shortRay ? 1.5f : 10.f);
 		const unsigned removed = run(scene, maxDirectionResidual);
-		if (removed != (shortRay ? 0u : 1u)) {
-			VERBOSE("ERROR: TranslationCutTest: the flipped pair at %s ray angle: %u removed", shortRay ? "1.5 degrees of" : "10 degrees of", removed);
-			return false;
-		}
-	}
-	{
-		// the scale solve is the least squares of its equations: a dense SVD of the system with the gauge eliminated, computed here
-		std::vector<ScalePair> pairs;
-		pairs.emplace_back(0, 1, REAL(2), 30.f);
-		pairs.emplace_back(1, 2, REAL(0.5), 25.f);
-		pairs.emplace_back(2, 3, REAL(4), 20.f);
-		pairs.emplace_back(0, 2, REAL(1.1), 20.f);
-		pairs.emplace_back(1, 3, REAL(2.2), 18.f);
-		pairs.emplace_back(0, 3, REAL(7), 10.f);
-		GlobalScaleEstimator estimator;
-		std::vector<REAL> scales;
-		if (!estimator.EstimateScales(pairs, 4, 0, scales)) {
-			VERBOSE("ERROR: TranslationCutTest: the scale solve failed");
-			return false;
-		}
-		Eigen::MatrixXd A = Eigen::MatrixXd::Zero((Eigen::Index)pairs.size(), 3);
-		Eigen::VectorXd b((Eigen::Index)pairs.size());
-		FOREACH(i, pairs) {
-			const ScalePair& pair = pairs[i];
-			if (pair.idxA > 0)
-				A(i, pair.idxA - 1) = -(double)pair.weight;
-			if (pair.idxB > 0)
-				A(i, pair.idxB - 1) = (double)pair.weight;
-			b(i) = (double)pair.weight * std::log((double)pair.scaleRatio);
-		}
-		const Eigen::VectorXd expected = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b);
-		if (!(std::abs(std::log((double)scales[0])) < 1e-12)) {
-			VERBOSE("ERROR: TranslationCutTest: the fixed scale is %g, not 1", (double)scales[0]);
-			return false;
-		}
-		for (unsigned i = 1; i < 4; ++i)
-			if (!(std::abs(std::log((double)scales[i]) - expected(i - 1)) < 1e-9)) {
-				VERBOSE("ERROR: TranslationCutTest: scale %u is %g, the dense SVD's least squares %g", i, (double)scales[i], std::exp(expected(i - 1)));
-				return false;
-			}
+		TEST_CHECK(!(removed != (shortRay ? 0u : 1u)), "the flipped pair at %s ray angle: %u removed", shortRay ? "1.5 degrees of" : "10 degrees of", removed);
 	}
 	{
 		// bar 0: the rotation stage alone. One more pair is 30 degrees off in rotation: it goes at either
@@ -1034,10 +914,7 @@ bool TranslationCutTest()
 			ImagePair* pRotated = findPair(scene, 6, 14);
 			ImagePair* pFlipped = findPair(scene, 3, 9);
 			ImagePair* pTurned = findPair(scene, 2, 11);
-			if (pRotated == NULL || pFlipped == NULL || pTurned == NULL) {
-				VERBOSE("ERROR: TranslationCutTest: the ring has no pair (6,14), (3,9) or (2,11)");
-				return false;
-			}
+			TEST_CHECK(!(pRotated == NULL || pFlipped == NULL || pTurned == NULL), "the ring has no pair (6,14), (3,9) or (2,11)");
 			pRotated->relativePose->R = RMatrix(Point3(0, D2R(REAL(30)), 0)) * pRotated->relativePose->R;
 			flip(*pFlipped);
 			turn(*pTurned);
@@ -1051,11 +928,8 @@ bool TranslationCutTest()
 				exact = exact && !kept.count(ids);
 			for (const auto& ids : flippedAndTurned)
 				exact = exact && (bar > 0.f || kept.count(ids));
-			if (!exact) {
-				VERBOSE("ERROR: TranslationCutTest: bar %g: %u pairs removed of %zu, expected the %zu pairs of the rotated%s", bar,
+			TEST_CHECK(!(!exact), "bar %g: %u pairs removed of %zu, expected the %zu pairs of the rotated%s", bar,
 					removed, numPairs, expected.size(), bar > 0.f ? ", the flipped and the turned baselines" : " pair alone");
-				return false;
-			}
 		}
 	}
 	{
@@ -1082,18 +956,12 @@ bool TranslationCutTest()
 		plant(scene);
 		const unsigned removed = run(scene, maxDirectionResidual, true);
 		const auto kept = keptPairs(scene);
-		if (removed != 1 || kept.size() != numPairs - 1 || kept.count({4, 12})) {
-			VERBOSE("ERROR: TranslationCutTest: the repair: %u pairs removed of %zu, expected only the pair with the shifted matches", removed, numPairs);
-			return false;
-		}
+		TEST_CHECK(!(removed != 1 || kept.size() != numPairs - 1 || kept.count({4, 12})), "the repair: %u pairs removed of %zu, expected only the pair with the shifted matches", removed, numPairs);
 		for (const auto& [ids, pose] : exact) {
 			const ImagePair& pair = *findPair(scene, ids.first, ids.second);
 			const REAL rotationError = R2D(ACOS(MINF(MAXF(ComputeAngle(pair.relativePose->R, pose.R), REAL(-1)), REAL(1))));
 			const REAL directionError = R2D(ACOS(MINF(MAXF(pair.relativePose->C.dot(pose.C) / (norm(pair.relativePose->C) * norm(pose.C)), REAL(-1)), REAL(1))));
-			if (!(rotationError < 0.1 && directionError < 0.1) || !pair.E.has_value() || !pair.F.has_value()) {
-				VERBOSE("ERROR: TranslationCutTest: the repaired pair (%u,%u) is %g degrees off in rotation and %g in direction", ids.first, ids.second, rotationError, directionError);
-				return false;
-			}
+			TEST_CHECK(!(!(rotationError < 0.1 && directionError < 0.1) || !pair.E.has_value() || !pair.F.has_value()), "the repaired pair (%u,%u) is %g degrees off in rotation and %g in direction", ids.first, ids.second, rotationError, directionError);
 		}
 		// the weights are final before the repair: a repaired pair forms no triangle, so its triangle share is 0 and every
 		// other pair weighs what it weighs in the graph without the repaired pairs
@@ -1104,23 +972,14 @@ bool TranslationCutTest()
 		for (const ImagePair& pair : scene.pairs) {
 			if (pair.returnedByRepair) {
 				++numReturned;
-				if (pair.weightTriplet != 0.f) {
-					VERBOSE("ERROR: TranslationCutTest: the repaired pair (%u,%u) has the triangle share %g, expected 0", pair.ID1, pair.ID2, pair.weightTriplet);
-					return false;
-				}
+				TEST_CHECK(!(pair.weightTriplet != 0.f), "the repaired pair (%u,%u) has the triangle share %g, expected 0", pair.ID1, pair.ID2, pair.weightTriplet);
 				continue;
 			}
 			ImagePair* pOther = findPair(without, pair.ID1, pair.ID2);
-			if (pOther == NULL || !ISEQUAL(pair.GetCompositeWeight(), pOther->GetCompositeWeight())) {
-				VERBOSE("ERROR: TranslationCutTest: the pair (%u,%u) weighs %g with the repair and %g without the repaired pairs", pair.ID1, pair.ID2,
+			TEST_CHECK(!(pOther == NULL || !ISEQUAL(pair.GetCompositeWeight(), pOther->GetCompositeWeight())), "the pair (%u,%u) weighs %g with the repair and %g without the repaired pairs", pair.ID1, pair.ID2,
 					pair.GetCompositeWeight(), pOther ? pOther->GetCompositeWeight() : -1.f);
-				return false;
-			}
 		}
-		if (numReturned != planted.size()) {
-			VERBOSE("ERROR: TranslationCutTest: %u repaired pairs flagged, expected %zu", numReturned, planted.size());
-			return false;
-		}
+		TEST_CHECK(!(numReturned != planted.size()), "%u repaired pairs flagged, expected %zu", numReturned, planted.size());
 	}
 	{
 		// a connected graph of 5 pairs, a loop and a chord among them, one baseline flipped: under
@@ -1131,16 +990,10 @@ bool TranslationCutTest()
 			if (!graph.count({scene.pairs[idxPair].ID1, scene.pairs[idxPair].ID2}))
 				scene.pairs.RemoveAt(idxPair);
 		ImagePair* pFlipped = findPair(scene, 0, 2);
-		if (pFlipped == NULL || scene.pairs.size() != graph.size()) {
-			VERBOSE("ERROR: TranslationCutTest: the ring has not the 5 pairs of the small graph");
-			return false;
-		}
+		TEST_CHECK(!(pFlipped == NULL || scene.pairs.size() != graph.size()), "the ring has not the 5 pairs of the small graph");
 		flip(*pFlipped);
 		const unsigned removed = run(scene, maxDirectionResidual);
-		if (removed != 0 || scene.pairs.size() != graph.size()) {
-			VERBOSE("ERROR: TranslationCutTest: the 5-pair graph lost %u pairs", removed);
-			return false;
-		}
+		TEST_CHECK(!(removed != 0 || scene.pairs.size() != graph.size()), "the 5-pair graph lost %u pairs", removed);
 	}
 	{
 		// two components: images 0-8 and 9-15 as two groups of cameras with every pair inside a group and none
@@ -1155,30 +1008,21 @@ bool TranslationCutTest()
 				scene.pairs.RemoveAt(idxPair);
 		const size_t numPairs = scene.pairs.size();
 		ImagePair* pFlipped = findPair(scene, 10, 13);
-		if (pFlipped == NULL || numPairs != 9 * 8 / 2 + 7 * 6 / 2) {
-			VERBOSE("ERROR: TranslationCutTest: the two groups hold %zu pairs, or have no pair (10,13)", numPairs);
-			return false;
-		}
+		TEST_CHECK(!(pFlipped == NULL || numPairs != 9 * 8 / 2 + 7 * 6 / 2), "the two groups hold %zu pairs, or have no pair (10,13)", numPairs);
 		flip(*pFlipped);
 		LogCapture log;
 		const unsigned removed = run(scene, maxDirectionResidual);
 		const auto kept = keptPairs(scene);
-		if (removed != 1 || kept.size() != numPairs - 1 || kept.count({10, 13})) {
-			VERBOSE("ERROR: TranslationCutTest: the two groups: %u pairs removed of %zu, expected only the flipped (10,13)", removed, numPairs);
-			return false;
-		}
+		TEST_CHECK(!(removed != 1 || kept.size() != numPairs - 1 || kept.count({10, 13})), "the two groups: %u pairs removed of %zu, expected only the flipped (10,13)", removed, numPairs);
 		const String rotationReport = String::FormatString("Contradiction cut: removed 0/%zu pairs", numPairs);
 		const String translationReport = String::FormatString("Translation cut: removed 1/%zu pairs", numPairs);
-		if (!log.Contains(rotationReport) || !log.Contains("of 2 usable components") ||
-			!log.Contains(translationReport) || !log.Contains("centres of 2 of 2 scale components")) {
-			VERBOSE("ERROR: TranslationCutTest: the two groups: the cut did not report the two rotation components and the two solves "
+		TEST_CHECK(!(!log.Contains(rotationReport) || !log.Contains("of 2 usable components") ||
+			!log.Contains(translationReport) || !log.Contains("centres of 2 of 2 scale components")), "the two groups: the cut did not report the two rotation components and the two solves "
 				"judging every pair of the %zu (\"%s\", \"of 2 usable components\", \"%s\", \"centres of 2 of 2 scale components\")",
 				numPairs, rotationReport.c_str(), translationReport.c_str());
-			return false;
-		}
 	}
-	VERBOSE("TranslationCutTest passed (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
+	return scope.Pass("the rotation stage on the octagon, the bridge, the capped pair and the roof; the translation stage on the "
+		"flipped and turned baselines, the bridge, the short rays, bar 0, the repair, the small graph and two components");
 }
 
 // A matched scene goes through the view-graph filters (the triplet filter, the contradiction cut and its repair)

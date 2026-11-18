@@ -321,7 +321,6 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(RotationEstimatorTest),
 				SFM_TEST(RotationWeightScaleTest),
 				SFM_TEST(ContradictionCutTest),
-				SFM_TEST(TranslationCutTest),
 				SFM_TEST(FilteredSceneReloadTest),
 				SFM_TEST(ScaleEstimatorTest),
 				SFM_TEST(TranslationEstimatorTest),
