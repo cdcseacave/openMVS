@@ -632,12 +632,12 @@ bool SceneClusterSeamTest()
 		}
 	}
 
-	// 3. leaf merge: images 0..259 a chain of five-view tracks, images 260..304 a tail of the same, and between them only the
+	// 3. leaf merge: images 0..259 a chain of five-view tracks, images 260..319 a tail of the same (60, over the floor of 53, so only the leaf rule can place it), and between them only the
 	// three-view tracks starting at 255..259 -- two of which cross the cut
 	unsigned tailSubSceneSize;
 	{
 		Scene scene;
-		BuildChainScene(305, 20, [](unsigned i) { return i >= 255 && i <= 259 ? 3u : 5u; }, scene);
+		BuildChainScene(320, 20, [](unsigned i) { return i >= 255 && i <= 259 ? 3u : 5u; }, scene);
 		const ClusterConfig clusterCfg;
 		SceneCluster cluster(scene, clusterCfg);
 		std::vector<IIndexArr> localToGlobals;
@@ -654,7 +654,7 @@ bool SceneClusterSeamTest()
 					subSceneOfEnd = (unsigned)s;
 		TEST_CHECK(subSceneOfEnd != NO_ID, "leaf merge: image 259 left out of the sub-scenes");
 		const std::set<IIndex> withEnd(localToGlobals[subSceneOfEnd].begin(), localToGlobals[subSceneOfEnd].end());
-		for (IIndex globalID = 260; globalID < 305; ++globalID)
+		for (IIndex globalID = 260; globalID < 320; ++globalID)
 			TEST_CHECK(withEnd.count(globalID) != 0, "leaf merge: image %u is not in the sub-scene of image 259 (%u images)", globalID, (unsigned)withEnd.size());
 		TEST_CHECK(withEnd.count(250) != 0, "leaf merge: the tail and image 259 are a sub-scene of their own (%u images)", (unsigned)withEnd.size());
 		tailSubSceneSize = (unsigned)withEnd.size();
