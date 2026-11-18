@@ -1760,216 +1760,133 @@ bool FilterTracksUntriangulatedTrackTest()
 	return true;
 }
 
-bool TriangulationFailureTest()
+// Triangulation, its failures and a geometry that once defeated it.
+// 1. A failure leaves the track with no inliers (IsInlier() is what the adjustments read, and the caller counts the track as
+//    failed). Two posed views of the arc (ArcScene) see one exact track 100 units beyond the middle of their centres, about
+//    half a degree of parallax, under the 1.5-degree minimum: at 0.1 degrees it triangulates with both views (the premise),
+//    at 1.5 TriangulateSkewLLS, TriangulateDLT and TriangulateTracks return 0 and leave no inlier, and the next TriangulateTracks
+//    of the tracks without inliers, at 0.1 degrees, takes it up again. Three views of one point whose second and third keypoints
+//    are 10 px off in opposite directions across the plane of the arc (the direction every view constrains alike) leave the
+//    first view the only one within the 4-px bar (measured: 1.14 px in TriangulateSkewLLS and 2.12 in TriangulateDLT, the other
+//    two over 10): with one inlier enough both count it (the premise), with the default two both fail and leave none, and so
+//    does a track coming in with inliers counted earlier and one posed view left, turned down before anything is counted.
+// 2. TriangulateSkewLLS on panoramas whose rays lie across the optical axis: three 4096x2048 panoramas one metre apart
+//    (MakeSphereScene, no points), a point 10 m away in the plane of their centres has dz = 0 in every bearing, where the first
+//    two rows of [d]x R, the two the system once kept, are parallel and fix only the depth along the optical axis; the three
+//    rows determine it. Exact keypoints at dz = 0 triangulate to the point within 5 mm with every view, and with 1 px of noise
+//    the median error at dz = 0 and 0.05 stays under 0.2 m (the two rows: about 10 m and 0.4 m, the three: about 0.09 m).
+bool TriangulationTest()
 {
-	TD_TIMER_START();
-
-	// Two posed views of the arc see one exact track, at a point 100 units beyond the middle of their
-	// two centres: about half a degree of parallax. The keypoints are exact, so the reprojection test
-	// passes and both views are inliers, and the rays meet below the 1.5-degree minimum angle. A
-	// triangulation that fails on the angle returns 0, and the track it leaves must hold no inliers:
-	// IsInlier() is what the adjustments that follow read, and the caller counts the track as failed
+	TestScope scope("TriangulationTest");
 	constexpr float minAngle = 1.5f, looseAngle = 0.1f;
-	Scene scene;
-	BuildResectionArc(scene, 2);
-	const Point3 mid = (scene.images[0].C + scene.images[1].C) * 0.5;
-	if (!AddResectionTrack(scene, mid * (1 - 100 / norm(mid)), {0, 1})) {
-		VERBOSE("TriangulationFailureTest FAILED: the track does not project inside both images");
-		return false;
-	}
-	const auto Fresh = [&scene]() {
+	// a copy of the scene's first track, its triangulation undone
+	const auto Fresh = [](const Scene& scene) {
 		Track track(scene.tracks[0]);
 		track.position = Point3(0, 0, 0);
 		track.numInliers = 0;
 		return track;
 	};
-	bool passed = true;
-	const auto Check = [&passed](const char* what, bool ok, unsigned returned, const Track& track) {
-		if (ok)
-			return;
-		VERBOSE("TriangulationFailureTest FAILED: %s returned %u, leaving the track with %u inliers (%s), expected 0 and no inliers",
-			what, returned, track.numInliers, track.IsInlier() ? "an inlier" : "not an inlier");
-		passed = false;
-	};
 
-	// Control: held to a looser angle, the same track triangulates, with the parallax the test means
+	// 1. the angle bar
 	{
-		Track track = Fresh();
-		const unsigned returned = TriangulateSkewLLS(track, scene.images, 4.f, looseAngle);
-		const double angle = R2D(track.ComputeMaxAngleBetweenRays(scene.images));
-		if (returned != 2 || !track.IsInlier() || angle < 0.25 || angle > 1.0) {
-			VERBOSE("TriangulationFailureTest FAILED: premise not met: at %g degrees the track triangulates with %u inliers (%s) and %.3f degrees of parallax, expected 2 and a parallax between 0.25 and 1",
-				looseAngle, returned, track.IsInlier() ? "an inlier" : "not an inlier", angle);
-			return false;
+		ArcScene arc(2, 1);
+		Scene& scene = arc.scene;
+		const Point3 mid = (scene.images[0].C + scene.images[1].C) * 0.5;
+		TEST_CHECK(arc.TrackAt(mid * (1 - 100 / norm(mid)), {0, 1}), "the track does not project inside both images");
+		{
+			Track track = Fresh(scene);
+			const unsigned returned = TriangulateSkewLLS(track, scene.images, 4.f, looseAngle);
+			const double angle = R2D(track.ComputeMaxAngleBetweenRays(scene.images));
+			TEST_CHECK(returned == 2 && track.IsInlier() && angle >= 0.25 && angle <= 1.0, "premise not met: at %g degrees the track "
+				"triangulates with %u inliers (%s) and %.3f degrees of parallax, expected 2 and a parallax between 0.25 and 1", looseAngle,
+				returned, track.IsInlier() ? "an inlier" : "not an inlier", angle);
 		}
-	}
-	{
-		Track track = Fresh();
-		const unsigned returned = TriangulateSkewLLS(track, scene.images, 4.f, minAngle);
-		Check("TriangulateSkewLLS below the minimum angle", returned == 0 && !track.IsInlier(), returned, track);
-	}
-	{
-		Track track = Fresh();
-		const unsigned returned = TriangulateDLT(track, scene.images, 4.f, minAngle);
-		Check("TriangulateDLT below the minimum angle", returned == 0 && !track.IsInlier(), returned, track);
-	}
-	{
+		for (const bool dlt : {false, true}) {
+			Track track = Fresh(scene);
+			const unsigned returned = dlt ? TriangulateDLT(track, scene.images, 4.f, minAngle) : TriangulateSkewLLS(track, scene.images, 4.f, minAngle);
+			TEST_CHECK(returned == 0 && !track.IsInlier(), "%s below the minimum angle returned %u, leaving the track %s, expected 0 and "
+				"no inliers", dlt ? "TriangulateDLT" : "TriangulateSkewLLS", returned, track.IsInlier() ? "an inlier" : "not an inlier");
+		}
 		Track& track = scene.tracks[0];
 		track.position = Point3(0, 0, 0);
 		track.numInliers = 0;
 		const unsigned returned = TriangulateTracks(scene, false, 4.f, minAngle);
-		Check("TriangulateTracks below the minimum angle", returned == 0 && !track.IsInlier() && scene.status.nTracks == 0, returned, track);
-		// the track did not triangulate, so the next call that only triangulates the tracks without inliers
-		// takes it up again, and at a looser angle it succeeds
+		TEST_CHECK(returned == 0 && !track.IsInlier() && scene.status.nTracks == 0, "TriangulateTracks below the minimum angle returned "
+			"%u, leaving the track %s, expected 0 and no inliers", returned, track.IsInlier() ? "an inlier" : "not an inlier");
 		const unsigned retried = TriangulateTracks(scene, true, 4.f, looseAngle);
-		if (retried != 1 || !track.IsInlier()) {
-			VERBOSE("TriangulationFailureTest FAILED: the next TriangulateTracks of the tracks without inliers, at %g degrees, triangulated %u tracks (the track is %s), expected 1 and an inlier",
-				looseAngle, retried, track.IsInlier() ? "an inlier" : "not an inlier");
-			passed = false;
-		}
+		TEST_CHECK(retried == 1 && track.IsInlier(), "the next TriangulateTracks of the tracks without inliers, at %g degrees, "
+			"triangulated %u tracks (the track is %s), expected 1 and an inlier", looseAngle, retried, track.IsInlier() ? "an inlier" : "not an inlier");
 	}
 
-	// A triangulation that fails for want of inliers leaves none either: three views of one point whose
-	// second and third keypoints are 10 pixels off in opposite directions across the plane of the arc
-	// (the direction every view constrains alike) leave the first view the only one within the 4-pixel
-	// bar of the solution, so one inlier is counted against the minimum of two. Measured on the solution
-	// the two functions count against, the first view is 1.14 pixels off in TriangulateSkewLLS and 2.12 in
-	// TriangulateDLT, the other two 10.04 and 10.03 in the first and 10.10 and 10.19 in the second. The
-	// angle bar is 0 in the two checks, so that only the count of inliers can fail them
+	// 1. the inlier count
 	{
-		constexpr float displacement = 10.f;
-		Scene fit;
-		BuildResectionArc(fit, 3);
-		if (!AddResectionTrack(fit, Point3(0.2, 0.1, -0.3), {0, 1, 2})) {
-			VERBOSE("TriangulationFailureTest FAILED: the track of three views does not project inside every image");
-			return false;
-		}
-		const Track& exact = fit.tracks[0];
-		fit.images[1].keypoints[exact.observations[1].featureID].pt.y += displacement;
-		fit.images[2].keypoints[exact.observations[2].featureID].pt.y -= displacement;
-		const auto FreshFit = [&fit]() {
-			Track track(fit.tracks[0]);
-			track.position = Point3(0, 0, 0);
-			track.numInliers = 0;
-			return track;
-		};
-		// Control: with no angle bar and one inlier enough, both functions count the one inlier the test means
+		ArcScene arc(3, 1);
+		Scene& fit = arc.scene;
+		TEST_CHECK(arc.TrackAt(Point3(0.2, 0.1, -0.3), {0, 1, 2}), "the track of three views does not project inside every image");
+		arc.Displace(1, 0, 1, Point2f(0.f, 10.f));
+		arc.Displace(2, 0, 1, Point2f(0.f, -10.f));
 		{
-			Track skew = FreshFit(), dlt = FreshFit();
+			Track skew = Fresh(fit), dlt = Fresh(fit);
 			const unsigned returnedSkew = TriangulateSkewLLS(skew, fit.images, 4.f, 0.f, 1);
 			const unsigned returnedDLT = TriangulateDLT(dlt, fit.images, 4.f, 0.f, 1);
-			if (returnedSkew != 1 || returnedDLT != 1) {
-				VERBOSE("TriangulationFailureTest FAILED: premise not met: with one inlier enough and no angle bar TriangulateSkewLLS counts %u inliers and TriangulateDLT %u, expected 1 and 1",
-					returnedSkew, returnedDLT);
-				return false;
-			}
+			TEST_CHECK(returnedSkew == 1 && returnedDLT == 1, "premise not met: with one inlier enough and no angle bar TriangulateSkewLLS "
+				"counts %u inliers and TriangulateDLT %u, expected 1 and 1", returnedSkew, returnedDLT);
 		}
-		{
-			Track track = FreshFit();
-			const unsigned returned = TriangulateSkewLLS(track, fit.images, 4.f, 0.f);
-			Check("TriangulateSkewLLS with one inlier", returned == 0 && track.GetNumInliers() == 0, returned, track);
+		for (const bool dlt : {false, true}) {
+			Track track = Fresh(fit);
+			const unsigned returned = dlt ? TriangulateDLT(track, fit.images, 4.f, 0.f) : TriangulateSkewLLS(track, fit.images, 4.f, 0.f);
+			TEST_CHECK(returned == 0 && track.GetNumInliers() == 0, "%s with one inlier returned %u, leaving %u inliers, expected 0 and none",
+				dlt ? "TriangulateDLT" : "TriangulateSkewLLS", returned, track.GetNumInliers());
 		}
-		{
-			Track track = FreshFit();
-			const unsigned returned = TriangulateDLT(track, fit.images, 4.f, 0.f);
-			Check("TriangulateDLT with one inlier", returned == 0 && track.GetNumInliers() == 0, returned, track);
-		}
-		// and so does one that comes in with inliers counted earlier and has one posed view left, which
-		// the function turns down before it counts anything
-		{
-			fit.images[1].InvalidatePose();
-			fit.images[2].InvalidatePose();
-			Track track = FreshFit();
-			track.numInliers = 2;
-			const unsigned returned = TriangulateSkewLLS(track, fit.images, 4.f, minAngle);
-			Check("TriangulateSkewLLS with one posed view", returned == 0 && track.GetNumInliers() == 0, returned, track);
-		}
+		fit.images[1].InvalidatePose();
+		fit.images[2].InvalidatePose();
+		Track track = Fresh(fit);
+		track.numInliers = 2;
+		const unsigned returned = TriangulateSkewLLS(track, fit.images, 4.f, minAngle);
+		TEST_CHECK(returned == 0 && track.GetNumInliers() == 0, "TriangulateSkewLLS with one posed view returned %u, leaving %u inliers, "
+			"expected 0 and none", returned, track.GetNumInliers());
 	}
-	if (!passed)
-		return false;
 
-	VERBOSE("TriangulationFailureTest PASSED: a triangulation that fails, for the minimum angle (TriangulateSkewLLS, TriangulateDLT, TriangulateTracks) or for want of "
-		"a second inlier (TriangulateSkewLLS, TriangulateDLT), leaves the track with no inliers, and the next TriangulateTracks of the tracks without inliers "
-		"takes it up again (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// TriangulateSkewLLS on spherical cameras whose rays lie across the optical axis. A point seen by three
-// 4096x2048 panoramas side by side (one metre apart, identity rotation) 10 m away in the plane of their
-// centres has a bearing with dz = 0 in every one of them: the first two rows of [d]x R, the two the
-// system once kept, are then parallel and give a single equation per view that fixes only the depth
-// along the optical axis, so the point is not determined across it. The three rows determine it.
-// Exact keypoints at dz = 0 must triangulate to the point (the two rows return the minimum-norm
-// solution, metres away, which the reprojection test then rejects); with 1 pixel of noise the median
-// position error at dz = 0 and 0.05 must stay under 0.2 m (the two rows: about 10 m and 0.4 m, the
-// three: about 0.09 m)
-bool SphericalTriangulationTest()
-{
-	TD_TIMER_START();
-	constexpr int width = 4096, height = 2048, numViews = 3, numPoints = 200;
-	Scene scene;
-	scene.cameras.emplace_back(new SphericalCamera(cv::Size(width, height)));
-	for (unsigned i = 0; i < numViews; ++i) {
-		Pose3D pose;
-		pose.C = Point3(i, 0, 0);
-		pose.R = Matrix3x3::IDENTITY;
-		scene.images.emplace_back(static_cast<IIndex>(i), String(), pose, 0, scene.cameras[0]);
-	}
+	// 2. panoramas, rays across the optical axis
+	constexpr unsigned numViews = 3, numPoints = 200;
+	Scene scene(MakeSphereScene({Point3(0, 0, 0), Point3(1, 0, 0), Point3(2, 0, 0)}, 0, 0, cv::Size(4096, 2048)));
 	std::mt19937 rng(4096);
 	std::uniform_real_distribution<REAL> azimuthDist(REAL(0.5), REAL(M_PI) - REAL(0.5));
 	std::normal_distribution<float> noiseDist(0.f, 1.f);
-	bool passed = true;
-	for (const REAL dz : {REAL(0), REAL(0.05)}) {
-		for (const bool noisy : {false, true}) {
-			if (!noisy && dz != REAL(0))
-				continue;
-			CLISTDEF0(double) errors;
-			for (int p = 0; p < numPoints; ++p) {
-				// a bearing from the first view with the given dz, on either side of the baseline
-				const REAL azimuth = azimuthDist(rng) * ((p & 1) ? REAL(1) : REAL(-1));
-				const REAL radial = SQRT(REAL(1) - dz*dz);
-				const Point3 X = Point3(radial * COS(azimuth), radial * SIN(azimuth), dz) * REAL(10);
-				for (Image& img : scene.images)
-					img.keypoints.clear();
-				Track track(Point3(0, 0, 0));
-				for (Image& img : scene.images) {
-					const auto [proj, valid] = img.ProjectPoint(X);
-					if (!valid || !Image8U::isInside(proj, img.GetSize())) {
-						VERBOSE("SphericalTriangulationTest FAILED: the point does not project inside view %u", img.ID);
-						return false;
-					}
-					cv::Point2f pt = Cast<float>(proj);
-					if (noisy) {
-						pt.x += noiseDist(rng);
-						pt.y += noiseDist(rng);
-					}
-					img.keypoints.emplace_back(pt, 0.f, 0.f, 10.f);
-					track.observations.emplace_back(img.ID, 0);
+	String medians;
+	for (const auto& [dz, noisy] : {std::make_pair(REAL(0), false), std::make_pair(REAL(0), true), std::make_pair(REAL(0.05), true)}) {
+		CLISTDEF0(double) errors;
+		for (unsigned p = 0; p < numPoints; ++p) {
+			// a bearing from the first view with the given dz, on either side of the baseline
+			const REAL azimuth = azimuthDist(rng) * ((p & 1) ? REAL(1) : REAL(-1));
+			const REAL radial = SQRT(REAL(1) - dz*dz);
+			const Point3 X = Point3(radial * COS(azimuth), radial * SIN(azimuth), dz) * REAL(10);
+			Track track(Point3(0, 0, 0));
+			for (Image& img : scene.images) {
+				img.keypoints.clear();
+				const auto [proj, valid] = img.ProjectPoint(X);
+				TEST_CHECK(valid && Image8U::isInside(proj, img.GetSize()), "the point does not project inside view %u", img.ID);
+				cv::Point2f pt = Cast<float>(proj);
+				if (noisy) {
+					pt.x += noiseDist(rng);
+					pt.y += noiseDist(rng);
 				}
-				const unsigned returned = TriangulateSkewLLS(track, scene.images, 8.f, 0.f);
-				if (!noisy && (returned != numViews || norm(track.position - X) > 5e-3)) {
-					VERBOSE("SphericalTriangulationTest FAILED: exact keypoints at dz = %g: %u inliers, position %g m off, expected %d and under 0.005",
-						(double)dz, returned, norm(track.position - X), numViews);
-					passed = false;
-					break;
-				}
-				errors.push_back(norm(track.position - X));
+				img.keypoints.emplace_back(pt, 0.f, 0.f, 10.f);
+				track.observations.emplace_back(img.ID, 0);
 			}
-			if (!noisy || errors.empty())
-				continue;
-			const double median = errors.GetMedian();
-			if (!(median < 0.2)) {
-				VERBOSE("SphericalTriangulationTest FAILED: with 1 pixel of noise at dz = %g the median position error is %.3f m, expected under 0.2",
-					(double)dz, median);
-				passed = false;
-			}
-			VERBOSE("SphericalTriangulationTest: dz = %g, 1 px noise: median position error %.3f m", (double)dz, median);
+			const unsigned returned = TriangulateSkewLLS(track, scene.images, 8.f, 0.f);
+			TEST_CHECK(noisy || (returned == numViews && norm(track.position - X) <= 5e-3), "exact keypoints at dz = %g: %u inliers, "
+				"position %g m off, expected %u and under 0.005", (double)dz, returned, norm(track.position - X), numViews);
+			errors.push_back(norm(track.position - X));
 		}
+		if (!noisy)
+			continue;
+		const double median = errors.GetMedian();
+		TEST_CHECK(median < 0.2, "with 1 pixel of noise at dz = %g the median position error is %.3f m, expected under 0.2", (double)dz, median);
+		medians += String::FormatString("%s%.3f m at dz = %g", medians.empty() ? "" : ", ", median, (double)dz);
 	}
-	if (!passed)
-		return false;
-	VERBOSE("SphericalTriangulationTest PASSED: a point across the optical axis of three panoramas triangulates (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
+	return scope.Pass("a triangulation failing for the angle or for a second inlier leaves no inliers and is taken up again; a point "
+		"across the optical axis of three panoramas triangulates (1 px noise: %s)", medians.c_str());
 }
 
 namespace {

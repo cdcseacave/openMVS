@@ -563,30 +563,45 @@ void ArcScene::Place(IIndex imageID, REAL angleDeg)
 	static_cast<Pose3D&>(scene.images[imageID]) = truth[imageID];
 }
 
-void ArcScene::Tracks(const IIndexArr& imageIDs, unsigned numTracks)
+bool ArcScene::TrackAt(const Point3& X, const IIndexArr& imageIDs)
 {
 	ASSERT(!imageIDs.empty());
+	std::vector<Point2> projections;
+	for (IIndex imageID : imageIDs) {
+		const Image& img = scene.images[imageID];
+		const auto [proj, valid] = img.ProjectPoint(X);
+		if (!valid || !Image8U::isInside(proj, img.GetSize()))
+			return false;
+		projections.push_back(proj);
+	}
+	Track track(X);
+	FOREACH(i, imageIDs) {
+		Image& img = scene.images[imageIDs[i]];
+		track.observations.emplace_back(imageIDs[i], (uint32_t)img.keypoints.size());
+		img.keypoints.emplace_back(cv::Point2f((float)projections[i].x, (float)projections[i].y), 1.f);
+	}
+	scene.tracks.emplace_back(std::move(track));
+	return true;
+}
+
+void ArcScene::Tracks(const IIndexArr& imageIDs, unsigned numTracks, REAL spreadY)
+{
+	ASSERT(spreadY >= 0 && spreadY <= 1);
 	std::uniform_real_distribution<REAL> coord(-1, 1);
-	for (unsigned n = 0; n < numTracks; ) {
-		const Point3 X(coord(rng), coord(rng), coord(rng));
-		std::vector<Point2> projections;
-		for (IIndex imageID : imageIDs) {
-			const Image& img = scene.images[imageID];
-			const auto [proj, valid] = img.ProjectPoint(X);
-			if (!valid || !Image8U::isInside(proj, img.GetSize()))
-				break;
-			projections.push_back(proj);
-		}
-		if (projections.size() != imageIDs.size())
-			continue;
-		Track track(X);
-		FOREACH(i, imageIDs) {
-			Image& img = scene.images[imageIDs[i]];
-			track.observations.emplace_back(imageIDs[i], (uint32_t)img.keypoints.size());
-			img.keypoints.emplace_back(cv::Point2f((float)projections[i].x, (float)projections[i].y), 1.f);
-		}
-		scene.tracks.emplace_back(std::move(track));
-		++n;
+	for (unsigned n = 0; n < numTracks; )
+		if (TrackAt(Point3(coord(rng), spreadY*coord(rng), coord(rng)), imageIDs))
+			++n;
+}
+
+void ArcScene::Displace(IIndex imageID, unsigned firstTrack, unsigned numTracks, const Point2f& delta)
+{
+	ASSERT(firstTrack + numTracks <= scene.tracks.size());
+	for (unsigned t = firstTrack; t < firstTrack + numTracks; ++t) {
+		const Track& track = scene.tracks[t];
+		const auto it = std::find_if(track.observations.begin(), track.observations.end(),
+			[imageID](const Observation& obs) { return obs.imageID == imageID; });
+		ASSERT(it != track.observations.end());
+		scene.images[imageID].keypoints[it->featureID].pt += cv::Point2f(delta.x, delta.y);
 	}
 }
 
@@ -622,6 +637,10 @@ ImagePair& ArcScene::Pair(IIndex idA, IIndex idB, unsigned numInliers, const Arc
 	pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 	pair.weightConnectivity = 1.f;
 	pair.meanRayAngle = (float)D2R(spec.rayAngleDeg);
+	if (spec.withMatches) {
+		pair.matches.resize(numInliers);
+		pair.numFilteredInliers = numInliers;
+	}
 	if (spec.turnTranslationDeg != 0) {
 		// a unit vector perpendicular to the translation mixes into it with the sine of the angle
 		Point3& C = pair.relativePose->C;
@@ -647,6 +666,11 @@ void ArcScene::Unregister(const IIndexArr& imageIDs)
 		scene.images[imageID].InvalidatePose();
 	}
 	scene.status.nCalibratedImages = (unsigned)(scene.images.size() - imageIDs.size());
+	Triangulate();
+}
+
+void ArcScene::Triangulate()
+{
 	TriangulateTracks(scene, false, 4.f, 1.f);
 }
 /*----------------------------------------------------------------*/

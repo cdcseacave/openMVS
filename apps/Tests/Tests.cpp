@@ -410,8 +410,7 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(DenseReprojectionBarTest),
 				SFM_TEST(FilterTracksUnposedTrackTest),
 				SFM_TEST(FilterTracksUntriangulatedTrackTest),
-				SFM_TEST(TriangulationFailureTest),
-				SFM_TEST(SphericalTriangulationTest),
+				SFM_TEST(TriangulationTest),
 				SFM_TEST(ContradictingImagesTest),
 				// Hierarchical SFM tests - Phase 1: Scene Clustering
 				SFM_TEST(SceneClusterSingleClusterTest),

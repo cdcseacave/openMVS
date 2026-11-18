@@ -668,15 +668,11 @@ bool FilterTracksUnposedTrackTest();
 // where the star's reference camera sits: the filter rejects it instead of reading a NaN angle as a good one.
 bool FilterTracksUntriangulatedTrackTest();
 
-// A triangulation that fails (TriangulateSkewLLS, TriangulateDLT, and so TriangulateTracks), whether the rays
-// meet below the minimum angle or fewer than the minimum number of observations fit, returns 0 and leaves the
-// track with no inliers: IsInlier() is what the adjustments that follow read, and the caller counts the track
-// as failed.
-bool TriangulationFailureTest();
-
-// TriangulateSkewLLS on spherical cameras determines a point whose bearing lies across the optical axis (dz near 0),
-// which the two rows of [d]x R it once kept did not.
-bool SphericalTriangulationTest();
+// A triangulation that fails (TriangulateSkewLLS, TriangulateDLT, and so TriangulateTracks), for the minimum angle
+// or for want of a second inlier, returns 0 and leaves the track with no inliers, and the next TriangulateTracks of
+// the tracks without inliers takes it up again; TriangulateSkewLLS on panoramas determines a point whose bearing
+// lies across the optical axis (dz near 0), which the two rows of [d]x R it once kept did not.
+bool TriangulationTest();
 
 // TestsSFMMerge.cpp -------------------------------------------
 

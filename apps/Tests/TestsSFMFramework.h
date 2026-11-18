@@ -205,8 +205,9 @@ struct PairGraph
 // ===============================================================================
 // What an ArcScene pair adds to the true relative pose it carries: the ray angle it reports (0: not
 // measured), its translation turned away by turnTranslationDeg (length kept) and its rotation turned
-// about the vertical axis by turnRotationDeg (translation kept)
-struct ArcLinkSpec { REAL rayAngleDeg{0}, turnTranslationDeg{0}, turnRotationDeg{0}; };
+// about the vertical axis by turnRotationDeg (translation kept); withMatches gives it numInliers
+// placeholder matches and as many filtered inliers, for the stages that count them
+struct ArcLinkSpec { REAL rayAngleDeg{0}, turnTranslationDeg{0}, turnRotationDeg{0}; bool withMatches{false}; };
 
 struct ArcScene
 {
@@ -224,9 +225,15 @@ struct ArcScene
 	static Pose3D Pose(REAL angleDeg);
 	// move an image (and its truth) to the given angle along the circle; before any track is added
 	void Place(IIndex imageID, REAL angleDeg);
-	// numTracks tracks at random points of the box, each observed at its exact projection by every
-	// given image (points not projecting inside all of them are drawn again)
-	void Tracks(const IIndexArr& imageIDs, unsigned numTracks);
+	// one track at X, observed at its exact projection by every given image; false (nothing added) when
+	// X does not project inside all of them
+	bool TrackAt(const Point3& X, const IIndexArr& imageIDs);
+	// numTracks tracks at random points of the box, its height scaled by spreadY (0: the plane of the
+	// arc), each observed at its exact projection by every given image (points not projecting inside
+	// all of them are drawn again)
+	void Tracks(const IIndexArr& imageIDs, unsigned numTracks, REAL spreadY = 1);
+	// move the given image's observations of the tracks [firstTrack, firstTrack + numTracks) by delta pixels
+	void Displace(IIndex imageID, unsigned firstTrack, unsigned numTracks, const Point2f& delta);
 	// the image's observations of the first numTrue + numNoise tracks: the first numTrue at the
 	// projections of `projecting` (the image's own pose when NULL), the rest at random pixels
 	void Correspondences(IIndex imageID, unsigned numTrue, unsigned numNoise, const Pose3D* projecting = NULL);
@@ -236,6 +243,8 @@ struct ArcScene
 	ImagePair& Pair(IIndex idA, IIndex idB, unsigned numInliers, const ArcLinkSpec& spec = {});
 	// invalidate the given images' poses, leaving the others registered, and triangulate the tracks
 	void Unregister(const IIndexArr& imageIDs);
+	// triangulate the tracks from the registered images, at the resection's bars (4 px, 1 degree)
+	void Triangulate();
 };
 /*----------------------------------------------------------------*/
 
