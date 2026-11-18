@@ -1,5 +1,5 @@
 /*
- * MatchROMA2.cpp
+ * MatchDense.cpp
  *
  * Copyright (c) 2014-2026 SEACAVE
  *
@@ -25,13 +25,13 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Common.h"
-#include "MatchROMA2.h"
+#include "MatchDense.h"
 #include "Scene.h"
 #include "RoMa2Matcher.h"
 #include "DenseMatcher.h"
 #include "PairsMatcher.h"
 #include "MatchGeometric.h"
-#include "ROMA2Warp.h"
+#include "DenseWarp.h"
 
 #include <deque>
 #include <future>
@@ -72,7 +72,7 @@ PairInput MakePairInput(const Image& imgA, const Image& imgB)
 // extracted from. Each image is touched by exactly one pool task, and by the calling thread
 // only after that task's future has resolved (PrefetchRing::Take, below), so no locking is
 // needed on Image.
-bool PrepareImageROMA2(Image& img, const DenseMatcher& matcher, PlanarImage& planar)
+bool PrepareImageDense(Image& img, const DenseMatcher& matcher, PlanarImage& planar)
 {
 	const bool hadPixels = img.HasPixels();
 	if (!hadPixels && !img.LoadPixels())
@@ -99,7 +99,7 @@ bool PrepareImageROMA2(Image& img, const DenseMatcher& matcher, PlanarImage& pla
 // `capacity` submissions may be outstanding, so the (capacity+1)-th may only be issued after
 // Take() consumed the first. Both passes keep it by construction (each pass issues at most one
 // submission per Take()). A submission for an image another outstanding submission is already
-// preparing is refused as well: PrepareImageROMA2 loads and releases that Image's pixels, so
+// preparing is refused as well: PrepareImageDense loads and releases that Image's pixels, so
 // two concurrent tasks on one image would race on them. Only the dense-matching pass can ask
 // for that (an image evicted from its slot and reloaded a few steps later); CanSubmit() tells
 // it to let the prefetch window run short until the earlier submission has been taken.
@@ -136,7 +136,7 @@ public:
 		ASSERT(CanSubmit(image));
 		const size_t idxPlanar = numSubmitted++ % planars.size();
 		pending.push_back(Submission{image, scene.threadPool.submit_task([this, image, idxPlanar]() {
-			return PrepareImageROMA2(scene.images[image], matcher, planars[idxPlanar]);
+			return PrepareImageDense(scene.images[image], matcher, planars[idxPlanar]);
 		})});
 	}
 
@@ -195,7 +195,7 @@ struct ScopedPassState
 	}
 };
 
-// Waits for every task of the scene thread pool on scope exit. MatchPairsROMA2's consumers are
+// Waits for every task of the scene thread pool on scope exit. MatchPairsDense's consumers are
 // detached (they hand nothing back but the result slot they fill), so this is what guarantees
 // none of them is still running when the locals they capture by reference die -- on the normal
 // path, where the explicit wait has already drained them, and on an exceptional one alike.
@@ -209,7 +209,7 @@ struct ScopedPoolDrain
 	~ScopedPoolDrain() { scene.threadPool.wait(); }
 };
 
-// Returns one permit of the in-flight semaphore on scope exit. MatchPairsROMA2's producer takes
+// Returns one permit of the in-flight semaphore on scope exit. MatchPairsDense's producer takes
 // a permit before it hands a warp to a consumer, so a consumer that left without returning one
 // (the verdict, the guided match and the assembly can all throw) would starve the producer
 // permanently; this keeps the count balanced on every path out of the task.
@@ -224,7 +224,7 @@ struct ScopedSemaphore
 };
 
 // Which device slot each image of each pair is described into, and in which order the slots
-// are (re)loaded: one Step per pair, in the order MatchPairsROMA2 walks the pairs.
+// are (re)loaded: one Step per pair, in the order MatchPairsDense walks the pairs.
 struct SlotPlan {
 	struct Load {
 		IIndex image;  // image to describe
@@ -338,7 +338,7 @@ typedef std::function<void(size_t idxPair, const PairIdx& pair, PairOutput& outp
 // is drained, and the OpenCV thread count, log console and progress bar restored, on every exit path
 // including an exceptional one (Describe, MatchCoarse and the consumers can all throw).
 // Returns false only when the device slot pool could not be allocated (nothing was warped).
-bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const PairIdxArr& pairs,
+bool ForEachDenseWarp(PairsMatcher& pairsMatcher, DenseMatcher& matcher, const PairIdxArr& pairs,
 	unsigned slotBudget, LPCTSTR progressCaption, const WarpConsumer& consume, WarpPassStats& stats)
 {
 	ASSERT(!pairs.empty() && std::is_sorted(pairs.begin(), pairs.end()));
@@ -352,7 +352,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const Pai
 	const SlotPlan plan(MakeSlotPlan(pairs, slotBudget, (IIndex)scene.images.size()));
 	std::vector<OrtTensor> slotLayers(plan.numSlots);
 	for (OrtTensor& layers : slotLayers) {
-		layers = roma2.MakeCode();
+		layers = matcher.MakeCode();
 		if (!layers.IsValid()) {
 			VERBOSE("error: ROMA2 slot pool: could not allocate the %u descriptor slots the plan needs (lower --dense-slots)", plan.numSlots);
 			return false;
@@ -374,7 +374,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const Pai
 		for (const SlotPlan::Load& load : step.loads)
 			loads.push_back(load);
 	ScopedPassState state(scene, progressCaption, pairs.size());
-	PrefetchRing ring(scene, MINF(2u*nThreads, 8u), roma2);
+	PrefetchRing ring(scene, MINF(2u*nThreads, 8u), matcher);
 	// the detached consumers capture every local above by reference, so the pool must be drained
 	// before any of them dies -- on the exceptional path too. Declared last, so that its
 	// destructor is the first one to run.
@@ -396,7 +396,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const Pai
 			const PlanarImage* const planar = ring.Take();
 			slotImage[load.slot] = NO_ID;
 			// value_facets stays on the device: the warp pass never reads it back
-			if (planar && roma2.DescribeImage(planar->data(), slotLayers[load.slot], discardedRetrieval)) {
+			if (planar && matcher.DescribeImage(planar->data(), slotLayers[load.slot], discardedRetrieval)) {
 				slotImage[load.slot] = load.image;
 			} else {
 				++stats.numFailedLoads;
@@ -410,13 +410,13 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const Pai
 			continue;
 		}
 		PairOutput warps;
-		if (!roma2.MatchPair(slotLayers[step.slotA], slotLayers[step.slotB], MakePairInput(scene.images[pair.i], scene.images[pair.j]), warps)) {
+		if (!matcher.MatchPair(slotLayers[step.slotA], slotLayers[step.slotB], MakePairInput(scene.images[pair.i], scene.images[pair.j]), warps)) {
 			++stats.numFailedMatches;
 			DEBUG_EXTRA("error: could not dense match pair (% 4u, % 4u)", pair.i, pair.j);
 			++state.progress;
 			continue;
 		}
-		ASSERT(warps.IsValid() && warps.ab.warp.rows == roma2.GridSize());
+		ASSERT(warps.IsValid() && warps.ab.warp.rows == matcher.GridSize());
 		inFlight.Wait();
 		scene.threadPool.detach_task([&, p, pair, warps = std::move(warps)]() mutable {
 			const ScopedSemaphore released(inFlight); // returned however this task ends (see the struct)
@@ -441,7 +441,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const Pai
 constexpr unsigned VERDICT_SAMPLE = 4000;
 
 // Every eligible cell of one warp direction, in raster order. Eligibility is not decided here: the
-// one predicate every warp scan uses decides it (IsWarpCellEligible, ROMA2Warp.h, the same one
+// one predicate every warp scan uses decides it (IsWarpCellEligible, DenseWarp.h, the same one
 // CollectWarpCandidates walks the grid with), so the population the verdict measures below and the
 // population the dense fill draws from cannot drift apart. `ptsSrc` are the cell centres in the
 // pixels of the working orientation of the source image, `ptsDst` the warped points in the target
@@ -601,10 +601,10 @@ void MakeFitImages(const std::vector<Point2f>& pointsA, const std::vector<Point2
 
 // D E S C R I B E   P A S S //////////////////////////////////////////
 
-unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2)
+unsigned SFM::ComputeGlobalDescriptorsDense(Scene& scene, DenseMatcher& matcher)
 {
 #ifdef _USE_ONNXRUNTIME
-	ASSERT(roma2.IsLoaded());
+	ASSERT(matcher.IsLoaded());
 	TD_TIMER_STARTD();
 	const IIndex nImages = (IIndex)scene.images.size();
 	const unsigned nPrefetch = MINF(2u*(unsigned)scene.threadPool.get_thread_count(), 8u);
@@ -613,12 +613,12 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2)
 	// before state, so it is declared after state (reverse declaration order == destruction
 	// order) -- every pool task is drained before cv::setNumThreads/log console are restored
 	ScopedPassState state(scene, _T("Describe images"), nImages);
-	PrefetchRing ring(scene, nPrefetch, roma2);
+	PrefetchRing ring(scene, nPrefetch, matcher);
 	for (IIndex i = 0; i < MINF(nPrefetch, nImages); ++i)
 		ring.Submit(i);
 
 	unsigned numDescribed = 0;
-	OrtTensor layers(roma2.MakeCode()); // reused across every image: the describe pass keeps only the pooled vector, not the layers
+	OrtTensor layers(matcher.MakeCode()); // reused across every image: the describe pass keeps only the pooled vector, not the layers
 	if (!layers.IsValid()) {
 		VERBOSE("error: could not allocate the ROMA2 layers tensor");
 		return 0;
@@ -630,8 +630,8 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2)
 		Image& img = scene.images[i];
 		// the graph's own on-device retrieval pooling (RoMa2Onnx::Describe), read straight into
 		// descriptor
-		if (planar && roma2.DescribeImage(planar->data(), layers, descriptor)) {
-			ASSERT(descriptor.size() == roma2.RetrievalSize());
+		if (planar && matcher.DescribeImage(planar->data(), layers, descriptor)) {
+			ASSERT(descriptor.size() == matcher.RetrievalSize());
 			img.globalDescriptor = cv::Mat(1, (int)descriptor.size(), CV_32F, descriptor.data()).clone();
 			++numDescribed;
 		} else {
@@ -644,7 +644,7 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2)
 	state.Finish(); // unpause the log console before the summary line below (see struct comment)
 
 	DEBUG("Global descriptors computed for %u/%u images (%u-D, %s provider, %s)",
-		numDescribed, (unsigned)nImages, roma2.RetrievalSize(), roma2.ProviderName().c_str(), TD_TIMER_GET_FMT().c_str());
+		numDescribed, (unsigned)nImages, matcher.RetrievalSize(), matcher.ProviderName().c_str(), TD_TIMER_GET_FMT().c_str());
 	return numDescribed;
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never
@@ -658,8 +658,8 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2)
 
 // T H E   V E R D I C T //////////////////////////////////////////////
 
-void SFM::JudgePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const PairWarps& warps, const ROMA2Config& config, ImagePair& pair, PairVerdict& verdict)
+void SFM::JudgePairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const PairWarps& warps, const DenseMatchConfig& config, ImagePair& pair, PairVerdict& verdict)
 {
 	ASSERT(warps.IsValid());
 	ASSERT(imgA.HasCamera() && imgB.HasCamera());
@@ -753,8 +753,8 @@ void SFM::JudgePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, co
 
 // P A I R   A S S E M B L Y   A N D   S T O R A G E //////////////////
 
-bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const PairVerdict& verdict, const std::vector<DMatch>& guided, const ROMA2Config& config, int warpSize,
+bool SFM::AssemblePairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const PairVerdict& verdict, const std::vector<DMatch>& guided, const DenseMatchConfig& config, int warpSize,
 	ImagePair& pair, DenseMatches& dense)
 {
 	ASSERT(verdict.admitted);
@@ -786,10 +786,10 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 	}
 
 	// 2) the one geometry and the classification of both kinds of correspondence
-	// (FitAndClassifyPairROMA2); the warp's half cell is the dense bar when the verification is off,
+	// (FitAndClassifyPairDense); the warp's half cell is the dense bar when the verification is off,
 	// and when the union fit fails the classification ran against the verdict's geometry, which stands
 	std::vector<uint8_t> denseKept;
-	FitAndClassifyPairROMA2(pairsMatcher, imgA, imgB, guided, dense.pointsA, dense.pointsB, config,
+	FitAndClassifyPairDense(pairsMatcher, imgA, imgB, guided, dense.pointsA, dense.pointsB, config,
 		WarpTolerance(sizeA, sizeB, warpSize), pair, denseKept);
 	size_t numDenseKept = 0;
 	FOREACH(k, dense.pointsA) {
@@ -811,9 +811,9 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 	return !pair.matches.empty() || numDenseKept > 0;
 }
 
-bool SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+bool SFM::FitAndClassifyPairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
 	const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA, const std::vector<Point2f>& densePointsB,
-	const ROMA2Config& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept, bool bFit)
+	const DenseMatchConfig& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept, bool bFit)
 {
 	ASSERT(pair.matches.empty() && pair.outlierMatches.empty());
 	ASSERT(bFit || pair.relativePose.has_value());
@@ -845,7 +845,7 @@ bool SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image&
 		MakeFitImages(pointsA, pointsB, imgACopy, imgBCopy, fit);
 		if (pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit)) {
 			// the polish that closes the fit, again over the fit's inliers but with each dense
-			// correspondence at ROMA2Config::denseFitWeight: the union found the pose, the sparse
+			// correspondence at DenseMatchConfig::denseFitWeight: the union found the pose, the sparse
 			// matches set it wherever they are many (MakeFitImages numbers the sparse matches first)
 			if (fit.relativePose.has_value()) {
 				std::vector<double> weights;
@@ -867,7 +867,7 @@ bool SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image&
 
 	// classify both kinds of correspondence against the kept geometry: a descriptor correspondence
 	// is sub-pixel and is held to the matcher's own epipolar error; a warp cell is held to a multiple
-	// of that same bar (ROMA2Config::denseEpipolarErrorFactor), since a correspondence admitted at the
+	// of that same bar (DenseMatchConfig::denseEpipolarErrorFactor), since a correspondence admitted at the
 	// half cell the coarse warp can claim pollutes every track it enters downstream
 	const MatchConfig& cfg = pairsMatcher.GetConfig();
 	// maxEpipolarError 0 turns the RANSAC verification off scene-wide (MatchConfig), and with it the
@@ -887,7 +887,7 @@ bool SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image&
 			pair.outlierMatches.push_back(match);
 	}
 	// the sparse segment is materialised here rather than left at -1: the dense segment goes right
-	// after it (ImagePair's partition), and StorePairROMA2 appends it as soon as the pair exists
+	// after it (ImagePair's partition), and StorePairDense appends it as soon as the pair exists
 	pair.numFilteredInliers = (int)pair.matches.size();
 	pair.numDenseInliers = 0;
 	pair.weightedInliers = -1.f;
@@ -902,8 +902,8 @@ bool SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image&
 	return bFitted;
 }
 
-void SFM::ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const ROMA2Config& config, ImagePair& pair, bool bRefit)
+void SFM::ReverifyPairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const DenseMatchConfig& config, ImagePair& pair, bool bRefit)
 {
 	ASSERT(pair.ID1 == imgA.ID && pair.ID2 == imgB.ID);
 	const unsigned numSparse = pair.GetNumFilteredInliers(), numDense = pair.GetNumDenseInliers();
@@ -936,7 +936,7 @@ void SFM::ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 	}
 	pair.ResetMatches();
 	std::vector<uint8_t> denseKept;
-	if (!FitAndClassifyPairROMA2(pairsMatcher, imgA, imgB, sparse, densePointsA, densePointsB, config, 0.f, pair, denseKept, bRefit)) {
+	if (!FitAndClassifyPairDense(pairsMatcher, imgA, imgB, sparse, densePointsA, densePointsB, config, 0.f, pair, denseKept, bRefit)) {
 		// no geometry explains the candidates any more (too few of them, or too few inliers for the
 		// estimator): the pair is invalidated, as GeometricFilter leaves a pair it cannot verify -- no
 		// geometry, every candidate an outlier and no partition -- rather than classified against a
@@ -958,8 +958,8 @@ void SFM::ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 		pair.meanRayAngle = pair.ComputeMeanRayAngle(imgA, imgB);
 }
 
-bool SFM::PlanarTwinROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const ROMA2Config& config, const ImagePair& pair, ImagePair& twin, float& share)
+bool SFM::PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const DenseMatchConfig& config, const ImagePair& pair, ImagePair& twin, float& share)
 {
 	ASSERT(pair.ID1 == imgA.ID && pair.ID2 == imgB.ID);
 	ASSERT(pair.relativePose.has_value());
@@ -1061,13 +1061,13 @@ bool SFM::PlanarTwinROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, c
 		DirectionDeg(twin.relativePose->GetT(), t0) > minDirectionDeg;
 }
 
-unsigned SFM::SwitchPlanarTwinsROMA2(PairsMatcher& pairsMatcher, const ROMA2Config& config)
+unsigned SFM::SwitchPlanarTwinsDense(PairsMatcher& pairsMatcher, const DenseMatchConfig& config)
 {
 	if (config.twinMinLoopGain == 0)
 		return 0;
 	TD_TIMER_STARTD();
 	Scene& scene = pairsMatcher.GetScene();
-	const auto IsRoMa2Pair = [&](const ImagePair& pair) {
+	const auto IsDensePair = [&](const ImagePair& pair) {
 		return pair.GetNumDenseInliers() > 0 || scene.images[pair.ID1].HasDenseKeypoints() || scene.images[pair.ID2].HasDenseKeypoints();
 	};
 	// 1) the twin of every posed, plane-dominated RoMa2 pair
@@ -1077,10 +1077,10 @@ unsigned SFM::SwitchPlanarTwinsROMA2(PairsMatcher& pairsMatcher, const ROMA2Conf
 	cv::setNumThreads(1); // temporarily turn off multi-threading for OpenCV functions (the pool tasks are already parallel)
 	scene.threadPool.detach_loop(0u, scene.pairs.size(), [&](unsigned i) {
 		const ImagePair& pair = scene.pairs[i];
-		if (!pair.relativePose.has_value() || !IsRoMa2Pair(pair))
+		if (!pair.relativePose.has_value() || !IsDensePair(pair))
 			return;
 		float share;
-		hasTwin[i] = PlanarTwinROMA2(pairsMatcher, scene.images[pair.ID1], scene.images[pair.ID2], config, pair, twins[i], share) ? 1 : 0;
+		hasTwin[i] = PlanarTwinDense(pairsMatcher, scene.images[pair.ID1], scene.images[pair.ID2], config, pair, twins[i], share) ? 1 : 0;
 		if (share >= config.twinMinPlaneShare)
 			++numPlanar;
 	});
@@ -1234,7 +1234,7 @@ unsigned SFM::SwitchPlanarTwinsROMA2(PairsMatcher& pairsMatcher, const ROMA2Conf
 		pair.relativePose = twin.relativePose;
 		pair.E = twin.E;
 		pair.F = twin.F;
-		ReverifyPairROMA2(pairsMatcher, scene.images[pair.ID1], scene.images[pair.ID2], config, pair, false);
+		ReverifyPairDense(pairsMatcher, scene.images[pair.ID1], scene.images[pair.ID2], config, pair, false);
 		VERBOSE("Pair %u-%u switched to its planar twin: loops %d -> %d of %u within %g deg, rotation change %.2f deg, direction change %.1f deg; sparse inliers %u -> %u, dense %u -> %u",
 			pair.ID1, pair.ID2, loopsStored, loopsTwin, (unsigned)trianglesOf[ci].size(), config.twinMaxLoopAngle, rotationDeg,
 			R2D(ACOS(CLAMP(t0.dot(t1)/(norm(t0)*norm(t1)), REAL(-1), REAL(1)))),
@@ -1248,7 +1248,7 @@ unsigned SFM::SwitchPlanarTwinsROMA2(PairsMatcher& pairsMatcher, const ROMA2Conf
 }
 /*----------------------------------------------------------------*/
 
-void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
+void SFM::StorePairDense(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
 	ImagePair&& pair, const DenseMatches& dense, int warpSize)
 {
 	ASSERT(pair.ID1 < pair.ID2 && pair.ID2 < scene.images.size());
@@ -1259,7 +1259,7 @@ void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 	if (it != pairIndexMap.end()) {
 		// a same-key pair a previous Match() left: this pass judged the pair again on its warp
 		// alone, so its verdict replaces that pair whole rather than merging two sets of evidence.
-		// Unreached today -- MatchPairsROMA2 skips every candidate already in pairIndexMap -- and
+		// Unreached today -- MatchPairsDense skips every candidate already in pairIndexMap -- and
 		// safe only as long as that holds: the incumbent must carry no dense segment of its own, or
 		// this move would orphan the keypoints its dense fill already appended to both images.
 		idxPair = it->second;
@@ -1300,12 +1300,12 @@ static void LogOnePassSummary(size_t numCandidates, unsigned numJudged, unsigned
 }
 #endif
 
-bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const PairIdxArr& candidatePairs,
-	const ROMA2Config& config, unsigned& numStored)
+bool SFM::MatchPairsDense(PairsMatcher& pairsMatcher, DenseMatcher& matcher, const PairIdxArr& candidatePairs,
+	const DenseMatchConfig& config, unsigned& numStored)
 {
 	numStored = 0;
 #ifdef _USE_ONNXRUNTIME
-	ASSERT(roma2.IsLoaded());
+	ASSERT(matcher.IsLoaded());
 	if (candidatePairs.empty())
 		return true;
 	TD_TIMER_STARTD();
@@ -1363,9 +1363,9 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 	};
 	std::vector<AssembledPair> results(pairs.size());
 	std::atomic<unsigned> numJudged{0}, numAdmitted{0}, numGated{0};
-	const int warpSize = roma2.GridSize();
+	const int warpSize = matcher.GridSize();
 	WarpPassStats stats;
-	if (!ForEachWarpROMA2(pairsMatcher, roma2, pairs, config.slotBudget, _T("Dense match image pairs"),
+	if (!ForEachDenseWarp(pairsMatcher, matcher, pairs, config.slotBudget, _T("Dense match image pairs"),
 		[&](size_t p, const PairIdx& pairIdx, PairOutput& warps, unsigned threadIdx) {
 			const Image& imgA = scene.images[pairIdx.i];
 			const Image& imgB = scene.images[pairIdx.j];
@@ -1378,7 +1378,7 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 			pair.covisibility = warps.covisibility;
 			pair.posePrior = warps.pose;
 			PairVerdict verdict;
-			JudgePairROMA2(pairsMatcher, imgA, imgB, warps, config, pair, verdict);
+			JudgePairDense(pairsMatcher, imgA, imgB, warps, config, pair, verdict);
 			++numJudged;
 			if (!verdict.admitted) {
 				DEBUG_ULTIMATE("ROMA2 pair %u-%u: conf %.4f %.4f inl %.4f %.4f REJECT",
@@ -1404,7 +1404,7 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 			std::vector<DMatch> guided;
 			MatchFeaturesGuided(pairsMatcher, imgA, imgB, trackedB, trackStatus, search, threadIdx, guided);
 			AssembledPair& result = results[p];
-			result.bAssembled = AssemblePairROMA2(pairsMatcher, imgA, imgB, verdict, guided, config,
+			result.bAssembled = AssemblePairDense(pairsMatcher, imgA, imgB, verdict, guided, config,
 				warpSize, pair, result.dense);
 			const unsigned numSparse = result.bAssembled ? pair.GetNumFilteredInliers() : 0u;
 			if (result.bAssembled)
@@ -1428,7 +1428,7 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 		if (result.pair.GetNumFilteredInliers() == 0)
 			++numDenseOnly; // no sparse inlier at all: the dense segment is this pair's whole evidence
 		numDenseMatches += result.dense.pointsA.size();
-		StorePairROMA2(scene, pairIndexMap, std::move(result.pair), result.dense, warpSize);
+		StorePairDense(scene, pairIndexMap, std::move(result.pair), result.dense, warpSize);
 		++numStored;
 	}
 	if (config.minCovisibility > 0.f && numGated.load() + numJudged.load() > 0)

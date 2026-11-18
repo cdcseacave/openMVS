@@ -30,8 +30,8 @@ flags say are done (see "Saved-scene resume").
 | 1 | Import and cameras | an image folder, a semicolon-separated list of images, or one `.sfm` file; optionally a poses file | images with EXIF metadata, one shared camera per distinct intrinsics, forced focal/distortion applied, imported poses | `--source`, `--camera-type`, `--default-focal-ratio`, `--focal-length`, `--k1`, `--k2`, `--image-indices`, `--import-poses-file`, `--import-poses-mode`, `--known-poses-convention` | `Scene.cpp:Scene::Import` | `ImportAndCameras.md`, `SphericalCameras.md` |
 | 2 | Features | the images | keypoints and descriptors per image | `--detector-type` (AKAZE, ORB, SIFT, SIFTGPU; default SIFTGPU), `--max-features-per-cell`, `--min-features-per-cell`, `--siftgpu-cuda`, `--siftgpu-darkness-adaptivity`, `--spherical-bottom-band`, `--import-openmvg-dir`, `--export-openmvg-dir` | `Scene.cpp:Scene::ExtractFeatures` (`FeaturesExtractor.cpp:FeaturesExtractor::Extract`) | `FeatureExtraction.md`, `SiftGPUFeatureExtraction.md` |
 | 3 | Retrieval and pair selection | features (and, for RETRIEVAL, global descriptors) | the candidate pairs to match | `--match-mode` (default 1 VOCABULARY), `--vocab-max-pairs` (50), `--match-sequence-overlap` (3), `--match-verification-feedback` (1), `--dense-matcher` with `--match-mode 4` | `PairsMatcher.cpp:PairsMatcher::Match` (`CollectVocabularyPairs`, `CollectRetrievalPairs`, `CollectKnownPosePairs`, `CollectVerificationFeedbackPairs`) | `PairSelection.md` |
-| 4 | Matching | the candidate pairs | for each pair, matches between keypoints | `--dense-match` (default 0) selects the dense pass; otherwise descriptor matching. The dense pass is sized by `--dense-*` (`--roma2-model` for RoMa2 only), `--dense-matcher`, `--flexglue-model`, `--dense-min-covisibility` | descriptors: `PairsMatcher.cpp:PairsMatcher::MatchPairsBatch`; dense: `MatchROMA2.cpp:MatchPairsROMA2`; both from `Scene.cpp:Scene::MatchPairs` | `PairSelection.md`, `DenseMatching.md` |
-| 5 | Pair verification, lens fit, focal calibration | matched pairs | inlier matches and a relative pose per verified pair; the radial lens of every pinhole camera without one; focals of cameras that do not trust theirs | `--release-descriptors`; the lens fit has no option | `PairsMatcher.cpp:PairsMatcher::GeometricFilter` (inside stage 4), then `LensFit.cpp:CalibrateFocalsAndFitLenses` and `MatchROMA2.cpp:SwitchPlanarTwinsROMA2` (both from `Scene::MatchPairs`) | `TwoViewVerificationAndLens.md`, `DenseMatching.md` (planar twin switch) |
+| 4 | Matching | the candidate pairs | for each pair, matches between keypoints | `--dense-match` (default 0) selects the dense pass; otherwise descriptor matching. The dense pass is sized by `--dense-*` (`--roma2-model` for RoMa2 only), `--dense-matcher`, `--flexglue-model`, `--dense-min-covisibility` | descriptors: `PairsMatcher.cpp:PairsMatcher::MatchPairsBatch`; dense: `MatchDense.cpp:MatchPairsDense`; both from `Scene.cpp:Scene::MatchPairs` | `PairSelection.md`, `DenseMatching.md` |
+| 5 | Pair verification, lens fit, focal calibration | matched pairs | inlier matches and a relative pose per verified pair; the radial lens of every pinhole camera without one; focals of cameras that do not trust theirs | `--release-descriptors`; the lens fit has no option | `PairsMatcher.cpp:PairsMatcher::GeometricFilter` (inside stage 4), then `LensFit.cpp:CalibrateFocalsAndFitLenses` and `MatchDense.cpp:SwitchPlanarTwinsDense` (both from `Scene::MatchPairs`) | `TwoViewVerificationAndLens.md`, `DenseMatching.md` (planar twin switch) |
 | 6 | Pair weighting | verified pairs | the composite weight of each pair | `--export-pairs-csv` writes the pairs right after this step | `PairsWeighting.cpp:ComputePairsWeights`, called by `WeighAndExportPairs` in `Scene.cpp` (from `FilterViewGraph`, or alone for a scene loaded at `PAIRS_FILTERED`) | `PairWeight.md` |
 | 7 | View-graph filtering and the contradiction cut | the weighted view graph | triplet scores per pair, the seed views (`Scene::seedViews`), a view graph with the contradicted pairs removed (or repaired, `ImagePair::returnedByRepair`), and the `PAIRS_FILTERED` state | `--filter-triplets` (1), `--triplet-cut` (0), `--triplet-min-score` (0.3), `--triplet-second-face-score` (0.75), `--max-pair-direction-residual` (45; 0 = rotation stage only), `--repair-contradicted-pairs` (1) | `ViewGraphTriplets.cpp:FilterPairsByTriplets`, then `GlobalRotationAveraging.cpp:FilterPairsByContradiction`; both from `FilterViewGraph` in `Scene.cpp` | `TripletScores.md`, `ContradictionCut.md`; weights again in `PairWeight.md` |
 | 8 | Solver choice | the filtered view graph | a calibrated scene | known poses imported (modes 1 and 2) take `ReconstructKnownPoses`; else `--use-global-solver` takes `ReconstructGlobal`; else `ReconstructHierarchical` (default) | `Scene.cpp:Scene::Reconstruct`, the ternary after the `matchImagesOnly` return | this document; `GlobalSolver.md` for `ReconstructGlobal` |
@@ -60,14 +60,14 @@ the camera when other images share it.
 than `1.2 * --vocab-max-pairs` images. VOCABULARY and RETRIEVAL add the sequential prior (`--match-sequence-overlap`).
 When verification feedback is on and `--vocab-max-pairs` is at least 10, matching runs in two rounds (VOCABULARY,
 RETRIEVAL and KNOWN_POSES only): the first round matches 80 percent of the budget, the second re-invests the rest in pairs
-suggested by the verified matches. With `--dense-match` each round is the dense pass (`MatchPairsROMA2`): a pair the
+suggested by the verified matches. With `--dense-match` each round is the dense pass (`MatchPairsDense`): a pair the
 dense verdict rejects is dropped, never descriptor-matched. RETRIEVAL ranks by global descriptors computed once by the
 dense matcher's descriptor graph (`Scene::ComputeGlobalDescriptors`, flag `GLOBAL_DESCRIPTORS`); a scene that already
 carries descriptors of the right size does not load the model for it.
 
 **Verification and weighting.** `GeometricFilter` picks one of three branches per pair: shared-focal fundamental matrix,
 essential matrix on bearings (both cameras trust their intrinsics), else the seven-degree-of-freedom fundamental matrix.
-After all pairs are verified, `CalibrateFocalsAndFitLenses` and `SwitchPlanarTwinsROMA2` run once on the whole graph,
+After all pairs are verified, `CalibrateFocalsAndFitLenses` and `SwitchPlanarTwinsDense` run once on the whole graph,
 before anything reads the pairs' geometry.
 
 **View-graph filtering.** Scene::Reconstruct runs this step (`FilterViewGraph`) once on a scene's pairs, after
@@ -141,8 +141,8 @@ Dense matcher and camera type.
 
 | Combination | Behaviour | Where |
 |---|---|---|
-| dense matcher, perspective images | supported | `MatchROMA2.cpp:SampsonTest` |
-| dense matcher, spherical images | supported: the dense code has no camera-type branch; the networks read the equirectangular raster as an image, and a spherical or mixed pair is judged on bearings through the essential matrix | `MatchROMA2.cpp:470-500` (no `CameraType` test in `MatchROMA2.cpp`, `DenseMatcher.cpp`, `GlobalDescriptors.cpp`) |
+| dense matcher, perspective images | supported | `MatchDense.cpp:SampsonTest` |
+| dense matcher, spherical images | supported: the dense code has no camera-type branch; the networks read the equirectangular raster as an image, and a spherical or mixed pair is judged on bearings through the essential matrix | `MatchDense.cpp:470-500` (no `CameraType` test in `MatchDense.cpp`, `DenseMatcher.cpp`, `GlobalDescriptors.cpp`) |
 
 Camera type and the rest of the pipeline.
 

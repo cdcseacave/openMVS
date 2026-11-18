@@ -23,7 +23,7 @@
 #include "SceneCluster.h"
 #include "BundleAdjustment.h"
 #include "GlobalAlignment.h"
-#include "MatchROMA2.h"
+#include "MatchDense.h"
 #include "ViewGraphTriplets.h"
 #include "PoseIO.h"
 
@@ -72,7 +72,7 @@ struct SFM_API ReconstructionConfig {
 	FeatureExtractionConfig featuresCfg;
 
 	// ROMA2 configuration
-	ROMA2Config roma2Cfg;
+	DenseMatchConfig denseCfg;
 
 	// Matching parameters (will be translated to MatchConfig)
 	MatchConfig matchCfg;
@@ -323,20 +323,20 @@ public:
 	/**
 	 * @brief Match image pairs to find correspondences
 	 * @param config Matching configuration
-	 * @param roma2Cfg In-process ROMAv2 configuration
+	 * @param denseCfg In-process ROMAv2 configuration
 	 * @param vgConfig View-graph calibration configuration
 	 * @return true if matching completed successfully
 	 */
-	bool MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg = ROMA2Config(), const ViewGraphCalibratorConfig& vgConfig = ViewGraphCalibratorConfig());
+	bool MatchPairs(const MatchConfig& config, const DenseMatchConfig& denseCfg = DenseMatchConfig(), const ViewGraphCalibratorConfig& vgConfig = ViewGraphCalibratorConfig());
 
 	/**
 	 * @brief Describe every image with the in-process ROMAv2 model and pool the result into
 	 * each image's global retrieval descriptor (a no-op returning true if the scene is already
 	 * marked GLOBAL_DESCRIPTORS). Sets the flag only once every image was successfully described.
-	 * @param roma2 an already-loaded dense matcher (RoMa2Onnx or FlexGlueMatcher)
+	 * @param matcher an already-loaded dense matcher (RoMa2Onnx or FlexGlueMatcher)
 	 * @return true if every image now carries a global descriptor
 	 */
-	bool ComputeGlobalDescriptors(DenseMatcher& roma2);
+	bool ComputeGlobalDescriptors(DenseMatcher& matcher);
 
 	/**
 	 * @brief Run a full reconstruction from a folder or semicolon-separated list

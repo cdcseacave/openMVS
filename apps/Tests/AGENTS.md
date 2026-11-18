@@ -90,7 +90,7 @@ All in `namespace SFM`. Called sequentially when `argv[1] == 1`.
 
 ### ROMAv2 Dense Matching Catalog
 
-The one-pass dense matcher (`libs/SFM/MatchROMA2.h`, `libs/SFM/ROMA2Warp.h`), in the order
+The one-pass dense matcher (`libs/SFM/MatchDense.h`, `libs/SFM/DenseWarp.h`), in the order
 `Tests.cpp` dispatches it. The last two need a model: they report themselves skipped unless
 `OPENMVS_ROMA2_MODEL_PATH` points at an exported model folder, and `OPENMVS_ROMA2_PROVIDER`
 (`auto|cuda|coreml|dml|cpu`) and `OPENMVS_ROMA2_SETTING` (`turbo|fast|base`) narrow what they run.
@@ -99,12 +99,12 @@ runs entirely off the bundled fixture files.
 
 | Test | Purpose | Key Tolerance |
 |------|---------|---------------|
-| `ROMA2WarpTrackingTest()` | Keypoint tracking through an identity warp: the pixel/grid/normalized conventions, the confidence gate, the dense append | Tracked positions exact; gated cells dropped |
-| `ROMA2CoverageSampleTest()` | The coverage-uniform sample the verdict fits on: budget, bucket stratification against a top-confidence pick, one-sided coverage, determinism | One winner per bucket; identical draw on a repeat |
-| `ROMA2ComplementaryDrawTest()` | The dense fill of an admitted pair: drawn only where the guided matches are not, capped, thinned by the pair-independent lattice key so a tighter budget keeps a subset of a looser one's, chained across pairs sharing an image | >= 2/5 of the common-region points coincide exactly; a budget halved again keeps a subset; repeat draw identical |
-| `ROMA2VerdictTest()` | `JudgePairROMA2` on the exact bidirectional warp of a two-camera wedge fixture: ~30% of both frames admitted, a 3% B side rejected by the min-side rule, a homography warp rejected in the calibrated AND the forced-fundamental branch, `minOverlap` 0 admitting both | Inlier areas within 0.05 of the confident region; pose < 0.05 deg and t-dot > 0.9999 off the two cameras |
-| `ROMA2GuidedMatchTest()` | `MatchFeaturesGuided`: the ratio taken against the best descriptor OUTSIDE the search disc, so a lookalike elsewhere still rejects and a scale duplicate inside no longer blocks | Exact accept/reject per case; same matches in the same order on a repeat |
-| `ROMA2AssemblyTest()` | `AssemblePairROMA2` + `StorePairROMA2`: one fit over guided u dense splitting into the sparse and dense segments, a dense-only pair, a fill too small to refit, and the store's dense append past each image's described prefix and ahead of a pair's rejected tail | Sparse/dense/outlier counts exact; assembled pose < 0.05 deg off; keypoint indices reproducible across two runs |
+| `DenseWarpTrackingTest()` | Keypoint tracking through an identity warp: the pixel/grid/normalized conventions, the confidence gate, the dense append | Tracked positions exact; gated cells dropped |
+| `DenseCoverageSampleTest()` | The coverage-uniform sample the verdict fits on: budget, bucket stratification against a top-confidence pick, one-sided coverage, determinism | One winner per bucket; identical draw on a repeat |
+| `DenseComplementaryDrawTest()` | The dense fill of an admitted pair: drawn only where the guided matches are not, capped, thinned by the pair-independent lattice key so a tighter budget keeps a subset of a looser one's, chained across pairs sharing an image | >= 2/5 of the common-region points coincide exactly; a budget halved again keeps a subset; repeat draw identical |
+| `DenseVerdictTest()` | `JudgePairDense` on the exact bidirectional warp of a two-camera wedge fixture: ~30% of both frames admitted, a 3% B side rejected by the min-side rule, a homography warp rejected in the calibrated AND the forced-fundamental branch, `minOverlap` 0 admitting both | Inlier areas within 0.05 of the confident region; pose < 0.05 deg and t-dot > 0.9999 off the two cameras |
+| `DenseGuidedMatchTest()` | `MatchFeaturesGuided`: the ratio taken against the best descriptor OUTSIDE the search disc, so a lookalike elsewhere still rejects and a scale duplicate inside no longer blocks | Exact accept/reject per case; same matches in the same order on a repeat |
+| `DenseAssemblyTest()` | `AssemblePairDense` + `StorePairDense`: one fit over guided u dense splitting into the sparse and dense segments, a dense-only pair, a fill too small to refit, and the store's dense append past each image's described prefix and ahead of a pair's rejected tail | Sparse/dense/outlier counts exact; assembled pose < 0.05 deg off; keypoint indices reproducible across two runs |
 | `DenseKeypointBoundaryTest()` | The described/dense keypoint boundary survives a descriptor release and an `.sfm` round-trip | Stored described count preserved exactly |
 | `SupplementEvidenceIsolationTest()` | Dense supplementation as evidence: ray angle, grid occupancy and the support floor measured over sparse + dense, `GetNumWeightedInliers()` discounting the dense share | Degenerate all-dense baseline still demoted |
 | `GlobalDescriptorsQueryTest()` | Cosine ranking of the per-image global descriptors, its tie order, the `PairsMatcher` dispatch through them and the `.sfm` round-trip | Deterministic ranking; descriptors bit-identical after round-trip |

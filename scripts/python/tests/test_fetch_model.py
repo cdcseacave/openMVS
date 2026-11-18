@@ -123,7 +123,7 @@ class FetchTests(unittest.TestCase):
 
     def test_manifest_lands_flat_directly_under_dest(self):
         """The one assertion that would catch a regression back to a nested layout: this is exactly the path
-        ROMA2Config::ResolveModelPath() hands to RoMa2Onnx::Load, which reads
+        DenseMatchConfig::ResolveModelPath() hands to RoMa2Onnx::Load, which reads
         modelDir + "roma_" + setting + ".json" with no further nesting."""
         self._fetch()
         self.assertTrue((self.dest / f"roma_{self.setting}.json").is_file())

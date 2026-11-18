@@ -24,7 +24,7 @@
 
 #include "Common.h"
 #include "DenseMatcher.h"
-#include "MatchROMA2.h"
+#include "MatchDense.h"
 #include "RoMa2Matcher.h"
 #include "FlexGlueMatcher.h"
 
@@ -38,7 +38,7 @@ bool DenseMatcher::IsAvailable()
 	return RoMa2Onnx::IsAvailable();
 }
 
-std::unique_ptr<DenseMatcher> DenseMatcher::Create(const ROMA2Config& config)
+std::unique_ptr<DenseMatcher> DenseMatcher::Create(const DenseMatchConfig& config)
 {
 	ASSERT(config.matcher == "roma2" || config.matcher == "flexglue");
 	ASSERT(IsAvailable());
@@ -49,7 +49,7 @@ std::unique_ptr<DenseMatcher> DenseMatcher::Create(const ROMA2Config& config)
 	return std::make_unique<RoMa2Onnx>();
 }
 
-unsigned DenseMatcher::ExpectedRetrievalSize(const ROMA2Config& config)
+unsigned DenseMatcher::ExpectedRetrievalSize(const DenseMatchConfig& config)
 {
 	ASSERT(config.matcher == "roma2" || config.matcher == "flexglue");
 	String modelDir(config.ResolveModelPath());

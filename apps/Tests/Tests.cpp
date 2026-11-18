@@ -376,33 +376,33 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::VocabularyTreeTest())
 				return false;
-			if (!SFM::ROMA2WarpGridConventionTest())
+			if (!SFM::DenseWarpGridConventionTest())
 				return false;
-			if (!SFM::ROMA2WarpTrackingTest())
+			if (!SFM::DenseWarpTrackingTest())
 				return false;
-			if (!SFM::ROMA2CoverageSampleTest())
+			if (!SFM::DenseCoverageSampleTest())
 				return false;
-			if (!SFM::ROMA2ComplementaryDrawTest())
+			if (!SFM::DenseComplementaryDrawTest())
 				return false;
-			if (!SFM::ROMA2DenseFillDensityTest())
+			if (!SFM::DenseFillDensityTest())
 				return false;
-			if (!SFM::ROMA2DenseFillCeilingTest())
+			if (!SFM::DenseFillCeilingTest())
 				return false;
-			if (!SFM::ROMA2VerdictTest())
+			if (!SFM::DenseVerdictTest())
 				return false;
-			if (!SFM::ROMA2GuidedMatchTest())
+			if (!SFM::DenseGuidedMatchTest())
 				return false;
-			if (!SFM::ROMA2GuidedBandTest())
+			if (!SFM::DenseGuidedBandTest())
 				return false;
 			if (!SFM::BuildTracksConflictTest())
 				return false;
-			if (!SFM::ROMA2AssemblyTest())
+			if (!SFM::DenseAssemblyTest())
 				return false;
-			if (!SFM::ROMA2DenseFitWeightTest())
+			if (!SFM::DenseFitWeightTest())
 				return false;
 			if (!SFM::PlanarTwinSwitchTest())
 				return false;
-			if (!SFM::ROMA2LensInlierTest())
+			if (!SFM::DenseLensInlierTest())
 				return false;
 			if (!SFM::DenseKeypointBoundaryTest())
 				return false;
@@ -458,9 +458,9 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::LensFitMinimumPairsTest())
 				return false;
-			if (!SFM::ROMA2ReverifyPartitionTest())
+			if (!SFM::DenseReverifyPartitionTest())
 				return false;
-			if (!SFM::ROMA2ReverifyLensTest())
+			if (!SFM::DenseReverifyLensTest())
 				return false;
 			if (!SFM::LensFitStageTest())
 				return false;

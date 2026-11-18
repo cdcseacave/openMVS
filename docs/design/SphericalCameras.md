@@ -73,7 +73,7 @@ the predicate.
 The dense matchers (`DenseMatching.md`) honour the same band through the same predicate: a warp cell is eligible only
 when neither its end in the spherical source image nor its end in the spherical target image lies in the band
 (`IsWarpCellEligible`), so no dense keypoint is created in the band and no dense match has an end in it. The value is
-`ROMA2Config::sphericalBottomBand`, which `Scene::Reconstruct` copies from `FeatureExtractionConfig::sphericalBottomBand`
+`DenseMatchConfig::sphericalBottomBand`, which `Scene::Reconstruct` copies from `FeatureExtractionConfig::sphericalBottomBand`
 (the scene stores no band, so on a reloaded scene whose features exist the dense matching takes the band of the
 current configuration, while the stored features keep the filter they were extracted with). A perspective end is never
 filtered, so a spherical and a perspective image lose only the spherical end's band.
@@ -145,7 +145,7 @@ error, so the pinhole results are unchanged.
 | `cubemapFaces` | `FeatureExtractionConfig` | 6 | tangent-face count for feature extraction (4, 6, 8, 12, 20) |
 | `cubemapFaceSize` | `FeatureExtractionConfig` | 0 (auto: `max(1024, width / 4)`) | tangent-face resolution for feature extraction |
 | `cubemapDedupAngleDeg` | `FeatureExtractionConfig` | 0.25 deg | angular non-maximum-suppression radius across face seams |
-| `sphericalBottomBand` | `FeatureExtractionConfig`, `CreateStructure --spherical-bottom-band` | 0.2 | fraction of the image height, from the bottom, discarded from the features and the dense matches (`ROMA2Config::sphericalBottomBand`, set from it); in [0,1), 0 = off |
+| `sphericalBottomBand` | `FeatureExtractionConfig`, `CreateStructure --spherical-bottom-band` | 0.2 | fraction of the image height, from the bottom, discarded from the features and the dense matches (`DenseMatchConfig::sphericalBottomBand`, set from it); in [0,1), 0 = off |
 | `sphericalNumFaces` | `ExportMVSConfig` | 6 | face count for the MVS export (4, 6, 8, 12, 20) |
 | `sphericalFaceSize` | `ExportMVSConfig` | 1024 px | face resolution for the MVS export |
 | `--camera-type`, `--cubemap-faces` | `apps/ExtractKeyframes` | 0, 6 | video input camera model and extraction face count |

@@ -19,7 +19,7 @@ selected, only the FlexGlue bundle is loaded, required or looked for.
 | Hugging Face (canonical, fetched at the commit the script pins) | `cDcSeacave/openmvs-roma2-onnx` at `ea2b04648ba0` | `cDcSeacave/openmvs-flexglue-onnx` at `f635c84532db` |
 | GitHub mirror (the same files, flat) | release `roma2-model` of `cdcseacave/openMVS` | release `flexglue-model` of `cdcseacave/openMVS` |
 
-`ROMA2Config::ResolveModelPath()` finds the selected matcher's folder the same way for both: the explicit option, else the
+`DenseMatchConfig::ResolveModelPath()` finds the selected matcher's folder the same way for both: the explicit option, else the
 environment variable, else the install copy (`OPENMVS_MODEL_INSTALL_DIR/<matcher>`, checked with `File::isFolder`, so an
 unfetched prefix still gives the ordinary "needs a model" error), else nothing.
 

@@ -155,7 +155,7 @@ SFM_API LensFitReport FitLensesFromPairs(Scene& scene, const MatchConfig& config
 // not take untrusted again, with no lens and its pairs back to their F, then every pair of a camera whose lens was
 // fitted or whose focal moved (LensFitReport::CamerasToVerifyAgain) verified again through its focal
 // and lens (PairsMatcher::ComputeRelativePoses: a descriptor pair through
-// GeometricFilter, its outliers rejoining the candidates; a RoMa2 pair through ReverifyPairROMA2,
+// GeometricFilter, its outliers rejoining the candidates; a RoMa2 pair through ReverifyPairDense,
 // its sparse and dense segments kept apart), which also recomputes the pair weights. Logs every
 // camera's outcome, the pairs' inliers before and after, and how many of the pairs that formed tracks
 // the verification invalidated.

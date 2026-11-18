@@ -1,5 +1,5 @@
 /*
- * ROMA2Warp.h
+ * DenseWarp.h
  *
  * Copyright (c) 2014-2026 SEACAVE
  *
@@ -22,8 +22,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef _SFM_ROMA2WARP_H_
-#define _SFM_ROMA2WARP_H_
+#ifndef _SFM_DENSEWARP_H_
+#define _SFM_DENSEWARP_H_
 
 // I N C L U D E S /////////////////////////////////////////////////
 
@@ -57,8 +57,8 @@ struct SFM_API WarpMaps {
 // Both directions of one (A,B) pair. They come out of a single coarse-match call -- the model
 // produces the B->A field from the same pair-ViT pass as the A->B one -- so they are one statement
 // about the pair and travel together: the verdict measures its inlier area on A's cells through
-// `ab` and on B's cells through `ba`, and only the min of the two admits the pair (MatchROMA2.h,
-// JudgePairROMA2).
+// `ab` and on B's cells through `ba`, and only the min of the two admits the pair (MatchDense.h,
+// JudgePairDense).
 struct SFM_API PairWarps {
 	WarpMaps ab, ba;
 
@@ -87,7 +87,7 @@ SFM_API Point2f DenormCoord(const Point2f& normCoord, const cv::Size& size);
 // Inverse of DenormCoord: a pixel position of an image back to the normalized (align_corners=false)
 // coordinate a warp map stores. Declared here, next to its inverse, so the half-pixel convention has
 // ONE definition rather than a copy in every translation unit that has to undo a DenormCoord.
-// Accepted limitation of the round trip (RebuildInlierWarp, MatchROMA2.cpp): a point within ~1e-4 px
+// Accepted limitation of the round trip (RebuildInlierWarp, MatchDense.cpp): a point within ~1e-4 px
 // of the frame border can come back out of DenormCoord a hair outside the frame and fail the
 // in-frame test of whatever reads it, which drops at most a handful of the verdict's inlier cells
 // out of the dense fill. Carrying the warp cell index through PairVerdict would avoid the round trip
@@ -95,7 +95,7 @@ SFM_API Point2f DenormCoord(const Point2f& normCoord, const cv::Size& size);
 SFM_API Point2f NormCoord(const Point2f& coord, const cv::Size& size);
 
 // The ONE eligibility predicate every scan of a warp uses (CollectWarpCandidates here, the verdict's
-// CollectEligibleCells in MatchROMA2.cpp): a cell is eligible when the model is at least
+// CollectEligibleCells in MatchDense.cpp): a cell is eligible when the model is at least
 // minConfidence confident about it AND the point it warps to lands inside the target image AND
 // neither end lies in the bottom band of a spherical image (Image::IsInSphericalBottomBand; 0 = off).
 // `conf` and `normCoord` are the cell's own values in the confidence and warp maps, `ptSrc` its
@@ -122,11 +122,11 @@ inline bool IsWarpCellEligible(float conf, const Point2f& normCoord, float minCo
 
 // Half a warp cell in image pixels: the accuracy a coarse-warp correspondence can claim, and the
 // epipolar tolerance the tests that judge the warp itself use -- the verdict's fit and Sampson test
-// on both sides of the pair (JudgePairROMA2) and the union fit of a pair's evidence
-// (AssemblePairROMA2). A function of the two image sizes and the warp grid rather than a setting,
+// on both sides of the pair (JudgePairDense) and the union fit of a pair's evidence
+// (AssemblePairDense). A function of the two image sizes and the warp grid rather than a setting,
 // because it is not a precision the user chooses but the one the grid has: measured at 2 px on the
 // 640/160 grid. The dense segment a pair stores is classified more tightly, at a multiple of the
-// matcher's own epipolar bar (ROMA2Config::denseEpipolarErrorFactor), since what this tolerance
+// matcher's own epipolar bar (DenseMatchConfig::denseEpipolarErrorFactor), since what this tolerance
 // admits pollutes the tracks downstream; the factor at 0 falls back to this tolerance.
 inline float WarpTolerance(const cv::Size& sizeA, const cv::Size& sizeB, int warpSize) {
 	return 0.5f * (float)MAXF(MAXF(sizeA.width, sizeA.height), MAXF(sizeB.width, sizeB.height)) / (float)warpSize;
@@ -174,7 +174,7 @@ SFM_API size_t TrackKeypointsByWarp(
 // is taken. Otherwise the warp grid is stratified into n x n buckets over the WHOLE image, with
 //    n = min(warpSize, ceil(sqrt(maxSamples * T / E))),
 // and ONE cell of each bucket is taken -- one per bucket, and nothing else. Which one is the shared
-// winner rule of every warp draw (ROMA2Warp.cpp, WarpCellLatticePriority): the eligible cell with
+// winner rule of every warp draw (DenseWarp.cpp, WarpCellLatticePriority): the eligible cell with
 // the highest pair-independent lattice priority, i.e. the one whose grid coordinates are both
 // divisible by the largest power of two, ties going to raster order. Confidence is the eligibility
 // test, not the ranking -- a rule that reads this pair's confidences would pick a different cell of
@@ -318,4 +318,4 @@ SFM_API unsigned AppendDenseMatches(
 
 } // namespace SFM
 
-#endif // _SFM_ROMA2WARP_H_
+#endif // _SFM_DENSEWARP_H_

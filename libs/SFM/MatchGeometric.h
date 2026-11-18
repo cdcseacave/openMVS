@@ -33,7 +33,7 @@ struct SFM_API GuidedSearch {
 /**
  * @brief Guided sparse matching of one admitted image pair, under the warp that admitted it.
  *
- * The ROMAv2 one-pass matcher's descriptor step (MatchPairsROMA2): the pair already passed the dense
+ * The ROMAv2 one-pass matcher's descriptor step (MatchPairsDense): the pair already passed the dense
  * verdict, which is where its geometry comes from, so this function only has to say which described
  * keypoints of the two images are the same point.
  *
@@ -71,8 +71,8 @@ struct SFM_API GuidedSearch {
  * 160-cell grid, against 5.8 px in 2D), the length its along-line one.
  *
  * No geometry is estimated or applied here, no train-side collision is resolved and there is no
- * descriptor-only fallback: geometry is the verdict's business (JudgePairROMA2) and the final fit's
- * (AssemblePairROMA2), and a pair the warp rejected never reaches this function.
+ * descriptor-only fallback: geometry is the verdict's business (JudgePairDense) and the final fit's
+ * (AssemblePairDense), and a pair the warp rejected never reaches this function.
  *
  * Only the DESCRIBED prefix of either image takes part -- the query scan and the candidate search
  * both run over NumDescribedKeypoints() -- because every match this function selects is decided by a

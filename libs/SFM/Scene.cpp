@@ -591,68 +591,68 @@ bool Scene::ExtractFeatures(const FeatureExtractionConfig& config)
 	return true;
 }
 
-bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, const ViewGraphCalibratorConfig& vgConfig)
+bool Scene::MatchPairs(const MatchConfig& config, const DenseMatchConfig& denseCfg, const ViewGraphCalibratorConfig& vgConfig)
 {
 	// In-process dense matcher (RoMa2 or FlexGlue): one loaded model serves the retrieval descriptors and the dense
 	// matching; it lives for this call only. Declared before
-	// pairsMatcher: anything holding a DenseMatcher* or a MakeCode() tensor (pairsMatcher.SetROMA2
+	// pairsMatcher: anything holding a DenseMatcher* or a MakeCode() tensor (pairsMatcher.SetDense
 	// below) must be destroyed before the model, so the model must outlive it and therefore be
 	// declared first (destructors run in reverse declaration order).
-	std::unique_ptr<DenseMatcher> roma2;
+	std::unique_ptr<DenseMatcher> denseMatcher;
 	PairsMatcher pairsMatcher(*this, config);
 
 	// Global descriptors a scene carries from another matcher are not this matcher's (RoMa2 2048-D, FlexGlue 256-D): the images are described
 	// again by the selected one. Only known where the selected matcher's descriptor size is (it comes from the model bundle's manifest; 0, unknown, when no bundle is reachable: the stored descriptors are then kept)
-	if (roma2Cfg.enabled && config.mode == MatchConfig::RETRIEVAL && status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS) &&
+	if (denseCfg.enabled && config.mode == MatchConfig::RETRIEVAL && status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS) &&
 		!status.nState.isSet(Status::STATE::MATCHED) && !images.empty()) {
-		const unsigned expectedDim = DenseMatcher::ExpectedRetrievalSize(roma2Cfg);
+		const unsigned expectedDim = DenseMatcher::ExpectedRetrievalSize(denseCfg);
 		if (expectedDim != 0 && (unsigned)images[0].globalDescriptor.cols != expectedDim) {
 			VERBOSE("warning: the scene's global descriptors are %d-D, the %s matcher's are %u-D: describing the images again",
-				images[0].globalDescriptor.cols, roma2Cfg.matcher.c_str(), expectedDim);
+				images[0].globalDescriptor.cols, denseCfg.matcher.c_str(), expectedDim);
 			status.nState.unset(Status::STATE::GLOBAL_DESCRIPTORS);
 		}
 	}
 
 	// SKIP runs no matching, so no dense matcher has anything to do, and the scene holds the matches (Scene::Reconstruct)
-	ASSERT(config.mode != MatchConfig::SKIP || !roma2Cfg.enabled);
+	ASSERT(config.mode != MatchConfig::SKIP || !denseCfg.enabled);
 	ASSERT(config.mode != MatchConfig::SKIP || std::any_of(pairs.begin(), pairs.end(), [](const ImagePair& pair) { return pair.GetNumMatches() > 0; }));
 
 	// Which passes this run needs: RETRIEVAL is what makes the global descriptors necessary
 	const bool needsDescriptors = config.mode == MatchConfig::RETRIEVAL && !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS);
-	const bool needsWarps = roma2Cfg.useMatching;
+	const bool needsWarps = denseCfg.useMatching;
 
-	const String modelPath(roma2Cfg.ResolveModelPath());
-	if (roma2Cfg.enabled && (needsDescriptors || needsWarps) && modelPath.empty()) {
+	const String modelPath(denseCfg.ResolveModelPath());
+	if (denseCfg.enabled && (needsDescriptors || needsWarps) && modelPath.empty()) {
 		// a requested-but-unavailable model is a named error here, not the
 		// generic "failed to load the roma2 model ''" that Load() below would report if this
 		// fell through to it unchecked
-		if (roma2Cfg.matcher == "flexglue")
+		if (denseCfg.matcher == "flexglue")
 			VERBOSE("error: the FlexGlue dense matcher requested but no model path given (set --flexglue-model or OPENMVS_FLEXGLUE_MODEL_PATH, or install the model into the install prefix)");
 		else
 			VERBOSE("error: ROMA2 requested but no model path given (set --roma2-model or OPENMVS_ROMA2_MODEL_PATH, or install the model into the install prefix)");
 		return false;
 	}
-	const bool useROMA2 = roma2Cfg.enabled && (needsDescriptors || needsWarps) && !status.nState.isSet(Status::STATE::MATCHED);
-	if (useROMA2) {
+	const bool useDense = denseCfg.enabled && (needsDescriptors || needsWarps) && !status.nState.isSet(Status::STATE::MATCHED);
+	if (useDense) {
 		if (!DenseMatcher::IsAvailable()) {
 			VERBOSE("error: ROMA2 model '%s' requested, but this build has no ONNX Runtime support", modelPath.c_str());
 			return false;
 		}
-		roma2 = DenseMatcher::Create(roma2Cfg);
-		if (!roma2->Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
-			VERBOSE("error: failed to load the %s model '%s'", roma2Cfg.matcher.c_str(), modelPath.c_str());
+		denseMatcher = DenseMatcher::Create(denseCfg);
+		if (!denseMatcher->Load(modelPath, denseCfg.setting, denseCfg.useGPU ? denseCfg.provider : String("cpu"))) {
+			VERBOSE("error: failed to load the %s model '%s'", denseCfg.matcher.c_str(), modelPath.c_str());
 			return false;
 		}
-		if (needsDescriptors && !ComputeGlobalDescriptors(*roma2))
+		if (needsDescriptors && !ComputeGlobalDescriptors(*denseMatcher))
 			return false;
-	} else if (roma2Cfg.enabled && config.mode == MatchConfig::RETRIEVAL && !status.nState.isSet(Status::STATE::MATCHED)) {
+	} else if (denseCfg.enabled && config.mode == MatchConfig::RETRIEVAL && !status.nState.isSet(Status::STATE::MATCHED)) {
 		// descriptors are wanted and already stored, and no warps are needed either: retrieval over
 		// an earlier run's descriptors ranks the pairs straight from Image::globalDescriptor
 		// (PairsMatcher::QueryRetrieval) and never enters a session, so loading 1.2 GB of graph
 		// weights onto the device for it would buy nothing
 		DEBUG("ROMA2 retrieval reuses the %u global descriptors stored in the scene; no model loaded", images.size());
 	}
-	pairsMatcher.SetROMA2(useROMA2 && needsWarps ? roma2.get() : NULL, roma2Cfg);
+	pairsMatcher.SetDense(useDense && needsWarps ? denseMatcher.get() : NULL, denseCfg);
 
 	if (status.nState.isSet(Status::STATE::MATCHED) || config.mode == MatchConfig::SKIP) {
 		VERBOSE(config.mode == MatchConfig::SKIP ? "Matching skipped: the scene's own matches are used" : "warning: pairs already matched, skipping");
@@ -687,15 +687,15 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	if (!CalibrateFocalsAndFitLenses(pairsMatcher, vgConfig))
 		return false;
 
-	// a plane-dominated RoMa2 pair keeps the planar twin its rotation loops prefer (SwitchPlanarTwinsROMA2): after the
+	// a plane-dominated RoMa2 pair keeps the planar twin its rotation loops prefer (SwitchPlanarTwinsDense): after the
 	// last refit of the pairs (the lens fit's), before anything reads their poses (FilterViewGraph
 	// recomputes the pair weights first)
-	SwitchPlanarTwinsROMA2(pairsMatcher, roma2Cfg);
+	SwitchPlanarTwinsDense(pairsMatcher, denseCfg);
 
 	return true;
 }
 
-bool Scene::ComputeGlobalDescriptors(DenseMatcher& roma2)
+bool Scene::ComputeGlobalDescriptors(DenseMatcher& matcher)
 {
 	if (status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS))
 		return true;
@@ -706,7 +706,7 @@ bool Scene::ComputeGlobalDescriptors(DenseMatcher& roma2)
 	}
 	// the retrieval index needs one row per image; Scene::Import already rejected unreadable
 	// images, so a miss here (a per-image load/describe failure) is a real failure
-	if (ComputeGlobalDescriptorsROMA2(*this, roma2) != images.size()) {
+	if (ComputeGlobalDescriptorsDense(*this, matcher) != images.size()) {
 		VERBOSE("error: failed to describe all %u images with the dense matcher's model", (unsigned)images.size());
 		return false;
 	}
@@ -791,7 +791,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// solves, the resection's local and full ones, and the global passes alike.
 	SetBAPairConstraints(cfg.baConfig, cfg.relativeRotationSigma);
 	cfg.baConfig.minTriangulationAngle = cfg.minAngleThreshold; // the budget of the observations keeps every track this wide
-	cfg.roma2Cfg.sphericalBottomBand = cfg.featuresCfg.sphericalBottomBand; // the dense matching keeps out of the band the features keep out of
+	cfg.denseCfg.sphericalBottomBand = cfg.featuresCfg.sphericalBottomBand; // the dense matching keeps out of the band the features keep out of
 	if (cfg.importCfg.focalLength > 0) {
 		cfg.initCfg.refineFocalLength = false;
 		VERBOSE("Focal length forced at %g px: kept by the star initializer, refined by bundle adjustment", cfg.importCfg.focalLength);
@@ -844,7 +844,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 			return false;
 
 		// Match image pairs
-		if (!MatchPairs(cfg.matchCfg, cfg.roma2Cfg, cfg.viewgraphCfg))
+		if (!MatchPairs(cfg.matchCfg, cfg.denseCfg, cfg.viewgraphCfg))
 			return false;
 
 		// export the pairs CSV right after matching, before any reconstruction step (clustering,

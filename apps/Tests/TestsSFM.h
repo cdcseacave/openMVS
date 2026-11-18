@@ -42,22 +42,22 @@ bool VocabularyTreeTest();
 
 // The warp grid's pixel <-> cell convention (align_corners=False cell centres) end to end: keypoint
 // tracking, the draws' cell positions, the occupancy rounding and the verdict's cells
-bool ROMA2WarpGridConventionTest();
+bool DenseWarpGridConventionTest();
 
 // ROMA2 warp helpers test: keypoint tracking through an identity warp (the
 // pixel<->grid<->normalized coordinate conventions), the confidence gate, and the dense append
-bool ROMA2WarpTrackingTest();
+bool DenseWarpTrackingTest();
 
 // Coverage-uniform warp sampling, the sample the verdict fits its geometry on: the sample budget,
 // the spread the bucket stratification buys over a plain top-confidence selection, the coverage a
 // genuinely one-sided sample reports, and the determinism of the draw
-bool ROMA2CoverageSampleTest();
+bool DenseCoverageSampleTest();
 
 // The complementary dense draw, the fill of an admitted pair: it is drawn only where that pair's
 // guided sparse matches are NOT, capped at the pair's dense budget, thinned when over budget by the
 // pair-independent lattice key rather than by confidence -- so a tighter budget keeps a subset of
 // what a looser one keeps -- identical across two pairs sharing an image, and deterministic
-bool ROMA2ComplementaryDrawTest();
+bool DenseComplementaryDrawTest();
 
 // The dense fill's bucket pitch (DenseFillGridSide): a function of the density and the warp side
 // alone, not of the pair, so the draw it feeds is a density over the overlap the sparse matches did
@@ -66,32 +66,32 @@ bool ROMA2ComplementaryDrawTest();
 // two pairs sharing an image stratify it on the same grid and so agree on the pixels they sample,
 // an agreement that survives the one term of the draw that IS per-pair: two pairs whose ceilings
 // thin that agreement to different sizes keep nested samples of it rather than divergent ones
-bool ROMA2DenseFillDensityTest();
+bool DenseFillDensityTest();
 
 // The dense fill ceiling (DenseFillCeiling): the configured density over the SMALLER of the
 // verdict's two inlier areas, symmetric in A and B, and linear in the density knob
-bool ROMA2DenseFillCeilingTest();
+bool DenseFillCeilingTest();
 
-// The pair verdict (JudgePairROMA2) on the exact bidirectional warp of two pinhole cameras looking
+// The pair verdict (JudgePairDense) on the exact bidirectional warp of two pinhole cameras looking
 // at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
 // areas measuring that share, a warp confident over 30% of A whose B side maps into A over only 3%
 // is rejected by the min side alone, a smooth warp unrelated to the cameras (a homography of A's
 // grid) is rejected however exactly one geometry explains its own side -- through the calibrated
 // branch and, with forceFundamental, through the 7-DoF one the min-side rule was designed for --
 // and minOverlap 0 admits the first two
-bool ROMA2VerdictTest();
+bool DenseVerdictTest();
 
 // Guided sparse matching (MatchFeaturesGuided) without a geometry, the disc: a keypoint alone in
 // its disc whose lookalike sits elsewhere in the other image is refused by the outside reference,
 // one whose only close descriptor is inside the disc is accepted, and a scale duplicate inside it is
 // no rival; the same inputs give the same matches, in the same order
-bool ROMA2GuidedMatchTest();
+bool DenseGuidedMatchTest();
 
 // The epipolar band of the guided sparse matching (GuidedSearch): a rival off the epipolar line is
 // no candidate, an equally close rival on it refuses the match, a same-feature duplicate is no
 // rival, every winner answers to the reference outside its band, and the search is the disc
 // without a geometry or near the epipole
-bool ROMA2GuidedBandTest();
+bool DenseGuidedBandTest();
 
 // The track builder on a component holding one image twice (BuildTracks, TrackConflictConfig): the
 // cut removes the least-supported link on the path between the two keypoints and keeps the
@@ -100,20 +100,20 @@ bool ROMA2GuidedBandTest();
 // bar takes the veto, the cut can be switched off, and a conflict-free scene is untouched
 bool BuildTracksConflictTest();
 
-// Pair assembly and storage (AssemblePairROMA2, StorePairROMA2): the union of the guided matches
+// Pair assembly and storage (AssemblePairDense, StorePairDense): the union of the guided matches
 // and the dense fill is fitted once and splits into the pair's sparse and dense segments under one
 // relative pose, a pair with no guided match is still assembled as a dense-only pair, a fill too
 // small to fit leaves the verdict's geometry untouched, and the store appends the dense keypoints
 // past each image's described prefix with reproducible indices, inserting the dense block ahead of
 // a pair's rejected tail rather than past it
-bool ROMA2AssemblyTest();
+bool DenseAssemblyTest();
 
 // The weighted refinement that closes a pair's assembly: with the dense fill displaced 2 px across
 // the epipolar lines and the guided matches exact, the pose follows the sparse matches at
-// ROMA2Config::denseFitWeight and the dense bias at full weight
-bool ROMA2DenseFitWeightTest();
+// DenseMatchConfig::denseFitWeight and the dense bias at full weight
+bool DenseFitWeightTest();
 
-// The planar twin switch (SwitchPlanarTwinsROMA2): a floor pair stored at its wrong planar twin
+// The planar twin switch (SwitchPlanarTwinsDense): a floor pair stored at its wrong planar twin
 // switches to the true pose its neighbours' rotation loops close with (not with the switch off or a
 // margin above its gain), a pair with 40% of its matches off the floor is untouched (under the plane
 // gate), and of two wrong twins sharing a triangle the second switches once the first has (best
@@ -124,7 +124,7 @@ bool PlanarTwinSwitchTest();
 // the camera knows, every guided match on the true geometry is a sparse inlier, the corner ones
 // included, while the pixel fundamental matrix of the same geometry, composed without the lens, puts
 // the corner ones past the matcher's epipolar bar
-bool ROMA2LensInlierTest();
+bool DenseLensInlierTest();
 
 // The keyframe extractor's geometric match through a lens (MatchFeaturesGeometric): every corner
 // correspondence of the same two views is matched, though the pixel F's epipolar line misses it by
@@ -163,13 +163,13 @@ bool LensFitMinimumPairsTest();
 // with the matcher's strict filter and without it; under the default configuration, with the dense
 // fill biased across the epipolar lines, the re-verified pose follows the sparse matches where
 // GeometricFilter at full weight follows the bias
-bool ROMA2ReverifyPartitionTest();
+bool DenseReverifyPartitionTest();
 
 // A RoMa2 pair matched through the pinhole and re-verified once its camera knows its lens
-// (ReverifyPairROMA2): with the pinhole geometry of the true pose kept at matching, the guided matches
+// (ReverifyPairDense): with the pinhole geometry of the true pose kept at matching, the guided matches
 // at the corners the pinhole rejected come back as sparse inliers, and the dense samples the pinhole
 // bar let through off the true geometry are dropped while the true ones stay
-bool ROMA2ReverifyLensTest();
+bool DenseReverifyLensTest();
 
 // The lens stage of the matching (FitLensesAndReverifyPairs): on 40 pairs of one camera verified
 // through the pinhole, whose rotations come out degrees off the truth, the lens is fitted and set and
@@ -230,7 +230,7 @@ bool RoMa2ManifestVersionTest();
 // version, another model, a missing key and another pose head are rejected. Pure JSON parsing, needs no model.
 bool FlexGlueManifestTest();
 
-// ROMA2Config::ResolveModelPath precedence test, for each matcher (roma2, flexglue): its explicit path wins over everything
+// DenseMatchConfig::ResolveModelPath precedence test, for each matcher (roma2, flexglue): its explicit path wins over everything
 // (including a set environment variable); with it empty, its $OPENMVS_<MATCHER>_MODEL_PATH wins; with both absent, the result
 // falls back to this build's install-prefix directory share/openMVS/<matcher> when that directory actually exists on disk, else
 // it is empty -- read with the same File::isFolder check the implementation uses, so this test does not create anything under the
@@ -349,7 +349,7 @@ bool ReconstructSphericalSyntheticTest();
 // keypoints and descriptors with the band at 0.2 or at 0.
 bool SphericalBottomBandTest();
 
-// Spherical bottom band of the dense matching: with ROMA2Config::sphericalBottomBand at 0.2 neither warp draw
+// Spherical bottom band of the dense matching: with DenseMatchConfig::sphericalBottomBand at 0.2 neither warp draw
 // (the verdict's sample and the fill) has an end of a sample in the bottom 20% of rows of a spherical image,
 // the rows above keep the samples they have without the band, and a perspective pair is unaffected.
 bool SphericalBottomBandDenseTest();

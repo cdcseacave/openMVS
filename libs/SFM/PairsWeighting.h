@@ -80,7 +80,7 @@ struct SFM_API PairsWeightingConfig
 	// images.
 	float denseFrameInliers = 50.f;
 	// The matcher's dense draw per frame the number above is anchored to. The application hands it
-	// the value it gives the matcher (ROMA2Config::denseMatchesPerFrame); the default is that config's.
+	// the value it gives the matcher (DenseMatchConfig::denseMatchesPerFrame); the default is that config's.
 	unsigned denseMatchesPerFrame = 2000;
 	// What one dense inlier counts as in sparse inliers: its share of the frame draw times what a whole
 	// frame is worth. The one formula of the pair evidence (ComputePairsWeights) and of every other

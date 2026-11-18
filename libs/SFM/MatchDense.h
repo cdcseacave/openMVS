@@ -1,5 +1,5 @@
 /*
- * MatchROMA2.h
+ * MatchDense.h
  *
  * Copyright (c) 2014-2026 SEACAVE
  *
@@ -22,8 +22,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef _SFM_MATCHROMA2_H_
-#define _SFM_MATCHROMA2_H_
+#ifndef _SFM_MATCHDENSE_H_
+#define _SFM_MATCHDENSE_H_
 
 // I N C L U D E S /////////////////////////////////////////////////
 
@@ -45,9 +45,9 @@ class SFM_API DenseMatcher;
 class SFM_API PairsMatcher;
 struct SFM_API PairWarps;
 
-// Configuration of the in-process ROMAv2 (ONNX Runtime) retrieval and dense matching
-struct SFM_API ROMA2Config {
-	bool enabled = false;          // enable the in-process ROMAv2 model (explicit opt-in)
+// Configuration of the in-process dense matcher (RoMa2 or FlexGlue, ONNX Runtime) retrieval and dense matching
+struct SFM_API DenseMatchConfig {
+	bool enabled = false;          // enable the in-process dense matcher model (explicit opt-in)
 	String modelPath;              // folder of the exported graphs (empty = $OPENMVS_ROMA2_MODEL_PATH, else the installed share/openMVS/roma2)
 	String setting = "base";       // preset: turbo|fast|base
 	String provider = "auto";      // execution provider: auto|cuda|coreml|dml|cpu
@@ -106,7 +106,7 @@ struct SFM_API ROMA2Config {
 	// A rival within this distance (pixels) of the winner is the same feature described twice (a
 	// scale or orientation duplicate) and does not count as a rival in the ratio test.
 	float guidedSameFeatureDistance = 3.f;
-	// The planar twin switch (SwitchPlanarTwinsROMA2): the matches of a pair that lie mostly on one
+	// The planar twin switch (SwitchPlanarTwinsDense): the matches of a pair that lie mostly on one
 	// plane admit two relative poses, the stored one and its planar twin, which explain them equally
 	// well, so the matches cannot tell which is right and the rotation loops with the pair's
 	// neighbours decide. A pair is plane dominated when a homography explains at least
@@ -144,15 +144,15 @@ struct SFM_API ROMA2Config {
 };
 /*----------------------------------------------------------------*/
 
-// Run the ROMAv2 describe pass over every image of the scene: pipelines each image's load
-// and preprocessing on the thread pool while roma2.Describe() (which may only be driven from
+// Run the dense matcher describe pass over every image of the scene: pipelines each image's load
+// and preprocessing on the thread pool while matcher.Describe() (which may only be driven from
 // one thread) runs on the calling thread, then stores the descriptor graph's own on-device
-// retrieval pooling of every successfully described image in Image::globalDescriptor. roma2
+// retrieval pooling of every successfully described image in Image::globalDescriptor. matcher
 // must already be loaded (RoMa2Onnx::Load); this pass never touches the coarse-match graph.
 // Returns the number of images successfully described; a per-image load/describe failure is
 // logged individually and leaves that image's globalDescriptor empty, so a return value below
 // scene.images.size() is the caller's cue to treat the whole pass as failed.
-SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2);
+SFM_API unsigned ComputeGlobalDescriptorsDense(Scene& scene, DenseMatcher& matcher);
 /*----------------------------------------------------------------*/
 
 // What the verdict knows about one pair once it ran
@@ -177,7 +177,7 @@ struct SFM_API PairVerdict {
 // Rounded in double and clamped into the unsigned the knob itself is, rather than through the int a
 // float rounding would land in: the density has no upper bound the CLI enforces, and the product of
 // an absurd one with an area near 1 has no int to be converted to.
-inline unsigned DenseFillCeiling(const ROMA2Config& config, const PairVerdict& verdict) {
+inline unsigned DenseFillCeiling(const DenseMatchConfig& config, const PairVerdict& verdict) {
 	const double ceiling = std::floor((double)config.denseMatchesPerFrame *
 		(double)MINF(verdict.inlierAreaA, verdict.inlierAreaB) + 0.5);
 	return (unsigned)MINF(MAXF(ceiling, 0.0), (double)std::numeric_limits<unsigned>::max());
@@ -195,8 +195,8 @@ inline unsigned DenseFillCeiling(const ROMA2Config& config, const PairVerdict& v
 // matches; verdict.inliersA/B are A's inlier cells. On rejection pair is Reset() and verdict says why
 // (areas filled as far as they were computed). A sample under 8 cells is rejected without a fit.
 // Pure function of its inputs; runs on the pool (GeometricFilter is const and thread-safe).
-SFM_API void JudgePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const PairWarps& warps, const ROMA2Config& config, ImagePair& pair, PairVerdict& verdict);
+SFM_API void JudgePairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const PairWarps& warps, const DenseMatchConfig& config, ImagePair& pair, PairVerdict& verdict);
 /*----------------------------------------------------------------*/
 
 // One pair's dense segment before it is appended
@@ -209,11 +209,11 @@ struct SFM_API DenseMatches {
 // verdict's inlier cells where the guided candidates are not (SampleWarpComplementary with occupiedA =
 // the A positions of `guided`, at config.denseMatchesPerFrame's density, capped by DenseFillCeiling);
 // then fit ONE geometry on guided u dense and classify both kinds against it, which is
-// FitAndClassifyPairROMA2 (with the warp's half cell, WarpTolerance, for the dense bar when the
+// FitAndClassifyPairDense (with the warp's half cell, WarpTolerance, for the dense bar when the
 // verification is off): the guided matches within the matcher's maxEpipolarError are the sparse
 // segment (`pair.matches[0, numFilteredInliers)`, the pair's descriptor evidence), the dense
 // correspondences within config.denseEpipolarErrorFactor times that same bar are the dense segment
-// (returned in `dense`, appended by StorePairROMA2 after the pair exists). When the union fit fails
+// (returned in `dense`, appended by StorePairDense after the pair exists). When the union fit fails
 // (too few inliers at the sparse tolerance, or the branch's strict filters), the verdict's geometry
 // stands: the classification runs against it instead, so an admitted pair is always stored -- a pair
 // with zero sparse inliers is a dense-only pair, its dense segment its whole evidence.
@@ -221,12 +221,12 @@ struct SFM_API DenseMatches {
 // in increasing queryIdx (MatchFeaturesGuided's own order), which is the order the sparse segment
 // keeps.
 // Returns true when the pair carries at least one correspondence of either kind.
-SFM_API bool AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const PairVerdict& verdict, const std::vector<DMatch>& guided, const ROMA2Config& config, int warpSize,
+SFM_API bool AssemblePairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const PairVerdict& verdict, const std::vector<DMatch>& guided, const DenseMatchConfig& config, int warpSize,
 	ImagePair& pair, DenseMatches& dense);
 
 // The fit and the classification of one RoMa2 pair's correspondences, shared by the assembly at
-// matching (AssemblePairROMA2) and the re-verification of a stored pair (ReverifyPairROMA2): ONE
+// matching (AssemblePairDense) and the re-verification of a stored pair (ReverifyPairDense): ONE
 // geometry fitted on sparse u dense through pairsMatcher.GeometricFilter at the matcher's
 // maxEpipolarError on temporary Image copies whose keypoints are those correspondences, polished by
 // PairsMatcher::RefineRelativePose with each dense correspondence at config.denseFitWeight; when that
@@ -243,14 +243,14 @@ SFM_API bool AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& im
 // geometry `pair` arrived with, which the assembly keeps (the verdict's) and the re-verification
 // refuses. With bFit false the fit is skipped and the classification runs against the geometry
 // `pair` arrives with (a relative pose, asserted), which is then kept: true is returned.
-SFM_API bool FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+SFM_API bool FitAndClassifyPairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
 	const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA, const std::vector<Point2f>& densePointsB,
-	const ROMA2Config& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept, bool bFit = true);
+	const DenseMatchConfig& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept, bool bFit = true);
 
 // Re-verify a stored RoMa2 pair through its cameras as they are now (a lens fitted, a focal
 // calibrated), the way it was assembled: its sparse candidates -- the sparse segment, any RANSAC
 // inlier a strict filter rejected, and the outliers -- and its dense segment go through
-// FitAndClassifyPairROMA2, on a geometry fitted to them afresh; a match with a dense end outside
+// FitAndClassifyPairDense, on a geometry fitted to them afresh; a match with a dense end outside
 // the dense segment (a pair invalidated after its fill was stored holds its dense matches among its
 // outliers) is a dense candidate too. The pair comes back partitioned as at matching, [sparse
 // inliers | kept dense], every other sparse candidate an outlier; a dense match that fails is
@@ -261,8 +261,8 @@ SFM_API bool FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Ima
 // partition (numFilteredInliers -1, numDenseInliers 0).
 // With bRefit false the candidates are gathered the same way but no geometry is fitted: they are
 // classified against the geometry the pair carries (a relative pose, asserted), which it keeps.
-SFM_API void ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const ROMA2Config& config, ImagePair& pair, bool bRefit = true);
+SFM_API void ReverifyPairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const DenseMatchConfig& config, ImagePair& pair, bool bRefit = true);
 
 // The planar twin of a RoMa2 pair: a homography fitted (RANSAC, 2000 iterations, on the cameras'
 // normalized planes, at the angular equivalent of the matches' classification bar maxEpipolarError)
@@ -273,11 +273,11 @@ SFM_API void ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& im
 // at 1, dense at config.denseFitWeight) on the same matches, so `twin` comes back with pose, E and
 // F and no matches. Returns false when the pair is not plane dominated or has no distinct twin
 // (rotation within 0.5 deg and direction within 10 deg of the stored pose).
-SFM_API bool PlanarTwinROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const ROMA2Config& config, const ImagePair& pair, ImagePair& twin, float& share);
+SFM_API bool PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const DenseMatchConfig& config, const ImagePair& pair, ImagePair& twin, float& share);
 
 // The planar twin switch, once every pair is verified (after the lens fit) and before anything
-// reads the poses: the candidates are the posed RoMa2 pairs with a planar twin (PlanarTwinROMA2);
+// reads the poses: the candidates are the posed RoMa2 pairs with a planar twin (PlanarTwinDense);
 // a triangle is a candidate (a,b) and an image c with (a,c) and (b,c) posed, and it closes when its
 // rotation loop is within config.twinMaxLoopAngle degrees. The gain of a candidate is the number of
 // its triangles that close after switching it minus before, every other pair at its current pose
@@ -287,24 +287,24 @@ SFM_API bool PlanarTwinROMA2(const PairsMatcher& pairsMatcher, const Image& imgA
 // candidates sharing a triangle with it are updated, and this repeats until no gain is that large;
 // a pair may switch back. Every switch raises the number of closed triangles by at least
 // twinMinLoopGain, so this ends. A pair that ends at its twin takes the twin's pose, E and F and
-// re-classifies its matches against them (ReverifyPairROMA2 without the refit); its weight is
+// re-classifies its matches against them (ReverifyPairDense without the refit); its weight is
 // left to be recomputed. twinMinLoopGain 0 turns the switch off.
 // Returns the number of pairs that end at their twin.
-SFM_API unsigned SwitchPlanarTwinsROMA2(PairsMatcher& pairsMatcher, const ROMA2Config& config);
+SFM_API unsigned SwitchPlanarTwinsDense(PairsMatcher& pairsMatcher, const DenseMatchConfig& config);
 
 // Store one assembled pair: create it, or replace the same-key pair a previous Match() left, then
 // append its dense segment (AppendDenseMatches). Serial, in (ID1,ID2) order -- the keypoint indices
 // the append hands out depend on what the two images already carry.
-SFM_API void StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
+SFM_API void StorePairDense(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
 	ImagePair&& pair, const DenseMatches& dense, int warpSize);
 /*----------------------------------------------------------------*/
 
 // One-pass dense pair matching of the given candidate pairs (each unordered pair once, i < j): sorts
 // them in (ID1,ID2) order, plans the device slots (Belady, config.slotBudget), and on the calling
 // thread describes the slots and runs the bidirectional coarse-match graph pair by pair while the pool
-// judges each pair (JudgePairROMA2), guides its sparse matching (TrackKeypointsByWarp,
-// MatchFeaturesGuided) and assembles it (AssemblePairROMA2); assembled pairs are stored serially in
-// (ID1,ID2) order (StorePairROMA2). A candidate already in scene.pairs is skipped (the feedback round
+// judges each pair (JudgePairDense), guides its sparse matching (TrackKeypointsByWarp,
+// MatchFeaturesGuided) and assembles it (AssemblePairDense); assembled pairs are stored serially in
+// (ID1,ID2) order (StorePairDense). A candidate already in scene.pairs is skipped (the feedback round
 // proposes only new pairs, and a re-run must not double-store). A pair whose image could not be
 // described or whose graph call failed is dropped with a message.
 // The summary line reports candidates, judged, admitted, stored, dense-only, the slot plan's
@@ -315,10 +315,10 @@ SFM_API void StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex,
 // every candidate storing none and still succeeding; returns false only when the pass could not run
 // at all (the device slot pool could not be allocated), which the caller must treat as a failed
 // matching round rather than as an empty one.
-SFM_API bool MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const PairIdxArr& candidatePairs,
-	const ROMA2Config& config, unsigned& numStored);
+SFM_API bool MatchPairsDense(PairsMatcher& pairsMatcher, DenseMatcher& matcher, const PairIdxArr& candidatePairs,
+	const DenseMatchConfig& config, unsigned& numStored);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM
 
-#endif // _SFM_MATCHROMA2_H_
+#endif // _SFM_MATCHDENSE_H_

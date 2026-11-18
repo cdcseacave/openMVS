@@ -1,5 +1,5 @@
 /*
- * ROMA2Warp.cpp
+ * DenseWarp.cpp
  *
  * Copyright (c) 2014-2026 SEACAVE
  *
@@ -23,7 +23,7 @@
  */
 
 #include "Common.h"
-#include "ROMA2Warp.h"
+#include "DenseWarp.h"
 #include "Scene.h"
 
 using namespace SFM;

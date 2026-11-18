@@ -523,7 +523,7 @@ def main(argv=None) -> int:
     print(f"model ready at: {dest.resolve()}")
     print(f"set {spec.env}={dest.resolve()} (or pass {option} {dest.resolve()} to CreateStructure) so "
           f"--dense-matcher finds it. If --dest was the CMake install prefix's own share/openMVS/{args.model}, "
-          "ROMA2Config::ResolveModelPath()'s install-prefix fallback already finds it with no environment "
+          "DenseMatchConfig::ResolveModelPath()'s install-prefix fallback already finds it with no environment "
           "variable needed.")
     return 0
 

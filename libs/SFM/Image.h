@@ -184,7 +184,7 @@ public:
 	// Build the keypoint standing for one dense (ROMAv2 warp) correspondence sample.
 	// The response/size convention the weighting functions below then see:
 	//  - response = the warp confidence at that sample, which is the only per-sample quality the
-	//    warp offers; it lands in [ROMA2Config::minConfidence, 1], well above the response of a
+	//    warp offers; it lands in [DenseMatchConfig::minConfidence, 1], well above the response of a
 	//    weak detector keypoint, so a dense point is never mistaken for a low-confidence one
 	//  - size = warpCellSize, the pixel footprint of one warp cell in this image, i.e. the scale
 	//    the position was actually sampled at. This is the honest number: it makes

@@ -1184,7 +1184,7 @@ bool VocabularyTreeTest()
 
 // ROMA2 warp helpers test: keypoint tracking through an identity warp, the confidence gate
 // that drops the cells the model is unsure about, and the dense append
-bool ROMA2WarpTrackingTest()
+bool DenseWarpTrackingTest()
 {
 	TD_TIMER_START();
 
@@ -1214,12 +1214,12 @@ bool ROMA2WarpTrackingTest()
 	std::vector<Point2f> trackedA, trackedB;
 	std::vector<uchar> status;
 	if (TrackKeypointsByWarp(imgA, imgB, warp, overlap, 0.3f, trackedA, trackedB, status) != imgA.keypoints.size()) {
-		VERBOSE("ROMA2WarpTrackingTest FAILED: not every keypoint tracked through the identity warp");
+		VERBOSE("DenseWarpTrackingTest FAILED: not every keypoint tracked through the identity warp");
 		return false;
 	}
 	FOREACH(i, trackedA)
 		if (!status[i] || norm(trackedB[i] - trackedA[i]) > 1e-3f) {
-			VERBOSE("ROMA2WarpTrackingTest FAILED: keypoint %u moved %g px", i, norm(trackedB[i] - trackedA[i]));
+			VERBOSE("DenseWarpTrackingTest FAILED: keypoint %u moved %g px", i, norm(trackedB[i] - trackedA[i]));
 			return false;
 		}
 
@@ -1229,7 +1229,7 @@ bool ROMA2WarpTrackingTest()
 	FOREACH(i, status) {
 		const float x = imgA.keypoints[i].pt.x;
 		if ((x < 316.f && status[i]) || (x > 324.f && !status[i])) {
-			VERBOSE("ROMA2WarpTrackingTest FAILED: overlap gate at x=%g", x);
+			VERBOSE("DenseWarpTrackingTest FAILED: overlap gate at x=%g", x);
 			return false;
 		}
 	}
@@ -1257,7 +1257,7 @@ bool ROMA2WarpTrackingTest()
 		const std::vector<Point2f> ptsB{Point2f(110.f, 100.f), Point2f(210.f, 200.f)};
 		const std::vector<float> confidences{0.7f, 0.9f};
 		if (AppendDenseMatches(denseScene, pair, ptsA, ptsB, confidences, cv::Size(cells, cells)) != 2) {
-			VERBOSE("ROMA2WarpTrackingTest FAILED: dense fill not appended");
+			VERBOSE("DenseWarpTrackingTest FAILED: dense fill not appended");
 			return false;
 		}
 		const float cellSize = MAXF((float)width/(float)cells, (float)height/(float)cells);
@@ -1265,20 +1265,20 @@ bool ROMA2WarpTrackingTest()
 			const Image& im = denseScene.images[k];
 			if (im.keypoints.size() != 12 || im.NumDescribedKeypoints() != 10 || im.NumDenseKeypoints() != 2 ||
 				im.IsDenseKeypoint(9) || !im.IsDenseKeypoint(10)) {
-				VERBOSE("ROMA2WarpTrackingTest FAILED: image %u has %u keypoints with boundary %u",
+				VERBOSE("DenseWarpTrackingTest FAILED: image %u has %u keypoints with boundary %u",
 					k, (unsigned)im.keypoints.size(), im.NumDescribedKeypoints());
 				return false;
 			}
 			if (im.keypoints[10].response != 0.7f || im.keypoints[11].response != 0.9f ||
 				im.keypoints[10].size != cellSize) {
-				VERBOSE("ROMA2WarpTrackingTest FAILED: image %u dense keypoint response %g / size %g, expected size %g",
+				VERBOSE("DenseWarpTrackingTest FAILED: image %u dense keypoint response %g / size %g, expected size %g",
 					k, im.keypoints[10].response, im.keypoints[10].size, cellSize);
 				return false;
 			}
 		}
 		if (denseScene.images[0].keypoints[10].pt != cv::Point2f(100.f, 100.f) ||
 			denseScene.images[1].keypoints[10].pt != cv::Point2f(110.f, 100.f)) {
-			VERBOSE("ROMA2WarpTrackingTest FAILED: dense keypoint positions");
+			VERBOSE("DenseWarpTrackingTest FAILED: dense keypoint positions");
 			return false;
 		}
 		// the two dense matches sit at 5 and 6, the strict-filter rejects moved after them, the
@@ -1287,7 +1287,7 @@ bool ROMA2WarpTrackingTest()
 			pair.GetNumFilteredInliers() != 5 || pair.GetNumTrackFormingMatches() != 7 ||
 			pair.matches[5].queryIdx != 10 || pair.matches[5].trainIdx != 10 ||
 			pair.matches[6].queryIdx != 11 || pair.matches[7].queryIdx != 5) {
-			VERBOSE("ROMA2WarpTrackingTest FAILED: dense matches not inserted as their own segment (%u matches, %d sparse, %d dense)",
+			VERBOSE("DenseWarpTrackingTest FAILED: dense matches not inserted as their own segment (%u matches, %d sparse, %d dense)",
 				(unsigned)pair.matches.size(), pair.numFilteredInliers, pair.numDenseInliers);
 			return false;
 		}
@@ -1297,23 +1297,23 @@ bool ROMA2WarpTrackingTest()
 			denseScene.images[0].NumDescribedKeypoints() != 10 || denseScene.images[0].NumDenseKeypoints() != 4 ||
 			pair.numFilteredInliers != 5 || pair.numDenseInliers != 4 ||
 			pair.matches.size() != 12 || pair.matches[7].queryIdx != 12 || pair.matches[9].queryIdx != 5) {
-			VERBOSE("ROMA2WarpTrackingTest FAILED: a second append moved the described boundary or the sparse count");
+			VERBOSE("DenseWarpTrackingTest FAILED: a second append moved the described boundary or the sparse count");
 			return false;
 		}
 	}
 
-	VERBOSE("ROMA2WarpTrackingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("DenseWarpTrackingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
 // Coverage-uniform warp sampling (the verdict's fitting sample): the budget, the spread the
 // bucket stratification buys over a plain top-confidence selection, the frame occupancy of a
 // sample that really does sit in one corner, and the determinism of the whole draw
-bool ROMA2CoverageSampleTest()
+bool DenseCoverageSampleTest()
 {
 	TD_TIMER_START();
 
-	// two 640x480 images and the identity warp of ROMA2WarpTrackingTest, so every sampled point of
+	// two 640x480 images and the identity warp of DenseWarpTrackingTest, so every sampled point of
 	// A must come back unmoved in B and the two coverages have to agree
 	Scene scene;
 	const int width = 640, height = 480;
@@ -1355,18 +1355,18 @@ bool ROMA2CoverageSampleTest()
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
 	const size_t numFull = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, sampledA, sampledB);
 	if (numFull < budget*9/10 || numFull > budget*11/10) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: full overlap drew %u samples, expected about the %u budgeted",
+		VERBOSE("DenseCoverageSampleTest FAILED: full overlap drew %u samples, expected about the %u budgeted",
 			(unsigned)numFull, budget);
 		return false;
 	}
 	float coverageA = SampleCoverage(sampledA, imgA.GetSize()), coverageB = SampleCoverage(sampledB, imgB.GetSize());
 	if (coverageA < 0.99f || coverageB < 0.99f) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: a fully overlapping sample covers only %.3f/%.3f of the two images", coverageA, coverageB);
+		VERBOSE("DenseCoverageSampleTest FAILED: a fully overlapping sample covers only %.3f/%.3f of the two images", coverageA, coverageB);
 		return false;
 	}
 	FOREACH(i, sampledA)
 		if (!Image8U::isInside(sampledB[i], imgB.GetSize()) || norm(sampledB[i] - sampledA[i]) > 1e-3f) {
-			VERBOSE("ROMA2CoverageSampleTest FAILED: sample %u moved %g px through the identity warp", i, norm(sampledB[i] - sampledA[i]));
+			VERBOSE("DenseCoverageSampleTest FAILED: sample %u moved %g px through the identity warp", i, norm(sampledB[i] - sampledA[i]));
 			return false;
 		}
 
@@ -1380,7 +1380,7 @@ bool ROMA2CoverageSampleTest()
 	overlap(cv::Rect(2, 2, 100, 100)).setTo(0.6f);
 	const size_t numPartial = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, sampledA, sampledB);
 	if (numPartial < budget*3/4 || numPartial > budget*5/4) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: a 39%%-overlap warp drew %u samples, expected near the %u budgeted",
+		VERBOSE("DenseCoverageSampleTest FAILED: a 39%%-overlap warp drew %u samples, expected near the %u budgeted",
 			(unsigned)numPartial, budget);
 		return false;
 	}
@@ -1389,7 +1389,7 @@ bool ROMA2CoverageSampleTest()
 	coverageA = SampleCoverage(sampledA, imgA.GetSize());
 	coverageB = SampleCoverage(sampledB, imgB.GetSize());
 	if (coverageA < 0.3f || coverageA > 0.5f || ABS(coverageB-coverageA) > 0.02f) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: a 39%%-overlap sample reports %.3f/%.3f coverage, expected about 0.4",
+		VERBOSE("DenseCoverageSampleTest FAILED: a 39%%-overlap sample reports %.3f/%.3f coverage, expected about 0.4",
 			coverageA, coverageB);
 		return false;
 	}
@@ -1402,7 +1402,7 @@ bool ROMA2CoverageSampleTest()
 		// map each A-point back to the warp-grid cell it came from, then to its
 		// (numBuckets x numBuckets) bucket, and require no two samples to share one: a fill-up
 		// necessarily puts extra points into buckets that already have a winner, which this catches
-		// directly. The mapping is PixelToCell (ROMA2Warp.cpp), the exact inverse of the CellToPixel
+		// directly. The mapping is PixelToCell (DenseWarp.cpp), the exact inverse of the CellToPixel
 		// the sampler places a cell in image coordinates with -- any other map here would bias every
 		// index and would only stay invisible while the bias sat under the rounding threshold
 		std::vector<int> bucketHits((size_t)numBuckets*numBuckets, 0);
@@ -1416,7 +1416,7 @@ bool ROMA2CoverageSampleTest()
 		}
 		FOREACH(b, bucketHits)
 			if (bucketHits[b] > 1) {
-				VERBOSE("ROMA2CoverageSampleTest FAILED: %s bucket %u holds %d samples, expected at most 1 -- a fill-up puts extra points into buckets that already have a winner",
+				VERBOSE("DenseCoverageSampleTest FAILED: %s bucket %u holds %d samples, expected at most 1 -- a fill-up puts extra points into buckets that already have a winner",
 					label, (unsigned)b, bucketHits[b]);
 				return false;
 			}
@@ -1440,7 +1440,7 @@ bool ROMA2CoverageSampleTest()
 		}
 		const float meanHits = (float)sumHits/(float)numNonEmpty;
 		if ((float)maxHits > 3.f*meanHits) {
-			VERBOSE("ROMA2CoverageSampleTest FAILED: %s busiest %dx%d bin holds %d samples, %.2fx the %.2f mean over the %d non-empty bins, expected at most 3x",
+			VERBOSE("DenseCoverageSampleTest FAILED: %s busiest %dx%d bin holds %d samples, %.2fx the %.2f mean over the %d non-empty bins, expected at most 3x",
 				label, fineGrid, fineGrid, maxHits, (float)maxHits/meanHits, meanHits, numNonEmpty);
 			return false;
 		}
@@ -1453,7 +1453,7 @@ bool ROMA2CoverageSampleTest()
 	if (!CheckOneWinnerPerBucket(sampledA, numBuckets, "partial-overlap"))
 		return false;
 	// the draw must not be piled onto the most confident part of that region -- and under the shared
-	// lattice winner rule (ROMA2Warp.cpp, WarpCellLatticePriority) confidence does not rank the
+	// lattice winner rule (DenseWarp.cpp, WarpCellLatticePriority) confidence does not rank the
 	// candidates at all, only admit them, so raising a 20x20-cell corner of an ALREADY-ELIGIBLE
 	// region to full confidence must not move the draw by a single point. Pinned as exact equality,
 	// not as a tolerance: a tolerance would pass whatever the rule does.
@@ -1464,7 +1464,7 @@ bool ROMA2CoverageSampleTest()
 	const float skewCoverageA = SampleCoverage(skewA, imgA.GetSize()), skewCoverageB = SampleCoverage(skewB, imgB.GetSize());
 	if (numSkew != numPartial || skewA != partialA || skewB != partialB ||
 		skewCoverageA != coverageA || skewCoverageB != coverageB) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: a confidence hot-spot moved the draw from %u samples at %.3f coverage to %u at %.3f "
+		VERBOSE("DenseCoverageSampleTest FAILED: a confidence hot-spot moved the draw from %u samples at %.3f coverage to %u at %.3f "
 			"-- confidence is ranking the bucket winners, not just admitting them",
 			(unsigned)numPartial, coverageA, (unsigned)numSkew, skewCoverageA);
 		return false;
@@ -1485,7 +1485,7 @@ bool ROMA2CoverageSampleTest()
 	SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, repeatA, repeatB);
 	if (repeatA != skewA || repeatB != skewB ||
 		SampleCoverage(repeatA, imgA.GetSize()) != skewCoverageA || SampleCoverage(repeatB, imgB.GetSize()) != skewCoverageB) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: the draw is not a pure function of its inputs");
+		VERBOSE("DenseCoverageSampleTest FAILED: the draw is not a pure function of its inputs");
 		return false;
 	}
 
@@ -1495,14 +1495,14 @@ bool ROMA2CoverageSampleTest()
 	// dominates: what must hold is that the draw stays small, stays non-empty, and terminates
 	const size_t numTiny = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, 8, sampledA, sampledB);
 	if (numTiny == 0 || numTiny > 64 || sampledA.size() != numTiny) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: a budget of 8 drew %u samples", (unsigned)numTiny);
+		VERBOSE("DenseCoverageSampleTest FAILED: a budget of 8 drew %u samples", (unsigned)numTiny);
 		return false;
 	}
 	// and a budget of 1 degenerates to a 2x2 bucket grid over the whole warp (n is still scaled by
 	// the inverse overlap fraction), not to a division by zero or an empty draw
 	const size_t numOne = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, 1, sampledA, sampledB);
 	if (numOne == 0 || numOne > 8) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: a budget of 1 drew %u samples", (unsigned)numOne);
+		VERBOSE("DenseCoverageSampleTest FAILED: a budget of 1 drew %u samples", (unsigned)numOne);
 		return false;
 	}
 
@@ -1514,13 +1514,13 @@ bool ROMA2CoverageSampleTest()
 	overlap.setTo(0.f);
 	overlap(cv::Rect(2, 2, 40, 40)).setTo(1.f);
 	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, sampledA, sampledB) != 40*40) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: %u samples drawn of the 1600 confident cells", (unsigned)sampledA.size());
+		VERBOSE("DenseCoverageSampleTest FAILED: %u samples drawn of the 1600 confident cells", (unsigned)sampledA.size());
 		return false;
 	}
 	coverageA = SampleCoverage(sampledA, imgA.GetSize());
 	coverageB = SampleCoverage(sampledB, imgB.GetSize());
 	if (coverageA > 0.15f || coverageA < 0.05f || ABS(coverageB-coverageA) > 0.01f) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: a corner-only sample covers %.3f/%.3f of the two images", coverageA, coverageB);
+		VERBOSE("DenseCoverageSampleTest FAILED: a corner-only sample covers %.3f/%.3f of the two images", coverageA, coverageB);
 		return false;
 	}
 
@@ -1528,11 +1528,11 @@ bool ROMA2CoverageSampleTest()
 	overlap.setTo(0.f);
 	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 0.f, budget, sampledA, sampledB) != 0 ||
 		!sampledA.empty() || SampleCoverage(sampledA, imgA.GetSize()) != 0.f || SampleCoverage(sampledB, imgB.GetSize()) != 0.f) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: an unconfident warp still produced a sample");
+		VERBOSE("DenseCoverageSampleTest FAILED: an unconfident warp still produced a sample");
 		return false;
 	}
 
-	VERBOSE("ROMA2CoverageSampleTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("DenseCoverageSampleTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -1544,11 +1544,11 @@ bool ROMA2CoverageSampleTest()
 // bucket winners by confidence (which breaks the cross-pair keypoint identity the dense tracks rest
 // on), and thinning an over-budget draw by confidence, which re-clusters the survivors onto exactly
 // the well-textured part the sparse matcher already covered.
-bool ROMA2ComplementaryDrawTest()
+bool DenseComplementaryDrawTest()
 {
 	TD_TIMER_START();
 
-	// the identity-warp two-image setup of ROMA2CoverageSampleTest: a drawn point of A comes back
+	// the identity-warp two-image setup of DenseCoverageSampleTest: a drawn point of A comes back
 	// unmoved in B, so every check below can be read in A's frame alone
 	Scene scene;
 	const int width = 640, height = 480;
@@ -1603,7 +1603,7 @@ bool ROMA2ComplementaryDrawTest()
 	for (int cy = 0; cy < 40; cy += 2)
 		for (int cx = 0; cx < 40; cx += 2)
 			sparseA.push_back(CellPixel(cx, cy));
-	const ROMA2Config config; // denseMatchesPerFrame 2000 (a density per full frame of overlap), minConfidence 0.1
+	const DenseMatchConfig config; // denseMatchesPerFrame 2000 (a density per full frame of overlap), minConfidence 0.1
 	const unsigned denseBudget = config.denseMatchesPerFrame;
 	const int numBuckets = DenseFillGridSide(denseBudget, cells);
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
@@ -1612,7 +1612,7 @@ bool ROMA2ComplementaryDrawTest()
 	const size_t numDense = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0.f, numBuckets, denseBudget,
 		sparseA, denseA, denseB, confidences);
 	if (numDense == 0 || denseB.size() != numDense || confidences.size() != numDense) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the draw returned %u points with %u/%u index-parallel arrays",
+		VERBOSE("DenseComplementaryDrawTest FAILED: the draw returned %u points with %u/%u index-parallel arrays",
 			(unsigned)numDense, (unsigned)denseB.size(), (unsigned)confidences.size());
 		return false;
 	}
@@ -1621,7 +1621,7 @@ bool ROMA2ComplementaryDrawTest()
 		occupied[PixelToBucket(pt, numBuckets)] = true;
 	FOREACH(i, denseA)
 		if (occupied[PixelToBucket(denseA[i], numBuckets)]) {
-			VERBOSE("ROMA2ComplementaryDrawTest FAILED: dense point %u at (%.1f, %.1f) landed in a bucket the pair's sparse matches already hold",
+			VERBOSE("DenseComplementaryDrawTest FAILED: dense point %u at (%.1f, %.1f) landed in a bucket the pair's sparse matches already hold",
 				i, denseA[i].x, denseA[i].y);
 			return false;
 		}
@@ -1636,13 +1636,13 @@ bool ROMA2ComplementaryDrawTest()
 			++numExpected;
 	numExpected = MINF(numExpected, (size_t)denseBudget); // the thinning's cap, if the winners ran over it
 	if (numDense != numExpected) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: %u dense points for the %u unoccupied buckets of the %dx%d grid that hold a candidate",
+		VERBOSE("DenseComplementaryDrawTest FAILED: %u dense points for the %u unoccupied buckets of the %dx%d grid that hold a candidate",
 			(unsigned)numDense, (unsigned)numExpected, numBuckets, numBuckets);
 		return false;
 	}
 	// the budget is a real CAP here, not merely the target it is for the verdict's draw
 	if (numDense > denseBudget) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the draw kept %u points of a %u budget",
+		VERBOSE("DenseComplementaryDrawTest FAILED: the draw kept %u points of a %u budget",
 			(unsigned)numDense, denseBudget);
 		return false;
 	}
@@ -1650,7 +1650,7 @@ bool ROMA2ComplementaryDrawTest()
 		// index-parallel through the identity warp, and each point carries its own cell's
 		// confidence -- the value it was selected on, which is what MakeDenseKeypoint stamps
 		if (norm(denseB[i] - denseA[i]) > 1e-3f || ABS(confidences[i] - 0.6f) > 1e-6f) {
-			VERBOSE("ROMA2ComplementaryDrawTest FAILED: dense point %u moved %g px and carries confidence %g, expected 0.6",
+			VERBOSE("DenseComplementaryDrawTest FAILED: dense point %u moved %g px and carries confidence %g, expected 0.6",
 				i, norm(denseB[i] - denseA[i]), confidences[i]);
 			return false;
 		}
@@ -1660,7 +1660,7 @@ bool ROMA2ComplementaryDrawTest()
 	for (size_t i = 1; i < numDense; ++i)
 		if (denseA[i].y < denseA[i-1].y - 1e-3f ||
 			(ABS(denseA[i].y - denseA[i-1].y) <= 1e-3f && denseA[i].x <= denseA[i-1].x)) {
-			VERBOSE("ROMA2ComplementaryDrawTest FAILED: point %u at (%.1f, %.1f) breaks the raster order after (%.1f, %.1f)",
+			VERBOSE("DenseComplementaryDrawTest FAILED: point %u at (%.1f, %.1f) breaks the raster order after (%.1f, %.1f)",
 				(unsigned)i, denseA[i].x, denseA[i].y, denseA[i-1].x, denseA[i-1].y);
 			return false;
 		}
@@ -1671,7 +1671,7 @@ bool ROMA2ComplementaryDrawTest()
 	std::vector<float> zeroC(7, 0.5f);
 	if (SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0.f, numBuckets, 0, sparseA, zeroA, zeroB, zeroC) != 0 ||
 		!zeroA.empty() || !zeroB.empty() || !zeroC.empty()) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: a zero dense budget still drew %u points", (unsigned)zeroA.size());
+		VERBOSE("DenseComplementaryDrawTest FAILED: a zero dense budget still drew %u points", (unsigned)zeroA.size());
 		return false;
 	}
 
@@ -1691,7 +1691,7 @@ bool ROMA2ComplementaryDrawTest()
 	const size_t numSmall = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0.f, numSmallBuckets, smallBudget,
 		sparseA, denseA, denseB, confidences);
 	if (numSmall != smallBudget || denseB.size() != numSmall || confidences.size() != numSmall) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: an over-budget draw kept %u points of a %u budget",
+		VERBOSE("DenseComplementaryDrawTest FAILED: an over-budget draw kept %u points of a %u budget",
 			(unsigned)numSmall, smallBudget);
 		return false;
 	}
@@ -1703,7 +1703,7 @@ bool ROMA2ComplementaryDrawTest()
 		// complementarity has to survive the thinning too: it can only drop points, never move one
 		// into a bucket the draw had struck out
 		if (smallOccupied[PixelToBucket(denseA[i], numSmallBuckets)]) {
-			VERBOSE("ROMA2ComplementaryDrawTest FAILED: the thinned draw put point %u at (%.1f, %.1f) into a sparse-occupied bucket",
+			VERBOSE("DenseComplementaryDrawTest FAILED: the thinned draw put point %u at (%.1f, %.1f) into a sparse-occupied bucket",
 				i, denseA[i].x, denseA[i].y);
 			return false;
 		}
@@ -1713,7 +1713,7 @@ bool ROMA2ComplementaryDrawTest()
 	// draw thinned by confidence collapses into the last one and empties the first outright
 	for (int q = 0; q < 4; ++q)
 		if (perQuadrant[q] < smallBudget/10) {
-			VERBOSE("ROMA2ComplementaryDrawTest FAILED: quadrant %d holds %u of the %u kept points (%u/%u/%u/%u), "
+			VERBOSE("DenseComplementaryDrawTest FAILED: quadrant %d holds %u of the %u kept points (%u/%u/%u/%u), "
 				"expected at least a tenth in each -- the thinning collapsed the draw onto one region",
 				q, perQuadrant[q], smallBudget, perQuadrant[0], perQuadrant[1], perQuadrant[2], perQuadrant[3]);
 			return false;
@@ -1727,7 +1727,7 @@ bool ROMA2ComplementaryDrawTest()
 	std::vector<float> repeatC(4, 0.25f);
 	SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0.f, numSmallBuckets, smallBudget, sparseA, repeatA, repeatB, repeatC);
 	if (repeatA != denseA || repeatB != denseB || repeatC != confidences) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the draw is not a pure function of its inputs");
+		VERBOSE("DenseComplementaryDrawTest FAILED: the draw is not a pure function of its inputs");
 		return false;
 	}
 
@@ -1748,14 +1748,14 @@ bool ROMA2ComplementaryDrawTest()
 	SampleWarpComplementary(imgA, imgB, warp, rampUp, 0.3f, 0.f, gridSide900, 900, noneOccupied, upA, upB, upC);
 	SampleWarpComplementary(imgA, imgB, warp, rampDown, 0.3f, 0.f, gridSide900, 900, noneOccupied, downA, downB, downC);
 	if (upA.empty() || upA != downA || upB != downB) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: opposite confidence ramps over one region drew %u and %u points "
+		VERBOSE("DenseComplementaryDrawTest FAILED: opposite confidence ramps over one region drew %u and %u points "
 			"at different positions -- confidence is still ranking the bucket winners",
 			(unsigned)upA.size(), (unsigned)downA.size());
 		return false;
 	}
 	// ...while each point still carries ITS OWN cell's confidence, which is what MakeDenseKeypoint stamps
 	if (upC == downC) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the two ramps stamped identical confidences on the same cells");
+		VERBOSE("DenseComplementaryDrawTest FAILED: the two ramps stamped identical confidences on the same cells");
 		return false;
 	}
 
@@ -1779,7 +1779,7 @@ bool ROMA2ComplementaryDrawTest()
 	const size_t numAB = SampleWarpComplementary(imgA, imgB, warp, overlapAB, 0.3f, 0.f, numBucketsAB, 900, noneOccupied, abA, abB, abC);
 	const size_t numAC = SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, 0.f, numBucketsAC, 1500, noneOccupied, acA, acB, acC);
 	if (numAB == 0 || numAC == 0 || numBucketsAB == numBucketsAC) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the two pairs drew %u/%u points on %dx%d and %dx%d grids -- "
+		VERBOSE("DenseComplementaryDrawTest FAILED: the two pairs drew %u/%u points on %dx%d and %dx%d grids -- "
 			"the fixture must give them different grids for the coincidence to mean anything",
 			(unsigned)numAB, (unsigned)numAC, numBucketsAB, numBucketsAB, numBucketsAC, numBucketsAC);
 		return false;
@@ -1808,7 +1808,7 @@ bool ROMA2ComplementaryDrawTest()
 		}
 	const unsigned numCommonMin = MINF(numCommonAB, numCommonAC);
 	if (numCommonMin == 0 || numCoincident*5 < numCommonMin*2) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: only %u of the %u/%u points the two pairs drew in their common "
+		VERBOSE("DenseComplementaryDrawTest FAILED: only %u of the %u/%u points the two pairs drew in their common "
 			"region coincide exactly, expected at least two fifths -- the draws are not chaining across pairs",
 			numCoincident, numCommonAB, numCommonAC, numCommonMin);
 		return false;
@@ -1821,19 +1821,19 @@ bool ROMA2ComplementaryDrawTest()
 		++hitsAC[PixelToBucket(pt, numBucketsAC)];
 	FOREACH(b, hitsAB)
 		if (hitsAB[b] > 1) {
-			VERBOSE("ROMA2ComplementaryDrawTest FAILED: bucket %u of the first pair holds %d points, expected at most 1", (unsigned)b, hitsAB[b]);
+			VERBOSE("DenseComplementaryDrawTest FAILED: bucket %u of the first pair holds %d points, expected at most 1", (unsigned)b, hitsAB[b]);
 			return false;
 		}
 	FOREACH(b, hitsAC)
 		if (hitsAC[b] > 1) {
-			VERBOSE("ROMA2ComplementaryDrawTest FAILED: bucket %u of the second pair holds %d points, expected at most 1", (unsigned)b, hitsAC[b]);
+			VERBOSE("DenseComplementaryDrawTest FAILED: bucket %u of the second pair holds %d points, expected at most 1", (unsigned)b, hitsAC[b]);
 			return false;
 		}
 	std::vector<Point2f> repeatAC_A, repeatAC_B;
 	std::vector<float> repeatAC_C;
 	SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, 0.f, numBucketsAC, 1500, noneOccupied, repeatAC_A, repeatAC_B, repeatAC_C);
 	if (repeatAC_A != acA || repeatAC_B != acB || repeatAC_C != acC) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the lattice draw is not a pure function of its inputs");
+		VERBOSE("DenseComplementaryDrawTest FAILED: the lattice draw is not a pure function of its inputs");
 		return false;
 	}
 
@@ -1859,7 +1859,7 @@ bool ROMA2ComplementaryDrawTest()
 	const unsigned thinTo = (unsigned)(acA.size()/3);
 	ThinSampleByLatticePriority(thinA, thinB, thinC, thinCellIdx, cells, thinTo);
 	if (thinA.size() != thinTo || thinB.size() != thinTo || thinC.size() != thinTo || thinCellIdx.size() != thinTo) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: thinning %u points to %u kept %u", (unsigned)acA.size(), thinTo, (unsigned)thinA.size());
+		VERBOSE("DenseComplementaryDrawTest FAILED: thinning %u points to %u kept %u", (unsigned)acA.size(), thinTo, (unsigned)thinA.size());
 		return false;
 	}
 	size_t src = 0;
@@ -1867,7 +1867,7 @@ bool ROMA2ComplementaryDrawTest()
 		while (src < acA.size() && !(acA[src] == thinA[i]))
 			++src;
 		if (src == acA.size() || !(acB[src] == thinB[i]) || acC[src] != thinC[i] || acCellIdx[src] != thinCellIdx[i]) {
-			VERBOSE("ROMA2ComplementaryDrawTest FAILED: the thinned sample is not an order-preserving index-parallel subsequence of the draw at %u", i);
+			VERBOSE("DenseComplementaryDrawTest FAILED: the thinned sample is not an order-preserving index-parallel subsequence of the draw at %u", i);
 			return false;
 		}
 	}
@@ -1879,7 +1879,7 @@ bool ROMA2ComplementaryDrawTest()
 	const std::set<int> keptCells(thinCellIdx.begin(), thinCellIdx.end());
 	FOREACH(i, tightCellIdx)
 		if (keptCells.find(tightCellIdx[i]) == keptCells.end()) {
-			VERBOSE("ROMA2ComplementaryDrawTest FAILED: thinning to %u kept cell %d, which thinning the same sample to %u dropped -- "
+			VERBOSE("DenseComplementaryDrawTest FAILED: thinning to %u kept cell %d, which thinning the same sample to %u dropped -- "
 				"the two budgets are not keeping nested prefixes of one order", thinTo/2, tightCellIdx[i], thinTo);
 			return false;
 		}
@@ -1890,19 +1890,19 @@ bool ROMA2ComplementaryDrawTest()
 	ThinSampleByLatticePriority(keepA, keepB, keepC, keepCellIdx, cells, (unsigned)acA.size() + 10);
 	ThinSampleByLatticePriority(thinA, thinB, thinC, thinCellIdx, cells, 0);
 	if (keepA != acA || keepB != acB || keepC != acC || !thinA.empty() || !thinB.empty() || !thinC.empty() || !thinCellIdx.empty()) {
-		VERBOSE("ROMA2ComplementaryDrawTest FAILED: thinning to a budget above the sample size, or to zero, did not behave");
+		VERBOSE("DenseComplementaryDrawTest FAILED: thinning to a budget above the sample size, or to zero, did not behave");
 		return false;
 	}
 
-	VERBOSE("ROMA2ComplementaryDrawTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("DenseComplementaryDrawTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
-bool ROMA2DenseFillDensityTest()
+bool DenseFillDensityTest()
 {
 	TD_TIMER_START();
 
-	// --- the identity-warp setup of ROMA2ComplementaryDrawTest -------------------------------
+	// --- the identity-warp setup of DenseComplementaryDrawTest -------------------------------
 	Scene scene;
 	const int width = 640, height = 480;
 	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
@@ -1928,7 +1928,7 @@ bool ROMA2DenseFillDensityTest()
 	// one bucket per dense match at full overlap, clamped to the warp side, never below 1
 	if (DenseFillGridSide(2000, cells) != 45 || DenseFillGridSide(0, cells) != 1 ||
 		DenseFillGridSide(1000000, cells) != cells) {
-		VERBOSE("ROMA2DenseFillDensityTest FAILED: pitch %d/%d/%d for densities 2000/0/1000000",
+		VERBOSE("DenseFillDensityTest FAILED: pitch %d/%d/%d for densities 2000/0/1000000",
 			DenseFillGridSide(2000, cells), DenseFillGridSide(0, cells), DenseFillGridSide(1000000, cells));
 		return false;
 	}
@@ -1955,7 +1955,7 @@ bool ROMA2DenseFillDensityTest()
 	const size_t numBig = DrawOver(80, 80, none, bigA, bigB, bigC);      // a quarter of the frame
 	const size_t numSmall = DrawOver(40, 40, none, smallA, smallB, smallC); // a sixteenth
 	if (numBig < 3*numSmall || numBig > 5*numSmall || numSmall == 0) {
-		VERBOSE("ROMA2DenseFillDensityTest FAILED: a 4x larger overlap drew %u against %u points",
+		VERBOSE("DenseFillDensityTest FAILED: a 4x larger overlap drew %u against %u points",
 			(unsigned)numBig, (unsigned)numSmall);
 		return false;
 	}
@@ -1975,12 +1975,12 @@ bool ROMA2DenseFillDensityTest()
 	const size_t numHalf = DrawOver(80, 80, halfOccupied, halfA, halfB, halfC);
 	const size_t numFull = DrawOver(80, 80, allOccupied, fullA, fullB, fullC);
 	if (numHalf == 0 || numHalf > numBig*3/5 || numHalf < numBig/3) {
-		VERBOSE("ROMA2DenseFillDensityTest FAILED: half the overlap covered drew %u of %u",
+		VERBOSE("DenseFillDensityTest FAILED: half the overlap covered drew %u of %u",
 			(unsigned)numHalf, (unsigned)numBig);
 		return false;
 	}
 	if (numFull != 0) {
-		VERBOSE("ROMA2DenseFillDensityTest FAILED: a fully covered overlap still drew %u points",
+		VERBOSE("DenseFillDensityTest FAILED: a fully covered overlap still drew %u points",
 			(unsigned)numFull);
 		return false;
 	}
@@ -2005,7 +2005,7 @@ bool ROMA2DenseFillDensityTest()
 	// what the property is worth -- the great majority of the two draws land on the same pixels of A
 	// -- not an exact count that would break on any change to the region sizes.
 	if (numShared*20 < bigA.size()*17) {
-		VERBOSE("ROMA2DenseFillDensityTest FAILED: only %u of %u samples of A are shared by a second pair",
+		VERBOSE("DenseFillDensityTest FAILED: only %u of %u samples of A are shared by a second pair",
 			(unsigned)numShared, (unsigned)bigA.size());
 		return false;
 	}
@@ -2024,7 +2024,7 @@ bool ROMA2DenseFillDensityTest()
 	// An even stride through each pair's own list -- what this used to be -- would keep the index
 	// sets {floor(i*2025/1000)} and {floor(i*2025/700)}, which meet in only 400 of the 700; the bar
 	// below sits above that and below the nesting.
-	ROMA2Config ceilingConfig;
+	DenseMatchConfig ceilingConfig;
 	ceilingConfig.denseMatchesPerFrame = density;
 	PairVerdict verdictWideB, verdictNarrowB;
 	verdictWideB.inlierAreaA = 1.00f; verdictWideB.inlierAreaB = 0.50f;
@@ -2039,7 +2039,7 @@ bool ROMA2DenseFillDensityTest()
 	const size_t numNarrowB = SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, 0.f, grid, capNarrowB,
 		none, narrowBA, narrowBB, narrowBC);
 	if (numWideB != capWideB || numNarrowB != capNarrowB) {
-		VERBOSE("ROMA2DenseFillDensityTest FAILED: ceilings %u/%u drew %u/%u points -- the fixture must put both "
+		VERBOSE("DenseFillDensityTest FAILED: ceilings %u/%u drew %u/%u points -- the fixture must put both "
 			"draws over their ceiling for the thinning to be under test at all",
 			capWideB, capNarrowB, (unsigned)numWideB, (unsigned)numNarrowB);
 		return false;
@@ -2052,7 +2052,7 @@ bool ROMA2DenseFillDensityTest()
 		if (keptByWideB.find(std::make_pair(pt.x, pt.y)) != keptByWideB.end())
 			++numSharedCapped;
 	if (numSharedCapped*20 < numNarrowB*19) {
-		VERBOSE("ROMA2DenseFillDensityTest FAILED: of the %u points the tighter ceiling kept, only %u are among the "
+		VERBOSE("DenseFillDensityTest FAILED: of the %u points the tighter ceiling kept, only %u are among the "
 			"%u the looser one kept -- the two thinnings are not nested",
 			(unsigned)numNarrowB, (unsigned)numSharedCapped, (unsigned)numWideB);
 		return false;
@@ -2062,14 +2062,14 @@ bool ROMA2DenseFillDensityTest()
 	return true;
 }
 
-bool ROMA2DenseFillCeilingTest()
+bool DenseFillCeilingTest()
 {
 	TD_TIMER_START();
 
 	// The ceiling is the configured density over the SMALLER of the verdict's two inlier areas: the
 	// bucket grid lives in A's frame and cannot see how much of B the pair's dense matches would
 	// land on, so this is the only term that bounds their density in B.
-	ROMA2Config config;
+	DenseMatchConfig config;
 	config.denseMatchesPerFrame = 2000;
 	PairVerdict verdict;
 
@@ -2082,7 +2082,7 @@ bool ROMA2DenseFillCeilingTest()
 	verdict.inlierAreaA = 1.00f; verdict.inlierAreaB = 1.00f;
 	const unsigned identical = DenseFillCeiling(config, verdict);
 	if (symmetric != 1000 || narrowB != 200 || narrowA != 200 || identical != 2000) {
-		VERBOSE("ROMA2DenseFillCeilingTest FAILED: ceilings %u/%u/%u/%u for .5|.5, .5|.1, .1|.5, 1|1",
+		VERBOSE("DenseFillCeilingTest FAILED: ceilings %u/%u/%u/%u for .5|.5, .5|.1, .1|.5, 1|1",
 			symmetric, narrowB, narrowA, identical);
 		return false;
 	}
@@ -2091,7 +2091,7 @@ bool ROMA2DenseFillCeilingTest()
 	config.denseMatchesPerFrame = 500;
 	verdict.inlierAreaA = 0.50f; verdict.inlierAreaB = 0.50f;
 	if (DenseFillCeiling(config, verdict) != 250) {
-		VERBOSE("ROMA2DenseFillCeilingTest FAILED: ceiling %u at density 500 over half an overlap",
+		VERBOSE("DenseFillCeilingTest FAILED: ceiling %u at density 500 over half an overlap",
 			DenseFillCeiling(config, verdict));
 		return false;
 	}
@@ -2110,10 +2110,10 @@ bool ROMA2DenseFillCeilingTest()
 // poses it admits, the uncalibrated one as any member of a whole family of fundamental matrices --
 // so a warp of a single plane would be explained exactly by a geometry that has nothing to do with
 // these two cameras.
-constexpr REAL ROMA2_WEDGE_SEAM_Z = 3.0; // depth of the seam, on the optical axis of the first camera
-constexpr REAL ROMA2_WEDGE_SLOPE = 1.6;  // how fast the two planes recede to either side of it
+constexpr REAL DENSE_WEDGE_SEAM_Z = 3.0; // depth of the seam, on the optical axis of the first camera
+constexpr REAL DENSE_WEDGE_SLOPE = 1.6;  // how fast the two planes recede to either side of it
 
-static void MakeROMA2WedgeScene(Scene& scene)
+static void MakeDenseWedgeScene(Scene& scene)
 {
 	const int width = 640, height = 480;
 	PinholeCamera* const camera = new PinholeCamera(cv::Size(width, height),
@@ -2131,14 +2131,14 @@ static void MakeROMA2WedgeScene(Scene& scene)
 // Where the ray through pixel `pt` of `img` meets the wedge, in world coordinates; false when it
 // meets neither plane in front of the camera, which only happens far off axis -- outside the region
 // the tests below make confident
-static bool IntersectROMA2Wedge(const Image& img, const Point2f& pt, Point3& X)
+static bool IntersectDenseWedge(const Image& img, const Point2f& pt, Point3& X)
 {
 	const Point3 dir(img.Ray(Cast<REAL>(pt)));
 	const Point3& C = img.C;
 	// Z = SEAM_Z - SLOPE*X where X <= 0 and Z = SEAM_Z + SLOPE*X where X > 0, along X(t) = C + t*dir
-	const REAL denom[2] = { dir.z + ROMA2_WEDGE_SLOPE*dir.x, dir.z - ROMA2_WEDGE_SLOPE*dir.x };
-	const REAL num[2] = { ROMA2_WEDGE_SEAM_Z - ROMA2_WEDGE_SLOPE*C.x - C.z,
-	                      ROMA2_WEDGE_SEAM_Z + ROMA2_WEDGE_SLOPE*C.x - C.z };
+	const REAL denom[2] = { dir.z + DENSE_WEDGE_SLOPE*dir.x, dir.z - DENSE_WEDGE_SLOPE*dir.x };
+	const REAL num[2] = { DENSE_WEDGE_SEAM_Z - DENSE_WEDGE_SLOPE*C.x - C.z,
+	                      DENSE_WEDGE_SEAM_Z + DENSE_WEDGE_SLOPE*C.x - C.z };
 	for (int side = 0; side < 2; ++side) {
 		if (ABS(denom[side]) < 1e-9)
 			continue; // the ray runs parallel to this plane
@@ -2156,10 +2156,10 @@ static bool IntersectROMA2Wedge(const Image& img, const Point2f& pt, Point3& X)
 
 // The exact correspondence of a pixel of imgSrc in imgDst through the wedge; false when the ray
 // misses the surface or the point it hits falls outside imgDst
-static bool ROMA2WedgeCorrespondence(const Image& imgSrc, const Image& imgDst, const Point2f& ptSrc, Point2f& ptDst)
+static bool DenseWedgeCorrespondence(const Image& imgSrc, const Image& imgDst, const Point2f& ptSrc, Point2f& ptDst)
 {
 	Point3 X;
-	if (!IntersectROMA2Wedge(imgSrc, ptSrc, X))
+	if (!IntersectDenseWedge(imgSrc, ptSrc, X))
 		return false;
 	const auto [proj, valid] = imgDst.ProjectPoint(X);
 	if (!valid)
@@ -2169,7 +2169,7 @@ static bool ROMA2WedgeCorrespondence(const Image& imgSrc, const Image& imgDst, c
 }
 
 // The normalized (align_corners=false) coordinate a warp map stores for a pixel of the target image
-static inline Point2f ROMA2NormCoord(const Point2f& pt, const cv::Size& size)
+static inline Point2f DenseNormCoord(const Point2f& pt, const cv::Size& size)
 {
 	return Point2f(2.f*(pt.x + 0.5f)/(float)size.width - 1.f, 2.f*(pt.y + 0.5f)/(float)size.height - 1.f);
 }
@@ -2178,7 +2178,7 @@ static inline Point2f ROMA2NormCoord(const Point2f& pt, const cv::Size& size)
 // through the wedge, with confidence 1 on the given cell rectangle and 0 everywhere else. A cell
 // whose ray misses the surface is pointed far outside imgDst, the "no correspondence here" encoding
 // every warp draw reads.
-static void MakeROMA2WedgeWarp(const Image& imgSrc, const Image& imgDst, int cells,
+static void MakeDenseWedgeWarp(const Image& imgSrc, const Image& imgDst, int cells,
 	int x0, int x1, int y0, int y1, WarpMaps& maps)
 {
 	const cv::Size gridSize(cells, cells), sizeSrc(imgSrc.GetSize()), sizeDst(imgDst.GetSize());
@@ -2189,10 +2189,10 @@ static void MakeROMA2WedgeWarp(const Image& imgSrc, const Image& imgDst, int cel
 		for (int x = 0; x < cells; ++x) {
 			maps.warp(y, x) = Point2f(-3.f, -3.f);
 			Point2f ptDst;
-			if (!ROMA2WedgeCorrespondence(imgSrc, imgDst,
+			if (!DenseWedgeCorrespondence(imgSrc, imgDst,
 				CellToPixel(Point2f((float)x, (float)y), gridSize, sizeSrc), ptDst))
 				continue;
-			maps.warp(y, x) = ROMA2NormCoord(ptDst, sizeDst);
+			maps.warp(y, x) = DenseNormCoord(ptDst, sizeDst);
 			if (x >= x0 && x < x1 && y >= y0 && y < y1)
 				maps.confidence(y, x) = 1.f;
 		}
@@ -2202,7 +2202,7 @@ static void MakeROMA2WedgeWarp(const Image& imgSrc, const Image& imgDst, int cel
 // A warp of the same grid that has nothing to do with the two cameras: one fixed homography of A --
 // 5 degrees of rotation, a 5% scale, a shift and a mild projective term -- confident over the same
 // cell rectangle. Smooth and locally consistent, exactly like a hallucinated warp.
-static void MakeROMA2HomographyWarp(const Image& imgSrc, const Image& imgDst, int cells,
+static void MakeDenseHomographyWarp(const Image& imgSrc, const Image& imgDst, int cells,
 	int x0, int x1, int y0, int y1, WarpMaps& maps)
 {
 	const cv::Size gridSize(cells, cells), sizeSrc(imgSrc.GetSize()), sizeDst(imgDst.GetSize());
@@ -2219,7 +2219,7 @@ static void MakeROMA2HomographyWarp(const Image& imgSrc, const Image& imgDst, in
 			const float w = 1.f + 3e-4f*dx - 2e-4f*dy;
 			const Point2f ptDst(cxDst + (cosT*dx - sinT*dy - 30.f)/w, cyDst + (sinT*dx + cosT*dy + 12.f)/w);
 			maps.warp(y, x) = Image8U::isInside(ptDst, sizeDst) ?
-				ROMA2NormCoord(ptDst, sizeDst) : Point2f(-3.f, -3.f);
+				DenseNormCoord(ptDst, sizeDst) : Point2f(-3.f, -3.f);
 			if (x >= x0 && x < x1 && y >= y0 && y < y1)
 				maps.confidence(y, x) = 1.f;
 		}
@@ -2239,9 +2239,9 @@ static void MakeROMA2HomographyWarp(const Image& imgSrc, const Image& imgDst, in
 //  - every warp draw places a cell's A end at the cell's true centre (CollectWarpCandidates through
 //    SampleWarpByCoverage, CollectEligibleCells through the verdict's inlier cells);
 //  - the complementary draw's occupancy (pixel -> cell, rounded) strikes the cell a position lies in.
-// The convention is written out here rather than taken from ROMA2Warp.h, so the test states it
+// The convention is written out here rather than taken from DenseWarp.h, so the test states it
 // independently of the implementation.
-bool ROMA2WarpGridConventionTest()
+bool DenseWarpGridConventionTest()
 {
 	TD_TIMER_START();
 	const auto CellCentre = [](float i, int size, int cells) { return (i + 0.5f)*(float)size/(float)cells - 0.5f; };
@@ -2283,7 +2283,7 @@ bool ROMA2WarpGridConventionTest()
 				if (ABS(pixel.x - CellCentre(cell.x, size.width, cells)) > 1e-3f ||
 					ABS(pixel.y - CellCentre(cell.y, size.height, cells)) > 1e-3f ||
 					norm(PixelToCell(pixel, size, gridSize) - cell) > 1e-4f) {
-					VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: cell (%g,%g) -> pixel (%g,%g) -> cell (%g,%g)",
+					VERBOSE("DenseWarpGridConventionTest FAILED: %dx%d: cell (%g,%g) -> pixel (%g,%g) -> cell (%g,%g)",
 						size.width, size.height, cell.x, cell.y, pixel.x, pixel.y,
 						PixelToCell(pixel, size, gridSize).x, PixelToCell(pixel, size, gridSize).y);
 					return false;
@@ -2291,7 +2291,7 @@ bool ROMA2WarpGridConventionTest()
 			}
 			const Point2f back(PixelToCell(CellToPixel(Point2f((float)i, (float)i), gridSize, size), size, gridSize));
 			if (ROUND2INT(back.x) != i || ROUND2INT(back.y) != i) {
-				VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: cell %d rounds back to (%d,%d)",
+				VERBOSE("DenseWarpGridConventionTest FAILED: %dx%d: cell %d rounds back to (%d,%d)",
 					size.width, size.height, i, ROUND2INT(back.x), ROUND2INT(back.y));
 				return false;
 			}
@@ -2327,7 +2327,7 @@ bool ROMA2WarpGridConventionTest()
 		std::vector<Point2f> trackedA, trackedB;
 		std::vector<uchar> status;
 		if (TrackKeypointsByWarp(imgA, imgB, warp, confidence, 0.1f, trackedA, trackedB, status) != imgA.keypoints.size()) {
-			VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: not every keypoint tracked through a fully confident warp",
+			VERBOSE("DenseWarpGridConventionTest FAILED: %dx%d: not every keypoint tracked through a fully confident warp",
 				size.width, size.height);
 			return false;
 		}
@@ -2343,7 +2343,7 @@ bool ROMA2WarpGridConventionTest()
 			}
 		}
 		if (maxError > 0.05f) {
-			VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: keypoint (%g,%g) tracked %g px off its true target",
+			VERBOSE("DenseWarpGridConventionTest FAILED: %dx%d: keypoint (%g,%g) tracked %g px off its true target",
 				size.width, size.height, imgA.keypoints[worst].pt.x, imgA.keypoints[worst].pt.y, maxError);
 			return false;
 		}
@@ -2353,14 +2353,14 @@ bool ROMA2WarpGridConventionTest()
 		// cell centre's target
 		std::vector<Point2f> sampledA, sampledB;
 		if (SampleWarpByCoverage(imgA, imgB, warp, confidence, 0.1f, 0.f, (unsigned)(cells*cells), sampledA, sampledB) != (size_t)(cells*cells)) {
-			VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: the draw did not take every cell of a fully confident warp",
+			VERBOSE("DenseWarpGridConventionTest FAILED: %dx%d: the draw did not take every cell of a fully confident warp",
 				size.width, size.height);
 			return false;
 		}
 		FOREACH(k, sampledA) {
 			const Point2f centre(CellCentreA((int)k%cells, (int)k/cells));
 			if (norm(sampledA[k] - centre) > 2e-3f || norm(sampledB[k] - MapAB(centre)) > 0.01f) {
-				VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: cell (%d,%d) drawn at (%g,%g) -> (%g,%g), its centre is (%g,%g) -> (%g,%g)",
+				VERBOSE("DenseWarpGridConventionTest FAILED: %dx%d: cell (%d,%d) drawn at (%g,%g) -> (%g,%g), its centre is (%g,%g) -> (%g,%g)",
 					size.width, size.height, (int)k%cells, (int)k/cells, sampledA[k].x, sampledA[k].y, sampledB[k].x, sampledB[k].y,
 					centre.x, centre.y, MapAB(centre).x, MapAB(centre).y);
 				return false;
@@ -2391,7 +2391,7 @@ bool ROMA2WarpGridConventionTest()
 				bStruckDrawn = true;
 		}
 		if (sampledA.size() != (size_t)cells*cells - numStruck || bStruckDrawn) {
-			VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: the complementary draw took %u cells around %u occupied ones (%s an occupied cell), expected %u",
+			VERBOSE("DenseWarpGridConventionTest FAILED: %dx%d: the complementary draw took %u cells around %u occupied ones (%s an occupied cell), expected %u",
 				size.width, size.height, (unsigned)sampledA.size(), (unsigned)numStruck, bStruckDrawn ? "including" : "excluding",
 				(unsigned)((size_t)cells*cells - numStruck));
 			return false;
@@ -2402,7 +2402,7 @@ bool ROMA2WarpGridConventionTest()
 	// wedge, generated in the same convention, admitted, and every inlier cell of A at a cell centre
 	{
 		Scene scene;
-		MakeROMA2WedgeScene(scene);
+		MakeDenseWedgeScene(scene);
 		const Image& imgA = scene.images[0];
 		const Image& imgB = scene.images[1];
 		MatchConfig matchCfg;
@@ -2422,7 +2422,7 @@ bool ROMA2WarpGridConventionTest()
 				for (int x = 0; x < wedgeCells; ++x) {
 					maps.warp(y, x) = Point2f(-3.f, -3.f);
 					Point2f ptDst;
-					if (!ROMA2WedgeCorrespondence(imgSrc, imgDst, Point2f(CellCentre((float)x, sizeSrc.width, wedgeCells),
+					if (!DenseWedgeCorrespondence(imgSrc, imgDst, Point2f(CellCentre((float)x, sizeSrc.width, wedgeCells),
 						CellCentre((float)y, sizeSrc.height, wedgeCells)), ptDst))
 						continue;
 					maps.warp(y, x) = Point2f(NormalizedCoord(ptDst.x, sizeDst.width), NormalizedCoord(ptDst.y, sizeDst.height));
@@ -2431,12 +2431,12 @@ bool ROMA2WarpGridConventionTest()
 				}
 			}
 		}
-		const ROMA2Config config;
+		const DenseMatchConfig config;
 		ImagePair pair(0, 1);
 		PairVerdict verdict;
-		JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+		JudgePairDense(matcher, imgA, imgB, warps, config, pair, verdict);
 		if (!verdict.admitted || verdict.inliersA.empty()) {
-			VERBOSE("ROMA2WarpGridConventionTest FAILED: the exact wedge warp was rejected (inlier areas %.4f/%.4f)",
+			VERBOSE("DenseWarpGridConventionTest FAILED: the exact wedge warp was rejected (inlier areas %.4f/%.4f)",
 				verdict.inlierAreaA, verdict.inlierAreaB);
 			return false;
 		}
@@ -2444,30 +2444,30 @@ bool ROMA2WarpGridConventionTest()
 			const float x = (pt.x + 0.5f)*(float)wedgeCells/(float)imgA.GetWidth() - 0.5f;
 			const float y = (pt.y + 0.5f)*(float)wedgeCells/(float)imgA.GetHeight() - 0.5f;
 			if (ABS(x - (float)ROUND2INT(x)) > 1e-3f || ABS(y - (float)ROUND2INT(y)) > 1e-3f) {
-				VERBOSE("ROMA2WarpGridConventionTest FAILED: a verdict inlier of A at (%g,%g) is cell (%g,%g), not a cell centre",
+				VERBOSE("DenseWarpGridConventionTest FAILED: a verdict inlier of A at (%g,%g) is cell (%g,%g), not a cell centre",
 					pt.x, pt.y, x, y);
 				return false;
 			}
 		}
 	}
 
-	VERBOSE("ROMA2WarpGridConventionTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("DenseWarpGridConventionTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
 
-// The pair verdict (JudgePairROMA2) on the exact bidirectional warp of two pinhole cameras looking
+// The pair verdict (JudgePairDense) on the exact bidirectional warp of two pinhole cameras looking
 // at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
 // areas measuring that share, a warp confident over 30% of A whose B side maps into A over only 3%
 // is rejected by the min side alone, a smooth warp unrelated to the cameras is rejected however
 // exactly one geometry explains its own side -- through the calibrated branch and through the
 // fundamental one alike -- and minOverlap 0 admits the first two
-bool ROMA2VerdictTest()
+bool DenseVerdictTest()
 {
 	TD_TIMER_START();
 
 	Scene scene;
-	MakeROMA2WedgeScene(scene);
+	MakeDenseWedgeScene(scene);
 	const Image& imgA = scene.images[0];
 	const Image& imgB = scene.images[1];
 	const Pose3D poseGT(imgB / imgA);
@@ -2481,15 +2481,15 @@ bool ROMA2VerdictTest()
 
 	// (a) a region covering ~30% of both frames: admitted, both inlier areas measuring the region
 	PairWarps warps;
-	MakeROMA2WedgeWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
-	MakeROMA2WedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
-	ROMA2Config config; // minConfidence 0.1, minOverlap 0.10
+	MakeDenseWedgeWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
+	MakeDenseWedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
+	DenseMatchConfig config; // minConfidence 0.1, minOverlap 0.10
 	ImagePair pair(0, 1);
 	PairVerdict verdict;
-	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+	JudgePairDense(matcher, imgA, imgB, warps, config, pair, verdict);
 	if (!verdict.admitted ||
 		ABS(verdict.inlierAreaA - regionShare) > 0.05f || ABS(verdict.inlierAreaB - regionShare) > 0.05f) {
-		VERBOSE("ROMA2VerdictTest FAILED: a warp confident over %.4f of both frames was %s with inlier areas %.4f/%.4f",
+		VERBOSE("DenseVerdictTest FAILED: a warp confident over %.4f of both frames was %s with inlier areas %.4f/%.4f",
 			regionShare, verdict.admitted ? "admitted" : "rejected", verdict.inlierAreaA, verdict.inlierAreaB);
 		return false;
 	}
@@ -2497,7 +2497,7 @@ bool ROMA2VerdictTest()
 	// fitted geometry, so both areas are the region itself and not some fraction of it
 	if (verdict.confidentAreaA != regionShare || verdict.confidentAreaB != regionShare ||
 		verdict.inlierAreaA != verdict.confidentAreaA || verdict.inlierAreaB != verdict.confidentAreaB) {
-		VERBOSE("ROMA2VerdictTest FAILED: confident areas %.4f/%.4f and inlier areas %.4f/%.4f over a region of %.4f",
+		VERBOSE("DenseVerdictTest FAILED: confident areas %.4f/%.4f and inlier areas %.4f/%.4f over a region of %.4f",
 			verdict.confidentAreaA, verdict.confidentAreaB, verdict.inlierAreaA, verdict.inlierAreaB, regionShare);
 		return false;
 	}
@@ -2505,7 +2505,7 @@ bool ROMA2VerdictTest()
 	if (verdict.inliersA.size() != (size_t)((rx1-rx0)*(ry1-ry0)) ||
 		verdict.inliersB.size() != verdict.inliersA.size() ||
 		verdict.confidences.size() != verdict.inliersA.size()) {
-		VERBOSE("ROMA2VerdictTest FAILED: the verdict kept %u/%u cells with %u confidences, expected %u",
+		VERBOSE("DenseVerdictTest FAILED: the verdict kept %u/%u cells with %u confidences, expected %u",
 			(unsigned)verdict.inliersA.size(), (unsigned)verdict.inliersB.size(),
 			(unsigned)verdict.confidences.size(), (unsigned)((rx1-rx0)*(ry1-ry0)));
 		return false;
@@ -2514,17 +2514,17 @@ bool ROMA2VerdictTest()
 	// two cameras really have: the fit is handed warp cells and nothing else, and it comes back
 	// within a twentieth of a degree of the truth, which is what says the warp carried the geometry.
 	// It is not evidence that the scene's own solution stayed out of the fit -- a leak would read
-	// exactly the same; the temporary poseless Image copies JudgePairROMA2 builds are what keeps it
+	// exactly the same; the temporary poseless Image copies JudgePairDense builds are what keeps it
 	// out
 	if (!pair.relativePose.has_value() || !pair.F.has_value() || !pair.matches.empty()) {
-		VERBOSE("ROMA2VerdictTest FAILED: an admitted pair carries %u matches, pose %d, F %d",
+		VERBOSE("DenseVerdictTest FAILED: an admitted pair carries %u matches, pose %d, F %d",
 			(unsigned)pair.matches.size(), (int)pair.relativePose.has_value(), (int)pair.F.has_value());
 		return false;
 	}
 	const REAL angleErr = R2D(ACOS(ComputeAngle(pair.relativePose->R, poseGT.R)));
 	const REAL tSim = ABS(normalized(pair.relativePose->GetT()).dot(normalized(poseGT.GetT())));
 	if (angleErr > REAL(0.05) || tSim < REAL(0.9999)) {
-		VERBOSE("ROMA2VerdictTest FAILED: the fitted geometry is %.4f deg and %.6f off the two cameras", angleErr, tSim);
+		VERBOSE("DenseVerdictTest FAILED: the fitted geometry is %.4f deg and %.6f off the two cameras", angleErr, tSim);
 		return false;
 	}
 
@@ -2532,11 +2532,11 @@ bool ROMA2VerdictTest()
 	// the pair although A's own side would have admitted it
 	const int bx0 = 20, bx1 = 32, by0 = 20, by1 = 30;
 	const float smallShare = (float)((bx1-bx0)*(by1-by0))/(float)(cells*cells);
-	MakeROMA2WedgeWarp(imgB, imgA, cells, bx0, bx1, by0, by1, warps.ba);
-	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+	MakeDenseWedgeWarp(imgB, imgA, cells, bx0, bx1, by0, by1, warps.ba);
+	JudgePairDense(matcher, imgA, imgB, warps, config, pair, verdict);
 	if (verdict.admitted || ABS(verdict.inlierAreaA - regionShare) > 0.05f ||
 		ABS(verdict.inlierAreaB - smallShare) > 0.01f || !verdict.inliersA.empty() || pair.F.has_value()) {
-		VERBOSE("ROMA2VerdictTest FAILED: a B side of %.4f (expected %.4f) next to an A side of %.4f was %s, "
+		VERBOSE("DenseVerdictTest FAILED: a B side of %.4f (expected %.4f) next to an A side of %.4f was %s, "
 			"keeping %u cells and %d geometry",
 			verdict.inlierAreaB, smallShare, verdict.inlierAreaA, verdict.admitted ? "admitted" : "rejected",
 			(unsigned)verdict.inliersA.size(), (int)pair.F.has_value());
@@ -2548,9 +2548,9 @@ bool ROMA2VerdictTest()
 	// calibrated branch: a homography is a valid planar two-view interpretation there too, one of
 	// the poses it admits explaining the whole of A's own side, so A cannot tell it from a true
 	// pair; the other direction can, and that is the whole point of measuring the min of the two
-	MakeROMA2WedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
-	MakeROMA2HomographyWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
-	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+	MakeDenseWedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
+	MakeDenseHomographyWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
+	JudgePairDense(matcher, imgA, imgB, warps, config, pair, verdict);
 	// one geometry does explain the whole of the homography's own side, exactly as it explains a
 	// true pair's -- an inlier count or ratio on A's cells cannot separate the two -- while the B
 	// side reads a fraction of it, and under the bar. B's side is measured, not skipped: it comes
@@ -2559,7 +2559,7 @@ bool ROMA2VerdictTest()
 	if (verdict.admitted || verdict.confidentAreaA != regionShare ||
 		ABS(verdict.inlierAreaA - regionShare) > 0.05f || verdict.inlierAreaB <= 0.f ||
 		verdict.inlierAreaB >= config.minOverlap || verdict.inlierAreaB >= 0.5f*verdict.inlierAreaA) {
-		VERBOSE("ROMA2VerdictTest FAILED: a homography warp confident over %.4f of A (inlier areas %.4f/%.4f, bar %.4f) was %s",
+		VERBOSE("DenseVerdictTest FAILED: a homography warp confident over %.4f of A (inlier areas %.4f/%.4f, bar %.4f) was %s",
 			verdict.confidentAreaA, verdict.inlierAreaA, verdict.inlierAreaB, config.minOverlap,
 			verdict.admitted ? "admitted" : "rejected");
 		return false;
@@ -2575,17 +2575,17 @@ bool ROMA2VerdictTest()
 		fundamentalCfg.forceFundamental = true; // 7-DoF F over the fixture's trusted intrinsics
 		const PairsMatcher fundamentalMatcher(scene, fundamentalCfg);
 		if (PairsMatcher::SelectGeometryBranch(fundamentalCfg, imgA, imgB) != PairsMatcher::GeometryBranch::FUNDAMENTAL) {
-			VERBOSE("ROMA2VerdictTest FAILED: forceFundamental did not select the fundamental branch");
+			VERBOSE("DenseVerdictTest FAILED: forceFundamental did not select the fundamental branch");
 			return false;
 		}
 		// same outcome as (c), and for the same reason: A's own side fully explained (0.2988 of the
 		// grid, all of it), B's side measured and small (0.0173 here), the pair rejected by the min
 		// of the two
-		JudgePairROMA2(fundamentalMatcher, imgA, imgB, warps, config, pair, verdict);
+		JudgePairDense(fundamentalMatcher, imgA, imgB, warps, config, pair, verdict);
 		if (verdict.admitted || verdict.confidentAreaA != regionShare ||
 			ABS(verdict.inlierAreaA - regionShare) > 0.05f || verdict.inlierAreaB <= 0.f ||
 			verdict.inlierAreaB >= config.minOverlap) {
-			VERBOSE("ROMA2VerdictTest FAILED: through the fundamental branch a homography warp confident over %.4f of A "
+			VERBOSE("DenseVerdictTest FAILED: through the fundamental branch a homography warp confident over %.4f of A "
 				"(inlier areas %.4f/%.4f, bar %.4f) was %s",
 				verdict.confidentAreaA, verdict.inlierAreaA, verdict.inlierAreaB, config.minOverlap,
 				verdict.admitted ? "admitted" : "rejected");
@@ -2595,19 +2595,19 @@ bool ROMA2VerdictTest()
 
 	// (e) minOverlap 0 admits both (a) and (b): the threshold is the only thing that rejected (b)
 	config.minOverlap = 0.f;
-	MakeROMA2WedgeWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
-	MakeROMA2WedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
-	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+	MakeDenseWedgeWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
+	MakeDenseWedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
+	JudgePairDense(matcher, imgA, imgB, warps, config, pair, verdict);
 	const bool bAdmittedFull = verdict.admitted && ABS(verdict.inlierAreaB - regionShare) <= 0.05f;
-	MakeROMA2WedgeWarp(imgB, imgA, cells, bx0, bx1, by0, by1, warps.ba);
-	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+	MakeDenseWedgeWarp(imgB, imgA, cells, bx0, bx1, by0, by1, warps.ba);
+	JudgePairDense(matcher, imgA, imgB, warps, config, pair, verdict);
 	if (!bAdmittedFull || !verdict.admitted || ABS(verdict.inlierAreaB - smallShare) > 0.01f) {
-		VERBOSE("ROMA2VerdictTest FAILED: minOverlap 0 admitted the 30%% B side %d and the %.4f one %d",
+		VERBOSE("DenseVerdictTest FAILED: minOverlap 0 admitted the 30%% B side %d and the %.4f one %d",
 			(int)bAdmittedFull, verdict.inlierAreaB, (int)verdict.admitted);
 		return false;
 	}
 
-	VERBOSE("ROMA2VerdictTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("DenseVerdictTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -2616,7 +2616,7 @@ bool ROMA2VerdictTest()
 // rejects the match, a keypoint whose only close descriptor is inside the disc is accepted, and a
 // scale duplicate on top of the true match inside the disc -- the classic ratio-test failure -- no
 // longer blocks it; the same inputs give the same matches, in the same order
-bool ROMA2GuidedMatchTest()
+bool DenseGuidedMatchTest()
 {
 	TD_TIMER_START();
 
@@ -2692,9 +2692,9 @@ bool ROMA2GuidedMatchTest()
 		matches.size() != 2 ||
 		matches[0].queryIdx != 1 || matches[0].trainIdx != 2 ||
 		matches[1].queryIdx != 2 || matches[1].trainIdx != 3) {
-		VERBOSE("ROMA2GuidedMatchTest FAILED: %u matches, expected (1,2) and (2,3)", (unsigned)matches.size());
+		VERBOSE("DenseGuidedMatchTest FAILED: %u matches, expected (1,2) and (2,3)", (unsigned)matches.size());
 		FOREACH(k, matches)
-			VERBOSE("ROMA2GuidedMatchTest:   match %u: (%u,%u)", k, matches[k].queryIdx, matches[k].trainIdx);
+			VERBOSE("DenseGuidedMatchTest:   match %u: (%u,%u)", k, matches[k].queryIdx, matches[k].trainIdx);
 		return false;
 	}
 
@@ -2705,7 +2705,7 @@ bool ROMA2GuidedMatchTest()
 	std::vector<DMatch> movedMatches;
 	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, movedMatches) != 3 ||
 		movedMatches[0].queryIdx != 0 || movedMatches[0].trainIdx != 0) {
-		VERBOSE("ROMA2GuidedMatchTest FAILED: the lookalike moved into the disc left %u matches, expected 3 starting with (0,0)",
+		VERBOSE("DenseGuidedMatchTest FAILED: the lookalike moved into the disc left %u matches, expected 3 starting with (0,0)",
 			(unsigned)movedMatches.size());
 		return false;
 	}
@@ -2715,18 +2715,18 @@ bool ROMA2GuidedMatchTest()
 	std::vector<DMatch> again;
 	MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, again);
 	if (again.size() != matches.size()) {
-		VERBOSE("ROMA2GuidedMatchTest FAILED: a second run returned %u matches instead of %u",
+		VERBOSE("DenseGuidedMatchTest FAILED: a second run returned %u matches instead of %u",
 			(unsigned)again.size(), (unsigned)matches.size());
 		return false;
 	}
 	FOREACH(k, again)
 		if (again[k].queryIdx != matches[k].queryIdx || again[k].trainIdx != matches[k].trainIdx) {
-			VERBOSE("ROMA2GuidedMatchTest FAILED: match %u is (%u,%u) and was (%u,%u)",
+			VERBOSE("DenseGuidedMatchTest FAILED: match %u is (%u,%u) and was (%u,%u)",
 				k, again[k].queryIdx, again[k].trainIdx, matches[k].queryIdx, matches[k].trainIdx);
 			return false;
 		}
 
-	VERBOSE("ROMA2GuidedMatchTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("DenseGuidedMatchTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -2735,7 +2735,7 @@ bool ROMA2GuidedMatchTest()
 // disc from the true match, an ambiguous rival ON the line refuses the match, a same-feature
 // duplicate does not count as a rival, every winner answers to the reference outside its band, and
 // the search falls back to the disc without a geometry or near the epipole.
-bool ROMA2GuidedBandTest()
+bool DenseGuidedBandTest()
 {
 	TD_TIMER_START();
 
@@ -2820,9 +2820,9 @@ bool ROMA2GuidedBandTest()
 	search.F = Fundamental(2000.f, 100.f); // the epipole far off the frame: every band is horizontal
 	search.sameFeatureDistance = 3.f;
 	const auto Report = [](const char* what, const std::vector<DMatch>& matches) {
-		VERBOSE("ROMA2GuidedBandTest FAILED: %s (%u matches)", what, (unsigned)matches.size());
+		VERBOSE("DenseGuidedBandTest FAILED: %s (%u matches)", what, (unsigned)matches.size());
 		FOREACH(k, matches)
-			VERBOSE("ROMA2GuidedBandTest:   match %u: (%u,%u)", k, matches[k].queryIdx, matches[k].trainIdx);
+			VERBOSE("DenseGuidedBandTest:   match %u: (%u,%u)", k, matches[k].queryIdx, matches[k].trainIdx);
 	};
 
 	// query 0 is refused: its impostor sits off the line, never a candidate, but closer in appearance
@@ -2874,23 +2874,23 @@ bool ROMA2GuidedBandTest()
 	std::vector<DMatch> again;
 	MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, again);
 	if (again.size() != matches.size()) {
-		VERBOSE("ROMA2GuidedBandTest FAILED: a second run returned %u matches instead of %u",
+		VERBOSE("DenseGuidedBandTest FAILED: a second run returned %u matches instead of %u",
 			(unsigned)again.size(), (unsigned)matches.size());
 		return false;
 	}
 	FOREACH(k, again)
 		if (again[k].queryIdx != matches[k].queryIdx || again[k].trainIdx != matches[k].trainIdx) {
-			VERBOSE("ROMA2GuidedBandTest FAILED: match %u is (%u,%u) and was (%u,%u)",
+			VERBOSE("DenseGuidedBandTest FAILED: match %u is (%u,%u) and was (%u,%u)",
 				k, again[k].queryIdx, again[k].trainIdx, matches[k].queryIdx, matches[k].trainIdx);
 			return false;
 		}
 
 
-	VERBOSE("ROMA2GuidedBandTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("DenseGuidedBandTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
-// Pair assembly and storage (AssemblePairROMA2, StorePairROMA2) on the exact geometry of two
+// Pair assembly and storage (AssemblePairDense, StorePairDense) on the exact geometry of two
 // pinhole cameras: the union of the guided matches and the dense fill is fitted once and splits
 // into the pair's sparse and dense segments, the fill is drawn only where the guided matches are
 // not, a pair with no guided match at all is still assembled as a dense-only pair, a fill too small
@@ -3074,12 +3074,12 @@ bool BuildTracksConflictTest()
 }
 
 
-bool ROMA2AssemblyTest()
+bool DenseAssemblyTest()
 {
 	TD_TIMER_START();
 
 	Scene scene;
-	MakeROMA2WedgeScene(scene);
+	MakeDenseWedgeScene(scene);
 	Image& imgA = scene.images[0];
 	Image& imgB = scene.images[1];
 	const Pose3D poseGT(imgB / imgA);
@@ -3094,7 +3094,7 @@ bool ROMA2AssemblyTest()
 		for (int x = rx0; x < rx1; ++x) {
 			const Point2f ptA(CellToPixel(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
 			Point2f ptB;
-			if (!ROMA2WedgeCorrespondence(imgA, imgB, ptA, ptB))
+			if (!DenseWedgeCorrespondence(imgA, imgB, ptA, ptB))
 				continue;
 			verdict.inliersA.push_back(ptA);
 			verdict.inliersB.push_back(ptB);
@@ -3105,7 +3105,7 @@ bool ROMA2AssemblyTest()
 	verdict.confidentAreaA = verdict.confidentAreaB =
 		verdict.inlierAreaA = verdict.inlierAreaB = (float)numInlierCells/(float)(cells*cells);
 	if (numInlierCells != (size_t)((rx1-rx0)*(ry1-ry0))) {
-		VERBOSE("ROMA2AssemblyTest FAILED: %u of the %u region cells have a correspondence",
+		VERBOSE("DenseAssemblyTest FAILED: %u of the %u region cells have a correspondence",
 			(unsigned)numInlierCells, (unsigned)((rx1-rx0)*(ry1-ry0)));
 		return false;
 	}
@@ -3124,14 +3124,14 @@ bool ROMA2AssemblyTest()
 		guided.emplace_back(idx, idx);
 	}
 	if (guided.size() != numGuided) {
-		VERBOSE("ROMA2AssemblyTest FAILED: the region offers %u cells, too few for %u guided matches",
+		VERBOSE("DenseAssemblyTest FAILED: the region offers %u cells, too few for %u guided matches",
 			(unsigned)numInlierCells, (unsigned)numGuided);
 		return false;
 	}
 
 	MatchConfig matchCfg;
 	PairsMatcher matcher(scene, matchCfg);
-	ROMA2Config config; // minConfidence 0.1, denseMatchesPerFrame 2000 (a density per full frame of overlap)
+	DenseMatchConfig config; // minConfidence 0.1, denseMatchesPerFrame 2000 (a density per full frame of overlap)
 	// the geometry the verdict handed over, 3 degrees off the truth, so that a pair carrying the
 	// union fit's geometry is told apart from one that kept the verdict's
 	const REAL tilt = D2R(REAL(3));
@@ -3154,20 +3154,20 @@ bool ROMA2AssemblyTest()
 	ImagePair pair(0, 1);
 	ArmVerdictGeometry(pair, poseVerdict);
 	DenseMatches dense;
-	if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, guided, config, cells, pair, dense)) {
-		VERBOSE("ROMA2AssemblyTest FAILED: an admitted pair with %u guided matches was not assembled", (unsigned)guided.size());
+	if (!AssemblePairDense(matcher, imgA, imgB, verdict, guided, config, cells, pair, dense)) {
+		VERBOSE("DenseAssemblyTest FAILED: an admitted pair with %u guided matches was not assembled", (unsigned)guided.size());
 		return false;
 	}
 	if (pair.matches.size() != numSparse || (size_t)pair.numFilteredInliers != numSparse ||
 		pair.outlierMatches.size() != numOutliers || pair.numDenseInliers != 0) {
-		VERBOSE("ROMA2AssemblyTest FAILED: the sparse segment holds %u of %u matches (%d filtered, %u outliers, %d dense)",
+		VERBOSE("DenseAssemblyTest FAILED: the sparse segment holds %u of %u matches (%d filtered, %u outliers, %d dense)",
 			(unsigned)pair.matches.size(), (unsigned)numGuided, pair.numFilteredInliers,
 			(unsigned)pair.outlierMatches.size(), pair.numDenseInliers);
 		return false;
 	}
 	FOREACH(k, pair.matches)
 		if (pair.matches[k].queryIdx != k || pair.matches[k].trainIdx != k) {
-			VERBOSE("ROMA2AssemblyTest FAILED: sparse match %u is (%u,%u), so the segment lost the guided order",
+			VERBOSE("DenseAssemblyTest FAILED: sparse match %u is (%u,%u), so the segment lost the guided order",
 				k, pair.matches[k].queryIdx, pair.matches[k].trainIdx);
 			return false;
 		}
@@ -3198,7 +3198,7 @@ bool ROMA2AssemblyTest()
 			++expectedDense;
 	if (dense.pointsA.size() != expectedDense ||
 		dense.pointsB.size() != dense.pointsA.size() || dense.confidences.size() != dense.pointsA.size()) {
-		VERBOSE("ROMA2AssemblyTest FAILED: the fill drew %u/%u points with %u confidences, expected %u",
+		VERBOSE("DenseAssemblyTest FAILED: the fill drew %u/%u points with %u confidences, expected %u",
 			(unsigned)dense.pointsA.size(), (unsigned)dense.pointsB.size(), (unsigned)dense.confidences.size(),
 			(unsigned)expectedDense);
 		return false;
@@ -3221,7 +3221,7 @@ bool ROMA2AssemblyTest()
 			const int cell = CellOf(dense.pointsA[k]);
 			if (inlierOfCell[cell] < 0 || occupied[cell] ||
 				dense.confidences[k] != verdict.confidences[inlierOfCell[cell]]) {
-				VERBOSE("ROMA2AssemblyTest FAILED: dense point %u at cell (%d,%d) is %s and carries confidence %g",
+				VERBOSE("DenseAssemblyTest FAILED: dense point %u at cell (%d,%d) is %s and carries confidence %g",
 					k, cell%cells, cell/cells, inlierOfCell[cell] < 0 ? "not a verdict cell" :
 					(occupied[cell] ? "on a guided match" : "mislabelled"), dense.confidences[k]);
 				return false;
@@ -3232,12 +3232,12 @@ bool ROMA2AssemblyTest()
 	// off the two cameras and the assembled pair carries the right one
 	REAL angleErr, tSim;
 	if (!pair.relativePose.has_value()) {
-		VERBOSE("ROMA2AssemblyTest FAILED: the assembled pair carries no relative pose");
+		VERBOSE("DenseAssemblyTest FAILED: the assembled pair carries no relative pose");
 		return false;
 	}
 	PoseErrorFromGT(pair.relativePose.value(), angleErr, tSim);
 	if (angleErr > REAL(0.05) || tSim < REAL(0.9999) || !pair.F.has_value() || !pair.E.has_value()) {
-		VERBOSE("ROMA2AssemblyTest FAILED: the assembled pose is %.4f deg and %.6f off the two cameras (F %d, E %d)",
+		VERBOSE("DenseAssemblyTest FAILED: the assembled pose is %.4f deg and %.6f off the two cameras (F %d, E %d)",
 			angleErr, tSim, (int)pair.F.has_value(), (int)pair.E.has_value());
 		return false;
 	}
@@ -3253,21 +3253,21 @@ bool ROMA2AssemblyTest()
 	ImagePair pairDense(0, 1);
 	ArmVerdictGeometry(pairDense, poseVerdict);
 	DenseMatches denseOnly;
-	if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, std::vector<DMatch>(), config, cells, pairDense, denseOnly) ||
+	if (!AssemblePairDense(matcher, imgA, imgB, verdict, std::vector<DMatch>(), config, cells, pairDense, denseOnly) ||
 		!pairDense.matches.empty() || pairDense.numFilteredInliers != 0 ||
 		denseOnly.pointsA.size() != expectedDenseOnly) {
-		VERBOSE("ROMA2AssemblyTest FAILED: a pair with no guided match holds %u sparse (%d filtered) and %u dense correspondences, expected 0 and %u",
+		VERBOSE("DenseAssemblyTest FAILED: a pair with no guided match holds %u sparse (%d filtered) and %u dense correspondences, expected 0 and %u",
 			(unsigned)pairDense.matches.size(), pairDense.numFilteredInliers,
 			(unsigned)denseOnly.pointsA.size(), (unsigned)expectedDenseOnly);
 		return false;
 	}
 	if (!pairDense.relativePose.has_value()) {
-		VERBOSE("ROMA2AssemblyTest FAILED: a dense-only pair carries no relative pose");
+		VERBOSE("DenseAssemblyTest FAILED: a dense-only pair carries no relative pose");
 		return false;
 	}
 	PoseErrorFromGT(pairDense.relativePose.value(), angleErr, tSim);
 	if (angleErr > REAL(0.05) || tSim < REAL(0.9999)) {
-		VERBOSE("ROMA2AssemblyTest FAILED: the dense-only pose is %.4f deg and %.6f off the two cameras", angleErr, tSim);
+		VERBOSE("DenseAssemblyTest FAILED: the dense-only pose is %.4f deg and %.6f off the two cameras", angleErr, tSim);
 		return false;
 	}
 
@@ -3284,18 +3284,18 @@ bool ROMA2AssemblyTest()
 		matchCfgTight.maxEpipolarError = 1.5f;
 		PairsMatcher matcherTight(scene, matchCfgTight);
 		const auto CountKept = [&](float factor, unsigned& numKept, unsigned& numKeptDisplaced) {
-			ROMA2Config configBar(config);
+			DenseMatchConfig configBar(config);
 			configBar.denseEpipolarErrorFactor = factor;
 			ImagePair pairOff(0, 1);
 			ArmVerdictGeometry(pairOff, poseVerdict);
 			DenseMatches denseOff;
-			if (!AssemblePairROMA2(matcherTight, imgA, imgB, verdictOff, std::vector<DMatch>(), configBar, cells, pairOff, denseOff))
+			if (!AssemblePairDense(matcherTight, imgA, imgB, verdictOff, std::vector<DMatch>(), configBar, cells, pairOff, denseOff))
 				return false;
 			numKept = (unsigned)denseOff.pointsA.size();
 			numKeptDisplaced = 0;
 			FOREACH(k, denseOff.pointsA) {
 				Point2f ptB;
-				if (!ROMA2WedgeCorrespondence(imgA, imgB, denseOff.pointsA[k], ptB))
+				if (!DenseWedgeCorrespondence(imgA, imgB, denseOff.pointsA[k], ptB))
 					return false;
 				if (SQRT(SQUARE(denseOff.pointsB[k].x - ptB.x) + SQUARE(denseOff.pointsB[k].y - ptB.y)) > 1.5f)
 					++numKeptDisplaced;
@@ -3304,15 +3304,15 @@ bool ROMA2AssemblyTest()
 		};
 		unsigned keptBar, keptBarDisplaced;
 		if (!CountKept(1.f, keptBar, keptBarDisplaced)) {
-			VERBOSE("ROMA2AssemblyTest FAILED: the pair whose every fourth cell is displaced was not assembled");
+			VERBOSE("DenseAssemblyTest FAILED: the pair whose every fourth cell is displaced was not assembled");
 			return false;
 		}
 		if (keptBar == 0 || keptBarDisplaced != 0 || keptBar > verdictOff.inliersB.size() - verdictOff.inliersB.size()/4) {
-			VERBOSE("ROMA2AssemblyTest FAILED: the dense segment keeps %u cells (%u displaced) of %u on the epipolar bar",
+			VERBOSE("DenseAssemblyTest FAILED: the dense segment keeps %u cells (%u displaced) of %u on the epipolar bar",
 				keptBar, keptBarDisplaced, (unsigned)verdictOff.inliersB.size());
 			return false;
 		}
-		DEBUG("ROMA2AssemblyTest: the dense segment keeps %u of %u cells on the epipolar bar, none of the displaced",
+		DEBUG("DenseAssemblyTest: the dense segment keeps %u of %u cells on the epipolar bar, none of the displaced",
 			keptBar, (unsigned)verdictOff.inliersB.size());
 	}
 
@@ -3334,9 +3334,9 @@ bool ROMA2AssemblyTest()
 	ArmVerdictGeometry(pairTiny, poseGT); // exact, so its own cells survive the classification
 	const Matrix3x3 Fverdict(pairTiny.F.value());
 	DenseMatches denseTiny;
-	if (!AssemblePairROMA2(matcher, imgA, imgB, tinyVerdict, std::vector<DMatch>(), config, cells, pairTiny, denseTiny) ||
+	if (!AssemblePairDense(matcher, imgA, imgB, tinyVerdict, std::vector<DMatch>(), config, cells, pairTiny, denseTiny) ||
 		denseTiny.pointsA.size() != tinyVerdict.inliersA.size()) {
-		VERBOSE("ROMA2AssemblyTest FAILED: a %u-cell fill was not assembled (%u dense correspondences)",
+		VERBOSE("DenseAssemblyTest FAILED: a %u-cell fill was not assembled (%u dense correspondences)",
 			(unsigned)tinyVerdict.inliersA.size(), (unsigned)denseTiny.pointsA.size());
 		return false;
 	}
@@ -3344,7 +3344,7 @@ bool ROMA2AssemblyTest()
 		for (int c = 0; c < 3; ++c)
 			if (pairTiny.F.value()(r, c) != Fverdict(r, c) ||
 				pairTiny.relativePose->R(r, c) != poseGT.R(r, c)) {
-				VERBOSE("ROMA2AssemblyTest FAILED: a fill too small to fit still moved the pair's geometry at (%d,%d)", r, c);
+				VERBOSE("DenseAssemblyTest FAILED: a fill too small to fit still moved the pair's geometry at (%d,%d)", r, c);
 				return false;
 			}
 
@@ -3377,7 +3377,7 @@ bool ROMA2AssemblyTest()
 				dense.pointsB.emplace_back(110.f + 10.f*(float)d, 100.f + 10.f*(float)j);
 				dense.confidences.push_back(0.5f + 0.1f*(float)d);
 			}
-			StorePairROMA2(out, pairIndexMap, std::move(pair), dense, cells);
+			StorePairDense(out, pairIndexMap, std::move(pair), dense, cells);
 		}
 		return pairIndexMap;
 	};
@@ -3385,7 +3385,7 @@ bool ROMA2AssemblyTest()
 	const std::unordered_map<PairIdx::PairIndex, IIndex> pairIndexMap(RunStore(storeScene));
 	if (storeScene.pairs.size() != 2 || pairIndexMap.size() != 2 ||
 		pairIndexMap.at(PairIdx(0, 1).idx) != 0 || pairIndexMap.at(PairIdx(0, 2).idx) != 1) {
-		VERBOSE("ROMA2AssemblyTest FAILED: the store left %u pairs and %u index entries",
+		VERBOSE("DenseAssemblyTest FAILED: the store left %u pairs and %u index entries",
 			(unsigned)storeScene.pairs.size(), (unsigned)pairIndexMap.size());
 		return false;
 	}
@@ -3395,7 +3395,7 @@ bool ROMA2AssemblyTest()
 		const Image& img = storeScene.images[i];
 		if (img.NumDescribedKeypoints() != 5 || img.keypoints.size() != expectedKeypoints[i] ||
 			img.IsDenseKeypoint(4) || !img.IsDenseKeypoint(5)) {
-			VERBOSE("ROMA2AssemblyTest FAILED: image %u carries %u keypoints past a described prefix of %u, expected %u",
+			VERBOSE("DenseAssemblyTest FAILED: image %u carries %u keypoints past a described prefix of %u, expected %u",
 				i, (unsigned)img.keypoints.size(), img.NumDescribedKeypoints(), expectedKeypoints[i]);
 			return false;
 		}
@@ -3406,20 +3406,20 @@ bool ROMA2AssemblyTest()
 	const ImagePair& pair02 = storeScene.pairs[1];
 	if (pair01.numFilteredInliers != 1 || pair01.numDenseInliers != 4 || pair01.matches.size() != 6 ||
 		pair02.numFilteredInliers != 2 || pair02.numDenseInliers != 3 || pair02.matches.size() != 5) {
-		VERBOSE("ROMA2AssemblyTest FAILED: the stored pairs partition %u/%u matches as %d+%d and %d+%d",
+		VERBOSE("DenseAssemblyTest FAILED: the stored pairs partition %u/%u matches as %d+%d and %d+%d",
 			(unsigned)pair01.matches.size(), (unsigned)pair02.matches.size(),
 			pair01.numFilteredInliers, pair01.numDenseInliers, pair02.numFilteredInliers, pair02.numDenseInliers);
 		return false;
 	}
 	for (unsigned d = 0; d < 4; ++d)
 		if (pair01.matches[1 + d].queryIdx != 5 + d || pair01.matches[1 + d].trainIdx != 5 + d) {
-			VERBOSE("ROMA2AssemblyTest FAILED: the first pair's dense match %u is (%u,%u), expected (%u,%u)",
+			VERBOSE("DenseAssemblyTest FAILED: the first pair's dense match %u is (%u,%u), expected (%u,%u)",
 				d, pair01.matches[1 + d].queryIdx, pair01.matches[1 + d].trainIdx, 5 + d, 5 + d);
 			return false;
 		}
 	for (unsigned d = 0; d < 3; ++d)
 		if (pair02.matches[2 + d].queryIdx != 9 + d || pair02.matches[2 + d].trainIdx != 5 + d) {
-			VERBOSE("ROMA2AssemblyTest FAILED: the second pair's dense match %u is (%u,%u), expected (%u,%u)",
+			VERBOSE("DenseAssemblyTest FAILED: the second pair's dense match %u is (%u,%u), expected (%u,%u)",
 				d, pair02.matches[2 + d].queryIdx, pair02.matches[2 + d].trainIdx, 9 + d, 5 + d);
 			return false;
 		}
@@ -3427,7 +3427,7 @@ bool ROMA2AssemblyTest()
 	// inserted into the track-forming prefix, never appended past the segments that follow it
 	const unsigned idxRejected = (unsigned)pair01.matches.size() - 1;
 	if (pair01.matches[idxRejected].queryIdx != 4 || pair01.matches[idxRejected].trainIdx != 4) {
-		VERBOSE("ROMA2AssemblyTest FAILED: match %u of the first pair is (%u,%u), not the rejected (4,4), so the dense "
+		VERBOSE("DenseAssemblyTest FAILED: match %u of the first pair is (%u,%u), not the rejected (4,4), so the dense "
 			"block did not land before it",
 			idxRejected, pair01.matches[idxRejected].queryIdx, pair01.matches[idxRejected].trainIdx);
 		return false;
@@ -3440,14 +3440,14 @@ bool ROMA2AssemblyTest()
 		const Image& imgAgain = storeSceneAgain.images[i];
 		if (img.keypoints.size() != imgAgain.keypoints.size() ||
 			img.NumDescribedKeypoints() != imgAgain.NumDescribedKeypoints()) {
-			VERBOSE("ROMA2AssemblyTest FAILED: a second store run gave image %u %u keypoints instead of %u",
+			VERBOSE("DenseAssemblyTest FAILED: a second store run gave image %u %u keypoints instead of %u",
 				i, (unsigned)imgAgain.keypoints.size(), (unsigned)img.keypoints.size());
 			return false;
 		}
 		FOREACH(k, img.keypoints)
 			if (img.keypoints[k].pt != imgAgain.keypoints[k].pt ||
 				img.keypoints[k].response != imgAgain.keypoints[k].response) {
-				VERBOSE("ROMA2AssemblyTest FAILED: a second store run moved keypoint %u of image %u", k, i);
+				VERBOSE("DenseAssemblyTest FAILED: a second store run moved keypoint %u of image %u", k, i);
 				return false;
 			}
 	}
@@ -3456,17 +3456,17 @@ bool ROMA2AssemblyTest()
 		const ImagePair& rhs = storeSceneAgain.pairs[p];
 		if (lhs.matches.size() != rhs.matches.size() || lhs.numFilteredInliers != rhs.numFilteredInliers ||
 			lhs.numDenseInliers != rhs.numDenseInliers) {
-			VERBOSE("ROMA2AssemblyTest FAILED: a second store run partitioned pair %u differently", p);
+			VERBOSE("DenseAssemblyTest FAILED: a second store run partitioned pair %u differently", p);
 			return false;
 		}
 		FOREACH(k, lhs.matches)
 			if (lhs.matches[k].queryIdx != rhs.matches[k].queryIdx || lhs.matches[k].trainIdx != rhs.matches[k].trainIdx) {
-				VERBOSE("ROMA2AssemblyTest FAILED: a second store run relabelled match %u of pair %u", k, p);
+				VERBOSE("DenseAssemblyTest FAILED: a second store run relabelled match %u of pair %u", k, p);
 				return false;
 			}
 	}
 
-	VERBOSE("ROMA2AssemblyTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("DenseAssemblyTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -3474,14 +3474,14 @@ bool ROMA2AssemblyTest()
 // displaced 2 px across the epipolar lines everywhere, the systematic error of a coarse warp, while
 // the guided matches are exact. Both kinds pass the 4 px bar and the union fit follows the far more
 // numerous dense matches; the weighted refinement that closes the assembly gives each dense
-// correspondence ROMA2Config::denseFitWeight against a sparse one's 1 and brings the pose back to the
+// correspondence DenseMatchConfig::denseFitWeight against a sparse one's 1 and brings the pose back to the
 // sparse matches, where the same assembly with the dense matches at full weight stays on the bias.
-bool ROMA2DenseFitWeightTest()
+bool DenseFitWeightTest()
 {
 	TD_TIMER_START();
 
 	Scene scene;
-	MakeROMA2WedgeScene(scene);
+	MakeDenseWedgeScene(scene);
 	Image& imgA = scene.images[0];
 	Image& imgB = scene.images[1];
 	const Pose3D poseGT(imgB / imgA);
@@ -3497,7 +3497,7 @@ bool ROMA2DenseFitWeightTest()
 		for (int x = rx0; x < rx1; ++x) {
 			const Point2f ptA(CellToPixel(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
 			Point2f ptB;
-			if (!ROMA2WedgeCorrespondence(imgA, imgB, ptA, ptB))
+			if (!DenseWedgeCorrespondence(imgA, imgB, ptA, ptB))
 				continue;
 			verdict.inliersA.push_back(ptA);
 			verdict.inliersB.push_back(ptB + across*bias);
@@ -3518,14 +3518,14 @@ bool ROMA2DenseFitWeightTest()
 	MatchConfig matchCfg;
 	PairsMatcher matcher(scene, matchCfg);
 	const auto Assemble = [&](float denseFitWeight, REAL& angleErr, size_t& numDense) {
-		ROMA2Config config;
+		DenseMatchConfig config;
 		config.denseFitWeight = denseFitWeight;
 		ImagePair pair(0, 1);
 		pair.relativePose = poseGT;
 		pair.E = ImagePair::ComposeEssentialMatrix(poseGT);
 		pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), imgA.GetK(), imgB.GetK());
 		DenseMatches dense;
-		if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, guided, config, cells, pair, dense) || !pair.relativePose.has_value())
+		if (!AssemblePairDense(matcher, imgA, imgB, verdict, guided, config, cells, pair, dense) || !pair.relativePose.has_value())
 			return false;
 		angleErr = R2D(ACOS(ComputeAngle(pair.relativePose->R, poseGT.R)));
 		numDense = dense.pointsA.size();
@@ -3533,23 +3533,23 @@ bool ROMA2DenseFitWeightTest()
 	};
 	REAL errFull, errWeighted;
 	size_t numDenseFull, numDenseWeighted;
-	if (!Assemble(1.f, errFull, numDenseFull) || !Assemble(ROMA2Config().denseFitWeight, errWeighted, numDenseWeighted)) {
-		VERBOSE("ROMA2DenseFitWeightTest FAILED: the biased pair was not assembled with a relative pose");
+	if (!Assemble(1.f, errFull, numDenseFull) || !Assemble(DenseMatchConfig().denseFitWeight, errWeighted, numDenseWeighted)) {
+		VERBOSE("DenseFitWeightTest FAILED: the biased pair was not assembled with a relative pose");
 		return false;
 	}
 	// the premise: the dense matches outnumber the sparse ones and at full weight pull the pose
 	if (numDenseFull < 4*guided.size() || errFull < REAL(0.05)) {
-		VERBOSE("ROMA2DenseFitWeightTest FAILED: premise not met: %u dense against %u sparse, %.4f deg at full weight",
+		VERBOSE("DenseFitWeightTest FAILED: premise not met: %u dense against %u sparse, %.4f deg at full weight",
 			(unsigned)numDenseFull, (unsigned)guided.size(), errFull);
 		return false;
 	}
 	if (errWeighted > REAL(0.25)*errFull) {
-		VERBOSE("ROMA2DenseFitWeightTest FAILED: the weighted refinement leaves the pose %.4f deg off, %.4f deg at full weight",
+		VERBOSE("DenseFitWeightTest FAILED: the weighted refinement leaves the pose %.4f deg off, %.4f deg at full weight",
 			errWeighted, errFull);
 		return false;
 	}
-	VERBOSE("ROMA2DenseFitWeightTest PASSED: %.4f deg off with the dense matches at full weight, %.4f deg at %g (%u dense, %u sparse) (%s)",
-		errFull, errWeighted, ROMA2Config().denseFitWeight, (unsigned)numDenseWeighted, (unsigned)guided.size(), TD_TIMER_GET_FMT().c_str());
+	VERBOSE("DenseFitWeightTest PASSED: %.4f deg off with the dense matches at full weight, %.4f deg at %g (%u dense, %u sparse) (%s)",
+		errFull, errWeighted, DenseMatchConfig().denseFitWeight, (unsigned)numDenseWeighted, (unsigned)guided.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -3606,7 +3606,7 @@ static ImagePair MakePlanarTwinPair(const Scene& scene, IIndex a, IIndex b, cons
 	return pair;
 }
 
-// The planar twin switch (SwitchPlanarTwinsROMA2) on cameras looking at a floor, every match exact:
+// The planar twin switch (SwitchPlanarTwinsDense) on cameras looking at a floor, every match exact:
 // - a pair whose matches all lie on the floor and whose stored pose is the wrong one of its two
 //   planar solutions, while its four neighbours close their rotation loops only with the right one,
 //   switches to it and keeps every match as an inlier; it does not switch with the switch off
@@ -3641,7 +3641,7 @@ bool PlanarTwinSwitchTest()
 		{-1, 1, 3, 5, 5}, {1, 2, 3.5, -5, 0}, {-2, -1, 4, 0, 8}, {0.5, -2, 3.2, 10, -5},
 		{2, 2, 4, -8, 6}, {-2, 2, 3.8, 6, -12}};
 	MatchConfig matchCfg;
-	const ROMA2Config config;
+	const DenseMatchConfig config;
 	const auto RotationDeg = [](const Pose3D& a, const Pose3D& b) { return R2D(ACOS(ComputeAngle(a.R, b.R))); };
 	// the scene: images, keypoints (all points, or the floor only) and the pairs; `twinOf` lists the
 	// pairs stored at their wrong planar twin (the twin of the true pose on the floor matches alone)
@@ -3662,7 +3662,7 @@ bool PlanarTwinSwitchTest()
 				ImagePair onFloor(MakePlanarTwinPair(scene, spec.a, spec.b, Pose3D(imgB / imgA), numFloor));
 				ImagePair twin;
 				float share;
-				if (!PlanarTwinROMA2(matcher, imgA, imgB, config, onFloor, twin, share) ||
+				if (!PlanarTwinDense(matcher, imgA, imgB, config, onFloor, twin, share) ||
 					RotationDeg(twin.relativePose.value(), onFloor.relativePose.value()) < REAL(10)) {
 					error = String::FormatString("the floor matches of pair %u-%u have no planar twin 10 degrees off (share %g)", spec.a, spec.b, share);
 					return false;
@@ -3683,9 +3683,9 @@ bool PlanarTwinSwitchTest()
 		}
 		return specs;
 	};
-	const auto Run = [&](Scene& scene, const ROMA2Config& cfg) {
+	const auto Run = [&](Scene& scene, const DenseMatchConfig& cfg) {
 		PairsMatcher matcher(scene, matchCfg);
-		return SwitchPlanarTwinsROMA2(matcher, cfg);
+		return SwitchPlanarTwinsDense(matcher, cfg);
 	};
 	const auto IsTrue = [&](const Scene& scene, IIndex p) {
 		const ImagePair& pair = scene.pairs[p];
@@ -3700,7 +3700,7 @@ bool PlanarTwinSwitchTest()
 		specs.insert(specs.end(), neighbours.begin(), neighbours.end());
 		// the switch off, a margin of 5 loops, the default configuration (a margin of 3)
 		for (int run = 0; run < 3; ++run) {
-			ROMA2Config cfg;
+			DenseMatchConfig cfg;
 			if (run < 2)
 				cfg.twinMinLoopGain = run == 0 ? 0u : 5u;
 			Scene scene;
@@ -3747,12 +3747,12 @@ bool PlanarTwinSwitchTest()
 			PairsMatcher matcher(scene, matchCfg);
 			ImagePair twin;
 			float share;
-			PlanarTwinROMA2(matcher, scene.images[0], scene.images[1], config, stored, twin, share);
+			PlanarTwinDense(matcher, scene.images[0], scene.images[1], config, stored, twin, share);
 			if (share < 0.5f || share >= config.twinMinPlaneShare) {
 				VERBOSE("PlanarTwinSwitchTest FAILED: premise not met: a homography explains %.3f of the two-layer matches, expected [0.5, %g)", share, config.twinMinPlaneShare);
 				return false;
 			}
-			ROMA2Config cfg;
+			DenseMatchConfig cfg;
 			cfg.twinMinPlaneShare = minPlaneShare;
 			const unsigned numSwitched = Run(scene, cfg);
 			const ImagePair& pair = scene.pairs[0];
@@ -3876,7 +3876,7 @@ static double PixelSampsonDistance(const Matrix3x3& F, const Point2f& ptA, const
 // the camera knows, every guided match on the true geometry is a sparse inlier, the corner ones
 // included, while the pixel fundamental matrix of the same geometry, composed without the lens,
 // puts the corner ones past the matcher's epipolar bar
-bool ROMA2LensInlierTest()
+bool DenseLensInlierTest()
 {
 	TD_TIMER_START();
 	Scene scene;
@@ -3885,7 +3885,7 @@ bool ROMA2LensInlierTest()
 	Image& imgB = scene.images[1];
 	const std::vector<uint32_t> corners(LensInlierCorners(imgA));
 	if (corners.size() < 4) {
-		VERBOSE("ROMA2LensInlierTest FAILED: only %u correspondences in A's corners, the fixture does not reach the lens", (unsigned)corners.size());
+		VERBOSE("DenseLensInlierTest FAILED: only %u correspondences in A's corners, the fixture does not reach the lens", (unsigned)corners.size());
 		return false;
 	}
 	std::vector<DMatch> guided;
@@ -3893,7 +3893,7 @@ bool ROMA2LensInlierTest()
 		guided.emplace_back((uint32_t)i, (uint32_t)i);
 	MatchConfig matchCfg;
 	PairsMatcher matcher(scene, matchCfg);
-	ROMA2Config config;
+	DenseMatchConfig config;
 	// an admitted pair with no inlier cells: no dense fill, the guided matches alone are fitted and classified
 	PairVerdict verdict;
 	verdict.admitted = true;
@@ -3904,12 +3904,12 @@ bool ROMA2LensInlierTest()
 	pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), imgA.GetK(), imgB.GetK());
 	DenseMatches dense;
 	constexpr int warpSize = 64;
-	if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, guided, config, warpSize, pair, dense)) {
-		VERBOSE("ROMA2LensInlierTest FAILED: the pair was not assembled");
+	if (!AssemblePairDense(matcher, imgA, imgB, verdict, guided, config, warpSize, pair, dense)) {
+		VERBOSE("DenseLensInlierTest FAILED: the pair was not assembled");
 		return false;
 	}
 	if (!pair.outlierMatches.empty() || pair.GetNumFilteredInliers() != guided.size()) {
-		VERBOSE("ROMA2LensInlierTest FAILED: %u of the %u matches on the true geometry are inliers, %u rejected",
+		VERBOSE("DenseLensInlierTest FAILED: %u of the %u matches on the true geometry are inliers, %u rejected",
 			pair.GetNumFilteredInliers(), (unsigned)guided.size(), (unsigned)pair.outlierMatches.size());
 		return false;
 	}
@@ -3917,11 +3917,11 @@ bool ROMA2LensInlierTest()
 	for (uint32_t i : corners)
 		worst = MAXF(worst, PixelSampsonDistance(pair.F.value(), imgA.keypoints[i].pt, imgB.keypoints[i].pt));
 	if (worst <= (double)matchCfg.maxEpipolarError) {
-		VERBOSE("ROMA2LensInlierTest FAILED: the corner matches lie within %.2f px of the pixel F, the fixture does not bend the epipolar lines past the %.1f px bar",
+		VERBOSE("DenseLensInlierTest FAILED: the corner matches lie within %.2f px of the pixel F, the fixture does not bend the epipolar lines past the %.1f px bar",
 			worst, matchCfg.maxEpipolarError);
 		return false;
 	}
-	VERBOSE("ROMA2LensInlierTest PASSED: %u corner matches kept through the lens, up to %.1f px off the pixel F (%s)",
+	VERBOSE("DenseLensInlierTest PASSED: %u corner matches kept through the lens, up to %.1f px off the pixel F (%s)",
 		(unsigned)corners.size(), worst, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -4650,9 +4650,9 @@ bool LensFitMinimumPairsTest()
 // The RoMa2 pair the assembly tests build on the wedge: 80 sound guided matches and 6 the geometry
 // contradicts, the dense fill drawn from the verdict's region, stored with its dense segment. With a
 // dense bias the verdict's B side, which the fill is drawn from, lies that many pixels across the
-// epipolar lines, the systematic error of a coarse warp ROMA2DenseFitWeightTest builds, while the
+// epipolar lines, the systematic error of a coarse warp DenseFitWeightTest builds, while the
 // guided matches stay exact
-static IIndex StoreROMA2WedgePair(Scene& scene, PairsMatcher& matcher, const ROMA2Config& config, int cells, float denseBias = 0.f)
+static IIndex StoreDenseWedgePair(Scene& scene, PairsMatcher& matcher, const DenseMatchConfig& config, int cells, float denseBias = 0.f)
 {
 	Image& imgA = scene.images[0];
 	Image& imgB = scene.images[1];
@@ -4666,7 +4666,7 @@ static IIndex StoreROMA2WedgePair(Scene& scene, PairsMatcher& matcher, const ROM
 		for (int x = rx0; x < rx1; ++x) {
 			const Point2f ptA(CellToPixel(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
 			Point2f ptB;
-			if (!ROMA2WedgeCorrespondence(imgA, imgB, ptA, ptB))
+			if (!DenseWedgeCorrespondence(imgA, imgB, ptA, ptB))
 				continue;
 			verdict.inliersA.push_back(ptA);
 			verdict.inliersB.push_back(ptB + across*denseBias);
@@ -4689,15 +4689,15 @@ static IIndex StoreROMA2WedgePair(Scene& scene, PairsMatcher& matcher, const ROM
 	pair.E = ImagePair::ComposeEssentialMatrix(poseGT);
 	pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), imgA.GetK(), imgB.GetK());
 	DenseMatches dense;
-	if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, guided, config, cells, pair, dense))
+	if (!AssemblePairDense(matcher, imgA, imgB, verdict, guided, config, cells, pair, dense))
 		return NO_ID;
 	std::unordered_map<PairIdx::PairIndex, IIndex> pairIndexMap;
-	StorePairROMA2(scene, pairIndexMap, std::move(pair), dense, cells);
+	StorePairDense(scene, pairIndexMap, std::move(pair), dense, cells);
 	return 0;
 }
 
 // Whether a pair's sparse segment is all described keypoints and its dense segment all dense ones
-static bool HasROMA2Partition(const Scene& scene, const ImagePair& pair)
+static bool HasDensePartition(const Scene& scene, const ImagePair& pair)
 {
 	const Image& imgA = scene.images[pair.ID1];
 	const Image& imgB = scene.images[pair.ID2];
@@ -4711,15 +4711,15 @@ static bool HasROMA2Partition(const Scene& scene, const ImagePair& pair)
 	return true;
 }
 
-// The pose sub-case of the test below, the systematic error of a coarse warp ROMA2DenseFitWeightTest
+// The pose sub-case of the test below, the systematic error of a coarse warp DenseFitWeightTest
 // builds: the dense fill's B side this many pixels across the epipolar lines, the guided matches exact
-constexpr float ROMA2_REVERIFY_DENSE_BIAS = 2.f;
-// and the bars ROMA2DenseFitWeightTest holds the assembly's pose to: the dense matches outnumber the
+constexpr float DENSE_REVERIFY_DENSE_BIAS = 2.f;
+// and the bars DenseFitWeightTest holds the assembly's pose to: the dense matches outnumber the
 // sparse ones at least this many times and pull a pose fitted at full weight at least this far off
 // the truth, and the pose the denseFitWeight polish closes keeps at most this share of that error
-constexpr unsigned ROMA2_REVERIFY_MIN_DENSE_PER_SPARSE = 4;
-constexpr REAL ROMA2_REVERIFY_MIN_FULL_WEIGHT_ERROR_DEG = REAL(0.05);
-constexpr REAL ROMA2_REVERIFY_MAX_ERROR_SHARE = REAL(0.25);
+constexpr unsigned DENSE_REVERIFY_MIN_DENSE_PER_SPARSE = 4;
+constexpr REAL DENSE_REVERIFY_MIN_FULL_WEIGHT_ERROR_DEG = REAL(0.05);
+constexpr REAL DENSE_REVERIFY_MAX_ERROR_SHARE = REAL(0.25);
 
 // The re-verification a camera's change sets off (PairsMatcher::ComputeRelativePoses, which the focal
 // calibration runs on every camera it changed and the lens stage on every camera it fitted) keeps a
@@ -4735,10 +4735,10 @@ constexpr REAL ROMA2_REVERIFY_MAX_ERROR_SHARE = REAL(0.25);
 // matches apart by their keypoints (ImagePair::FilterMatches), without it nothing does, and
 // GeometricFilter over all of a pair's matches folds the dense segment into the sparse one and leaves
 // the sparse count unmaterialised (-1), which the re-verification materialises. Under the default
-// configuration the change shows in the pose: with the dense fill displaced ROMA2_REVERIFY_DENSE_BIAS
+// configuration the change shows in the pose: with the dense fill displaced DENSE_REVERIFY_DENSE_BIAS
 // px across the epipolar lines, the re-verified pose follows the sparse matches (the denseFitWeight
 // polish), where GeometricFilter over all of the pair's matches at full weight follows the bias
-bool ROMA2ReverifyPartitionTest()
+bool DenseReverifyPartitionTest()
 {
 	TD_TIMER_START();
 	constexpr int cells = 64;
@@ -4757,17 +4757,17 @@ bool ROMA2ReverifyPartitionTest()
 				stored == Stored::OUTLIERS ? "every match an outlier" :
 				stored == Stored::NO_GEOMETRY ? "no geometry" : "under the minimum";
 			Scene scene;
-			MakeROMA2WedgeScene(scene);
+			MakeDenseWedgeScene(scene);
 			MatchConfig matchCfg;
 			if (!strictFilter)
 				matchCfg.minTriangulationAngle = matchCfg.reprojThreshold = matchCfg.epipoleFilterThreshold = 0.f;
 			PairsMatcher matcher(scene, matchCfg);
-			ROMA2Config config;
+			DenseMatchConfig config;
 			if (!withDense)
 				config.denseMatchesPerFrame = 0;
-			matcher.SetROMA2(NULL, config);
-			if (StoreROMA2WedgePair(scene, matcher, config, cells) == NO_ID) {
-				VERBOSE("ROMA2ReverifyPartitionTest FAILED: the wedge pair was not assembled");
+			matcher.SetDense(NULL, config);
+			if (StoreDenseWedgePair(scene, matcher, config, cells) == NO_ID) {
+				VERBOSE("DenseReverifyPartitionTest FAILED: the wedge pair was not assembled");
 				return false;
 			}
 			if (!withDense) {
@@ -4781,7 +4781,7 @@ bool ROMA2ReverifyPartitionTest()
 			const unsigned numSparse = pair.GetNumFilteredInliers(), numDense = pair.GetNumDenseInliers();
 			const size_t numOutliers = pair.outlierMatches.size();
 			if (numSparse != 80 || numOutliers != 6 || (numDense > 0) != withDense) {
-				VERBOSE("ROMA2ReverifyPartitionTest FAILED: the stored pair holds %u sparse, %u dense, %u outliers",
+				VERBOSE("DenseReverifyPartitionTest FAILED: the stored pair holds %u sparse, %u dense, %u outliers",
 					numSparse, numDense, (unsigned)numOutliers);
 				return false;
 			}
@@ -4793,7 +4793,7 @@ bool ROMA2ReverifyPartitionTest()
 			if (bRefused)
 				matchCfgAgain.minMatches = numCandidates + 1;
 			PairsMatcher matcherAgain(scene, matchCfgAgain);
-			matcherAgain.SetROMA2(NULL, config);
+			matcherAgain.SetDense(NULL, config);
 			if (stored == Stored::NO_GEOMETRY) {
 				// as a scene saved by an earlier build holds a pair GeometricFilter could not verify, and a
 				// resumed scene verifies again every pair without a pose
@@ -4809,7 +4809,7 @@ bool ROMA2ReverifyPartitionTest()
 				// invalidated, as GeometricFilter leaves a pair it cannot verify
 				if (pair.HasMatches() || pair.outlierMatches.size() != numCandidates || pair.numFilteredInliers != -1 ||
 					pair.GetNumDenseInliers() != 0 || pair.HasGeometricVerification()) {
-					VERBOSE("ROMA2ReverifyPartitionTest FAILED: %s, %s, re-verified to %u sparse, %u dense, %u outliers of the %u matches, %s geometry, where the refused re-fit leaves it invalidated",
+					VERBOSE("DenseReverifyPartitionTest FAILED: %s, %s, re-verified to %u sparse, %u dense, %u outliers of the %u matches, %s geometry, where the refused re-fit leaves it invalidated",
 						name, strictFilter ? "strict filter" : "no strict filter",
 						pair.GetNumFilteredInliers(), pair.GetNumDenseInliers(), (unsigned)pair.outlierMatches.size(),
 						numCandidates, pair.HasGeometricVerification() ? "with a" : "no");
@@ -4818,23 +4818,23 @@ bool ROMA2ReverifyPartitionTest()
 				continue;
 			}
 			if (pair.GetNumFilteredInliers() != numSparse || pair.GetNumDenseInliers() != numDense ||
-				pair.outlierMatches.size() != numOutliers || !HasROMA2Partition(scene, pair) || !pair.relativePose.has_value()) {
-				VERBOSE("ROMA2ReverifyPartitionTest FAILED: %s, %s, re-verified to %u sparse, %u dense, %u outliers (from %u, %u, %u), partition %s",
+				pair.outlierMatches.size() != numOutliers || !HasDensePartition(scene, pair) || !pair.relativePose.has_value()) {
+				VERBOSE("DenseReverifyPartitionTest FAILED: %s, %s, re-verified to %u sparse, %u dense, %u outliers (from %u, %u, %u), partition %s",
 					name, strictFilter ? "strict filter" : "no strict filter",
 					pair.GetNumFilteredInliers(), pair.GetNumDenseInliers(),
 					(unsigned)pair.outlierMatches.size(), numSparse, numDense, (unsigned)numOutliers,
-					HasROMA2Partition(scene, pair) ? "kept" : "broken");
+					HasDensePartition(scene, pair) ? "kept" : "broken");
 				return false;
 			}
 			// the partition the re-verification leaves: the sparse count materialised, which GeometricFilter
 			// without the strict filter leaves at -1, and nothing past the track-forming matches
 			if (pair.numFilteredInliers < 0) {
-				VERBOSE("ROMA2ReverifyPartitionTest FAILED: %s, %s, re-verified with the sparse count unmaterialised",
+				VERBOSE("DenseReverifyPartitionTest FAILED: %s, %s, re-verified with the sparse count unmaterialised",
 					name, strictFilter ? "strict filter" : "no strict filter");
 				return false;
 			}
 			if (pair.matches.size() != pair.GetNumTrackFormingMatches()) {
-				VERBOSE("ROMA2ReverifyPartitionTest FAILED: %s, %s, re-verified with %u matches past the track-forming ones",
+				VERBOSE("DenseReverifyPartitionTest FAILED: %s, %s, re-verified with %u matches past the track-forming ones",
 					name, strictFilter ? "strict filter" : "no strict filter",
 					(unsigned)pair.matches.size() - pair.GetNumTrackFormingMatches());
 				return false;
@@ -4846,13 +4846,13 @@ bool ROMA2ReverifyPartitionTest()
 	// stored pair's matches (the re-verification without the change) follows the biased dense fill,
 	// the re-verification follows the exact sparse matches
 	Scene scene;
-	MakeROMA2WedgeScene(scene);
+	MakeDenseWedgeScene(scene);
 	MatchConfig matchCfg;
 	PairsMatcher matcher(scene, matchCfg);
-	ROMA2Config config;
-	matcher.SetROMA2(NULL, config);
-	if (StoreROMA2WedgePair(scene, matcher, config, cells, ROMA2_REVERIFY_DENSE_BIAS) == NO_ID) {
-		VERBOSE("ROMA2ReverifyPartitionTest FAILED: the biased wedge pair was not assembled");
+	DenseMatchConfig config;
+	matcher.SetDense(NULL, config);
+	if (StoreDenseWedgePair(scene, matcher, config, cells, DENSE_REVERIFY_DENSE_BIAS) == NO_ID) {
+		VERBOSE("DenseReverifyPartitionTest FAILED: the biased wedge pair was not assembled");
 		return false;
 	}
 	const Image& imgA = scene.images[0];
@@ -4863,30 +4863,30 @@ bool ROMA2ReverifyPartitionTest()
 	};
 	ImagePair fullWeight(scene.pairs[0]);
 	if (!matcher.GeometricFilter(imgA, imgB, fullWeight) || !fullWeight.relativePose.has_value()) {
-		VERBOSE("ROMA2ReverifyPartitionTest FAILED: GeometricFilter verified no pose on the biased pair");
+		VERBOSE("DenseReverifyPartitionTest FAILED: GeometricFilter verified no pose on the biased pair");
 		return false;
 	}
 	const REAL errFull = RotationError(fullWeight);
 	matcher.ComputeRelativePoses(true, false, {scene.cameras[0]});
 	const ImagePair& biased = scene.pairs[0];
-	if (!biased.relativePose.has_value() || !HasROMA2Partition(scene, biased)) {
-		VERBOSE("ROMA2ReverifyPartitionTest FAILED: the biased pair was re-verified to no pose or a broken partition");
+	if (!biased.relativePose.has_value() || !HasDensePartition(scene, biased)) {
+		VERBOSE("DenseReverifyPartitionTest FAILED: the biased pair was re-verified to no pose or a broken partition");
 		return false;
 	}
-	if (biased.GetNumDenseInliers() < ROMA2_REVERIFY_MIN_DENSE_PER_SPARSE*biased.GetNumFilteredInliers() ||
-		errFull < ROMA2_REVERIFY_MIN_FULL_WEIGHT_ERROR_DEG) {
-		VERBOSE("ROMA2ReverifyPartitionTest FAILED: premise not met: %u dense against %u sparse, %.4f deg through GeometricFilter at full weight",
+	if (biased.GetNumDenseInliers() < DENSE_REVERIFY_MIN_DENSE_PER_SPARSE*biased.GetNumFilteredInliers() ||
+		errFull < DENSE_REVERIFY_MIN_FULL_WEIGHT_ERROR_DEG) {
+		VERBOSE("DenseReverifyPartitionTest FAILED: premise not met: %u dense against %u sparse, %.4f deg through GeometricFilter at full weight",
 			biased.GetNumDenseInliers(), biased.GetNumFilteredInliers(), errFull);
 		return false;
 	}
 	const REAL errReverified = RotationError(biased);
-	if (errReverified > ROMA2_REVERIFY_MAX_ERROR_SHARE*errFull) {
-		VERBOSE("ROMA2ReverifyPartitionTest FAILED: the re-verified pose is %.4f deg off with the dense fill biased, %.4f deg through GeometricFilter at full weight",
+	if (errReverified > DENSE_REVERIFY_MAX_ERROR_SHARE*errFull) {
+		VERBOSE("DenseReverifyPartitionTest FAILED: the re-verified pose is %.4f deg off with the dense fill biased, %.4f deg through GeometricFilter at full weight",
 			errReverified, errFull);
 		return false;
 	}
-	VERBOSE("ROMA2ReverifyPartitionTest PASSED: with the dense fill biased %g px the re-verified pose is %.4f deg off, %.4f deg through GeometricFilter at full weight (%u dense, %u sparse) (%s)",
-		ROMA2_REVERIFY_DENSE_BIAS, errReverified, errFull, biased.GetNumDenseInliers(), biased.GetNumFilteredInliers(), TD_TIMER_GET_FMT().c_str());
+	VERBOSE("DenseReverifyPartitionTest PASSED: with the dense fill biased %g px the re-verified pose is %.4f deg off, %.4f deg through GeometricFilter at full weight (%u dense, %u sparse) (%s)",
+		DENSE_REVERIFY_DENSE_BIAS, errReverified, errFull, biased.GetNumDenseInliers(), biased.GetNumFilteredInliers(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -4905,7 +4905,7 @@ constexpr REAL LENS_REVERIFY_CENTRAL_SHARE = REAL(0.4);
 // epipolar line the most and inside the LENS_INLIER_MARGIN the keypoints keep from the edges
 constexpr REAL LENS_REVERIFY_CENTRAL_OFFSET = REAL(12);
 constexpr REAL LENS_REVERIFY_CORNER_OFFSET = REAL(6);
-bool ROMA2ReverifyLensTest()
+bool DenseReverifyLensTest()
 {
 	TD_TIMER_START();
 	Scene scene;
@@ -4921,8 +4921,8 @@ bool ROMA2ReverifyLensTest()
 		guided.emplace_back((uint32_t)i, (uint32_t)i);
 	MatchConfig matchCfg;
 	PairsMatcher matcher(scene, matchCfg);
-	ROMA2Config config;
-	matcher.SetROMA2(NULL, config);
+	DenseMatchConfig config;
+	matcher.SetDense(NULL, config);
 	// the matching keeps the pinhole geometry of the true pose: its own union fit, refused here by an
 	// estimator asking for more inliers than the pair has, would absorb the lens into a pose degrees
 	// off whose epipolar lines pass within a pixel of every corner match (3.8 deg and 0.96 px at
@@ -4939,13 +4939,13 @@ bool ROMA2ReverifyLensTest()
 	pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), imgA.GetK(), imgB.GetK());
 	DenseMatches unused;
 	constexpr int warpSize = 64;
-	if (!AssemblePairROMA2(matcherPinhole, imgA, imgB, verdict, guided, config, warpSize, pair, unused)) {
-		VERBOSE("ROMA2ReverifyLensTest FAILED: the pair was not assembled through the pinhole");
+	if (!AssemblePairDense(matcherPinhole, imgA, imgB, verdict, guided, config, warpSize, pair, unused)) {
+		VERBOSE("DenseReverifyLensTest FAILED: the pair was not assembled through the pinhole");
 		return false;
 	}
 	const size_t numRejected = pair.outlierMatches.size();
 	if (numRejected < 4) {
-		VERBOSE("ROMA2ReverifyLensTest FAILED: the pinhole rejected only %u true matches, the fixture does not exercise the lens", (unsigned)numRejected);
+		VERBOSE("DenseReverifyLensTest FAILED: the pinhole rejected only %u true matches, the fixture does not exercise the lens", (unsigned)numRejected);
 		return false;
 	}
 	// the dense segment as a pinhole bar leaves it: true samples between the central grid points, and
@@ -4987,44 +4987,44 @@ bool ROMA2ReverifyLensTest()
 	}
 	const unsigned numWrongDense = (unsigned)dense.pointsA.size() - numTrueDense;
 	if (numTrueDense < 4 || numWrongDense < 2) {
-		VERBOSE("ROMA2ReverifyLensTest FAILED: %u true and %u wrong dense samples, too few to judge", numTrueDense, numWrongDense);
+		VERBOSE("DenseReverifyLensTest FAILED: %u true and %u wrong dense samples, too few to judge", numTrueDense, numWrongDense);
 		return false;
 	}
 	std::unordered_map<PairIdx::PairIndex, IIndex> pairIndexMap;
-	StorePairROMA2(scene, pairIndexMap, std::move(pair), dense, warpSize);
+	StorePairDense(scene, pairIndexMap, std::move(pair), dense, warpSize);
 	// now the camera knows its lens, and the pair is verified again through it
 	camera.SetDistortion(LENS_INLIER_K1, 0, 0, 0);
 	matcher.ComputeRelativePoses(true, false, {scene.cameras[0]});
 	const ImagePair& stored = scene.pairs[0];
 	if (stored.GetNumFilteredInliers() != guided.size()) {
-		VERBOSE("ROMA2ReverifyLensTest FAILED: %u of the %u true matches are sparse inliers through the lens",
+		VERBOSE("DenseReverifyLensTest FAILED: %u of the %u true matches are sparse inliers through the lens",
 			stored.GetNumFilteredInliers(), (unsigned)guided.size());
 		return false;
 	}
 	if (!stored.outlierMatches.empty()) {
-		VERBOSE("ROMA2ReverifyLensTest FAILED: %u matches are still outliers through the lens, where every true match is an inlier and every wrong dense sample dropped",
+		VERBOSE("DenseReverifyLensTest FAILED: %u matches are still outliers through the lens, where every true match is an inlier and every wrong dense sample dropped",
 			(unsigned)stored.outlierMatches.size());
 		return false;
 	}
 	if (stored.matches.size() != stored.GetNumTrackFormingMatches()) {
-		VERBOSE("ROMA2ReverifyLensTest FAILED: %u matches past the track-forming ones",
+		VERBOSE("DenseReverifyLensTest FAILED: %u matches past the track-forming ones",
 			(unsigned)stored.matches.size() - stored.GetNumTrackFormingMatches());
 		return false;
 	}
-	if (stored.GetNumDenseInliers() != numTrueDense || !HasROMA2Partition(scene, stored)) {
-		VERBOSE("ROMA2ReverifyLensTest FAILED: %u dense samples kept, expected the %u true ones of the %u (partition %s)",
-			stored.GetNumDenseInliers(), numTrueDense, numTrueDense + numWrongDense, HasROMA2Partition(scene, stored) ? "kept" : "broken");
+	if (stored.GetNumDenseInliers() != numTrueDense || !HasDensePartition(scene, stored)) {
+		VERBOSE("DenseReverifyLensTest FAILED: %u dense samples kept, expected the %u true ones of the %u (partition %s)",
+			stored.GetNumDenseInliers(), numTrueDense, numTrueDense + numWrongDense, HasDensePartition(scene, stored) ? "kept" : "broken");
 		return false;
 	}
 	for (unsigned k = 0; k < stored.GetNumDenseInliers(); ++k) {
 		const DMatch& m = stored.matches[stored.GetNumFilteredInliers() + k];
 		const Point2f& ptA = imgA.keypoints[m.queryIdx].pt;
 		if (norm(Point2(ptA.x - camera.cx, ptA.y - camera.cy)) >= LENS_REVERIFY_CENTRAL_SHARE*norm(Point2(camera.cx, camera.cy))) {
-			VERBOSE("ROMA2ReverifyLensTest FAILED: a dense sample off the true geometry was kept at (%.1f, %.1f)", ptA.x, ptA.y);
+			VERBOSE("DenseReverifyLensTest FAILED: a dense sample off the true geometry was kept at (%.1f, %.1f)", ptA.x, ptA.y);
 			return false;
 		}
 	}
-	VERBOSE("ROMA2ReverifyLensTest PASSED: %u true matches regained, %u wrong dense samples dropped (%s)",
+	VERBOSE("DenseReverifyLensTest PASSED: %u true matches regained, %u wrong dense samples dropped (%s)",
 		(unsigned)numRejected, numWrongDense, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -6238,7 +6238,7 @@ bool FlexGlueManifestTest()
 	return true;
 }
 
-// ROMA2Config::ResolveModelPath precedence test, for each matcher (roma2: modelPath and $OPENMVS_ROMA2_MODEL_PATH, flexglue:
+// DenseMatchConfig::ResolveModelPath precedence test, for each matcher (roma2: modelPath and $OPENMVS_ROMA2_MODEL_PATH, flexglue:
 // flexglueModelPath and $OPENMVS_FLEXGLUE_MODEL_PATH): the explicit path wins over everything (even a set environment variable);
 // with it empty, the matcher's environment variable wins; with both absent, the result falls back to the install prefix's own
 // copy (OPENMVS_MODEL_INSTALL_DIR/<matcher>) when that directory actually exists on disk, else it is empty. And a matcher never
@@ -6272,7 +6272,7 @@ bool ResolveModelPathTest()
 		const bool bFlexGlue = matcher == "flexglue";
 		const EnvGuard& ownEnv = bFlexGlue ? flexglueEnv : roma2Env;
 		const EnvGuard& otherEnv = bFlexGlue ? roma2Env : flexglueEnv;
-		ROMA2Config config;
+		DenseMatchConfig config;
 		config.matcher = matcher;
 		String& ownPath = bFlexGlue ? config.flexglueModelPath : config.modelPath;
 		String& otherPath = bFlexGlue ? config.modelPath : config.flexglueModelPath;
@@ -6381,7 +6381,7 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 	std::vector<float> facets, retrieval;
 	{
 		TD_TIMER_STARTD();
-		// this is the same call the describe pass in MatchROMA2.cpp makes (facetsOut NULL there):
+		// this is the same call the describe pass in MatchDense.cpp makes (facetsOut NULL there):
 		// it exercises RoMa2Onnx::Describe's retrievalOut readback, which otherwise has no automated coverage
 		if (!model.Describe(planarA.data(), layers, &facets, retrieval)) {
 			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe with the facets read-back", setting.c_str());
@@ -6636,36 +6636,36 @@ bool RoMa2OnnxParityTest()
 // scene to exactly the same expectations; defined next to ReconstructTest itself
 static bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned minTracks, unsigned maxTracks, REAL maxDistortion);
 
-// One matched pair of a ROMA2ReconstructScene run, reduced to what the checks below compare:
+// One matched pair of a DenseReconstructScene run, reduced to what the checks below compare:
 // which pair it is and how large each of its two evidence segments is. A pair the one pass stored
 // carries no marker of its own, so a pair the pass created is read off the difference between two
 // runs' pair sets; the dense count is what says the pass's fill reached the scene, and it is part
 // of the tuple so the determinism runs compare the fill too -- the dense keypoint indices are
 // handed out by a serial append whose order is exactly what a parallel pass could disturb.
-struct ROMA2PairSummary {
+struct DensePairSummary {
 	IIndex ID1, ID2;
 	unsigned numMatches, numFilteredInliers, numDenseInliers;
 
 	// order by pair identity alone: two runs of the same scene match the same pairs
-	bool operator<(const ROMA2PairSummary& r) const {
+	bool operator<(const DensePairSummary& r) const {
 		return ID1 != r.ID1 ? ID1 < r.ID1 : ID2 < r.ID2;
 	}
 	// the (ID1, ID2, numMatches, numFilteredInliers, numDenseInliers) tuple the determinism check compares
-	bool operator==(const ROMA2PairSummary& r) const {
+	bool operator==(const DensePairSummary& r) const {
 		return ID1 == r.ID1 && ID2 == r.ID2 && numMatches == r.numMatches &&
 			numFilteredInliers == r.numFilteredInliers && numDenseInliers == r.numDenseInliers;
 	}
 };
-typedef std::vector<ROMA2PairSummary> ROMA2PairSummaries;
+typedef std::vector<DensePairSummary> DensePairSummaries;
 
 // The scene's pairs as those tuples, sorted so that two runs are comparable whatever order
 // they happened to store the pairs in
-static ROMA2PairSummaries SummarizePairs(const Scene& scene)
+static DensePairSummaries SummarizePairs(const Scene& scene)
 {
-	ROMA2PairSummaries summaries;
+	DensePairSummaries summaries;
 	summaries.reserve(scene.pairs.size());
 	for (const ImagePair& pair : scene.pairs)
-		summaries.push_back(ROMA2PairSummary{pair.ID1, pair.ID2, (unsigned)pair.matches.size(),
+		summaries.push_back(DensePairSummary{pair.ID1, pair.ID2, (unsigned)pair.matches.size(),
 			pair.GetNumFilteredInliers(), pair.GetNumDenseInliers()});
 	std::sort(summaries.begin(), summaries.end());
 	return summaries;
@@ -6691,13 +6691,13 @@ static ROMA2PairSummaries SummarizePairs(const Scene& scene)
 // HEIC images and split the shared camera was an uninitialized read in the container-EXIF path of
 // Image::LoadMetadata, fixed there and pinned by ImportMetadataDeterminismTest.)
 // With it off, the stored pairs are exactly what the matching produced.
-static bool ROMA2ReconstructScene(Scene& scene, ROMA2Config roma2Cfg,
-	int expectedDim, bool bViewGraphCalibration, ROMA2PairSummaries& pairSummaries, bool bStaleDescriptors = false)
+static bool DenseReconstructScene(Scene& scene, DenseMatchConfig denseCfg,
+	int expectedDim, bool bViewGraphCalibration, DensePairSummaries& pairSummaries, bool bStaleDescriptors = false)
 {
-	const String& setting = roma2Cfg.setting;
-	const String& provider = roma2Cfg.provider;
-	const bool bUseMatching = roma2Cfg.useMatching;
-	const unsigned slotBudget = roma2Cfg.slotBudget;
+	const String& setting = denseCfg.setting;
+	const String& provider = denseCfg.provider;
+	const bool bUseMatching = denseCfg.useMatching;
+	const unsigned slotBudget = denseCfg.slotBudget;
 	// the images' own focal, given and so trusted (720.51 px, no distortion), unlike ReconstructTest,
 	// which forces a deliberately wrong 900 px / k1=0.6 / k2=-0.09 and leans on the view-graph
 	// calibrator to recover them from the fundamental matrices. That recovery is exactly what
@@ -6762,11 +6762,11 @@ static bool ROMA2ReconstructScene(Scene& scene, ROMA2Config roma2Cfg,
 	matchCfg.DefaultsForFeatureType(featuresCfg.detectorType);
 	matchCfg.viewGraphCalibrationEnabled = bViewGraphCalibration;
 
-	roma2Cfg.enabled = true;
+	denseCfg.enabled = true;
 	// MatchPairs runs the describe pass for RETRIEVAL mode alone (the match mode decides it), not
 	// merely because ROMA2 is enabled; on four images the retrieval proposes every pair, so this
 	// test exercises both of ROMA2's passes together in one model load over the whole graph
-	if (!scene.MatchPairs(matchCfg, roma2Cfg, ViewGraphCalibratorConfig())) {
+	if (!scene.MatchPairs(matchCfg, denseCfg, ViewGraphCalibratorConfig())) {
 		VERBOSE("ROMA2ReconstructTest FAILED: MatchPairs failed");
 		return false;
 	}
@@ -6824,7 +6824,7 @@ static bool ROMA2ReconstructScene(Scene& scene, ROMA2Config roma2Cfg,
 	// close-up shots of one small scene its verdict admits every one of them, so the count is the
 	// same either way -- what differs is the evidence each pair carries
 	// (a covisibility gate drops pairs on purpose: the caller then checks which ones)
-	const bool bGated = roma2Cfg.matcher == "flexglue" && roma2Cfg.minCovisibility > 0.f;
+	const bool bGated = denseCfg.matcher == "flexglue" && denseCfg.minCovisibility > 0.f;
 	if (bGated ? (scene.pairs.empty() || scene.pairs.size() > expectedPairs) : scene.pairs.size() != expectedPairs) {
 		VERBOSE("ROMA2ReconstructTest FAILED: expected %u geometrically matched pairs, got %u",
 			(unsigned)expectedPairs, (unsigned)scene.pairs.size());
@@ -6860,7 +6860,7 @@ static bool ROMA2ReconstructScene(Scene& scene, ROMA2Config roma2Cfg,
 // to prove determinism (design decision 11), round-tripped through Scene::Save/Load, and finished
 // with ReconstructTest's own reconstruction stage. Configured by the environment like
 // RoMa2OnnxParityTest: OPENMVS_ROMA2_MODEL_PATH (unset => skipped), OPENMVS_ROMA2_SETTING
-// (default "base", matching ROMA2Config::setting's own default and the published model bundle),
+// (default "base", matching DenseMatchConfig::setting's own default and the published model bundle),
 // OPENMVS_ROMA2_PROVIDER (default "auto")
 bool ROMA2ReconstructTest()
 {
@@ -6882,8 +6882,8 @@ bool ROMA2ReconstructTest()
 	const String setting(envSetting != NULL && *envSetting != 0 ? String(envSetting) : String("base"));
 	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
 	const String provider(envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto"));
-	const auto roma2Config = [&](bool bUseMatching, unsigned slotBudget) {
-		ROMA2Config cfg;
+	const auto denseConfig = [&](bool bUseMatching, unsigned slotBudget) {
+		DenseMatchConfig cfg;
 		cfg.setting = setting;
 		cfg.provider = provider;
 		cfg.useMatching = bUseMatching;
@@ -6900,20 +6900,20 @@ bool ROMA2ReconstructTest()
 	// (The grouping no longer varies between runs: the intermittent import camera split that
 	// originally forced this choice was an uninitialized read in Image::LoadMetadata's
 	// container-EXIF path, fixed there and pinned by ImportMetadataDeterminismTest.)
-	ROMA2PairSummaries baseline;
+	DensePairSummaries baseline;
 	{
 		Scene scene(2);
-		if (!ROMA2ReconstructScene(scene, roma2Config(false, 64), 2048, false, baseline)) {
+		if (!DenseReconstructScene(scene, denseConfig(false, 64), 2048, false, baseline)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: baseline run (one pass off)");
 			return false;
 		}
 	}
 
 	// 2) the same scene through the one pass
-	ROMA2PairSummaries guided;
+	DensePairSummaries guided;
 	{
 		Scene scene(2);
-		if (!ROMA2ReconstructScene(scene, roma2Config(true, 64), 2048, false, guided)) {
+		if (!DenseReconstructScene(scene, denseConfig(true, 64), 2048, false, guided)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: one-pass dense matching");
 			return false;
 		}
@@ -6962,7 +6962,7 @@ bool ROMA2ReconstructTest()
 			const ScopedTempDir tmpDir(_T("ROMA2ReconstructTest"));
 			if (!tmpDir.IsValid())
 				return false;
-			const String sfmPath(tmpDir(_T("roma2_matched.sfm")));
+			const String sfmPath(tmpDir(_T("dense_matched.sfm")));
 			if (!scene.Save(sfmPath)) {
 				VERBOSE("ROMA2ReconstructTest FAILED: cannot save '%s'", sfmPath.c_str());
 				return false;
@@ -7029,20 +7029,20 @@ bool ROMA2ReconstructTest()
 	// stored serially in (ID1, ID2) order however the pool interleaved them. The configuration is
 	// deliberately the awkward one: a single thread, with a slot pool too small to hold the scene,
 	// so that the describe pass reuses a prefetch buffer and the one pass reloads evicted slots (see the
-	// ROMA2ReconstructScene comment) -- the paths where a stale buffer or slot would show up as a
+	// DenseReconstructScene comment) -- the paths where a stale buffer or slot would show up as a
 	// difference. The view-graph calibration is off here so that the comparison sees the matching
-	// alone (again, see ROMA2ReconstructScene).
-	ROMA2PairSummaries tightPool, repeated;
+	// alone (again, see DenseReconstructScene).
+	DensePairSummaries tightPool, repeated;
 	{
 		Scene scene(1);
-		if (!ROMA2ReconstructScene(scene, roma2Config(true, 2), 2048, false, tightPool)) {
+		if (!DenseReconstructScene(scene, denseConfig(true, 2), 2048, false, tightPool)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: 2-slot pool run");
 			return false;
 		}
 	}
 	{
 		Scene scene(1);
-		if (!ROMA2ReconstructScene(scene, roma2Config(true, 2), 2048, false, repeated)) {
+		if (!DenseReconstructScene(scene, denseConfig(true, 2), 2048, false, repeated)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: determinism run");
 			return false;
 		}
@@ -7096,7 +7096,7 @@ bool FlexGlueReconstructTest()
 	}
 	TD_TIMER_STARTD();
 	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
-	ROMA2Config cfg;
+	DenseMatchConfig cfg;
 	cfg.matcher = "flexglue";
 	cfg.flexglueModelPath = envModelPath;
 	cfg.provider = envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto");
@@ -7114,9 +7114,9 @@ bool FlexGlueReconstructTest()
 	#endif
 
 	// 1) every pair kept: covisibility, pose prior and the CSV
-	ROMA2PairSummaries summaries;
+	DensePairSummaries summaries;
 	Scene scene(2);
-	const bool bMatched = ROMA2ReconstructScene(scene, cfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, summaries, true);
+	const bool bMatched = DenseReconstructScene(scene, cfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, summaries, true);
 	if (bHadRoMa2Path) {
 		#ifdef _MSC_VER
 		_putenv_s("OPENMVS_ROMA2_MODEL_PATH", prevRoMa2Path.c_str());
@@ -7195,10 +7195,10 @@ bool FlexGlueReconstructTest()
 	}
 	{
 		Scene gated(2);
-		ROMA2Config gateCfg(cfg);
+		DenseMatchConfig gateCfg(cfg);
 		gateCfg.minCovisibility = bar;
-		ROMA2PairSummaries gatedSummaries;
-		if (!ROMA2ReconstructScene(gated, gateCfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, gatedSummaries)) {
+		DensePairSummaries gatedSummaries;
+		if (!DenseReconstructScene(gated, gateCfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, gatedSummaries)) {
 			VERBOSE("FlexGlueReconstructTest FAILED: matching with the covisibility gate at %g", bar);
 			return false;
 		}
@@ -8316,7 +8316,7 @@ bool SphericalBottomBandTest()
 
 
 // ===============================================================================
-// Spherical bottom band of the dense matching (ROMA2Config::sphericalBottomBand, the value of
+// Spherical bottom band of the dense matching (DenseMatchConfig::sphericalBottomBand, the value of
 // FeatureExtractionConfig::sphericalBottomBand): the dense correspondences both warp draws take
 // (the verdict's SampleWarpByCoverage and the fill's SampleWarpComplementary, hence both matchers) have no
 // end in the bottom band of a spherical image, whichever image it is. With an identity warp the rows
@@ -17594,7 +17594,7 @@ bool MatchPairsFailureTest()
 // CLEAR for every non-fatal outcome, so it can not be conflated with "stored nothing". Provoking a
 // genuinely fatal round is out of reach here -- the only two are a SiftMatchGPU coordinator that
 // fails to initialise (SiftGPU + CUDA build, real device) and a device-slot-pool failure inside
-// MatchPairsROMA2 (a loaded RoMa v2 model) -- so the stage-failure side is left to the run-time
+// MatchPairsDense (a loaded RoMa v2 model) -- so the stage-failure side is left to the run-time
 // behaviour Scene::MatchPairs implements and MatchPairsFailureTest pins for the empty-graph case.
 bool MatchRoundFatalSignalTest()
 {
@@ -17753,10 +17753,10 @@ bool RetrievalModeTest()
 	matchCfg.mode = MatchConfig::RETRIEVAL;
 	matchCfg.maxPairsPerImage = 3;
 
-	// RETRIEVAL ranks by the descriptors regardless of the ROMA2Config passed to SetROMA2: the
+	// RETRIEVAL ranks by the descriptors regardless of the DenseMatchConfig passed to SetDense: the
 	// mode is its own opt-in and never consults a gate (design decision 10)
 	PairsMatcher matcher(scene, matchCfg);
-	matcher.SetROMA2(NULL, ROMA2Config());
+	matcher.SetDense(NULL, DenseMatchConfig());
 	const PairIdxArr pairs = matcher.CollectRetrievalPairs(2);
 	if (pairs.empty()) {
 		VERBOSE("RetrievalModeTest FAILED: RETRIEVAL produced no pairs despite a fully described scene");
@@ -17793,7 +17793,7 @@ bool RetrievalModeTest()
 		}
 	}
 	PairsMatcher brokenMatcher(brokenScene, matchCfg);
-	brokenMatcher.SetROMA2(NULL, ROMA2Config());
+	brokenMatcher.SetDense(NULL, DenseMatchConfig());
 	if (!brokenMatcher.CollectRetrievalPairs(2).empty()) {
 		VERBOSE("RetrievalModeTest FAILED: a missing descriptor should error out, not silently produce pairs");
 		return false;
@@ -17888,9 +17888,9 @@ bool VocabularyIgnoresGlobalDescriptorsTest()
 	// opt into ROMA2 (enabled=true) exactly as the deleted substitution required: under the old
 	// code this alone was enough to take VOCABULARY over with the global descriptors, no model
 	// needed
-	ROMA2Config roma2Cfg;
-	roma2Cfg.enabled = true;
-	matcher.SetROMA2(NULL, roma2Cfg);
+	DenseMatchConfig denseCfg;
+	denseCfg.enabled = true;
+	matcher.SetDense(NULL, denseCfg);
 	const PairIdxArr vocabPairs = matcher.CollectVocabularyPairs(2);
 	if (vocabPairs.empty()) {
 		VERBOSE("VocabularyIgnoresGlobalDescriptorsTest FAILED: VOCABULARY produced no candidate pairs");

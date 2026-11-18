@@ -188,7 +188,7 @@ SFM_API Ort::Env& OnnxEnv();
 
 #else // _USE_ONNXRUNTIME
 
-// Inert stand-in so code written against OrtTensor (e.g. MatchROMA2.cpp) compiles unchanged
+// Inert stand-in so code written against OrtTensor (e.g. MatchDense.cpp) compiles unchanged
 // in builds without ONNX Runtime: every accessor reports "no tensor", nothing is ever valid.
 class SFM_API OrtTensor
 {

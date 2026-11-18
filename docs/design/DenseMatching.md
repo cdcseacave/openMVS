@@ -14,8 +14,8 @@ offers two independent services to the classical SfM front end:
   fallback and no union with a descriptor-matched pair set.
 
 Two models implement the interface `DenseMatcher` (`libs/SFM/DenseMatcher.h`): RoMa v2 (default) and FlexGlue
-(`--dense-matcher flexglue`). Everything downstream of the warp (`JudgePairROMA2`, `TrackKeypointsByWarp`,
-`MatchFeaturesGuided`, `AssemblePairROMA2`, `StorePairROMA2`, the planar twin switch, the lens fit, the dense
+(`--dense-matcher flexglue`). Everything downstream of the warp (`JudgePairDense`, `TrackKeypointsByWarp`,
+`MatchFeaturesGuided`, `AssemblePairDense`, `StorePairDense`, the planar twin switch, the lens fit, the dense
 pseudo-count in the pair weight, `PairWeight.md`) never asks which model produced the warp.
 
 Out of scope: building and provisioning ONNX Runtime and the model bundles (`../DenseMatcherModels.md`); the bundle
@@ -23,8 +23,8 @@ adjustment's weight of a dense observation (`BundleAdjustment.md`: it measures t
 per solve, independently of the view graph's fixed dense pseudo-count described here under the options).
 
 Source files: `OnnxRuntime.h/cpp` (session and tensor wrapper), `DenseMatcher.h`, `RoMa2Matcher.h/cpp`,
-`FlexGlueMatcher.h/cpp`, `MatchROMA2.h/cpp` (describe pass, slot plan, verdict, assembly, storage, planar twin switch,
-`ROMA2Config`), `ROMA2Warp.h/cpp` (warp conventions, keypoint tracking, sampling, dense append), `MatchGeometric.h/cpp`
+`FlexGlueMatcher.h/cpp`, `MatchDense.h/cpp` (describe pass, slot plan, verdict, assembly, storage, planar twin switch,
+`DenseMatchConfig`), `DenseWarp.h/cpp` (warp conventions, keypoint tracking, sampling, dense append), `MatchGeometric.h/cpp`
 (`MatchFeaturesGuided`), `GlobalDescriptors.h/cpp` (cosine retrieval index), `Scene.cpp` (`Scene::MatchPairs`).
 
 ## Options and where they act
@@ -36,7 +36,7 @@ and rejects `--flexglue-model` with another matcher.
 The two services are independent: `--match-mode 4` alone ranks pairs by the descriptors and matches them with the
 ordinary SIFT/AKAZE/ORB flow; `--dense-match` composes with any match mode.
 
-| option | `ROMA2Config` field | default | effect |
+| option | `DenseMatchConfig` field | default | effect |
 |---|---|---|---|
 | `--roma2-model DIR` | `modelPath` | `$OPENMVS_ROMA2_MODEL_PATH`, else `<prefix>/share/openMVS/roma2` if present | folder of the RoMa2 bundle (manifest and graphs) |
 | `--dense-provider auto\|cuda\|coreml\|dml\|cpu` | `provider` | `auto` | ONNX Runtime execution provider (see Providers) |
@@ -49,7 +49,7 @@ ordinary SIFT/AKAZE/ORB flow; `--dense-match` composes with any match mode.
 | `--dense-min-overlap F` | `minOverlap` | 0.10 | the verdict's bar on the smaller inlier area (see Verdict); 0 admits every pair |
 | `--dense-matches N` | `denseMatchesPerFrame` | 2000 | dense correspondences per full frame of overlap, a density and not a per-pair count; also the frame target of the view graph's dense pseudo-count, so the same value reaches `PairsWeightingConfig::denseMatchesPerFrame` |
 
-`ROMA2Config` fields with no command-line option, all used by the one pass:
+`DenseMatchConfig` fields with no command-line option, all used by the one pass:
 
 | field | default | meaning |
 |---|---|---|
@@ -87,7 +87,7 @@ destroyed after it) and drives it from one thread; the pool only runs the consum
 `PairInput` holds the pixel sizes of the two images (`MakePairInput`); no model reads a camera (RoMa2 has no camera input,
 FlexGlue's pose head H1 reads none), so a dense matcher runs on any camera model.
 
-`ROMA2Config::ResolveModelPath` finds the selected matcher's bundle the same way for both: its explicit path
+`DenseMatchConfig::ResolveModelPath` finds the selected matcher's bundle the same way for both: its explicit path
 (`modelPath`, `flexglueModelPath`), else its environment variable (`OPENMVS_ROMA2_MODEL_PATH`, `OPENMVS_FLEXGLUE_MODEL_PATH`),
 else the install prefix's copy `OPENMVS_MODEL_INSTALL_DIR/<matcher>` (what the `roma2-model` / `flexglue-model` targets
 fetch, used only when `File::isFolder` finds it), else nothing; a matcher never resolves to the other one's path or
@@ -123,7 +123,7 @@ dimensions).
 The refiner stages are not exported: they buy match precision, which the guided sparse matches already supply wherever
 the scene has texture, and no depth maps are produced from the warps.
 
-Conventions (`ROMA2Warp.h`), all with `align_corners=false` in OpenMVS working-orientation pixels (integer = pixel
+Conventions (`DenseWarp.h`), all with `align_corners=false` in OpenMVS working-orientation pixels (integer = pixel
 centre; `Image::LoadPixels` rotates portrait images to landscape, the same pixels the keypoints were extracted from, so
 no map is ever rotated): warp cell (i,j) describes the source image at the pixel `(i+0.5)*W/C - 0.5`
 (`CellToPixel`, inverse `PixelToCell`); a warp value `n` is the target pixel `0.5*(n+1)*W - 0.5` (`DenormCoord`,
@@ -180,7 +180,7 @@ uses the device `SEACAVE::CUDA` selected. Each session logs its provider when lo
 
 ## Pair graph and slot plan
 
-The candidate list holds each unordered pair once (`MakePairIdx` orders the indices; `MatchPairsROMA2` sorts, removes
+The candidate list holds each unordered pair once (`MakePairIdx` orders the indices; `MatchPairsDense` sorts, removes
 duplicates, and drops pairs the scene already stores or whose images lack a camera or descriptors, counting the two
 causes apart). One graph call states both directions of a pair, so only the pair (A, B) with A < B is warped.
 
@@ -191,18 +191,18 @@ image falls in a short window and a modest budget rarely reloads. The plan is co
 describe-and-load of a slot runs on the calling thread (a session is driven by one thread; the image load and
 preprocessing are prefetched on the pool in a ring keyed by submission order), while each pair's verdict, guided
 match and assembly run on the pool, bounded by a semaphore on live warps. Assembled pairs are stored serially in
-`(ID1, ID2)` order, because the keypoint indices `StorePairROMA2` hands out depend on what the two images already
+`(ID1, ID2)` order, because the keypoint indices `StorePairDense` hands out depend on what the two images already
 carry. The budget is a pure cost knob: the same pairs are stored whatever it is. The plan and the loads and reloads it
 costs are logged with the pass summary.
 
 ## One-pass matching
 
-`Scene::MatchPairs` runs the pass as the whole matching round (`PairsMatcher::Match` calls `MatchPairsROMA2` instead of
+`Scene::MatchPairs` runs the pass as the whole matching round (`PairsMatcher::Match` calls `MatchPairsDense` instead of
 the descriptor round; the verification-feedback round, `PairSelection.md`, runs the same pass on its proposals). Per
 candidate pair:
 
 1. **Warp** (`MatchPair`): both directions in one call. The covisibility gate acts here.
-2. **Verdict** (`JudgePairROMA2`). One geometry is fitted through `PairsMatcher::GeometricFilter` on a
+2. **Verdict** (`JudgePairDense`). One geometry is fitted through `PairsMatcher::GeometricFilter` on a
    coverage-uniform sample of A's eligible cells (`SampleWarpByCoverage`, target 4000; fewer than 8 rejects the pair).
    A cell is eligible when its confidence reaches `minConfidence`, the point it warps to lies inside the other image,
    and neither end lies in the bottom band of a spherical image (`sphericalBottomBand`, `SphericalCameras.md`)
@@ -230,7 +230,7 @@ candidate pair:
    bounds it at that density over the smaller of the two inlier areas, which is what bounds the keypoint density in
    B; where it binds, `ThinSampleByLatticePriority` keeps a prefix of the same pair-independent order the bucket
    winners were picked on, so tighter and looser ceilings keep nested samples of A.
-5. **One geometry for the pair** (`AssemblePairROMA2`, through `FitAndClassifyPairROMA2`). `GeometricFilter` runs once
+5. **One geometry for the pair** (`AssemblePairDense`, through `FitAndClassifyPairDense`). `GeometricFilter` runs once
    more on guided plus dense at the matcher's `maxEpipolarError`, then `RefineRelativePose` polishes the pose with
    each dense correspondence at `denseFitWeight`. The classification keeps the guided matches within the matcher's
    epipolar tolerance as the pair's sparse (descriptor) segment and the dense correspondences within
@@ -238,7 +238,7 @@ candidate pair:
    lens and both trust their intrinsics, else the pixel F). With the verification off (`maxEpipolarError` 0) the warp's
    half cell is the dense bar. If the union fit fails, the verdict's own geometry stands, so an admitted pair is always
    stored; a pair with zero sparse inliers is dense-only, its dense segment its whole evidence.
-6. **Store** (`StorePairROMA2`): created, or replacing a same-key pair, then the dense segment is appended
+6. **Store** (`StorePairDense`): created, or replacing a same-key pair, then the dense segment is appended
    (`AppendDenseMatches`: new dense keypoints past each image's described prefix, matches placed inside the
    track-forming prefix of `ImagePair::matches` and outside the descriptor-evidence count).
 
@@ -274,17 +274,17 @@ gets through, a component holding one image twice, is the track builder's to res
 
 When a camera changes after matching (a focal moved by the focal check, a lens fitted, a focal calibrated),
 `PairsMatcher::ComputeRelativePoses` verifies again every pair of that camera. A pair the one pass matched (it carries a
-dense segment, or an image of it carries dense keypoints) goes through `ReverifyPairROMA2` instead of
+dense segment, or an image of it carries dense keypoints) goes through `ReverifyPairDense` instead of
 `GeometricFilter`: its sparse candidates (the sparse segment, the RANSAC inliers a strict filter rejected, the outliers)
-and its dense segment are classified again, kept apart, by `FitAndClassifyPairROMA2` on a geometry fitted afresh. A
+and its dense segment are classified again, kept apart, by `FitAndClassifyPairDense` on a geometry fitted afresh. A
 match with a dense end is a dense candidate wherever the pair holds it. A pair whose re-fit fails is invalidated, as
 `GeometricFilter` leaves a pair it cannot verify. `GeometricFilter` over all of a pair's matches would hold the dense
 samples to the descriptor estimator at full weight, which is why the pair is not passed through it.
 
-**Planar twin switch** (`SwitchPlanarTwinsROMA2`, called by `Scene::MatchPairs` right after the focal and lens stage,
+**Planar twin switch** (`SwitchPlanarTwinsDense`, called by `Scene::MatchPairs` right after the focal and lens stage,
 on a fresh run and on a reload alike, before anything reads the poses). The matches of a pair that lie mostly on one
 plane admit two relative poses that explain them equally well, the stored one and its planar twin. For every posed
-pair of the one pass, `PlanarTwinROMA2` fits a homography (OpenCV RANSAC, 2000 iterations, on the cameras' normalized
+pair of the one pass, `PlanarTwinDense` fits a homography (OpenCV RANSAC, 2000 iterations, on the cameras' normalized
 planes at the angular equivalent of `maxEpipolarError`) on its track-forming matches; when it explains at least
 `twinMinPlaneShare` of them, its physically valid decompositions (90% of the homography's inliers in front of both
 cameras) give the stored pose (the nearest) and the twin (the other), polished with the union fit's polish; a twin
@@ -296,7 +296,7 @@ largest gain switches when it is at least `twinMinLoopGain` (ties: more sparse i
 the gains of the candidates sharing a triangle with it are counted again, and this repeats until no gain reaches the
 margin; a pair may switch back, and each switch closes at least the margin more triangles, so the loop ends. A pair
 that ends at its twin takes the twin's pose, E and F and re-classifies its candidates against them
-(`ReverifyPairROMA2` without the refit); its weight is recomputed afterwards.
+(`ReverifyPairDense` without the refit); its weight is recomputed afterwards.
 
 ## Invariants
 

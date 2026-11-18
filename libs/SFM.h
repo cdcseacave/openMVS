@@ -32,8 +32,8 @@
 #include "SFM/LensFit.h"
 #include "SFM/PairsWeighting.h"
 #include "SFM/RelativePoseRefine.h"
-#include "SFM/MatchROMA2.h"
-#include "SFM/ROMA2Warp.h"
+#include "SFM/MatchDense.h"
+#include "SFM/DenseWarp.h"
 
 // Track building and triangulation
 #include "SFM/Track.h"

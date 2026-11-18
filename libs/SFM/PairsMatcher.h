@@ -29,7 +29,7 @@
 
 #include "Camera.h"
 #include "PairsWeighting.h"
-#include "MatchROMA2.h"
+#include "MatchDense.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -215,7 +215,7 @@ public:
 	// The same estimator at a caller-chosen epipolar tolerance, in pixels: the ROMA2 verdict fits
 	// warp cells, which can only claim half a warp cell of accuracy, and demanding the descriptor
 	// path's sub-pixel precision of them would reject the true pairs along with the false ones
-	// (ROMA2Warp.h, WarpTolerance). The branch choice (SelectGeometryBranch), the strict filters and
+	// (DenseWarp.h, WarpTolerance). The branch choice (SelectGeometryBranch), the strict filters and
 	// minMatches stay the estimator's own; the three-argument form forwards config.maxEpipolarError.
 	bool GeometricFilter(
 		const Image& img1,
@@ -247,14 +247,14 @@ public:
 	//  - updatedCameras: if non-empty, only pairs involving these cameras are updated.
 	//  - onlyTrustedIntrinsics: if true, only updates pairs where both cameras have trusted intrinsics.
 	//  - onlyComputeIfMissing: if true, only computes relative pose for pairs missing it.
-	// A pair the RoMa2 one pass matched is re-verified by ReverifyPairROMA2, keeping its sparse and
+	// A pair the RoMa2 one pass matched is re-verified by ReverifyPairDense, keeping its sparse and
 	// dense segments apart; any other pair by GeometricFilter.
 	// Returns number of pairs updated.
 	unsigned ComputeRelativePoses(bool onlyTrustedIntrinsics = true, bool onlyComputeIfMissing = true, const std::unordered_set<CameraPtr>& updatedCameras = {});
 
 	// Attach the in-process ROMAv2 model and its configuration for the dense one-pass matching
-	// path (MatchPairsROMA2); model may be NULL if roma2Cfg leaves that path disabled.
-	void SetROMA2(DenseMatcher* model, const ROMA2Config& cfg);
+	// path (MatchPairsDense); model may be NULL if denseCfg leaves that path disabled.
+	void SetDense(DenseMatcher* model, const DenseMatchConfig& cfg);
 
 	// Build the global-descriptor index on demand, unconditionally (RETRIEVAL mode): never
 	// builds nor falls back to the vocabulary tree — the backend is the DINOv3+GeM descriptors
@@ -347,7 +347,7 @@ private:
 	struct MatchStats {
 		unsigned newPairs = 0;
 		unsigned updatedPairs = 0;
-		unsigned densePairs = 0; // pairs the one-pass dense matching stored (MatchPairsROMA2)
+		unsigned densePairs = 0; // pairs the one-pass dense matching stored (MatchPairsDense)
 		size_t numMatches = 0;
 		size_t numInliers = 0;
 		size_t numFilteredInliers = 0;
@@ -385,9 +385,9 @@ private:
 	// built for VOCABULARY (lazy initialization)
 	std::unique_ptr<GlobalDescriptors> globalDescriptors;
 
-	// In-process ROMAv2 model and its configuration (NULL/defaults unless SetROMA2 was called)
-	DenseMatcher* roma2 = NULL;
-	ROMA2Config roma2Cfg;
+	// In-process ROMAv2 model and its configuration (NULL/defaults unless SetDense was called)
+	DenseMatcher* denseMatcher = NULL;
+	DenseMatchConfig denseCfg;
 
 	// Symmetric fused retrieval score of every pair retrieved by the last
 	// CollectVocabularyPairs or CollectRetrievalPairs call, kept for

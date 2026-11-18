@@ -175,12 +175,12 @@ GPS. Clustering is never involved.
   weakest verified connectivity refill any leftover budget (2 pairs/image) from their next
   best-ranked first-round candidates
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
-- **ROMAv2 one-pass dense matching** (`MatchROMA2.h`, `ROMA2Warp.h` helpers, `--dense-match`): the
+- **ROMAv2 one-pass dense matching** (`MatchDense.h`, `DenseWarp.h` helpers, `--dense-match`): the
   bidirectional dense warps are computed in-process (no external files) and, when enabled, ARE the
-  matching round - `JudgePairROMA2` admits a pair on the smaller of the two inlier areas one fitted
+  matching round - `JudgePairDense` admits a pair on the smaller of the two inlier areas one fitted
   geometry explains (`--dense-min-overlap`), `TrackKeypointsByWarp` + `MatchFeaturesGuided` select
-  its sparse matches in an epipolar band centred on each warp prediction, `AssemblePairROMA2` fills the rest
-  of the overlap densely and fits the pair's geometry, `StorePairROMA2` stores it. A rejected pair
+  its sparse matches in an epipolar band centred on each warp prediction, `AssemblePairDense` fills the rest
+  of the overlap densely and fits the pair's geometry, `StorePairDense` stores it. A rejected pair
   is dropped, never descriptor-matched
 - **Geometric verification**: RANSAC for E (calibrated) or F (uncalibrated), optional H; an F is posed
   (`DecomposeFundamentalToPose`, the lens fit's `PosePairsFromF`) through E = K2^T F K1 and `ImagePair::RecoverPose`
@@ -290,22 +290,22 @@ camera under 20 eligible pairs, spherical, untrusted, or with a given lens past 
 within the frame (not one to one out to 1.05x its corner) is left as it is, its pairs out of the fit.
 Every pair of a camera whose lens was fitted or whose focal moved (`LensFitReport::CamerasToVerifyAgain`)
 is then verified again through `PairsMatcher::ComputeRelativePoses` (a RoMa2 pair through
-`ReverifyPairROMA2`), and the summary line counts the pairs that verification invalidated.
+`ReverifyPairDense`), and the summary line counts the pairs that verification invalidated.
 The bundle adjustments refine k1, k2 from the fitted lens. No command-line flag;
 `MatchConfig::lensFitEnabled` turns it off. A lens given with `--k1/--k2` or imported is held, and a
 resumed scene's fitted lens counts as given; a resumed scene fits again every camera that still has
 no lens (refused, under the pair minimum, or matched by an older build), so a camera refused beside
 one fitted the first time, now held, can be kept.
 
-### Planar Twin Switch (`MatchROMA2.h`)
-Right after the lens fit, in `Scene::MatchPairs` (fresh run and reload of a scene not yet at `PAIRS_FILTERED`), `SwitchPlanarTwinsROMA2`: a posed
-RoMa2 pair whose track-forming matches a homography explains at >= `ROMA2Config::twinMinPlaneShare` (0.75,
-4 px on the normalized planes) gets its planar twin (`PlanarTwinROMA2`: the other valid decomposition,
+### Planar Twin Switch (`MatchDense.h`)
+Right after the lens fit, in `Scene::MatchPairs` (fresh run and reload of a scene not yet at `PAIRS_FILTERED`), `SwitchPlanarTwinsDense`: a posed
+RoMa2 pair whose track-forming matches a homography explains at >= `DenseMatchConfig::twinMinPlaneShare` (0.75,
+4 px on the normalized planes) gets its planar twin (`PlanarTwinDense`: the other valid decomposition,
 polished as the union fit is; one within 0.5 deg / 10 deg of the stored pose is no twin). Triangles through
 the candidates close within `twinMaxLoopAngle` (3 deg); best gain first, each gain counted with every other
 pair at its current state, a switch when >= `twinMinLoopGain` (3), the gains of the candidates sharing a
 triangle updated, until none reaches it (a pair may switch back; termination asserted in Debug). A switched
-pair takes the twin's pose, E, F and re-classifies against them (`ReverifyPairROMA2(..., bRefit = false)`).
+pair takes the twin's pose, E, F and re-classifies against them (`ReverifyPairDense(..., bRefit = false)`).
 No command-line flag; `twinMinLoopGain` 0 turns it off.
 
 ### Relative Pose Refinement (`RelativePoseRefine.h`)

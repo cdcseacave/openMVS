@@ -53,7 +53,7 @@ command-line option; the default flow uses ESSENTIAL for trusted cameras and FUN
 
 `PairsMatcher::ComputeRelativePoses` verifies pairs again after a camera changes: all pairs, or those of a given set of
 cameras, optionally only those whose cameras trust their intrinsics or only those missing a pose. A pair from the dense
-one-pass flow is re-verified by `ReverifyPairROMA2` (sparse and dense segments kept apart), every other pair by
+one-pass flow is re-verified by `ReverifyPairDense` (sparse and dense segments kept apart), every other pair by
 `GeometricFilter` with its outliers rejoining the candidates. The pair weights are recomputed afterwards.
 
 ## Stage order (`CalibrateFocalsAndFitLenses`)

@@ -130,7 +130,7 @@ struct SFM_API ResectionConfig
 	                                    // the polish that closes an image's absolute pose: the robust fit runs on every
 	                                    // correspondence, and the polish over its inliers lets the described ones,
 	                                    // sub-pixel where a dense one is a coarse warp sample whose error its neighbours
-	                                    // share, set the pose wherever they are many -- what ROMA2Config::denseFitWeight
+	                                    // share, set the pose wherever they are many -- what DenseMatchConfig::denseFitWeight
 	                                    // does for a pair's relative pose (1 = no polish, 0 = the described ones alone).
 	                                    // Off: at 0.003 it tied the head on the eleven verified captures (F1 +0.0015
 	                                    // [-0.006, +0.010], better on two, worse on none) before the dense weight ceiling

@@ -31,14 +31,14 @@
 
 #include "Common.h"
 #include "OnnxRuntime.h"
-#include "ROMA2Warp.h"
+#include "DenseWarp.h"
 
 
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace SFM {
 
-struct SFM_API ROMA2Config;
+struct SFM_API DenseMatchConfig;
 
 // What a dense matcher is told about the two images of a pair besides their descriptors: their pixel sizes (no model
 // reads a camera: RoMa2 has no camera input and FlexGlue's pose head H1 reads none)
@@ -58,7 +58,7 @@ struct SFM_API PairOutput : PairWarps {
 // One dense matcher model (RoMa2, FlexGlue), loaded once and driven from a single thread: every image is described once
 // into a descriptor tensor (`code`, resident on the device where the provider keeps tensors there) and a global
 // retrieval descriptor, then two codes are matched into a PairOutput. The passes that describe the images, plan the
-// descriptor slots, prefetch the images and feed the pairs to the thread pool (MatchROMA2.cpp) only need this interface.
+// descriptor slots, prefetch the images and feed the pairs to the thread pool (MatchDense.cpp) only need this interface.
 class SFM_API DenseMatcher
 {
 public:
@@ -67,10 +67,10 @@ public:
 	// Whether this build can load a dense matcher (it has ONNX Runtime support)
 	static bool IsAvailable();
 	// A new, not yet loaded matcher of the kind config.matcher names ("roma2" or "flexglue"); needs IsAvailable()
-	static std::unique_ptr<DenseMatcher> Create(const ROMA2Config& config);
+	static std::unique_ptr<DenseMatcher> Create(const DenseMatchConfig& config);
 	// The size of the global retrieval descriptors the matcher config names will produce, known before it is loaded
 	// (both matchers' come from the model bundle's manifest); 0 where it cannot be told (no model folder reachable or no manifest in it)
-	static unsigned ExpectedRetrievalSize(const ROMA2Config& config);
+	static unsigned ExpectedRetrievalSize(const DenseMatchConfig& config);
 
 	// Load the model from its folder ("setting" is the model's preset where it has several) on the provider
 	// ("auto"|"cuda"|"coreml"|"dml"|"cpu"); false with a message on any failure

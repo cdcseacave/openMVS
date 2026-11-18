@@ -91,9 +91,9 @@ public:
 		return ExtractFeatures(config);
 	}
 	bool pyMatchPairs(const SFM::MatchConfig& matchCfg,
-	                  const SFM::ROMA2Config& roma2Cfg,
+	                  const SFM::DenseMatchConfig& denseCfg,
 	                  const SFM::ViewGraphCalibratorConfig& vgConfig) {
-		return MatchPairs(matchCfg, roma2Cfg, vgConfig);
+		return MatchPairs(matchCfg, denseCfg, vgConfig);
 	}
 
 	bool pyAlignToGPS(double threshold=0.0) {
@@ -315,21 +315,21 @@ void RegisterBindings()
 		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode)
 		.def_readwrite("frames_convention", &SFM::ImportConfig::framesConvention);
 
-	// SFM::ROMA2Config — in-process ROMAv2 retrieval and one-pass dense matching
-	class_<SFM::ROMA2Config>("ROMA2Config")
-		.def_readwrite("enabled", &SFM::ROMA2Config::enabled)
-		.DEF_STR_RW("model_path", &SFM::ROMA2Config::modelPath)
-		.DEF_STR_RW("setting", &SFM::ROMA2Config::setting)
-		.DEF_STR_RW("provider", &SFM::ROMA2Config::provider)
-		.def_readwrite("use_matching", &SFM::ROMA2Config::useMatching)
-		.DEF_STR_RW("matcher", &SFM::ROMA2Config::matcher)
-		.DEF_STR_RW("flexglue_model_path", &SFM::ROMA2Config::flexglueModelPath)
-		.def_readwrite("min_covisibility", &SFM::ROMA2Config::minCovisibility)
-		.def_readwrite("min_confidence", &SFM::ROMA2Config::minConfidence)
-		.def_readwrite("min_overlap", &SFM::ROMA2Config::minOverlap)
-		.def_readwrite("dense_matches_per_frame", &SFM::ROMA2Config::denseMatchesPerFrame)
-		.def_readwrite("slot_budget", &SFM::ROMA2Config::slotBudget)
-		.def_readwrite("use_gpu", &SFM::ROMA2Config::useGPU);
+	// SFM::DenseMatchConfig — in-process ROMAv2 retrieval and one-pass dense matching
+	class_<SFM::DenseMatchConfig>("DenseMatchConfig")
+		.def_readwrite("enabled", &SFM::DenseMatchConfig::enabled)
+		.DEF_STR_RW("model_path", &SFM::DenseMatchConfig::modelPath)
+		.DEF_STR_RW("setting", &SFM::DenseMatchConfig::setting)
+		.DEF_STR_RW("provider", &SFM::DenseMatchConfig::provider)
+		.def_readwrite("use_matching", &SFM::DenseMatchConfig::useMatching)
+		.DEF_STR_RW("matcher", &SFM::DenseMatchConfig::matcher)
+		.DEF_STR_RW("flexglue_model_path", &SFM::DenseMatchConfig::flexglueModelPath)
+		.def_readwrite("min_covisibility", &SFM::DenseMatchConfig::minCovisibility)
+		.def_readwrite("min_confidence", &SFM::DenseMatchConfig::minConfidence)
+		.def_readwrite("min_overlap", &SFM::DenseMatchConfig::minOverlap)
+		.def_readwrite("dense_matches_per_frame", &SFM::DenseMatchConfig::denseMatchesPerFrame)
+		.def_readwrite("slot_budget", &SFM::DenseMatchConfig::slotBudget)
+		.def_readwrite("use_gpu", &SFM::DenseMatchConfig::useGPU);
 
 	// SFM::TripletFilterConfig — camera-triplet view-graph disambiguation
 	class_<SFM::TripletFilterConfig>("TripletFilterConfig")
@@ -352,7 +352,7 @@ void RegisterBindings()
 	class_<SFM::ReconstructionConfig>("ReconstructionConfig")
 		.def_readwrite("import_cfg", &SFM::ReconstructionConfig::importCfg)
 		.def_readwrite("features_cfg", &SFM::ReconstructionConfig::featuresCfg)
-		.def_readwrite("roma2_cfg", &SFM::ReconstructionConfig::roma2Cfg)
+		.def_readwrite("dense_cfg", &SFM::ReconstructionConfig::denseCfg)
 		.def_readwrite("match_cfg", &SFM::ReconstructionConfig::matchCfg)
 		.def_readwrite("match_images_only", &SFM::ReconstructionConfig::matchImagesOnly)
 		.DEF_STR_RW("export_pairs_csv", &SFM::ReconstructionConfig::exportPairsCSV)
@@ -391,7 +391,7 @@ void RegisterBindings()
 				(arg("source"), arg("config")))
 		.def("extract_features", &Scene::pyExtractFeatures, (arg("config")))
 		.def("match_pairs", &Scene::pyMatchPairs,
-				(arg("match_config"), arg("roma2_config"), arg("viewgraph_config")))
+				(arg("match_config"), arg("dense_config"), arg("viewgraph_config")))
 		.def("reconstruct", &Scene::pyReconstruct,
 				(arg("source"), arg("config")))
 		.def("reconstruct_hierarchical", &Scene::pyReconstructHierarchical, (arg("config")))

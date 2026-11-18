@@ -659,7 +659,7 @@ unsigned PairsMatcher::ComputeRelativePoses(bool onlyTrustedIntrinsics, bool onl
 		// folds the dense segment into the sparse one); every other pair through the estimator it was
 		// verified with, its outliers rejoining
 		if (IsDenseMatchedPair(pair, img1, img2))
-			ReverifyPairROMA2(*this, img1, img2, roma2Cfg, pair);
+			ReverifyPairDense(*this, img1, img2, denseCfg, pair);
 		else
 			GeometricFilter(img1, img2, pair);
 		numMatches += pair.GetNumMatches();
@@ -728,10 +728,10 @@ bool PairsMatcher::MatchPair(
 	return true;
 }
 
-void PairsMatcher::SetROMA2(DenseMatcher* model, const ROMA2Config& cfg)
+void PairsMatcher::SetDense(DenseMatcher* model, const DenseMatchConfig& cfg)
 {
-	roma2 = model;
-	roma2Cfg = cfg;
+	denseMatcher = model;
+	denseCfg = cfg;
 	// the ranking backend may change, so drop the index built for the previous configuration
 	globalDescriptors.reset();
 }
@@ -2223,9 +2223,9 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		// admitted ones through that warp, fills them densely and stores them. A pair the warp
 		// rejects is dropped: there is no descriptor-matching round to fall back to, and no union
 		// of SIFT-verified and warp-verified pairs
-		if (roma2 && roma2Cfg.useMatching) {
+		if (denseMatcher && denseCfg.useMatching) {
 			unsigned numStored = 0;
-			if (!MatchPairsROMA2(*this, *roma2, pairs, roma2Cfg, numStored))
+			if (!MatchPairsDense(*this, *denseMatcher, pairs, denseCfg, numStored))
 				return false;
 			stats.densePairs += numStored;
 			return true;
@@ -2274,7 +2274,7 @@ unsigned PairsMatcher::Match(bool& bFatal)
 	// the two round shapes count different things, so each closes with the counters it actually
 	// filled: the descriptor rounds their created/updated pairs and match totals, the one pass the
 	// pairs it stored (its own summary line above already reports what each of them cost)
-	if (roma2 && roma2Cfg.useMatching) {
+	if (denseMatcher && denseCfg.useMatching) {
 		DEBUG("Images matched: %u dense pairs stored (%u total from %u exhaustive) in %s",
 			stats.densePairs, scene.pairs.size(), numExhaustivePairs, TD_TIMER_GET_FMT().c_str());
 	} else {
