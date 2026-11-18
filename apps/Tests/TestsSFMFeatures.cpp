@@ -756,185 +756,81 @@ bool FeatureTypeNameTest()
 }
 /*----------------------------------------------------------------*/
 
-// ===============================================================================
-// PairsMatcher spherical relative pose test: end-to-end integration test for
-// the PairsMatcher -> poselib::estimate_relative_pose_bearings path. Exercises
-// RANSAC scoring, cheirality-off behavior for spherical, and the Sampson-on-sphere
-// Jacobian in refine_relpose_bearing.
-// ===============================================================================
-bool PairsMatcherSphericalTest()
+// The geometry of a pair of panoramas (bearing vectors, no fundamental matrix) on one sphere scene (MakeSphereScene: two
+// panoramas 1.08 apart, 120 points around them, about half of each camera's matches behind it):
+// 1. PairsMatcher::MatchPair, the calibrated branch through poselib's bearing-vector relative pose (RANSAC scoring without
+//    cheirality, the Sampson error on the sphere), on the matches the tracks give: rotation within 0.5 degrees, translation
+//    direction within acos(0.99);
+// 2. MatchFeaturesGeometric, the tracked-point guided matching KeyframeExtractor runs on consecutive 360-degree keyframes:
+//    bootstrapped from the tracked points, it filters descriptor candidates by the angular epipolar distance, with no F
+//    (reading pair.F.value() there once threw for every spherical pair). It must estimate the geometry, leave F empty, keep
+//    80% of the tracked correspondences, and admit back-hemisphere bearings (z < 0) among its inliers.
+// The bearing-vector absolute pose is tested in PoseLib's own suite (test_estimate_absolute_pose_bearings).
+bool SphericalPairGeometryTest()
 {
-	VERBOSE("\n=== PairsMatcherSphericalTest: spherical relative pose via bearings ===");
-
-	Scene scene;
-	Pose3D poseRelGT;
-	BuildSphericalTwoViewScene(scene, poseRelGT);
-	VERBOSE("Built scene: %u images, %u tracks", (unsigned)scene.images.size(), (unsigned)scene.tracks.size());
-
-	// Populate matches for the pair from the ground-truth track observations.
-	ImagePair pair(0, 1);
-	for (const Track& track : scene.tracks) {
-		uint32_t feat0 = NO_ID, feat1 = NO_ID;
-		for (const auto& obs : track.observations) {
-			if (obs.imageID == 0) feat0 = obs.featureID;
-			else if (obs.imageID == 1) feat1 = obs.featureID;
-		}
-		if (feat0 != NO_ID && feat1 != NO_ID)
-			pair.matches.emplace_back(feat0, feat1);
-	}
-	VERBOSE("Built pair with %u matches", pair.GetNumMatches());
-
-	// Run geometric verification via MatchGeometric (the "calibrated" branch of
-	// PairsMatcher::MatchPair). This is the site that was rewritten in Phase 3.
-	MatchConfig matchCfg;
-	matchCfg.minMatches = 8;
-	matchCfg.maxEpipolarError = 5.f;
-	PairsMatcher matcher(scene, matchCfg);
-	if (!matcher.MatchPair(scene.images[0], scene.images[1], pair)) {
-		VERBOSE("PairsMatcherSphericalTest FAILED: MatchPair returned false");
-		return false;
-	}
-	if (!pair.relativePose.has_value()) {
-		VERBOSE("PairsMatcherSphericalTest FAILED: pair has no relative pose after MatchPair");
-		return false;
-	}
-
-	const Pose3D& poseRelRecovered = pair.relativePose.value();
-	const REAL angleErr = R2D(ACOS(ComputeAngle(poseRelRecovered.R, poseRelGT.R)));
-
-	// Translation is recovered up to scale; check direction similarity.
-	const Point3 tRecovered = poseRelRecovered.GetT();
-	const Point3 tGT = poseRelGT.GetT();
-	const Point3 tGTnorm = normalized(tGT);
-	const Point3 tRecNorm = normalized(tRecovered);
-	const REAL tSim = ABS(tGTnorm.dot(tRecNorm));
-
-	VERBOSE("PairsMatcherSphericalTest: matches=%u, inliers=%u, rotation err=%.4f deg, t similarity=%.4f",
-	        pair.GetNumMatches(), pair.GetNumInliers(), angleErr, tSim);
-
-	if (angleErr > REAL(0.5)) {
-		VERBOSE("PairsMatcherSphericalTest FAILED: rotation error %.4f deg > 0.5 deg", angleErr);
-		return false;
-	}
-	if (tSim < REAL(0.99)) {
-		VERBOSE("PairsMatcherSphericalTest FAILED: translation similarity %.4f < 0.99", tSim);
-		return false;
-	}
-
-	VERBOSE("PairsMatcherSphericalTest PASSED");
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-// Note: the bearing-vector absolute pose (PnP) is tested directly in the
-// PoseLib test suite (ports/poselib/source/tests/optim_bearing_test.cc) —
-// specifically test_estimate_absolute_pose_bearings and
-// test_bearing_absolute_pose_jacobian. We keep PairsMatcherSphericalTest as
-// an OpenMVS integration test because it exercises PairsMatcher::MatchPair
-// (geometric verification orchestration), which is OpenMVS-specific.
-
-
-// ===============================================================================
-// MatchFeaturesGeometric spherical test: exercises the tracked-point guided
-// matching pipeline (used by KeyframeExtractor on 360° video). Tests the
-// post-RANSAC epipolar-constrained descriptor filtering step which cannot
-// use F-matrices for spherical pairs. Before Phase 4 this path would
-// throw bad_optional_access on pair.F.value() for any pair where at least
-// one camera is spherical.
-// ===============================================================================
-bool MatchGeometricSphericalTest()
-{
-	VERBOSE("\n=== MatchGeometricSphericalTest: tracked-guided matching on spherical pair ===");
-
-	Scene scene;
-	Pose3D poseRelGT;
-	BuildSphericalTwoViewScene(scene, poseRelGT);
+	TestScope scope("SphericalPairGeometryTest");
+	Scene scene(MakeSphereScene({Point3(-0.5, 0, 0), Point3(0.5, 0, 0.2)}, 120, 2027));
 	Image& img0 = scene.images[0];
 	Image& img1 = scene.images[1];
-	VERBOSE("Built scene: %u images, %u tracks, img0.kpts=%u, img1.kpts=%u",
-	        (unsigned)scene.images.size(), (unsigned)scene.tracks.size(),
-	        (unsigned)img0.keypoints.size(), (unsigned)img1.keypoints.size());
+	const Pose3D poseRelGT(img1 / img0);
+	// per keypoint of image 0, the keypoint of image 1 its track holds (every track of two panoramas holds both)
+	std::vector<uint32_t> feat0ToFeat1(img0.keypoints.size(), NO_ID);
+	for (const Track& track : scene.tracks) {
+		ASSERT(track.observations.size() == 2 && track.observations[0].imageID == 0);
+		feat0ToFeat1[track.observations[0].featureID] = track.observations[1].featureID;
+	}
+	const auto IsBack = [&](uint32_t feat0, uint32_t feat1) {
+		return img0.pCamera->UnprojectNormalized(Cast<REAL>(img0.keypoints[feat0].pt)).z < 0 ||
+			img1.pCamera->UnprojectNormalized(Cast<REAL>(img1.keypoints[feat1].pt)).z < 0;
+	};
+	// the recovered relative pose against the truth: rotation error in degrees, |cos| of the translation directions
+	const auto PoseErrors = [&](const ImagePair& pair) {
+		const Pose3D& pose = pair.relativePose.value();
+		return std::make_pair(RotationErrorDeg(pose.R, poseRelGT.R), ABS(normalized(pose.GetT()).dot(normalized(poseRelGT.GetT()))));
+	};
 
-	// Build tracked-point arrays indexed by img0's keypoint index (MatchFeaturesGeometric's
-	// convention). For each img0 feature i, find the track that owns it and look up the
-	// corresponding img1 feature; set trackedPoints2[i] to that img1 keypoint position.
+	// 1. MatchPair on the matches of the tracks
+	{
+		ImagePair pair(0, 1);
+		FOREACH(feat0, feat0ToFeat1)
+			if (feat0ToFeat1[feat0] != NO_ID)
+				pair.matches.emplace_back((uint32_t)feat0, feat0ToFeat1[feat0]);
+		MatchConfig matchCfg;
+		matchCfg.minMatches = 8;
+		matchCfg.maxEpipolarError = 5.f;
+		PairsMatcher matcher(scene, matchCfg);
+		TEST_CHECK(matcher.MatchPair(img0, img1, pair) && pair.relativePose.has_value(), "MatchPair found no relative pose (%u matches)",
+			pair.GetNumMatches());
+		const auto [rotErr, tSim] = PoseErrors(pair);
+		TEST_CHECK(rotErr <= 0.5 && tSim >= 0.99, "MatchPair: rotation %.4f deg off (0.5 at most), translation similarity %.4f (0.99 at least)",
+			rotErr, tSim);
+	}
+
+	// 2. MatchFeaturesGeometric bootstrapped from the tracked points, every track a unique 256-bit descriptor shared by its
+	// two keypoints (Hamming distance 0, so the descriptor matching prefers the true pair)
 	const size_t N0 = img0.keypoints.size();
-	std::vector<Point2f> trackedPoints1(N0);
-	std::vector<Point2f> trackedPoints2(N0, Point2f(0.f, 0.f));
+	std::vector<Point2f> trackedPoints1(N0), trackedPoints2(N0, Point2f(0.f, 0.f));
 	std::vector<uchar> trackStatus(N0, 0);
-	for (size_t i = 0; i < N0; ++i)
-		trackedPoints1[i] = img0.keypoints[i].pt;
-
-	// Map img0.featID -> img1.featID via tracks. Since BuildSphericalTwoViewScene
-	// rejects tracks with < 2 observations, every surviving track for a 2-view
-	// scene has exactly one observation per image.
-	std::vector<uint32_t> feat0ToFeat1(N0, NO_ID);
-	for (const Track& t : scene.tracks) {
-		uint32_t feat0 = NO_ID, feat1 = NO_ID;
-		for (const auto& obs : t.observations) {
-			if (obs.imageID == 0) feat0 = obs.featureID;
-			else if (obs.imageID == 1) feat1 = obs.featureID;
-		}
-		if (feat0 != NO_ID && feat1 != NO_ID) {
-			ASSERT(feat0 < N0);
-			feat0ToFeat1[feat0] = feat1;
-			trackedPoints2[feat0] = img1.keypoints[feat1].pt;
-			trackStatus[feat0] = 1;
-		}
-	}
-	size_t numTracked = 0;
-	for (uchar s : trackStatus)
-		if (s) ++numTracked;
-	VERBOSE("MatchGeometricSphericalTest: %zu tracked correspondences", numTracked);
-	if (numTracked < 50) {
-		VERBOSE("MatchGeometricSphericalTest FAILED: only %zu tracked correspondences (need >= 50)", numTracked);
-		return false;
-	}
-
-	// Synthesize unique 256-bit binary descriptors per track. Paired img0/img1
-	// keypoints share the same descriptor (Hamming distance 0) so descriptor
-	// matching always prefers the ground-truth pair as the closest candidate.
-	// Different tracks get pseudo-random distinct patterns (high Hamming distance).
-	const int descBytes = 32;
-	img0.descriptors.create((int)N0, descBytes, CV_8U);
-	img1.descriptors.create((int)img1.keypoints.size(), descBytes, CV_8U);
-	img0.descriptors.setTo(cv::Scalar::all(0));
-	img1.descriptors.setTo(cv::Scalar::all(0));
+	constexpr int descBytes = 32;
+	img0.descriptors = cv::Mat::zeros((int)N0, descBytes, CV_8U);
+	img1.descriptors = cv::Mat::zeros((int)img1.keypoints.size(), descBytes, CV_8U);
+	size_t numTracked = 0, numBack = 0;
 	for (uint32_t feat0 = 0; feat0 < N0; ++feat0) {
+		trackedPoints1[feat0] = img0.keypoints[feat0].pt;
 		const uint32_t feat1 = feat0ToFeat1[feat0];
 		if (feat1 == NO_ID)
 			continue;
+		trackedPoints2[feat0] = img1.keypoints[feat1].pt;
+		trackStatus[feat0] = 1;
+		++numTracked;
+		if (IsBack(feat0, feat1))
+			++numBack;
 		std::mt19937 descRng(0xDEADBEEFu ^ feat0);
-		for (int b = 0; b < descBytes; ++b) {
-			const uint8_t byte = (uint8_t)(descRng() & 0xFF);
-			img0.descriptors.at<uint8_t>((int)feat0, b) = byte;
-			img1.descriptors.at<uint8_t>((int)feat1, b) = byte;
-		}
+		for (int b = 0; b < descBytes; ++b)
+			img0.descriptors.at<uint8_t>((int)feat0, b) = img1.descriptors.at<uint8_t>((int)feat1, b) = (uint8_t)(descRng() & 0xFF);
 	}
-
-	// Record which matches span the back hemisphere — these are the features
-	// that the pre-Phase-4 (F-matrix) code would have lost, because the
-	// fundamental matrix is not geometrically meaningful for spherical pairs
-	// and pair.F is empty so the .value() call throws before reaching them.
-	size_t numBackHemisphereMatches = 0;
-	for (uint32_t feat0 = 0; feat0 < N0; ++feat0) {
-		const uint32_t feat1 = feat0ToFeat1[feat0];
-		if (feat1 == NO_ID)
-			continue;
-		const Point3 b0 = img0.pCamera->UnprojectNormalized(Cast<REAL>(img0.keypoints[feat0].pt));
-		const Point3 b1 = img1.pCamera->UnprojectNormalized(Cast<REAL>(img1.keypoints[feat1].pt));
-		if (b0.z < 0 || b1.z < 0)
-			++numBackHemisphereMatches;
-	}
-	VERBOSE("MatchGeometricSphericalTest: %zu back-hemisphere matches in scene", numBackHemisphereMatches);
-	if (numBackHemisphereMatches < 20) {
-		VERBOSE("MatchGeometricSphericalTest FAILED: scene has only %zu back-hemisphere matches (need >= 20 to be a meaningful test)", numBackHemisphereMatches);
-		return false;
-	}
-
-	// Run MatchFeaturesGeometric — the routine KeyframeExtractor calls for every
-	// consecutive video keyframe pair. Uses trackedPoints to bootstrap GeometricFilter,
-	// then filters descriptor candidates by epipolar distance.
+	TEST_CHECK(numTracked >= 50 && numBack >= 20, "the scene holds %zu tracked correspondences (50 needed), %zu of them behind a camera "
+		"(20 needed to make the test meaningful)", numTracked, numBack);
 	MatchConfig matchCfg;
 	matchCfg.minMatches = 30;
 	matchCfg.maxEpipolarError = 5.f;
@@ -944,75 +840,24 @@ bool MatchGeometricSphericalTest()
 	matchCfg.reprojThreshold = 0.f;
 	matchCfg.epipoleFilterThreshold = 0.f;
 	PairsMatcher matcher(scene, matchCfg);
-
 	ImagePair pair(0, 1);
-	const bool geometryEstimated = MatchFeaturesGeometric(
-		matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus, pair, 2.f);
-
-	if (!geometryEstimated) {
-		VERBOSE("MatchGeometricSphericalTest FAILED: MatchFeaturesGeometric reported fallback (no geometry estimated)");
-		return false;
-	}
-	if (pair.F.has_value()) {
-		VERBOSE("MatchGeometricSphericalTest FAILED: pair.F should be absent for spherical pair, got a value");
-		return false;
-	}
-	if (!pair.E.has_value()) {
-		VERBOSE("MatchGeometricSphericalTest FAILED: pair.E missing");
-		return false;
-	}
-	if (!pair.relativePose.has_value()) {
-		VERBOSE("MatchGeometricSphericalTest FAILED: pair.relativePose missing");
-		return false;
-	}
-
-	const Pose3D& poseRec = pair.relativePose.value();
-	const REAL angleErr = R2D(ACOS(ComputeAngle(poseRec.R, poseRelGT.R)));
-	const Point3 tSimDir = normalized(poseRec.GetT()).dot(normalized(poseRelGT.GetT())) > 0 ? Point3(1,0,0) : Point3(-1,0,0);
-	const REAL tSim = ABS(normalized(poseRec.GetT()).dot(normalized(poseRelGT.GetT())));
-	(void)tSimDir;
-
-	const unsigned numMatches = pair.GetNumMatches();
+	TEST_CHECK(MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus, pair, 2.f),
+		"MatchFeaturesGeometric reported its fallback (no geometry estimated)");
+	TEST_CHECK(!pair.F.has_value() && pair.E.has_value() && pair.relativePose.has_value(),
+		"a spherical pair must carry E and a relative pose and no F (F %s, E %s, pose %s)", pair.F.has_value() ? "set" : "empty",
+		pair.E.has_value() ? "set" : "empty", pair.relativePose.has_value() ? "set" : "empty");
+	const auto [rotErr, tSim] = PoseErrors(pair);
+	TEST_CHECK(rotErr <= 0.5 && tSim >= 0.99, "MatchFeaturesGeometric: rotation %.4f deg off (0.5 at most), translation similarity %.4f "
+		"(0.99 at least)", rotErr, tSim);
 	const unsigned numInliers = pair.GetNumInliers();
-	VERBOSE("MatchGeometricSphericalTest: matches=%u, inliers=%u, rotation err=%.4f deg, t similarity=%.4f",
-	        numMatches, numInliers, angleErr, tSim);
-
-	if (angleErr > REAL(0.5)) {
-		VERBOSE("MatchGeometricSphericalTest FAILED: rotation error %.4f deg > 0.5 deg", angleErr);
-		return false;
-	}
-	if (tSim < REAL(0.99)) {
-		VERBOSE("MatchGeometricSphericalTest FAILED: translation similarity %.4f < 0.99", tSim);
-		return false;
-	}
-	// Expect at least 80% of tracked correspondences to survive the full pipeline
-	// (geometric filter + descriptor filter + epipolar filter).
-	const size_t minExpectedInliers = (numTracked * 8) / 10;
-	if (numInliers < minExpectedInliers) {
-		VERBOSE("MatchGeometricSphericalTest FAILED: only %u inliers < expected %zu (80%% of %zu tracked)",
-		        numInliers, minExpectedInliers, numTracked);
-		return false;
-	}
-
-	// Critical: at least some of the inliers must span the back hemisphere, to
-	// prove the angular epipolar filter actually admits z<0 bearings.
-	size_t inlierBackHemisphere = 0;
-	for (unsigned k = 0; k < numInliers; ++k) {
-		const DMatch& m = pair.matches[k];
-		const Point3 b0 = img0.pCamera->UnprojectNormalized(Cast<REAL>(img0.keypoints[m.queryIdx].pt));
-		const Point3 b1 = img1.pCamera->UnprojectNormalized(Cast<REAL>(img1.keypoints[m.trainIdx].pt));
-		if (b0.z < 0 || b1.z < 0)
-			++inlierBackHemisphere;
-	}
-	VERBOSE("MatchGeometricSphericalTest: %zu/%u back-hemisphere inliers", inlierBackHemisphere, numInliers);
-	if (inlierBackHemisphere < 10) {
-		VERBOSE("MatchGeometricSphericalTest FAILED: only %zu back-hemisphere inliers — epipolar filter is rejecting z<0 bearings",
-		        inlierBackHemisphere);
-		return false;
-	}
-
-	VERBOSE("MatchGeometricSphericalTest PASSED");
-	return true;
+	TEST_CHECK(numInliers >= numTracked * 8 / 10, "only %u inliers, under 80%% of the %zu tracked", numInliers, numTracked);
+	size_t numBackInliers = 0;
+	for (unsigned k = 0; k < numInliers; ++k)
+		if (IsBack(pair.matches[k].queryIdx, pair.matches[k].trainIdx))
+			++numBackInliers;
+	TEST_CHECK(numBackInliers >= 10, "only %zu of %u inliers behind a camera: the epipolar filter rejects z < 0 bearings", numBackInliers, numInliers);
+	return scope.Pass("MatchPair and MatchFeaturesGeometric recover the panoramas' relative pose; %u of %zu tracked kept, %zu behind a camera",
+		numInliers, numTracked, numBackInliers);
 }
 /*----------------------------------------------------------------*/
 

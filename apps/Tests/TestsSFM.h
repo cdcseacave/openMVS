@@ -112,17 +112,9 @@ bool SphericalBottomBandTest();
 // The detector words of FeatureTypeFromString: AKAZE, ORB, SIFT and SIFTGPU in any letter case, any other word is NONE.
 bool FeatureTypeNameTest();
 
-// Integration test for the PairsMatcher -> poselib::estimate_relative_pose_bearings
-// path on a full-sphere spherical scene. Validates RANSAC scoring with
-// cheirality disabled for spherical cameras, plus the Sampson-on-sphere
-// refinement in refine_relpose_bearing.
-bool PairsMatcherSphericalTest();
-
-// Integration test for MatchFeaturesGeometric on a spherical pair. Exercises
-// the post-RANSAC epipolar-constrained descriptor matching step which must
-// fall back to Sampson-on-sphere + angular threshold when pair.F is absent
-// (pure spherical pairs don't have a meaningful fundamental matrix).
-bool MatchGeometricSphericalTest();
+// The relative pose of two panoramas through PairsMatcher::MatchPair (bearing vectors) and MatchFeaturesGeometric
+// (angular epipolar filter, no F), back-hemisphere bearings admitted.
+bool SphericalPairGeometryTest();
 
 bool KnownPosePairSelectionTest();
 

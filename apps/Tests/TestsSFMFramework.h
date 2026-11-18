@@ -286,6 +286,18 @@ bool ImportBundledImages(Scene& scene, const ImportConfig& importCfg);
 /*----------------------------------------------------------------*/
 
 
+// ===============================================================================
+// Panoramas looking at a sphere of points: one spherical camera of the given size shared by images at
+// the given centres (rotation identity, named ""), and numPoints points at directions drawn uniformly
+// over the sphere and distances 4.5-5.5 from the origin, each a track with a keypoint at its exact
+// projection in every image (a point seen by fewer than two is dropped). With numPoints 0 the cameras
+// alone. Every camera sees about half the points behind it, the case the bearing-vector geometry exists for.
+//   Scene scene(MakeSphereScene({Point3(-0.5, 0, 0), Point3(0.5, 0, 0.2)}, 120, 2027));
+// ===============================================================================
+Scene MakeSphereScene(const std::vector<Point3>& centres, unsigned numPoints, uint32_t seed, cv::Size size = cv::Size(2048, 1024));
+/*----------------------------------------------------------------*/
+
+
 // Angle in degrees between two rotations
 inline double RotationErrorDeg(const RMatrix& a, const RMatrix& b)
 {

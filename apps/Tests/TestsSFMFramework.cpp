@@ -801,6 +801,53 @@ bool ImportBundledImages(Scene& scene, const ImportConfig& importCfg)
 }
 /*----------------------------------------------------------------*/
 
+Scene MakeSphereScene(const std::vector<Point3>& centres, unsigned numPoints, uint32_t seed, cv::Size size)
+{
+	ASSERT(!centres.empty() && size.width == 2 * size.height);
+	Scene scene;
+	scene.cameras.emplace_back(new SphericalCamera(size));
+	for (const Point3& centre : centres) {
+		Pose3D pose;
+		pose.R = Matrix3x3::IDENTITY;
+		pose.C = centre;
+		scene.images.emplace_back((IIndex)scene.images.size(), String(), pose, 0, scene.cameras[0]);
+	}
+	scene.status.nCalibratedImages = scene.images.size();
+	if (numPoints == 0)
+		return scene;
+	std::mt19937 rng(seed);
+	std::uniform_real_distribution<REAL> cosThetaDist(REAL(-1), REAL(1));
+	std::uniform_real_distribution<REAL> phiDist(REAL(-M_PI), REAL(M_PI));
+	std::uniform_real_distribution<REAL> radiusDist(REAL(4.5), REAL(5.5));
+	for (unsigned p = 0; p < numPoints; ++p) {
+		const REAL r = radiusDist(rng);
+		const REAL ct = cosThetaDist(rng);
+		const REAL st = SQRT(REAL(1) - ct*ct);
+		const REAL ph = phiDist(rng);
+		const Point3 X(r * st * COS(ph), r * ct, r * st * SIN(ph));
+		Track track(X);
+		for (Image& img : scene.images) {
+			const auto [proj, valid] = img.ProjectPoint(X);
+			if (!valid || !Image8U::isInside(proj, img.GetSize()))
+				continue;
+			track.observations.emplace_back(img.ID, (uint32_t)img.keypoints.size());
+			img.keypoints.emplace_back(Cast<float>(proj), 0.f, 0.f, 10.f);
+		}
+		if (track.observations.size() < 2) {
+			for (const Observation& obs : track.observations)
+				scene.images[obs.imageID].keypoints.pop_back();
+			continue;
+		}
+		track.numInliers = (uint8_t)track.observations.size();
+		scene.tracks.emplace_back(std::move(track));
+	}
+	scene.status.nTracks = scene.tracks.size();
+	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
+	return scene;
+}
+/*----------------------------------------------------------------*/
+
+
 // ===============================================================================
 // Helpers that two or more topic files use (moved unchanged from the single TestsSFM.cpp)
 // ===============================================================================
