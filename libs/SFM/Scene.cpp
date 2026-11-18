@@ -634,7 +634,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const DenseMatchConfig& denseC
 	const bool useDense = denseCfg.enabled && (needsDescriptors || needsWarps) && !status.nState.isSet(Status::STATE::MATCHED);
 	if (useDense) {
 		if (!DenseMatcher::IsAvailable()) {
-			VERBOSE("error: ROMA2 model '%s' requested, but this build has no ONNX Runtime support", modelPath.c_str());
+			VERBOSE("error: the %s model '%s' requested, but this build has no ONNX Runtime support", denseCfg.matcher.c_str(), modelPath.c_str());
 			return false;
 		}
 		denseMatcher = DenseMatcher::Create(denseCfg);

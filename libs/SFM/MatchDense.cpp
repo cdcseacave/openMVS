@@ -354,7 +354,7 @@ bool ForEachDenseWarp(PairsMatcher& pairsMatcher, DenseMatcher& matcher, const P
 	for (OrtTensor& layers : slotLayers) {
 		layers = matcher.MakeCode();
 		if (!layers.IsValid()) {
-			VERBOSE("error: ROMA2 slot pool: could not allocate the %u descriptor slots the plan needs (lower --dense-slots)", plan.numSlots);
+			VERBOSE("error: dense matcher slot pool: could not allocate the %u descriptor slots the plan needs (lower --dense-slots)", plan.numSlots);
 			return false;
 		}
 	}
@@ -620,7 +620,7 @@ unsigned SFM::ComputeGlobalDescriptorsDense(Scene& scene, DenseMatcher& matcher)
 	unsigned numDescribed = 0;
 	OrtTensor layers(matcher.MakeCode()); // reused across every image: the describe pass keeps only the pooled vector, not the layers
 	if (!layers.IsValid()) {
-		VERBOSE("error: could not allocate the ROMA2 layers tensor");
+		VERBOSE("error: could not allocate the dense matcher's descriptor tensor");
 		return 0;
 	}
 	std::vector<float> descriptor;

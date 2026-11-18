@@ -425,7 +425,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::strDenseProvider != "auto" && OPT::strDenseProvider != "cuda" && OPT::strDenseProvider != "coreml" &&
 		OPT::strDenseProvider != "dml" && OPT::strDenseProvider != "cpu") {
-		LOG("error: unknown ROMA2 execution provider '%s' (accepted: auto, cuda, coreml, dml, cpu)", OPT::strDenseProvider.c_str());
+		LOG("error: unknown execution provider '%s' for --dense-provider (accepted: auto, cuda, coreml, dml, cpu)", OPT::strDenseProvider.c_str());
 		return false;
 	}
 	if (OPT::fDenseMinConfidence < 0.f || OPT::fDenseMinConfidence > 1.f) {
