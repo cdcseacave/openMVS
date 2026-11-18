@@ -49,8 +49,7 @@ DEFINE_LOG_NAME(lt, _T("GlbAlign"));
 GlobalAlignment::GlobalAlignment(Scene& _scene, const GlobalAlignmentConfig& _config, const std::unordered_set<IIndex>& _poolImages)
 	: scene(_scene), config(_config), poolImages(_poolImages)
 {
-	for (const IIndex image : poolImages)
-		ASSERT(image < scene.images.size());
+	ASSERT(std::all_of(poolImages.begin(), poolImages.end(), [this](IIndex image) { return image < scene.images.size(); }));
 }
 
 void GlobalAlignment::BuildGlobalToLocalMap(const std::vector<IIndexArr>& localToGlobals)
