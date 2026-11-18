@@ -213,16 +213,14 @@ bool DenseMatcherReconstructTest();
 
 // TestsSFMCalibration.cpp -------------------------------------
 
-// The inlier tests of a RoMa2 pair through a lens (SampsonTest): on two views through a barrel lens
-// the camera knows, every guided match on the true geometry is a sparse inlier, the corner ones
-// included, while the pixel fundamental matrix of the same geometry, composed without the lens, puts
-// the corner ones past the matcher's epipolar bar
-bool DenseLensInlierTest();
-
-// The keyframe extractor's geometric match through a lens (MatchFeaturesGeometric): every corner
-// correspondence of the same two views is matched, though the pixel F's epipolar line misses it by
-// more than the bar the match is held to
-bool MatchGeometricLensTest();
+// The matchers and the re-verification through a lens the camera knows, on two views through a barrel
+// lens: every guided match of a RoMa2 pair on the true geometry is a sparse inlier, the corner ones
+// included, while the pixel fundamental matrix of the same geometry puts the corner ones past the
+// matcher's epipolar bar; the keyframe extractor's geometric match matches every corner correspondence
+// the pixel geometry misses by more than its bar; and a pair matched through the pinhole and
+// re-verified once its camera knows its lens (ReverifyPairDense) regains the guided matches at the
+// corners the pinhole rejected and drops the dense samples the pinhole bar let through off the true geometry
+bool LensMatchingTest();
 
 // The lens fit from pairs (FitLensesFromPairs) recovers the lenses that rendered them: one camera
 // from 40 pairs that turn and move, to 2 px over the radii its matches reach, the lens set on the
@@ -236,35 +234,22 @@ bool LensFitRecoveryTest();
 // The focal check of the lens fit corrects a trusted focal its pairs clearly reject and keeps a right one
 bool LensFitFocalTest();
 
-// The lens fit refuses what no lens explains: pairs of a camera without a lens, forward pairs that
-// hide a strong lens, and exact positions whose error is float rounding, without a lens or through one
-// too faint to matter (1e-3 px at the corner); every refused camera is left without a lens
-bool LensFitRefusalTest();
-
-// A camera the lens fit cannot hold leaves it with every pair it has: one under the minimum of
-// eligible pairs, one whose given lens has terms past k1 and k2, one whose focal is not trusted and
-// one whose given lens folds within its frame are each left as they are, and the camera they pair
-// with is fitted from its own pairs alone; a camera given its true lens as k1, k2 alone is held, and
-// its cross pairs, either camera first, inform the fitted camera
-bool LensFitMinimumPairsTest();
-
-// A RoMa2 pair matched through the pinhole and re-verified once its camera knows its lens
-// (ReverifyPairDense): with the pinhole geometry of the true pose kept at matching, the guided matches
-// at the corners the pinhole rejected come back as sparse inliers, and the dense samples the pinhole
-// bar let through off the true geometry are dropped while the true ones stay
-bool DenseReverifyLensTest();
+// What the lens fit refuses or leaves alone: pairs of a camera without a lens, forward pairs that hide
+// a strong lens, and exact positions whose error is float rounding (without a lens or through one too
+// faint to matter) leave their camera without a lens; a camera under the minimum of eligible pairs,
+// one whose given lens has terms past k1 and k2, one whose focal is not trusted and one whose given
+// lens folds within its frame are each left as they are while the camera they pair with is fitted from
+// its own pairs alone; a camera given its true lens as k1, k2 alone is held, and its cross pairs,
+// either camera first, inform the fitted camera
+bool LensFitLimitsTest();
 
 // The lens stage of the matching (FitLensesAndReverifyPairs): on 40 pairs of one camera verified
 // through the pinhole, whose rotations come out degrees off the truth, the lens is fitted and set and
 // every pair verified again through it lands within half a degree of its true rotation and, in the
-// median, half a degree of its true baseline direction; a second run, the camera now carrying its
-// lens, holds it and fits nothing
+// median, half a degree of its true baseline direction, and a second run holds the lens and fits
+// nothing; a camera without a lens given a focal 15% short has its pairs verified again within the
+// same bars once the focal check has moved its focal, though no lens is kept at it
 bool LensFitStageTest();
-
-// The lens stage also verifies again the pairs of a camera whose focal the check moved, with no lens kept
-// at it: a camera without a lens given a focal 15% short has its pairs' rotations come out within half a
-// degree of the true ones
-bool LensFitFocalStageTest();
 
 // An untrusted focal fitted with its lens straight from its import focal, and its fallbacks
 bool LensFitUntrustedFocalTest();
