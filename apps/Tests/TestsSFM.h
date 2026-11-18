@@ -388,22 +388,14 @@ bool SceneClusterRefinePassesTest();
 // Triplet star-initialization test: 3-view scene with tracks + StarInitializer + BA
 bool TripletStarInitTest();
 
-// The star initializer's reference view is chosen among the seed views the caller names -- the
-// triplet filter's largest ceiling piece -- and only among every image when none is named, or
-// none of the named has a valid pair. After the filter, the seed's side of a symmetric building
-// becomes the model, and the heaviest image overall sits in the densest cluster of look-alike
-// views, which is the worst place to start.
-bool StarReferenceViewTest();
+// The star initializer: the reference view is the heaviest seed view with enough pairs to centre a star, among every
+// image when none is named or usable; a neighbour of the reference is listed by the inliers that fix its distance (those
+// whose ray angle reaches the triangulation bar), not by all of them, with the floor, the burst of near-duplicate frames
+// and the arms of an unsure baseline direction; the scale is fixed on the pair with the most weighted inliers
+bool StarInitTest();
 
-// The star initializer lists a neighbour of the reference view by the inliers that fix its distance,
-// those whose ray angle at the pair's pose reaches the reconstruction's triangulation bar, not by
-// all of them: a far view that shares only far points with the reference is no arm of the star,
-// whatever its inlier count, and its unit baseline guesses a distance no match backs. The reference
-// stays chosen by inlier count.
-bool StarEvidenceTest();
-
-bool StarScaleGaugeTest();
-
+// A near-duplicate pair is never the yardstick of good connectivity (PairsWeightingConfig::maxDuplicateOverlap /
+// maxDuplicateRayAngle), and the star starts with the wide views beside a burst of near-duplicate frames
 bool NearDuplicateYardstickTest();
 
 // A resected pose enters the model only when its support is credible: enough of its 2D-3D correspondences agree
@@ -415,65 +407,28 @@ bool NearDuplicateYardstickTest();
 // follows its ray angle (MeasurePairDisagreement)
 bool ResectionLinkChecksTest();
 
-// The resection's next image is the candidate whose verified pairs to registered images weigh most
-// (their composite weight), among every image holding ResectionConfig::minCorrespondences 2D-3D
-// correspondences, whatever its share of the best correspondence count; the candidates are tried
-// down that list until one registers, and the list is read again after each registration. An image
-// whose evidence lies almost entirely in unregistered images is tried last and registered all the
-// same, its pose right
-bool ResectionWeakEvidenceTest();
+// The resection's next image is the candidate whose verified pairs to registered images weigh most (their composite
+// weight), among every image holding ResectionConfig::minCorrespondences 2D-3D correspondences, whatever its share of the
+// best correspondence count; the candidates are tried down that list until one registers, and the list is read again after
+// each registration; an image with most of its evidence in unregistered images is tried last and registered all the same;
+// an image is tried only once it has a link (a verified pair with a relative pose to a registered image)
+bool ResectionCandidateOrderTest();
 
-bool ResectionNextImageOrderTest();
+// The full adjustments of the resection loop (Resection::GetStats()): an image whose pose is refused adds nothing to the
+// average inlier ratio that forces one; a stall after registrations or after a filter removed images runs one and tries again,
+// a stall with nothing new ends the resection, and every resection closes with its own, whether or not it had an image to try,
+// which brings back the tracks the final adjustment's tighter bar dropped
+bool ResectionFullAdjustmentTest();
 
-bool ResectionTriesEveryCandidateTest();
-
-// The average inlier ratio that forces a full bundle adjustment when it falls under
-// ResectionConfig::avgInliersRatioForceBA reads the registered images alone: an image whose pose is
-// refused adds nothing to it, so the refusals of one candidate force no full adjustment while the
-// images registered after it hold the average above the bar
-bool ResectionRefusedAverageTest();
-
-// A resection that stalls -- no image holds minCorrespondences correspondences, or every candidate
-// failed -- with images registered since its last full adjustment runs that adjustment and tries
-// again, and stops at a stall that follows no registration; it always closes with its full
-// adjustment, even when it registered nothing since the last one
-bool ResectionStallRetryTest();
-
-// The full adjustment that ends a resection runs whether or not the resection had an image to try
-// -- every image holds a pose, or the only ones without are withheld by ImagesRemoved -- and brings
-// back the tracks the final adjustment's tighter bar dropped
-bool ResectionClosingAlwaysTest();
-
-// Images a filter removed right before a resection count as a change of the model since its last
-// full adjustment: a stall that follows runs the adjustment and another pass, which registers the
-// image the re-triangulated tracks hold; a stall with nothing removed or registered ends the resection
-bool ResectionRemovalStallTest();
-
-// The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
-// (dense) keypoint on a full-resolution image, several pixels off its projection, and not only one
-// measured with a detected keypoint's: an image seen through such correspondences alone reaches a
-// nearly complete inlier share, the share the resection reads its model's health from, where a 4 px
-// bar counts barely half of them (ResectionConfig::ransac.threshold).
-bool ResectionInlierBarTest();
-
-// The polish that closes an image's absolute pose weighs each dense (warp-sampled) correspondence at
-// ResectionConfig::denseFitWeight against a described one's 1: dense correspondences that share a
-// systematic error and outnumber the described ones pull the pose of the robust fit over all of
-// them, and the weighted polish brings it back to the described ones.
-bool ResectionDenseFitWeightTest();
-
-bool ResectionWeightedInlierBarTest();
+// The dense (warp-sampled) correspondences of a resection: the inlier bar admits them at the precision of a warp (a 4 px bar
+// counts barely half), the polish weighs each at ResectionConfig::denseFitWeight against a described one's 1, and the inlier
+// bars read what a pose's inliers weigh (a dense inlier counts 1/40)
+bool ResectionDenseCorrespondencesTest();
 
 // The shared walks: an image's 2D-3D correspondences to a model's inlier tracks (its first keypoint on
 // each, in track order), its observation counts, and the links of a model (its registered pairs carrying
 // a relative pose) seen from their other side, strongest first
 bool LinkWalksTest();
-
-// An image is tried for resection only once it has a link (a verified pair with a relative pose to a
-// registered image): one whose pairs with a relative pose go to unregistered images waits until one
-// of them is registered, however many 2D-3D correspondences it holds; the candidates are tried in the order
-// of their links' weight, a pair without a relative pose counting for nothing
-bool ResectionLinkGateTest();
 
 // The image filter tells the images it removed for contradicting the model (their verified pairs to
 // the kept images disagree with the pose the model gives them, by more inlier weight than agrees)
@@ -481,15 +436,14 @@ bool ResectionLinkGateTest();
 // resection that follows, the latter get another chance once the model has grown.
 bool ContradictingImagesTest();
 
-bool SceneBlocksInsertReleaseTest();
+// Images going through the pool into a block and back: Insert then Release returns the block's cameras, images and pairs
+// byte for byte, and a block that takes images through the pool ends with the tracks its own track building would have given
+// it with them from the start
+bool SceneBlocksInsertTest();
 
-bool SceneBlocksInsertRebuildTest();
-
-bool PoolResectionWrongClusterTest();
-
-// A pool image is offered only to the blocks it has links in (verified pairs with a relative pose to their
-// registered images): pairs without a relative pose, however heavy, do not send it to a block
-bool PoolResectionLinkOnlyTest();
+// The pool resection: an image the partition put in the wrong cluster ends registered, in the right block, at its true pose,
+// and a pool image is offered only to the blocks it has links in (pairs without a relative pose, however heavy, do not send it)
+bool PoolResectionTest();
 
 // TestsSFMBundleAdjustment.cpp --------------------------------
 
