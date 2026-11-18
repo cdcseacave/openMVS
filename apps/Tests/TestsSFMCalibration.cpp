@@ -58,6 +58,7 @@
 #include <chrono>
 #include <random>
 #include <future>
+#include <thread>
 #include <functional>
 
 
@@ -623,31 +624,50 @@ REAL LensCurveError(const Scene& scene, unsigned idxCamera, const LensTestCamera
 }
 } // namespace
 
-// A scene of a lens test and what the library made of it: the cases of a lens test are independent scenes and fits, so each runs on a
-// thread of its own (RunConcurrently) and the checks, which end the test at the first failure, are made afterwards in the order of the cases
+// A scene of a lens test and what the library made of it. The cases of a lens test are independent scenes and fits, so each runs on a
+// thread of its own (RunConcurrently) and the checks, which end the test at the first failure, are made afterwards in the order of
+// the cases, each with its own message.
 struct LensTestFit {
 	Scene scene;
 	LensFitReport report;
 	bool solved = false;          // CalibrateFocalsAndFitLenses' result
 	std::vector<double> measured; // what the case took before or after the fit, for its checks
+
+	explicit LensTestFit(unsigned numThreads) : scene(numThreads) {}
 };
-typedef std::function<LensTestFit()> LensTestJob;
+// A job builds its scene (with the given thread count, which the lens fit and the matcher read from the scene) and fits it. Contract: a
+// job touches only the objects it creates itself and the library calls the lens tests make (BuildLensTestScene, FitLensesFromPairs,
+// FitLensesAndReverifyPairs, CalibrateFocalsAndFitLenses), which keep no mutable static state, draw from no global random generator
+// (every draw is from a std::mt19937 seeded in the job or from PoseLib's per-call seed) and write no file; a job makes no TEST_CHECK
+// and captures no object another job writes.
+typedef std::function<LensTestFit(unsigned numThreads)> LensTestJob;
 static std::vector<LensTestFit> RunConcurrently(const std::vector<LensTestJob>& jobs)
 {
+	ASSERT(!jobs.empty());
+	// the machine's cores are shared by the jobs, so that N cases do not each start as many threads as there are cores
+	const unsigned numThreads = MAXF(1u, std::thread::hardware_concurrency()/(unsigned)jobs.size());
+	const int numOpenCVThreads = cv::getNumThreads(); // ComputeRelativePoses sets it process-wide, from each scene's thread count
+	#ifdef _USE_OPENMP
+	const int numOpenMPThreads = omp_get_max_threads(); // a Scene sets it (here: when a fit is moved out of its job) to its own thread count
+	#endif
 	std::vector<std::future<LensTestFit>> futures;
 	for (const LensTestJob& job : jobs)
-		futures.push_back(std::async(std::launch::async, job));
+		futures.push_back(std::async(std::launch::async, job, numThreads));
 	std::vector<LensTestFit> fits;
 	for (std::future<LensTestFit>& future : futures)
 		fits.push_back(future.get());
+	cv::setNumThreads(numOpenCVThreads);
+	#ifdef _USE_OPENMP
+	omp_set_num_threads(numOpenMPThreads);
+	#endif
 	return fits;
 }
 // the job of a scene of `cameras` built by BuildLensTestScene and fitted by FitLensesFromPairs (the cameras in `calibrated` held)
 static LensTestJob FitJob(const std::vector<LensTestCamera>& cameras, const std::vector<LensTestPairs>& pairs, unsigned seed,
 	REAL givenFocalScale = REAL(1), const std::unordered_set<size_t>& calibrated = {})
 {
-	return [=]() {
-		LensTestFit fit;
+	return [=](unsigned numThreads) {
+		LensTestFit fit(numThreads);
 		std::unordered_map<PairIdx, Pose3D> truePoses;
 		BuildLensTestScene(fit.scene, cameras, pairs, seed, truePoses, LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, givenFocalScale);
 		std::unordered_set<CameraPtr> calibratedCameras;
@@ -876,16 +896,16 @@ bool LensFitLimitsTest()
 	const MatchConfig config;
 	std::vector<LensTestJob> jobs;
 	for (const Refusal& refusal : refusals)
-		jobs.push_back([=]() {
-			LensTestFit fit;
+		jobs.push_back([=](unsigned numThreads) {
+			LensTestFit fit(numThreads);
 			std::unordered_map<PairIdx, Pose3D> truePoses;
 			BuildLensTestScene(fit.scene, {refusal.camera}, {{0, 0, refusal.motion, 30}}, 13, truePoses, refusal.noisePx, refusal.outlierShare);
 			fit.report = FitLensesFromPairs(fit.scene, MatchConfig());
 			return fit;
 		});
 	for (const Held& held : helds)
-		jobs.push_back([=]() {
-			LensTestFit fit;
+		jobs.push_back([=](unsigned numThreads) {
+			LensTestFit fit(numThreads);
 			Scene& scene = fit.scene;
 			std::unordered_map<PairIdx, Pose3D> truePoses;
 			BuildLensTestScene(scene, {LENS_TEST_A, LENS_TEST_B}, {{0, 0, LensTestMotion::TURN, 30},
@@ -1076,8 +1096,8 @@ bool LensFitUntrustedFocalTest()
 	// inliers of each pair of A and B the calibration kept
 	const auto Calibrate = [](const std::vector<LensTestCamera>& cameras, const std::vector<LensTestPairs>& pairs, unsigned seed,
 		const std::vector<LensTestGiven>& given, bool lensFitEnabled) -> LensTestJob {
-		return [=]() {
-			LensTestFit fit;
+		return [=](unsigned numThreads) {
+			LensTestFit fit(numThreads);
 			std::unordered_map<PairIdx, Pose3D> truePoses;
 			BuildLensTestScene(fit.scene, cameras, pairs, seed, truePoses, LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, REAL(1), given);
 			std::unordered_map<PairIdx, unsigned> crossInliers; // the sparse inliers of each pair of A and B, as the matching verified them
