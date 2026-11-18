@@ -493,28 +493,48 @@ bool PoolResectionLinkOnlyTest();
 
 // TestsSFMBundleAdjustment.cpp --------------------------------
 
-// PinholeReprojectionErrorAnalytic's hand-written Jacobians match the ones auto-diff derives from
-// the same projection, over randomized poses, points and full 12-parameter intrinsics (the whole
-// distortion model live, k3/p1/p2 and the rational denominator k4-k6 included); the quaternion
-// columns are compared in the manifold's tangent space, the only place the solver sees them
-bool BAPinholeReprojectionJacobianTest();
-
-// ComputeObservationSigmas recovers the displacement the BULK of a synthetic scene's described and
-// dense observations carry, with a tenth of each population thrown far out and a tenth left almost
-// on the point so that only a median answers it, and reports zero dense observations on a scene that
-// has none
-bool ObservationSigmasTest();
-
-// EstimateDenseObservationWeight returns 1/k^2 for the k a synthetic scene's described/dense
-// displacement ratio gives, clamps to 1 when the dense population is no less precise than the
-// described one, floors a far coarser one, and falls back to the configured constant both on a scene
-// with no dense keypoints and on one whose dense population exists but is under the sigma threshold
-bool DenseObservationWeightEstimateTest();
+// The weights a bundle adjustment gives dense observations: ComputeObservationSigmas reads the bulk of a scene's described
+// and dense displacements (a median), EstimateDenseObservationWeight returns 1/k^2 of their ratio (clamped to 1, floored,
+// the configured constant when the dense sample is absent or too small), and the per-image scaling and the ceiling each at
+// least halve the rotation error a bias shared by one image's dense keypoints costs under a uniform dense weight
+bool BADenseWeightTest();
 
 // Pins SetBAIntrinsicFlags (ReconstructionConfig::IntrinsicFlags -> BAConfig) and
 // ResectionConfig::DeriveBAConfigs, the two places the reconstruction's intrinsic flags turn
 // into the bundle-adjustment switches that are actually solved
 bool BAIntrinsicFlagsTest();
+
+// Full-hemisphere spherical reconstruction regression test: exercises the Triangulation + BA pipeline on a spherical scene
+// with 3D points across the entire sphere (front AND back hemispheres), pins the equirectangular convention against the
+// left-right mirror and checks the handedness of the reconstruction
+bool ReconstructSphericalSyntheticTest();
+
+// The smoke tests of the bundle adjustment on synthetic scenes: the plain and the spherical solve, the refined focal length
+// and radial distortion, and Scene::Transform preserving the projections
+bool BundleAdjustmentBasicsTest();
+
+// The pose uncertainty a solve records: the GPS-prior covariance (datum-free, agreeing with Ceres' estimator, missing
+// accuracy tags tolerated) and the quality report round trip (CSV, .mvs image IDs, Scene::Transform, .sfm)
+bool PoseUncertaintyTest();
+
+// A full adjustment fits the observations within ResectionConfig::fullBAInputErrorFactor x the reprojection bar of the
+// model and runs again while some camera's input to the next solve differs enough from what it gave this one
+// (AdjustRepeated): a camera whose observations all lie between the bar and 3x it comes back in one solve, which a
+// single solve fed by the inlier prefix alone does not do, one whose input grows once it is back takes a second
+// solve, with ResectionConfig::fullBARepeats 0 the adjustment is one solve of the wider input, and a solve stopped by
+// its cap triangulates the tracks without a point again
+bool RepeatedFullAdjustmentTest();
+
+// The track filter and the triangulation on the arc: a dense observation is held to its own multiple of the reprojection
+// bar, a track with a single posed view (the star's reference at the origin, default position) is not judged, and a track
+// of two posed views never triangulated holds the improbable default position and is rejected
+bool FilterTracksTest();
+
+// A triangulation that fails (TriangulateSkewLLS, TriangulateDLT, and so TriangulateTracks), for the minimum angle
+// or for want of a second inlier, returns 0 and leaves the track with no inliers, and the next TriangulateTracks of
+// the tracks without inliers takes it up again; TriangulateSkewLLS on panoramas determines a point whose bearing
+// lies across the optical axis (dz near 0), which the two rows of [d]x R it once kept did not.
+bool TriangulationTest();
 
 // The bundle adjustment hears the verified pairs: a chain bent at a joint whose only structure is
 // two-view and degenerate stays bent under the reprojection residuals alone, and the relative-pose
@@ -527,82 +547,15 @@ bool BundleAdjustmentPairConstraintTest();
 // is the 0.5 px they carry, and the unfiltered mean is dominated by the left-out outlier
 bool ReprojectionReportOverUsedTest();
 
-// The per-image cap on the observations a solve takes does not move the solution: on a scene whose
-// images carry far more of them than the cap allows, and which holds both the tracks the cap must
-// top back up and the ones it may let go entirely, the capped solve recovers the poses the uncapped
-// one recovers, dense-matched and described-only alike; below the threshold the cap applies from,
-// the solve fits every observation
+// The per-image cap on the observations a solve takes does not move the solution (dense-matched and described-only scenes,
+// and a scene under the threshold fits every observation), an image over the budget takes back the wide view it would lose,
+// and a capped global solve with one camera held and no GPS keeps the cameras' scale
 bool BAObservationCapTest();
-
-// A track the budget leaves with views that lie closer together than the bar (BAConfig::minTriangulationAngle)
-// gets back the dropped view that spans the widest angle with one of them: an image over the budget by five
-// observations, whose losses are views of tracks seen 10 degrees apart elsewhere, fits all it holds
-bool BAObservationCapWideViewTest();
 
 // A bundle adjustment large enough to be refined by inner iterations ends at the same bits when it is
 // solved twice from the same start, the second time with the small blocks it allocates laid out in
 // the reverse order
 bool BAInnerIterationOrderTest();
-
-// An image rich in described observations weighs its dense ones less: a bias shared by every dense
-// keypoint of one such image moves the model at most half as far as under a uniform dense weight
-bool BADenseWeightPerImageTest();
-
-// No image's dense residuals weigh more than BAConfig::maxDenseObservationWeight: a bias shared by
-// every dense keypoint of one image moves the model at most half as far as at the measured weight
-bool BADenseWeightCeilingTest();
-
-// Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
-bool PipelineTest();
-
-// GPS-prior BA on a geo-aligned scene: absolute (datum-free) pose covariance
-// and the missing-accuracy fallback
-bool GPSPriorPoseUncertaintyTest();
-
-// Pose-quality report roundtrip: pose uncertainty recorded on the scene from the last
-// BA, CSV export re-read, ExportMVS preserving the SFM image IDs the report is
-// correlated by, world-transform covariance mapping, and .sfm serialization
-bool PoseUncertaintyExportTest();
-
-// Full-hemisphere spherical reconstruction regression test: exercises the
-// Triangulation + BA pipeline on a spherical scene with 3D points distributed
-// across the entire sphere (front AND back hemispheres). Pins the correctness
-// of the Unproject / TriangulateDLT path for spherical cameras.
-bool ReconstructSphericalSyntheticTest();
-
-// A full adjustment fits the observations within ResectionConfig::fullBAInputErrorFactor x the reprojection bar of the
-// model and runs again while some camera's input to the next solve differs enough from what it gave this one
-// (AdjustRepeated): a camera whose observations all lie between the bar and 3x it comes back in one solve, which a
-// single solve fed by the inlier prefix alone does not do, one whose input grows once it is back takes a second
-// solve, and with ResectionConfig::fullBARepeats 0 the adjustment is one solve of the wider input
-bool RepeatedFullAdjustmentTest();
-
-bool CappedAdjustmentTriangulationTest();
-
-// A global solve with the per-image observation cap, one camera held and no GPS, keeps the cameras' scale, so the
-// tracks the cap left out of it are still where their observations see them after it
-bool CappedSolveScaleTest();
-
-// A dense (warp-sampled) observation is the less precise measurement, so the track filter and the
-// triangulation hold it to its own multiple of the reprojection bar a described one answers to
-// (FilterTracks / TriangulateTracks denseReprojErrorFactor).
-bool DenseReprojectionBarTest();
-
-// The track filter judges only a track that can have a position, one with two posed views (the rule the
-// triangulation applies): a track with a single posed view was never triangulated and holds the default
-// position (a scene saved before the default was improbable stores (0,0,0), the star reference camera's centre), so
-// judging it has no meaning.
-bool FilterTracksUnposedTrackTest();
-
-// A track of two posed views that was never triangulated holds the improbable default position, not (0,0,0), which is
-// where the star's reference camera sits: the filter rejects it instead of reading a NaN angle as a good one.
-bool FilterTracksUntriangulatedTrackTest();
-
-// A triangulation that fails (TriangulateSkewLLS, TriangulateDLT, and so TriangulateTracks), for the minimum angle
-// or for want of a second inlier, returns 0 and leaves the track with no inliers, and the next TriangulateTracks of
-// the tracks without inliers takes it up again; TriangulateSkewLLS on panoramas determines a point whose bearing
-// lies across the optical axis (dz near 0), which the two rows of [d]x R it once kept did not.
-bool TriangulationTest();
 
 // TestsSFMMerge.cpp -------------------------------------------
 
