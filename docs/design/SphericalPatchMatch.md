@@ -131,7 +131,7 @@ the hypothesis depth:
 
 Step 2 keeps the ranking of hypotheses fair next to an epipole: there the true depth gates every view while
 a closer depth sees some view at a larger angle. Pinhole-only estimators do not gate. The CUDA and Metal
-model kernels apply the same rule.
+kernels of a scene with a spherical view apply the same rule.
 
 ### Depth-map files
 
@@ -142,50 +142,62 @@ reject a file whose flag disagrees with the view's model.
 ### CUDA estimator
 
 - The kernels (`InitializeScore`, `BlackPixelProcess`, `RedPixelProcess`) are templates on `<GEOM, MODEL>`:
-  `MODEL_PINHOLE` (every view pinhole; the unchanged pinhole kernels), `MODEL_PINHOLE_REF` (pinhole
-  reference, spherical views), `MODEL_SPHERICAL_REF`. `RunCUDA` picks it from `Params::sphericalViews`.
-- `RefPixel` holds the reference model and its `RayFrame`; `__constant__ g_views` holds the per-view pose and
-  texture scale. An equirectangular reference builds the frame and every ray (Method A texels,
-  propagation, surface normal) from the per-column/row tables `Params::refTrig`, as the CPU does; the
-  table (`ComputeSphericalTrig`, `DepthMap.h`, double-precision angles stored in float) is the one of the CPU
-  estimator, of the Metal estimator and of every confidence recalibration, and the fused CUDA
-  recalibration reads the estimation's own copy before it is freed.
-- `ScorePlaneModel`: the CPU warps (B with the 4-corner check, A above `fSphericalWarpMaxElevation`, pinhole
-  target `K·H·F`); a plane not facing the reference camera scores the bad cost. The texel walk and ZNCC are
-  the pinhole ones (`SampleWarpedPatch`, `ScoreNCC`).
+  `MODEL_PINHOLE` (every view pinhole), `MODEL_PINHOLE_REF` (pinhole reference, spherical views),
+  `MODEL_SPHERICAL_REF`. `RunCUDA` picks it from `Params::sphericalViews`. Every MODEL runs the same code;
+  the spherical branches and the view gate are compiled out of `MODEL_PINHOLE`.
+- `__constant__ g_cameras` holds each view's `CUDA::Camera` (`CUDA/Camera.h`): the intrinsics in the fields
+  of the `CameraModels.h` models, the pose and the image size; the model is not stored, the kernel builds it
+  with `Camera::Model<PinholeModel>()` or `Model<SphericalModel>()`. `__constant__ g_views` holds each view's
+  `ModelView`: its pose relative to the reference, its center in the reference frame and its texture scale.
+- `RefPixel` holds the reference model and its `RayFrame` at the pixel. An equirectangular reference builds
+  the frame and every ray (Method A texels, propagation, surface normal) from the per-column/row tables
+  `Params::refTrig`, as the CPU does; the table (`ComputeSphericalTrig`, `DepthMap.h`, double-precision
+  angles stored in float) is the one of the CPU estimator, of the Metal estimator and of every confidence
+  recalibration, and the fused CUDA recalibration reads the estimation's own copy before it is freed.
+- `ScorePlane`: the warp `M = PixelHomography·H·F` of the CPU (`PlanePatchWarp`), `H·F = R·F + t·(nᵀF)/(n·X)`
+  from the relative pose: into a pinhole target `K·H·F`, into an equirectangular one warp B with the
+  4-corner check, warp A above `fSphericalWarpMaxElevation`. A plane not facing the reference camera, or
+  whose patch center is behind a pinhole target, scores the bad cost. The texel walk and ZNCC are shared
+  (`SampleWarpedPatch`, `ScoreNCC`).
+- `GeometricConsistencyWeight` is the CPU round trip through the relative pose, with the wrapped column
+  distance for an equirectangular reference; a point behind a pinhole camera scores the maximum distance.
 - Sampling: an equirectangular view's image and depth textures take normalized coordinates, wrap on the
   columns (`cudaAddressModeWrap`) and clamp on the rows (the CPU rejects the view there).
 - Propagation wraps its columns; red/black parity agrees across the seam only for an even width (ASSERTed in
   `RunCUDA`); the poles are not crossed. The 4 rows next to each pole are not estimated (cost `FLT_MAX`).
-- Normals are camera-facing against the pixel ray; surface normal and propagation use the generic geometry
-  of `DepthGeometry.h` on those rays.
-  `GeometricConsistencyWeightModel` is the CPU round trip with the wrapped column distance.
-- View gate (`MultiViewScorePlane`, model kernels): the CPU rule on a bit mask over the neighbor views:
-  `SelectViews` keeps at most `OPTDENSE::MAX_ESTIMATION_NEIGHBORS` (31), the Metal shader's limit too.
-- The model kernels are `__forceinline__`: under `-rdc` a callee is compiled with its own register count and
-  must fit the 128 registers of the launch bounds.
-- Pinhole scenes run the unchanged kernels.
+- Normals are camera-facing against the pixel ray (`RefPixel::F` column 2, any length); surface normal and
+  propagation use the geometry of `DepthGeometry.h` (its pinhole closed forms for a pinhole reference).
+- View gate (`MultiViewScorePlane`, scenes with a spherical view): the CPU rule on a bit mask over the
+  neighbor views: `SelectViews` keeps at most `OPTDENSE::MAX_ESTIMATION_NEIGHBORS` (31), the Metal shader's
+  limit too. Pinhole-only scenes run without it, as the pinhole CPU estimator does.
+- `ProcessPixel` is `__forceinline__` into the kernels with a spherical view: under `-rdc` a callee is
+  compiled with its own register count and must fit the 128 registers of the launch bounds. The pinhole
+  kernels leave the inlining to the compiler, which keeps them free of spills.
 - The host hands the kernels (CUDA and Metal, every model) the camera centers relative to the reference
   center, subtracted in double precision: the kernels only relate the views to each other, and single
   precision centers of a scene far from its origin round the baselines and the points of the geometric
   consistency.
+- The confidence recalibration kernels (`ConfidenceCUDA.cu`) are templates on the reference model
+  (`PinholeModel`, or `SphericalModel` with its trig table).
 
 ### Metal estimator
 
-`PatchMatchMetal.metal` mirrors the CUDA model kernels by hand (MSL cannot include Eigen).
-- Function constant `MODEL` (0, 1, 2 as in CUDA) next to `GEOM`; the model kernels are separate functions
-  (`InitializePixelScoreModel`, `ProcessPixelModel`, `ScorePlaneModel`, `GeometricConsistencyWeightModel`).
-  `PatchMatch` builds the pipelines of every (GEOM, MODEL) pair; `EstimateDepthMap` picks MODEL from the
-  spherical mask.
-- One delimited block mirrors `CameraModels.h` and `DepthGeometry.h`. The test kernel `TestModelMath` runs it
+`PatchMatchMetal.metal` mirrors the CUDA kernels by hand (MSL cannot include Eigen).
+- Function constant `MODEL` (0, 1, 2 as in CUDA) next to `GEOM`; one set of functions serves every MODEL
+  (`InitializePixelScore`, `ProcessPixel`, `ScorePlane`, `GeometricConsistencyWeight`,
+  `MultiViewScorePlane`), the spherical branches and the view gate dead for `MODEL_PINHOLE`. `PatchMatch`
+  builds the pipelines of every (GEOM, MODEL) pair; `EstimateDepthMap` picks MODEL from the spherical mask.
+- One delimited block mirrors `CameraModels.h` and `DepthGeometry.h`, the pinhole closed forms of
+  `InterpolatePlaneDepth` and `NormalFromDepthGradient` included. The test kernel `TestModelMath` runs it
   for `MetalModelMathTest` (Tests suite 2, Apple only), which compares it with the C++ models.
-- Buffer 8 holds the per-view `ModelView` {R, t, C, texScale}; buffer 9 the reference trig table (W+H
-  (sin, cos) pairs, a dummy for a pinhole reference). A second sampler (`coord::normalized`, repeat on
-  columns, clamp on rows) reads the textures of an equirectangular view.
-- Kernel logic as in CUDA, including the view gate (`MultiViewScorePlaneModel`).
-- Differences from CUDA: the relative view poses of the model kernels are composed in double precision
-  (CUDA composes them in single precision from the reference-centered cameras); random numbers come from
-  PCG, bilateral weights from `exp`.
+- Buffer 0 holds each view's `Camera` {fx, fy, cx, cy, size} (`AsPinhole`/`AsSpherical` build the models);
+  buffer 8 the per-view `ModelView` {R, t, C, texScale}; buffer 9 the reference trig table (W+H (sin, cos)
+  pairs, a dummy for a pinhole reference). A second sampler (`coord::normalized`, repeat on columns, clamp
+  on rows) reads the textures of an equirectangular view.
+- Kernel logic as in CUDA, including the view gate.
+- Differences from CUDA: the relative view poses are composed in double precision (CUDA composes them in
+  single precision from the reference-centered cameras); random numbers come from PCG, bilateral weights
+  from `exp`.
 - Kernels are compiled from source at runtime, with `ConfidenceMetal.metal` into one library; macOS caches
   the library and the pipelines across processes. CMake also compiles both offline (target
   `PatchMatchMetalCheck`) when the toolchain has a working Metal compiler.
@@ -251,6 +263,10 @@ Fused F is the harmonic mean of precision and recall at the stated range toleran
 | Mixed 96 px faces against two 384 px panoramas, CPU / CUDA / Metal | 0.838 / 0.991 / 0.990 | 0.00247 / 0.00226 / 0.00225 | |
 | Holo360D, CPU | 0.954 | 0.201 | 0.522 at 5% |
 | Holo360D, CUDA / Metal | 0.681 | 0.0471 | 0.617 at 5% |
+
+Pinhole scenes run the same GPU kernels with the spherical branches compiled out: Tanks and Temples
+Ignatius (263 images, CUDA, default options) fuses to F 0.803 at its 3 mm tolerance (precision 0.730,
+recall 0.892).
 
 The synthetic suite checks seam accuracy against the antipodal band and exercises CUDA or Metal
 with the scene translated 1e6 m from the origin along every axis. `TestSphericalPatchWarp` measures

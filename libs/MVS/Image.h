@@ -75,8 +75,7 @@ public:
 		if (!bSpherical)
 			return camera.TransformPointI2C(Point3(x.x, x.y, depth));
 		ASSERT(depth > 0);
-		const Eigen::Vector3d ray(GetSpherical().Ray(Eigen::Vector2d(x.x, x.y)));
-		return Point3(ray.x()*depth, ray.y()*depth, ray.z()*depth);
+		return Point3(GetSpherical().Ray(x)*depth);
 	}
 	// world point of pixel x at the given depth
 	inline Point3 TransformPointI2W(const Point2& x, REAL depth) const {
@@ -95,18 +94,18 @@ public:
 			return camera.ProjectPointP(X);
 		const Point3 Xc(camera.TransformPointW2C(Cast<REAL>(X)));
 		Eigen::Vector2d x;
-		GetSpherical().Project(Eigen::Vector3d(Xc.x, Xc.y, Xc.z), x);
-		return {TPoint2<TYPE>(TYPE(x.x()), TYPE(x.y())), TYPE(norm(Xc))};
+		GetSpherical().Project(Xc, x);
+		return {TPoint2<TYPE>(Point2(x)), TYPE(norm(Xc))};
 	}
 	// pixel and depth of a camera-frame point; the depth is not positive if the point is behind a
 	// pinhole camera or at the center of a spherical one
 	inline std::tuple<Point2,REAL> ProjectPointC(const Point3& Xc) const {
 		if (!bSpherical)
 			return {camera.TransformPointC2I(Xc), Xc.z};
-		const Eigen::Vector3d X(Xc.x, Xc.y, Xc.z);
+		const Eigen::Vector3d X(Xc);
 		Eigen::Vector2d x;
 		GetSpherical().Project(X, x);
-		return {Point2(x.x(), x.y()), Spherical<REAL>::Depth(X)};
+		return {Point2(x), Spherical<REAL>::Depth(X)};
 	}
 	// pixel of a world point in front of the camera
 	inline Point2 TransformPointW2I(const Point3& X) const {
@@ -296,14 +295,14 @@ public:
 	Point2f FileToCamera(const Point2f& x) const {
 		if (!bUndistort)
 			return x;
-		const Eigen::Vector2d u(undistorted.NormalizedToPixel(distortion.Undistort(file.PixelToNormalized(Eigen::Vector2d(x.x, x.y)))));
-		return Point2f((float)u.x(), (float)u.y());
+		const Eigen::Vector2d u(undistorted.NormalizedToPixel(distortion.Undistort(file.PixelToNormalized(Point2(x)))));
+		return Point2f(Point2(u));
 	}
 	Point2f CameraToFile(const Point2f& x) const {
 		if (!bUndistort)
 			return x;
-		const Eigen::Vector2d d(file.NormalizedToPixel(distortion.Distort(undistorted.PixelToNormalized(Eigen::Vector2d(x.x, x.y)))));
-		return Point2f((float)d.x(), (float)d.y());
+		const Eigen::Vector2d d(file.NormalizedToPixel(distortion.Distort(undistorted.PixelToNormalized(Point2(x)))));
+		return Point2f(Point2(d));
 	}
 	// one map per image
 	static std::vector<ObservationMap> MakeMaps(const ImageArr& images) {

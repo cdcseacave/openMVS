@@ -101,20 +101,14 @@ __constant__ CameraConstStorage g_cameraStorage[MAX_VIEWS + 1];
 #define g_cameras reinterpret_cast<const Camera*>(g_cameraStorage)
 __constant__ PatchMatch::Params g_params;
 
-// the camera models a kernel instantiation serves: every view pinhole (the plane homography of
-// ComputeHomography), or a pinhole or an equirectangular reference whose neighbor views each take
-// their own model (the model warp, resolved once per pixel, hypothesis and view)
+// the camera models a kernel instantiation serves: every view pinhole, or a pinhole or an
+// equirectangular reference whose neighbor views each take their own model (resolved once per pixel,
+// hypothesis and view); RefModel is the model of the reference camera
 enum KernelModel { MODEL_PINHOLE, MODEL_PINHOLE_REF, MODEL_SPHERICAL_REF };
-template <int MODEL> struct RefModel {
-	typedef SEACAVE::Pinhole<float> Type;
-	__device__ static Type Get(const Camera& camera) { return camera.model.AsPinhole(); }
-};
-template <> struct RefModel<MODEL_SPHERICAL_REF> {
-	typedef SEACAVE::Spherical<float> Type;
-	__device__ static Type Get(const Camera& camera) { return camera.model.AsSpherical(); }
-};
+template <int MODEL> struct RefModel { typedef PinholeModel Type; };
+template <> struct RefModel<MODEL_SPHERICAL_REF> { typedef SphericalModel Type; };
 
-// a view as the model kernels see it: its pose relative to the reference (a reference camera-frame
+// a view as the kernels see it: its pose relative to the reference (a reference camera-frame
 // point X is R*X+t in the view's frame; identity for the reference), its center in the reference frame
 // (C = -R^T*t) and the scale from texel-centered pixel coordinates to its texture coordinates (normalized
 // for an equirectangular view, else 1)
@@ -260,20 +254,6 @@ __device__ inline float GeneratePerturbedDepth(float depth, RandState* randState
 	return lo + curand_uniform(randState) * (hi - lo);
 }
 
-// compose tho homography matrix that transforms a point from reference to source camera through the given plane
-__device__ inline Matrix3 ComputeHomography(const CUDA::Camera& refCamera, const CUDA::Camera& trgCamera, const Point2& p, const Point4& plane)
-{
-	const Point3 X = refCamera.model.TransformPointI2C(p, plane.w());
-	const Point3 normal = plane.topLeftCorner<3,1>();
-	// guard against plane passing through (or near) the reference camera center:
-	// normal.dot(X) -> 0 makes t infinite and the resulting H NaN
-	const float denom = normal.dot(X);
-	const float safeDenom = fabsf(denom) < FLT_EPSILON ? copysignf(FLT_EPSILON, denom) : denom;
-	const Point3 t = (refCamera.pose.C - trgCamera.pose.C) / safeDenom;
-	const Matrix3 H = trgCamera.pose.R * (refCamera.pose.R.transpose() + t*normal.transpose());
-	return trgCamera.model.K() * H * refCamera.model.K().inverse();
-}
-
 // weight a neighbor texel based on color similarity and distance to the center texel
 __device__ inline float ComputeBilateralWeight4(int idx, float pix, float centerPix)
 {
@@ -298,24 +278,6 @@ __device__ inline float ComputeBilateralWeight(int xDist, int yDist, float pix, 
 	const float spatialDistSq = float(xDist * xDist + yDist * yDist);
 	const float colorDistSq = Square(pix - centerPix);
 	return __expf(spatialDistSq * sigmaSpatial + colorDistSq * sigmaColor);
-}
-
-// compute the geometric consistency weight
-__device__ inline float GeometricConsistencyWeight(const ImagePixels depthImage, const CUDA::Camera& refCamera, const CUDA::Camera& trgCamera, const Point4& plane, const Point2i& p)
-{
-	if (depthImage == NULL)
-		return 0.f;
-	constexpr float maxDist = 4.f;
-	const Point3 forwardPoint = refCamera.TransformPointI2W(p.cast<float>(), plane.w());
-	const Point2 trgPt = trgCamera.TransformPointW2I(forwardPoint);
-	const float trgDepth = tex2D<float>(depthImage, trgPt.x() + 0.5f, trgPt.y() + 0.5f);
-	if (trgDepth == 0.f)
-		return maxDist;
-	const Point3 trgX = trgCamera.TransformPointI2W(trgPt, trgDepth);
-	const Point2 backwardPoint = refCamera.TransformPointW2I(trgX);
-	const Point2 diff = p.cast<float>() - backwardPoint;
-	const float distSq = diff.squaredNorm();
-	return min(maxDist, sqrtf(distSq + sqrtf(distSq)*2.f));
 }
 
 // number of samples in the (2*halfWin/step + 1)^2 reference patch
@@ -433,26 +395,7 @@ __device__ inline float ScoreNCC(const RefPatchCache& cache, const PatchSums& su
 	return max(0.f, min(2.f, ncc));
 }
 
-// compute photometric score using weighted ZNCC; uses precomputed reference cache
-__device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refCamera, const ImagePixels trgImage, const CUDA::Camera& trgCamera, const Point2i& p, const Point4& plane, const float lowDepth)
-{
-	Matrix3 H = ComputeHomography(refCamera, trgCamera, p.cast<float>(), plane);
-	{
-		const Point3 ptH = H * p.cast<float>().homogeneous();
-		const float invZ = __fdividef(1.f, ptH.z());
-		const float ptX = ptH.x() * invZ;
-		const float ptY = ptH.y() * invZ;
-		if (ptX >= trgCamera.size.x() || ptX < 0.f || ptY >= trgCamera.size.y() || ptY < 0.f)
-			return fBadCost;
-	}
-	const Point3 X = H * Point2(p.x()-nSizeHalfWindow, p.y()-nSizeHalfWindow).homogeneous();
-	H *= float(nSizeStep);
-	PatchSums sums;
-	SampleWarpedPatch(cache, trgImage, X, H.col(0), H.col(1), 0.5f, 0.5f, sums);
-	return ScoreNCC(cache, sums, plane.w(), lowDepth);
-}
-
-// per-pixel reference state of the model kernels: the reference camera model and its ray frame at the
+// per-pixel reference state: the reference camera model and its ray frame at the
 // pixel (CameraModels.h RayFrame: the ray derivatives along x and y, then the ray); an equirectangular
 // reference builds both, and every other ray it needs, from the sines and cosines of the column's
 // longitude and the row's elevation (Params::refTrig), as the CPU estimator does
@@ -460,7 +403,7 @@ template <int MODEL>
 struct RefPixel {
 	typename RefModel<MODEL>::Type camera;
 	Matrix3 F;
-	__device__ RefPixel(const Point2i& p) : camera(RefModel<MODEL>::Get(g_cameras[0])) {
+	__device__ RefPixel(const Point2i& p) : camera(g_cameras[0].Model<typename RefModel<MODEL>::Type>()) {
 		if constexpr (MODEL == MODEL_SPHERICAL_REF) {
 			const float2 lon = __ldg(g_params.refTrig + p.x()), el = __ldg(g_params.refTrig + g_cameras[0].size.x() + p.y());
 			F = camera.RayFrame(lon.x, lon.y, el.x, el.y);
@@ -473,32 +416,17 @@ struct RefPixel {
 		if constexpr (MODEL == MODEL_SPHERICAL_REF) {
 			const int width = g_cameras[0].size.x();
 			const float2 lon = __ldg(g_params.refTrig + SEACAVE::WrapColumn(c, width)), el = __ldg(g_params.refTrig + width + r);
-			return SEACAVE::Spherical<float>::Ray(lon.x, lon.y, el.x, el.y);
+			return SphericalModel::Ray(lon.x, lon.y, el.x, el.y);
 		} else {
 			return camera.Ray(Point2(float(c), float(r)));
 		}
 	}
 };
-// the pinhole kernels: the plane homography needs no per-pixel state
-template <>
-struct RefPixel<MODEL_PINHOLE> {
-	__device__ RefPixel(const Point2i&) {}
-};
-
-// the viewing ray of the reference pixel, any length
-template <int MODEL>
-__device__ inline Point3 ViewDirection(const RefPixel<MODEL>& ref, const Point2i& p)
-{
-	if constexpr (MODEL == MODEL_PINHOLE)
-		return g_cameras[0].model.ViewDirection(p);
-	else
-		return ref.F.col(2);
-}
 
 // Method A: each texel ray of the reference patch intersected with the plane and projected exactly
 // into the equirectangular target; false if a texel ray meets the plane behind the reference camera
 template <int MODEL>
-__device__ __forceinline__ bool SampleExactPatch(const RefPatchCache& cache, const RefPixel<MODEL>& ref, const ImagePixels trgImage, const SEACAVE::Spherical<float>& trg, const ModelView& view, const Point3& normal, const float nX, const Point2i& p, PatchSums& sums)
+__device__ __forceinline__ bool SampleExactPatch(const RefPatchCache& cache, const RefPixel<MODEL>& ref, const ImagePixels trgImage, const SphericalModel& trg, const ModelView& view, const Point3& normal, const float nX, const Point2i& p, PatchSums& sums)
 {
 	int idx = 0;
 	#pragma unroll
@@ -525,9 +453,10 @@ __device__ __forceinline__ bool SampleExactPatch(const RefPatchCache& cache, con
 // photometric score of the plane against a neighbor view of any camera model: the patch warp
 // M = trg.PixelHomography(H*r0)*H*F (DepthGeometry.h PlanePatchWarp), F the reference ray frame at p
 // and H*F = R*F + t*(n^T*F)/(n.X); into an equirectangular target the tangent-plane warp (Method B)
-// up to the elevation threshold, the exact per-texel warp (Method A) above it, as the CPU estimator
+// up to the elevation threshold, the exact per-texel warp (Method A) above it, as the CPU estimator;
+// a pinhole target needs neither: its warp is the plane homography K*H*F
 template <int MODEL>
-__device__ __forceinline__ float ScorePlaneModel(const RefPatchCache& cache, RefPixel<MODEL>& ref, const ImagePixels trgImage, const int imgId, const Point2i& p, const Point4& plane, const float lowDepth)
+__device__ __forceinline__ float ScorePlane(const RefPatchCache& cache, RefPixel<MODEL>& ref, const ImagePixels trgImage, const int imgId, const Point2i& p, const Point4& plane, const float lowDepth)
 {
 	const ModelView& view = g_views[imgId];
 	const Point3 normal(plane.topLeftCorner<3,1>());
@@ -538,8 +467,8 @@ __device__ __forceinline__ float ScorePlaneModel(const RefPatchCache& cache, Ref
 	const Point3 q0(HF.col(2)); // the target ray of the patch center
 	const Camera& trgCamera = g_cameras[imgId];
 	PatchSums sums;
-	if (IsBitSet(g_params.sphericalViews, imgId)) {
-		const SEACAVE::Spherical<float> trg(trgCamera.model.AsSpherical());
+	if (MODEL != MODEL_PINHOLE && IsBitSet(g_params.sphericalViews, imgId)) {
+		const SphericalModel trg(trgCamera.Model<SphericalModel>());
 		if (Square(q0.y()) > g_params.fSinSqWarpMaxElevation * q0.squaredNorm()) {
 			if (!SampleExactPatch(cache, ref, trgImage, trg, view, normal, nX, p, sums))
 				return fBadCost;
@@ -564,7 +493,7 @@ __device__ __forceinline__ float ScorePlaneModel(const RefPatchCache& cache, Ref
 		// the patch center in front of a pinhole target and inside its image
 		if (q0.z() <= 0.f)
 			return fBadCost;
-		const Matrix3 M = trgCamera.model.AsPinhole().PixelHomography(q0) * HF;
+		const Matrix3 M = trgCamera.Model<PinholeModel>().PixelHomography(q0) * HF;
 		const Point3 center = M.col(2);
 		const float invZ = __fdividef(1.f, center.z());
 		const float ptX = center.x() * invZ;
@@ -582,7 +511,7 @@ __device__ __forceinline__ float ScorePlaneModel(const RefPatchCache& cache, Ref
 // that depth along the same ray projected back; the reprojection distance (columns wrapped for an
 // equirectangular reference) mapped to [0,4], 4 where the neighbor holds no depth
 template <int MODEL>
-__device__ __forceinline__ float GeometricConsistencyWeightModel(const ImagePixels depthImage, const RefPixel<MODEL>& ref, const int imgId, const Point4& plane, const Point2i& p)
+__device__ __forceinline__ float GeometricConsistencyWeight(const ImagePixels depthImage, const RefPixel<MODEL>& ref, const int imgId, const Point4& plane, const Point2i& p)
 {
 	if (depthImage == NULL)
 		return 0.f;
@@ -591,13 +520,13 @@ __device__ __forceinline__ float GeometricConsistencyWeightModel(const ImagePixe
 	const Point3 X1 = view.R * (ref.F.col(2) * plane.w()) + view.t;
 	Point2 x1;
 	float depth1Expected;
-	if (IsBitSet(g_params.sphericalViews, imgId)) {
-		g_cameras[imgId].model.AsSpherical().ProjectFast(X1, x1);
-		depth1Expected = SEACAVE::Spherical<float>::Depth(X1);
+	if (MODEL != MODEL_PINHOLE && IsBitSet(g_params.sphericalViews, imgId)) {
+		g_cameras[imgId].Model<SphericalModel>().ProjectFast(X1, x1);
+		depth1Expected = SphericalModel::Depth(X1);
 	} else {
-		if (!g_cameras[imgId].model.AsPinhole().Project(X1, x1))
+		if (!g_cameras[imgId].Model<PinholeModel>().Project(X1, x1))
 			return maxDist;
-		depth1Expected = SEACAVE::Pinhole<float>::Depth(X1);
+		depth1Expected = PinholeModel::Depth(X1);
 	}
 	const float depth1 = tex2D<float>(depthImage, (x1.x() + 0.5f) * view.texScale.x(), (x1.y() + 0.5f) * view.texScale.y());
 	if (depth1 == 0.f)
@@ -621,12 +550,9 @@ __device__ __forceinline__ void MultiViewScorePlane(const RefPatchCache& cache, 
 {
 	const int nNumViews = g_params.nNumViews;
 	if constexpr (MODEL == MODEL_PINHOLE) {
+		// pinhole scenes run without the view gate
 		for (int imgId = 1; imgId <= nNumViews; ++imgId)
-			costVector[imgId-1] = ScorePlane(cache, g_cameras[0], images[imgId], g_cameras[imgId], p, plane, lowDepth);
-		if (GEOM) {
-			for (int imgId = 0; imgId < nNumViews; ++imgId)
-				costVector[imgId] += 0.1f * GeometricConsistencyWeight(depthImages[imgId], g_cameras[0], g_cameras[imgId+1], plane, p);
-		}
+			costVector[imgId-1] = ScorePlane(cache, ref, images[imgId], imgId, p, plane, lowDepth);
 	} else {
 		// the view gate, as the CPU estimator's (ScorePixel): a view seeing the hypothesis point at a
 		// triangulation angle below fMinAngle does not constrain its depth and scores as a view that does
@@ -643,11 +569,11 @@ __device__ __forceinline__ void MultiViewScorePlane(const RefPatchCache& cache, 
 		if (__popc(gatedViews) == nNumViews)
 			gatedViews = 0;
 		for (int imgId = 1; imgId <= nNumViews; ++imgId)
-			costVector[imgId-1] = (gatedViews >> (imgId-1)) & 1u ? fBadCost : ScorePlaneModel(cache, ref, images[imgId], imgId, p, plane, lowDepth);
-		if (GEOM) {
-			for (int imgId = 0; imgId < nNumViews; ++imgId)
-				costVector[imgId] += 0.1f * GeometricConsistencyWeightModel(depthImages[imgId], ref, imgId+1, plane, p);
-		}
+			costVector[imgId-1] = (gatedViews >> (imgId-1)) & 1u ? fBadCost : ScorePlane(cache, ref, images[imgId], imgId, p, plane, lowDepth);
+	}
+	if (GEOM) {
+		for (int imgId = 0; imgId < nNumViews; ++imgId)
+			costVector[imgId] += 0.1f * GeometricConsistencyWeight(depthImages[imgId], ref, imgId+1, plane, p);
 	}
 }
 // same as above, but interpolate the plane to current pixel position
@@ -657,7 +583,7 @@ __device__ __forceinline__ float MultiViewScoreNeighborPlane(const RefPatchCache
 	if constexpr (MODEL == MODEL_SPHERICAL_REF)
 		plane.w() = SEACAVE::InterpolatePlaneDepth(Point3(ref.F.col(2)), ref.Ray(np.x(), np.y()), plane.w(), Point3(plane.topLeftCorner<3,1>()), g_params.fDepthMin, g_params.fDepthMax);
 	else
-		plane.w() = SEACAVE::InterpolatePlaneDepth(RefModel<MODEL>::Get(g_cameras[0]), p, np, plane.w(), plane.topLeftCorner<3,1>(), g_params.fDepthMin, g_params.fDepthMax);
+		plane.w() = SEACAVE::InterpolatePlaneDepth(ref.camera, p, np, plane.w(), plane.topLeftCorner<3,1>(), g_params.fDepthMin, g_params.fDepthMax);
 	MultiViewScorePlane<GEOM, MODEL>(cache, ref, images, depthImages, p, plane, lowDepth, costVector);
 	return plane.w();
 }
@@ -850,7 +776,7 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 	constexpr float perturbationDepth = 0.005f;
 	constexpr float perturbationNormal = 0.01f * (float)M_PI;
 	const float depthPerturbed = GeneratePerturbedDepth(depth, randState, perturbationDepth);
-	const auto viewDirection = [&]() { return ViewDirection(ref, p); };
+	const auto viewDirection = [&]() { return Point3(ref.F.col(2)); }; // the viewing ray of the pixel
 	const Point3 perturbedNormal = GeneratePerturbedNormal(viewDirection, plane.topLeftCorner<3,1>(), randState, perturbationNormal);
 	const Point3 normalRand = GenerateRandomNormal(viewDirection, randState);
 	int numValidPlanes = 3;
@@ -865,7 +791,7 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 		if constexpr (MODEL == MODEL_SPHERICAL_REF)
 			surfaceNormal = SEACAVE::NormalFromDepthGradient(ref.F, depth, fit.Gradient());
 		else
-			surfaceNormal = SEACAVE::NormalFromDepthGradient(RefModel<MODEL>::Get(g_cameras[0]), p, depth, fit.Gradient());
+			surfaceNormal = SEACAVE::NormalFromDepthGradient(ref.camera, p, depth, fit.Gradient());
 		numValidPlanes = 4;
 	}
 	constexpr int numPlanes = 4;
@@ -884,9 +810,9 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 	}
 }
 
-// the pinhole kernels leave the inlining of ProcessPixel to the compiler (whose choice the
-// register allocation of their tuned SASS depends on); the model kernels must inline it to keep
-// the register budget of their launch bounds
+// the pinhole kernels leave the inlining of ProcessPixel to the compiler (which keeps them free of
+// register spills); the kernels with a spherical view must inline it to keep the register budget of
+// their launch bounds
 template <bool GEOM>
 __device__ void ProcessPixelPinhole(const ImagePixels* images, const ImagePixels* depthImages, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const int iter)
 {
@@ -918,7 +844,7 @@ __device__ __forceinline__ void InitializePixelScore(const ImagePixels *images, 
 	RefPatchCache refCache;
 	ComputeRefPatchCache<MODEL>(images[0], p, refCache);
 	RefPixel<MODEL> ref(p);
-	const auto viewDirection = [&]() { return ViewDirection(ref, p); };
+	const auto viewDirection = [&]() { return Point3(ref.F.col(2)); }; // the viewing ray of the pixel
 	// initialize estimate randomly if not set
 	RandState* randState = &randStates[idx];
 	curand_init(1234/*threadIdx.x*/, p.y(), p.x(), randState);
@@ -1009,9 +935,7 @@ __host__ void PatchMatch::UploadCameras()
 	const size_t n = cameras.size();
 	ASSERT(n <= MAX_VIEWS + 1);
 	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_cameraStorage, cameras.data(), sizeof(Camera) * n, 0, cudaMemcpyHostToDevice, cudaStream));
-	if (params.sphericalViews == 0)
-		return; // every view pinhole: the plane homography kernels
-	// the views relative to the reference, for the model kernels
+	// the views relative to the reference
 	ModelView views[MAX_VIEWS + 1];
 	const Pose& ref = cameras[0].pose;
 	for (size_t i = 0; i < n; ++i) {

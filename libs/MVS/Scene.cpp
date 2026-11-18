@@ -894,8 +894,8 @@ bool Scene::ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uin
 	std::vector<uint32_t> edges(lines.size()*2);
 	FOREACH(i, lines) {
 		const Line3f& line = lines[i];
-		vertices[i*2+0] = Point3f(line.pt1.x(), line.pt1.y(), line.pt1.z());
-		vertices[i*2+1] = Point3f(line.pt2.x(), line.pt2.y(), line.pt2.z());
+		vertices[i*2+0] = Point3f(line.pt1);
+		vertices[i*2+1] = Point3f(line.pt2);
 		edges[i*2+0] = i*2+0;
 		edges[i*2+1] = i*2+1;
 	}

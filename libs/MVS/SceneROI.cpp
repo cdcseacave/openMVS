@@ -328,7 +328,7 @@ bool Scene::EstimateGravityDirection(Point3f& up) const
 	// a camera-sourced direction has an arbitrary sign and is oriented by scene geometry
 	if (!bPlaneOriented && camScore < 0)
 		g = -g;
-	up = Point3f(g.x(), g.y(), g.z());
+	up = Point3f(g);
 	return true;
 } // EstimateGravityDirection
 /*----------------------------------------------------------------*/
@@ -420,7 +420,7 @@ bool Scene::EstimateROI(float scaleROI, int upAxis)
 	} else {
 		Point3f estimatedUp;
 		if (EstimateGravityDirection(estimatedUp)) {
-			up = Eigen::Vector3f(estimatedUp.x, estimatedUp.y, estimatedUp.z);
+			up = estimatedUp;
 			bHasUp = true;
 		}
 	}
@@ -429,7 +429,7 @@ bool Scene::EstimateROI(float scaleROI, int upAxis)
 	// compute threshold using robust statistics
 	const auto [median, trustRegionSize] = ComputeX84Threshold(pointWeights.data(), pointWeights.size(), 0.7f);
 	Line3f camCenterLine;
-	const Point3f upPoint(bHasUp ? Point3f(up.x(), up.y(), up.z()) : Point3f());
+	const Point3f upPoint(bHasUp ? Point3f(up) : Point3f());
 	const bool isTower(ComputeCenterLine(camCenterLine, bHasUp ? &upPoint : NULL));
 	float threshold = isTower ? (median + 2*trustRegionSize) : (median - trustRegionSize / 2);
 	// clamp the threshold such that the retained fraction stays inside a sane band,

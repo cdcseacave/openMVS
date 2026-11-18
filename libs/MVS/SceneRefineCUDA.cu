@@ -78,10 +78,15 @@ struct ProjectedFace {
 __device__ inline bool projectVertex(const Camera& camera, const Point3& X, Point2& pti, float& z)
 {
 	const Point3 Xc = camera.pose.TransformPointW2C(X);
-	if (Xc.z() <= 0.f) return false;
-	pti = camera.model.TransformPointC2I(Xc);
+	if (!camera.Model<PinholeModel>().Project(Xc, pti)) return false;
 	z = Xc.z();
 	return true;
+}
+// the world point at the given depth along the ray of pixel x of a (pinhole) view
+__device__ inline Point3 backProjectPixel(const Camera& camera, const Point2& x, float depth)
+{
+	ASSERT(depth > 0.f);
+	return camera.pose.TransformPointC2W(camera.Model<PinholeModel>().Ray(x) * depth);
 }
 __device__ inline bool projectFace(const Point3* __restrict__ vertices, const Point3u& face, const Camera& camera, ProjectedFace& pf)
 {
@@ -434,12 +439,11 @@ __global__ void kernelImageMeshWarp(
 	if (!keepA || keepA[pixIdx]) {
 		const float depthA = depthMapA[pixIdx];
 		if (depthA > 0.f) {
-			const Point3 X_world = camA.TransformPointI2W(Point2((float)x, (float)y), depthA);
+			const Point3 X_world = backProjectPixel(camA, Point2((float)x, (float)y), depthA);
 			const Point3 Xc_B = camB.pose.TransformPointW2C(X_world);
 			const float pz = Xc_B.z();
-
-			if (pz > 0.f) {
-				const Point2 projB = camB.model.TransformPointC2I(Xc_B);
+			Point2 projB;
+			if (camB.Model<PinholeModel>().Project(Xc_B, projB)) {
 				const float xB = projB.x(), yB = projB.y();
 				// the B-side border rule shared with the CPU (MeshRefine::IsDepthSimilar): the
 				// rounded tap read below must lie inside the Refine::Border margin, tested in
@@ -520,7 +524,8 @@ __device__ inline bool computePhotoPixel(
 	float& g)
 {
 	// View direction in world space (normalized)
-	const Point3 camRay = camA.model.TransformPointI2C(Point2((float)x, (float)y));
+	const PinholeModel modelA(camA.Model<PinholeModel>()), modelB(camB.Model<PinholeModel>());
+	const Point3 camRay = modelA.Ray(Point2((float)x, (float)y));
 	const Point3 worldDir = camA.pose.R.transpose() * camRay;
 	const Point3 viewDir = worldDir.normalized();
 
@@ -529,17 +534,19 @@ __device__ inline bool computePhotoPixel(
 		return false;
 
 	// Back-project to 3D and forward-project to camera B
-	const Point3 X_world = camA.TransformPointI2W(Point2((float)x, (float)y), depth);
+	const Point3 X_world = camA.pose.TransformPointC2W(camRay * depth);
 	const Point3 Xc_B = camB.pose.TransformPointW2C(X_world);
 	const float pz = Xc_B.z();
 
 	// the warp ran this same chain for the pixel and masked it in only for a positive depth in B
-	ASSERT(pz > 0.f);
-	const Point2 projB = camB.model.TransformPointC2I(Xc_B);
+	Point2 projB;
+	const bool bInFrontB(modelB.Project(Xc_B, projB));
+	ASSERT(bInFrontB); (void)bInFrontB;
 
 	// Jacobian d(u,v)/d(X_world): KR = K * R
-	const Matrix3 KR = camB.model.K() * camB.pose.R;
-	const Point3 p = camB.model.K() * Xc_B; // raw projection before perspective divide
+	const Matrix3 K = modelB.PixelHomography(Xc_B);
+	const Matrix3 KR = K * camB.pose.R;
+	const Point3 p = K * Xc_B; // raw projection before perspective divide
 	const float pz2 = pz * pz;
 
 	// du/dX = (KR.row(0)*pz - KR.row(2)*px) / pz², same for dv/dX
@@ -822,7 +829,7 @@ __device__ inline void accumulateFacePhoto(
 				sum2 += g[k] * nb2;
 				// footprint at camera A (Camera::GetFootprintWorld = depth/focalLength), min over
 				// every contributing pixel of every pair-direction like the CPU's min-of-mins
-				foot = fminf(foot, depth / camA.model.f.x());
+				foot = fminf(foot, depth / camA.fx);
 				pixels += (float)__popc(m[k]);
 				faceBits |= m[k];
 			}

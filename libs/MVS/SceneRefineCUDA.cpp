@@ -51,11 +51,7 @@ using namespace MVS;
 
 // MVS::Camera (double precision, OpenCV types) to MVS::CUDA::Camera (float precision, Eigen types)
 static MVS::CUDA::Camera MakeCUDACamera(const Camera& camera, const Image8U::Size& size) {
-	return MVS::CUDA::Camera(
-		Eigen::Map<const SEACAVE::Matrix3x3::EMat>(camera.K.val).cast<float>(),
-		Eigen::Map<const SEACAVE::Matrix3x3::EMat>(camera.R.val).cast<float>(),
-		Eigen::Map<const SEACAVE::Point3::EVec>(camera.C.ptr()).cast<float>(),
-		size.width, size.height);
+	return MVS::CUDA::Camera(Matrix3x3f(camera.K), Matrix3x3f(camera.R), Point3f(camera.C), size.width, size.height);
 }
 
 typedef Mesh::Vertex Vertex;

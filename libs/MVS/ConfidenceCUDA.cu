@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <type_traits>
 #include <vector>
 
 #include "CUDA/Camera.h"
@@ -125,21 +126,27 @@ __device__ __forceinline__ bool SampleDepthBilinearDev(const DevNeighbor& np,
 
 // the ray frame of pixel (c,r) of a spherical reference from its sine/cosine table (ComputeSphericalTrig:
 // the W columns then the H rows), and its ray
-__device__ __forceinline__ Matrix3 RefRayFrame(const LinearCameraModel& camera, const float2* refTrig, int cols, int c, int r) {
+__device__ __forceinline__ Matrix3 RefRayFrame(const SphericalModel& camera, const float2* refTrig, int cols, int c, int r) {
 	const float2 lon = refTrig[c], el = refTrig[cols + r];
-	return camera.AsSpherical().RayFrame(lon.x, lon.y, el.x, el.y);
+	return camera.RayFrame(lon.x, lon.y, el.x, el.y);
 }
 __device__ __forceinline__ Point3 RefRay(const float2* refTrig, int cols, int c, int r) {
 	const float2 lon = refTrig[c], el = refTrig[cols + r];
-	return SEACAVE::Spherical<float>::Ray(lon.x, lon.y, el.x, el.y);
+	return SphericalModel::Ray(lon.x, lon.y, el.x, el.y);
 }
 
+// the kernels take the model of the reference camera, PinholeModel or SphericalModel, and refTrig, the
+// sine/cosine table of a spherical reference (null for a pinhole one)
+template <typename MODEL>
+constexpr bool IsSphericalModel = std::is_same<MODEL, SphericalModel>::value;
+
 // ---- intra-map geometric prior (mirrors DepthMapsData::ComputeIntraMapPrior) ----
-// refTrig: the sine/cosine table of a spherical reference, null for a pinhole one
-template <typename RefAcc>
-__global__ void PriorKernel(RefAcc ref, LinearCameraModel camera, const float2* refTrig,
+template <typename RefAcc, typename MODEL>
+__global__ void PriorKernel(RefAcc ref, MODEL camera, const float2* refTrig,
                             float band, float invKmin,
                             float* priorOut) {
+	constexpr bool bSpherical = IsSphericalModel<MODEL>;
+	ASSERT(bSpherical == (refTrig != nullptr));
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
 	const int r = blockIdx.y*blockDim.y + threadIdx.y;
 	if (c >= ref.cols || r >= ref.rows) return;
@@ -147,14 +154,14 @@ __global__ void PriorKernel(RefAcc ref, LinearCameraModel camera, const float2* 
 	priorOut[idx] = 0.f;
 	const Point2i pos(c, r);
 	float w; Point2 grad;
-	if (!SEACAVE::FitDepthGradient(ref, pos, w, grad, refTrig != nullptr))
+	if (!SEACAVE::FitDepthGradient(ref, pos, w, grad, bSpherical))
 		return;
 	int nInl = 0; float sumE2 = 0.f;
 	for (int y = -1; y <= 1; ++y) {
 		const int rr = r + y; if (rr < 0 || rr >= ref.rows) continue;
 		for (int x = -1; x <= 1; ++x) {
 			if (x == 0 && y == 0) continue;
-			const int cc = refTrig ? SEACAVE::WrapColumn(c + x, ref.cols) : c + x;
+			const int cc = bSpherical ? SEACAVE::WrapColumn(c + x, ref.cols) : c + x;
 			if (cc < 0 || cc >= ref.cols) continue;
 			const float dN = ref(rr, cc);
 			if (dN <= 0.f) continue;
@@ -168,9 +175,11 @@ __global__ void PriorKernel(RefAcc ref, LinearCameraModel camera, const float2* 
 	const float gate = 1.f - ConfRefine::CRexp(-(float)nInl * invKmin);
 	float Pnorm = 1.f;
 	if (ref.HasNormal()) {
-		const Point3 nGrad(refTrig ?
-			SEACAVE::NormalFromDepthGradient(RefRayFrame(camera, refTrig, ref.cols, c, r), w, grad) :
-			SEACAVE::NormalFromDepthGradient(camera.AsPinhole(), pos, w, grad));
+		Point3 nGrad;
+		if constexpr (bSpherical)
+			nGrad = SEACAVE::NormalFromDepthGradient(RefRayFrame(camera, refTrig, ref.cols, c, r), w, grad);
+		else
+			nGrad = SEACAVE::NormalFromDepthGradient(camera, pos, w, grad);
 		Pnorm = fmaxf(0.f, nGrad.dot(ref.Normal(idx)));
 	}
 	float pr = Pplane * Pnorm * gate;
@@ -178,10 +187,11 @@ __global__ void PriorKernel(RefAcc ref, LinearCameraModel camera, const float2* 
 }
 
 // ---- one-hop multi-view confirmation (mirrors AdjustConfidenceSweep) ----
-template <typename RefAcc>
-__global__ void SweepKernel(RefAcc ref, const float* priorMap, LinearCameraModel camera, const float2* refTrig,
+template <typename RefAcc, typename MODEL>
+__global__ void SweepKernel(RefAcc ref, const float* priorMap, MODEL camera, const float2* refTrig,
                             const DevNeighbor* neigh, int nNeigh, Params p,
                             float* confOut) {
+	ASSERT(IsSphericalModel<MODEL> == (refTrig != nullptr));
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
 	const int r = blockIdx.y*blockDim.y + threadIdx.y;
 	if (c >= ref.cols || r >= ref.rows) return;
@@ -197,11 +207,11 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, LinearCameraModel
 	// in the form the fused transforms take: (c*d,r*d,d) for a pinhole reference, the point itself
 	// for a spherical one
 	Point3 Xr, u;
-	if (refTrig) {
+	if constexpr (IsSphericalModel<MODEL>) {
 		Xr = RefRay(refTrig, ref.cols, c, r) * depthRef;
 		u = Xr;
 	} else {
-		Xr = Point3(((float)c - camera.p.x()) / camera.f.x() * depthRef, ((float)r - camera.p.y()) / camera.f.y() * depthRef, depthRef);
+		Xr = camera.Ray(Point2((float)c, (float)r)) * depthRef;
 		u = Point3((float)c * depthRef, (float)r * depthRef, depthRef);
 	}
 	const float ud = u.x(), vd = u.y(), wd = u.z();
@@ -218,7 +228,7 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, LinearCameraModel
 			qz = q.norm();
 			if (qz <= 0.f) continue;
 			Point2 x;
-			const SEACAVE::Spherical<float> sphere{np.K[0], np.K[1], np.K[2], np.K[3]};
+			const SphericalModel sphere{np.K[0], np.K[1], np.K[2], np.K[3]};
 			sphere.ProjectFast(q, x);
 			px = x.x(); py = x.y();
 		} else {
@@ -329,9 +339,15 @@ static bool LaunchConfidenceKernels(
 	const float band = params.thDepth * 3.f;
 	const float invKmin = 1.f/4.f;
 
-	const LinearCameraModel camera(fx, fy, cx, cy);
-	PriorKernel<RefAcc><<<grid, block, 0, stream>>>(ref, camera, refTrig, band, invKmin, dPrior);
-	SweepKernel<RefAcc><<<grid, block, 0, stream>>>(ref, dPrior, camera, refTrig, dNeigh, nNeighbors, params, dConf);
+	if (refTrig) {
+		const SphericalModel camera{fx, fy, cx, cy};
+		PriorKernel<<<grid, block, 0, stream>>>(ref, camera, refTrig, band, invKmin, dPrior);
+		SweepKernel<<<grid, block, 0, stream>>>(ref, dPrior, camera, refTrig, dNeigh, nNeighbors, params, dConf);
+	} else {
+		const PinholeModel camera{fx, fy, cx, cy};
+		PriorKernel<<<grid, block, 0, stream>>>(ref, camera, refTrig, band, invKmin, dPrior);
+		SweepKernel<<<grid, block, 0, stream>>>(ref, dPrior, camera, refTrig, dNeigh, nNeighbors, params, dConf);
+	}
 	// reject a failed kernel launch BEFORE queueing the download
 	if (cudaGetLastError() != cudaSuccess) return false;
 

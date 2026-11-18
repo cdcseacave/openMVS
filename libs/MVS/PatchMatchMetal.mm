@@ -56,7 +56,8 @@ namespace MVS {
 namespace METAL {
 
 // POD mirrors of the MSL structs (simd guarantees matching layout)
-struct MtlCamera { simd_float2 f; simd_float2 pp; simd_float3x3 R; simd_float3 C; simd_int2 size; };
+struct MtlCamera { float fx, fy, cx, cy; simd_int2 size; };
+static_assert(sizeof(MtlCamera) == 6*sizeof(float), "MtlCamera must match the shader's Camera");
 struct MtlParams {
 	float fDepthMin, fDepthMax, fThresholdKeepCost;
 	int nNumViews, nEstimationIters, nInitTopK, bLowResProcessed, width, height;
@@ -178,20 +179,22 @@ void PatchMatch::Init(bool bGeomConsistency)
 // while device/queue/pipelines live for the whole PatchMatch object lifetime.
 void PatchMatch::Release() {}
 
-// the camera of a view for the kernels, which only relate the views to each other: its center is taken
-// from the reference center in double precision before the conversion to single precision, which would
-// round the centers of a scene far from its origin to the float spacing at that distance
-static MtlCamera ConvertCamera(const Camera& cam, const Eigen::Vector3d& centerRef, int cols, int rows)
+// the intrinsics of a view and its image size for the kernels (its pose is its MtlModelView)
+static MtlCamera ConvertCamera(const Camera& cam, int cols, int rows)
 {
-	MtlCamera mc;
-	mc.f  = simd_make_float2((float)cam.K(0,0), (float)cam.K(1,1));
-	mc.pp = simd_make_float2((float)cam.K(0,2), (float)cam.K(1,2));
-	for (int j = 0; j < 3; ++j)
-		mc.R.columns[j] = simd_make_float3((float)cam.R(0,j), (float)cam.R(1,j), (float)cam.R(2,j));
-	const Eigen::Vector3d C(Eigen::Map<const SEACAVE::Point3::EVec>(cam.C.ptr()) - centerRef);
-	mc.C = simd_make_float3((float)C.x(), (float)C.y(), (float)C.z());
-	mc.size = simd_make_int2(cols, rows);
-	return mc;
+	ASSERT(cam.K(0,1) == 0 && cols > 0 && rows > 0);
+	return MtlCamera{(float)cam.K(0,0), (float)cam.K(1,1), (float)cam.K(0,2), (float)cam.K(1,2), simd_make_int2(cols, rows)};
+}
+static simd_float3 ToSimd(const Point3f& v)
+{
+	return simd_make_float3(v.x, v.y, v.z);
+}
+static simd_float3x3 ToSimd(const Matrix3x3f& M)
+{
+	simd_float3x3 S;
+	for (int c = 0; c < 3; ++c)
+		S.columns[c] = simd_make_float3(M(0,c), M(1,c), M(2,c));
+	return S;
 }
 
 // the confidence recalibration of a WxH reference (ConfidenceMetal.metal): the intra-map
@@ -323,7 +326,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confR
 	const KernelModel model(sphericalViews == 0 ? MODEL_PINHOLE : (sphericalViews & 1u ? MODEL_SPHERICAL_REF : MODEL_PINHOLE_REF));
 	const float fSinSqWarpMaxElevation(SQUARE(SIN(D2R(DepthEstimatorBase::fSphericalWarpMaxElevation))));
 	const float cosMinViewAngle(COS(D2R(OPTDENSE::fMinAngle)));
-	// the view gate of the model kernels holds one bit per neighbor view, the camera models one per view
+	// the view gate holds one bit per neighbor view, the camera models one per view
 	ASSERT(params.nNumViews < 32);
 	// the ignore mask of the reference (with the validity mask of an image undistorted on read), at the
 	// resolution of the estimate: applied to it at the end, and before the fused confidence recalibration
@@ -376,28 +379,26 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confR
 		// (neighbor views can differ in resolution from the reference, so a shared
 		// reference-sized descriptor would overflow replaceRegion for larger neighbors)
 		std::vector<MtlCamera> cams(numImages);
-		// the views relative to the reference, for the model kernels (CUDA::PatchMatch::UploadCameras)
+		// the views relative to the reference (CUDA::PatchMatch::UploadCameras)
 		std::vector<MtlModelView> views(numImages);
-		const Eigen::Matrix3d Rref(Eigen::Map<const SEACAVE::Matrix3x3::EMat>(dd.images[0].camera.R.val));
-		const Eigen::Vector3d Cref(Eigen::Map<const SEACAVE::Point3::EVec>(dd.images[0].camera.C.ptr()));
+		// the poses relative to the reference composed in double precision: single precision centers of a
+		// scene far from its origin would be rounded to the float spacing at that distance
+		const RMatrix& Rref = dd.images[0].camera.R;
+		const CMatrix& Cref = dd.images[0].camera.C;
 		NSMutableArray<id<MTLTexture>>* texs = [NSMutableArray arrayWithCapacity:numImages];
 		for (IIndex i = 0; i < numImages; ++i) {
 			const DepthData::ViewData& view = dd.images[i];
 			const Image32F& image = view.image;
-			cams[i] = ConvertCamera(view.camera, Cref, image.cols, image.rows);
+			cams[i] = ConvertCamera(view.camera, image.cols, image.rows);
 			const bool bSpherical = ((sphericalViews >> i) & 1u) != 0;
 			// an equirectangular camera keeps its angular K on the grid of every level (fx=W/2pi, fy=H/pi)
 			ASSERT(!bSpherical || (ISEQUAL(view.camera.K(0,0)*REAL(TWO_PI), REAL(image.cols)) && ISEQUAL(view.camera.K(1,1)*REAL(PI), REAL(image.rows))));
-			const Eigen::Matrix3d Ri(Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.R.val));
-			const Eigen::Vector3d Ci(Eigen::Map<const SEACAVE::Point3::EVec>(view.camera.C.ptr()));
-			const Eigen::Matrix3d Rrel(Ri * Rref.transpose());
-			const Eigen::Vector3d t(Ri * (Cref - Ci));
-			const Eigen::Vector3d C(Rref * (Ci - Cref)); // -Rrel^T*t
+			const RMatrix& Ri = view.camera.R;
+			const CMatrix& Ci = view.camera.C;
 			MtlModelView& mv = views[i];
-			for (int j = 0; j < 3; ++j)
-				mv.R.columns[j] = simd_make_float3((float)Rrel(0,j), (float)Rrel(1,j), (float)Rrel(2,j));
-			mv.t = simd_make_float3((float)t.x(), (float)t.y(), (float)t.z());
-			mv.C = simd_make_float3((float)C.x(), (float)C.y(), (float)C.z());
+			mv.R = ToSimd(Matrix3x3f(Ri * Rref.t()));
+			mv.t = ToSimd(Point3f(Ri * (Cref - Ci)));
+			mv.C = ToSimd(Point3f(Rref * (Ci - Cref))); // -Rrel^T*t
 			mv.texScale = bSpherical ? simd_make_float2(1.f/image.cols, 1.f/image.rows) : simd_make_float2(1.f, 1.f);
 			MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
 				width:image.cols height:image.rows mipmapped:NO];

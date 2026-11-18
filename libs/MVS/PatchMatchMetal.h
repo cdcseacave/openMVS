@@ -64,6 +64,7 @@ struct ModelMathSample {
 	float normal[3];         // InterpolatePlaneDepth plane normal
 	float nDepth, dMin, dMax;
 	float depth, gradient[2];// NormalFromDepthGradient at the ray frame of trig
+	int ipixel[2], npixel[2];// a pinhole pixel and a neighbor of it, for the pinhole closed forms
 	// outputs
 	float fastAtan2;         // FastAtan2(X.y, X.x)
 	float projected[2];      // Spherical::ProjectFast(X)
@@ -77,8 +78,10 @@ struct ModelMathSample {
 	float pinVisible;        // its return value (0 or 1)
 	float interpolated;      // InterpolatePlaneDepth(ray, nRay, nDepth, normal, dMin, dMax)
 	float normalOut[3];      // NormalFromDepthGradient(sphFrame, depth, gradient)
+	float pinNormal[3];      // NormalFromDepthGradient(pinhole, ipixel, depth, gradient)
+	float pinInterpolated;   // InterpolatePlaneDepth(pinhole, ipixel, npixel, nDepth, normal, dMin, dMax)
 };
-static_assert(sizeof(ModelMathSample) == 74*sizeof(float), "ModelMathSample must match the shader's layout");
+static_assert(sizeof(ModelMathSample) == 82*sizeof(float), "ModelMathSample must match the shader's layout");
 
 class MVS_API PatchMatch {
 public:

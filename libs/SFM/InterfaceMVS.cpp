@@ -750,7 +750,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 			const Point3 ray(img.pCamera->Unproject(Point2(kp)));
 			const KMatrix& Ku = itK->second;
 			const Eigen::Vector2d u(Pinhole<REAL>{Ku(0,0), Ku(1,1), Ku(0,2), Ku(1,2)}.NormalizedToPixel(Eigen::Vector2d(ray.x, ray.y)));
-			x = Point2f((float)u.x(), (float)u.y());
+			x = Point2f(Point2(u));
 		}
 		x = img.ToOriginalOrientation(x);
 		return MVS::Interface::Pos2f(x.x, x.y);

@@ -204,7 +204,7 @@ Several stages have GPU-accelerated variants:
 |-----------|------|-------------------|
 | PatchMatch stereo | `PatchMatchCUDA.h/cpp/inl` | Per-pixel depth estimation |
 | Mesh refinement | `SceneRefineCUDA.cpp` | Face normal computation, vertex deformation |
-| Camera operations | `CUDA/Camera.h` | Projection/unprojection on GPU |
+| Camera views | `CUDA/Camera.h` | View intrinsics (as `CameraModels.h` models), pose and size for the kernels |
 | Math utilities | `CUDA/Maths.h` | Vector/matrix operations |
 
 GPU code targets compute capabilities 5.0, 7.2, and 7.5+. When CUDA is not available, everything falls back to CPU implementations transparently.
@@ -261,7 +261,7 @@ libs/MVS/
 │
 │ # CUDA components
 ├── PatchMatchCUDA.h/cpp/inl  # GPU depth estimation
-├── CUDA/Camera.h             # GPU camera operations
+├── CUDA/Camera.h             # GPU camera views (intrinsics, pose, size)
 └── CUDA/Maths.h              # GPU math utilities
 ```
 

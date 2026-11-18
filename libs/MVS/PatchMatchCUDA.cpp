@@ -354,7 +354,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		// center in double precision before the conversion to single precision, which would round the
 		// centers of a scene far from its origin (geo-referenced coordinates) to the float spacing at
 		// that distance, and with them the baselines and the points of the geometric consistency
-		const Eigen::Map<const SEACAVE::Point3::EVec> centerRef(depthData.images[0].camera.C.ptr());
+		const SEACAVE::Point3& centerRef = depthData.images[0].camera.C;
 		for (IIndex i = 0; i < numImages; ++i) {
 			const DepthData::ViewData& view = depthData.images[i];
 			const Image32F image = view.image;
@@ -362,9 +362,9 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			// an equirectangular camera keeps its angular K on the grid of every level (fx=W/2pi, fy=H/pi)
 			ASSERT(!bSpherical || (ISEQUAL(view.camera.K(0,0)*REAL(TWO_PI), REAL(image.cols)) && ISEQUAL(view.camera.K(1,1)*REAL(PI), REAL(image.rows))));
 			const Camera camera(
-				Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.K.val).cast<float>(),
-				Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.R.val).cast<float>(),
-				(Eigen::Map<const SEACAVE::Point3::EVec>(view.camera.C.ptr()) - centerRef).cast<float>(),
+				SEACAVE::Matrix3x3f(view.camera.K),
+				SEACAVE::Matrix3x3f(view.camera.R),
+				SEACAVE::Point3f(view.camera.C - centerRef),
 				image.cols, image.rows);
 			// store camera and image
 			if (i == 0 && (prevNumImages < numImages || images[0].size() != image.size())) {
@@ -436,7 +436,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 				const Normal& n = depthData.normalMap(r, c);
 				const int index = baseIndex + c;
 				Point4& depthNormal = depthNormalEstimates[index];
-				depthNormal.topLeftCorner<3, 1>() = Eigen::Map<const Normal::EVec>(n.ptr());
+				depthNormal.topLeftCorner<3, 1>() = static_cast<Normal::CEVecMap>(n);
 				depthNormal.w() = depthData.depthMap(r, c);
 			}
 		}

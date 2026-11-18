@@ -248,7 +248,7 @@ void SynthRender(SynthView& view, unsigned supersample)
 			const EVec3 normal(R*hit.normal);
 			ASSERT(normal.dot(ray) <= 0);
 			view.depthMap(r, c) = (Depth)hit.t;
-			view.normalMap(r, c) = Normal((float)normal.x(), (float)normal.y(), (float)normal.z());
+			view.normalMap(r, c) = Normal(normal.cast<float>());
 			EVec3 color(EVec3::Zero());
 			for (unsigned sy = 0; sy < supersample; ++sy) {
 				for (unsigned sx = 0; sx < supersample; ++sx) {
@@ -1465,6 +1465,11 @@ bool MVS::MetalModelMathTest(bool forceCPU)
 		s.nDepth = R(1, 10); s.dMin = 0.01f; s.dMax = 1000.f;
 		s.depth = R(1, 10);
 		s.gradient[0] = R(-1, 1)*s.depth/sph.fx; s.gradient[1] = R(-1, 1)*s.depth/sph.fy;
+		// a pinhole pixel and a propagation neighbor of it: on its column, on its row, or off both
+		s.ipixel[0] = (int)R(0, 1919); s.ipixel[1] = (int)R(0, 1079);
+		const int offset((int)R(1, 24)), kind((int)R(0, 2.999f));
+		s.npixel[0] = s.ipixel[0] + (kind == 0 ? 0 : offset);
+		s.npixel[1] = s.ipixel[1] + (kind == 1 ? 0 : -offset);
 	}
 	if (!pm.EvaluateModelMath(samples)) {
 		VERBOSE("ERROR: MetalModelMathTest: the test kernel did not run!");
@@ -1479,7 +1484,7 @@ bool MVS::MetalModelMathTest(bool forceCPU)
 				err = std::max(err, std::abs(dev[r*3+c] - M(r,c)) / scale);
 		return err;
 	};
-	float errAtan(0), errProject(0), errRange(0), errRay(0), errFrame(0), errHomography(0), errPinFrame(0), errPinProject(0), errInterp(0), errNormal(0);
+	float errAtan(0), errProject(0), errRange(0), errRay(0), errFrame(0), errHomography(0), errPinFrame(0), errPinProject(0), errInterp(0), errNormal(0), errPinInterp(0), errPinNormal(0);
 	unsigned numVisibility(0);
 	for (int i = 0; i < numSamples; ++i) {
 		const METAL::ModelMathSample& s = samples[i];
@@ -1505,16 +1510,22 @@ bool MVS::MetalModelMathTest(bool forceCPU)
 		errInterp = std::max(errInterp, std::abs(s.interpolated - interpolated) / interpolated);
 		const Vec3 n(NormalFromDepthGradient(sph, pixels[i], s.depth, Vec2(s.gradient[0], s.gradient[1])));
 		errNormal = std::max(errNormal, (Vec3(s.normalOut[0], s.normalOut[1], s.normalOut[2]) - n).cwiseAbs().maxCoeff());
+		const Eigen::Vector2i ix(s.ipixel[0], s.ipixel[1]), nx(s.npixel[0], s.npixel[1]);
+		const Vec3 pn(NormalFromDepthGradient(pin, ix, s.depth, Vec2(s.gradient[0], s.gradient[1])));
+		errPinNormal = std::max(errPinNormal, (Vec3(s.pinNormal[0], s.pinNormal[1], s.pinNormal[2]) - pn).cwiseAbs().maxCoeff());
+		const float pinInterpolated(InterpolatePlaneDepth(pin, ix, nx, s.nDepth, Vec3(s.normal[0], s.normal[1], s.normal[2]), s.dMin, s.dMax));
+		errPinInterp = std::max(errPinInterp, std::abs(s.pinInterpolated - pinInterpolated) / pinInterpolated);
 	}
 	VERBOSE("MetalModelMathTest: %d samples, max error: FastAtan2 %.2e rad, Spherical ProjectFast %.2e px, Depth %.2e, Ray %.2e, "
-		"RayFrame %.2e, PixelHomography %.2e, Pinhole RayFrame %.2e, Project %.2e, InterpolatePlaneDepth %.2e, NormalFromDepthGradient %.2e; "
-		"%u visibility mismatches", numSamples, errAtan, errProject, errRange, errRay, errFrame, errHomography, errPinFrame, errPinProject,
-		errInterp, errNormal, numVisibility);
+		"RayFrame %.2e, PixelHomography %.2e, Pinhole RayFrame %.2e, Project %.2e, InterpolatePlaneDepth %.2e, NormalFromDepthGradient %.2e, "
+		"Pinhole InterpolatePlaneDepth %.2e, NormalFromDepthGradient %.2e; %u visibility mismatches", numSamples, errAtan, errProject, errRange,
+		errRay, errFrame, errHomography, errPinFrame, errPinProject, errInterp, errNormal, errPinInterp, errPinNormal, numVisibility);
 	// single precision with the fast math of the Metal compiler: a few ulp; the normal also differs by
-	// the host computing the ray frame from the float angles, the kernels from the trig tables
+	// the host computing the ray frame from the float angles, the kernels from the trig tables; the pinhole
+	// slice forms of InterpolatePlaneDepth cancel in their numerator and denominator (n.z + ray.y*n.y)
 	if (!(errAtan < 2e-6f) || !(errProject < 2e-3f) || !(errRange < 1e-5f) || !(errRay < 1e-6f) || !(errFrame < 1e-5f) ||
 		!(errHomography < 1e-5f) || !(errPinFrame < 1e-5f) || !(errPinProject < 1e-5f) || !(errInterp < 1e-4f) || !(errNormal < 1e-4f) ||
-		numVisibility) {
+		!(errPinInterp < 5e-4f) || !(errPinNormal < 1e-4f) || numVisibility) {
 		VERBOSE("ERROR: MetalModelMathTest: the Metal camera models differ from CameraModels.h!");
 		return false;
 	}
@@ -1846,7 +1857,7 @@ bool MVS::BrownUndistortOnLoadTest()
 					view.confidence = 0;
 					view.x = Interface::Pos2f((float)x.x(), (float)x.y());
 				}
-				points.emplace_back(Point3(X.x(), X.y(), X.z()), v);
+				points.emplace_back(Point3(X), v);
 			}
 		}
 	}

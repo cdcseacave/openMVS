@@ -300,7 +300,7 @@ Planef PointCloud::EstimateGroundPlane(const ImageArr& images, float planeThresh
 		for (const Image& imageData: images) {
 			if (!imageData.IsValid())
 				continue;
-			cosView.push_back(plane.m_vN.dot((const Point3f::EVecMap&)Cast<float>(imageData.camera.Direction())));
+			cosView.push_back(plane.m_vN.dot(static_cast<Point3f::EVec>(Cast<float>(imageData.camera.Direction()))));
 		}
 		if (cosView.GetMedian() > 0)
 			plane.Negate();
@@ -639,8 +639,8 @@ bool PointCloud::LoadGLTF(const String& fileName, bool bBinary)
 			// carries neither a node transform nor a scene graph
 			if (!instance.world.isIdentity()) {
 				for (size_t i = firstPoint; i < points.size(); ++i) {
-					const Eigen::Vector4d p(instance.world * Eigen::Vector4d(points[i].x, points[i].y, points[i].z, 1.0));
-					points[i] = Point((Point::Type)p.x(), (Point::Type)p.y(), (Point::Type)p.z());
+					const Eigen::Vector4d p(instance.world * static_cast<Point3::EVec>(Point3(points[i])).homogeneous());
+					points[i] = Point(Point3(p.head<3>()));
 				}
 				// normals transform by the inverse-transpose of the linear part, not
 				// by the linear part itself: glTF allows a node to carry non-uniform
@@ -652,10 +652,10 @@ bool PointCloud::LoadGLTF(const String& fileName, bool bBinary)
 				const Eigen::Matrix3d normalMatrix(ISZERO(linear.determinant())
 					? linear : Eigen::Matrix3d(linear.inverse().transpose()));
 				for (size_t i = firstNormal; i < normals.size(); ++i) {
-					const Eigen::Vector3d n(normalMatrix * Eigen::Vector3d(normals[i].x, normals[i].y, normals[i].z));
+					const Eigen::Vector3d n(normalMatrix * static_cast<Point3::EVec>(Point3(normals[i])));
 					const double norm(n.norm());
 					if (norm > 0)
-						normals[i] = Normal((Normal::Type)(n.x()/norm), (Normal::Type)(n.y()/norm), (Normal::Type)(n.z()/norm));
+						normals[i] = Normal(Point3(n/norm));
 				}
 			}
 		}

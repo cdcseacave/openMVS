@@ -1492,7 +1492,7 @@ struct NeighborProj {
 		if (depth <= 0)
 			return false;
 		Eigen::Vector2f x;
-		sphere.ProjectFast(Eigen::Vector3f(q.x, q.y, q.z), x);
+		sphere.ProjectFast(q, x);
 		px = x.x(); py = x.y();
 		return true;
 	}

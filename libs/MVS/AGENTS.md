@@ -171,7 +171,7 @@ the output byte for byte. Re-run those after touching the codec.
 ## GPU/CUDA Components
 - `PatchMatchCUDA.h/cpp/inl` - GPU-parallel depth estimation
 - `SceneRefineCUDA.cpp` - GPU mesh refinement with CUDA kernels
-- `CUDA/Camera.h`, `CUDA/Maths.h` - GPU utility types
+- `CUDA/Camera.h`, `CUDA/Maths.h` - GPU utility types: `CUDA::Camera` holds model-neutral intrinsics (`fx, fy, cx, cy`), pose and size; kernels read a view through the `CameraModels.h` models (`camera.Model<PinholeModel>()`/`Model<SphericalModel>()`), never through camera helpers of their own (root `AGENTS.md`, "Camera Models on the GPU")
 - GPU selection via `desiredDeviceID`, compute capabilities 5.0+
 
 ## Performance Optimizations

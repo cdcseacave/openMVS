@@ -68,7 +68,7 @@ public:
 		uint64_t sphericalViews = 0; // bit i set: view i (0 the reference) is equirectangular; up to MAX_VIEWS+1 views
 		float fSinSqWarpMaxElevation = 0; // squared sine of the target elevation above which the exact warp replaces the tangent-plane one
 		const float2* refTrig = NULL; // equirectangular reference: (sin,cos) of each column's longitude, then of each row's elevation
-		float fCosMinViewAngle = 0; // the view gate of the model kernels: cos(OPTDENSE::fMinAngle)
+		float fCosMinViewAngle = 0; // the view gate of the kernels with a spherical view: cos(OPTDENSE::fMinAngle)
 	};
 
 public:

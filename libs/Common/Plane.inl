@@ -113,7 +113,7 @@ int TPlane<TYPE,DIMS>::Optimize(const POINT* points, size_t size, const RobustNo
 	} functor(points, size, robust);
 	double arrParams[numParams]; {
 		arrParams[0] = (double)m_fD;
-		const Point3d N(m_vN.x(), m_vN.y(), m_vN.z());
+		const Point3d N(m_vN.template cast<double>());
 		Normal2Dir(N, reinterpret_cast<Point2d&>(arrParams[1]));
 	}
 	lm_control_struct control {1.e-6, 1.e-7, 1.e-8, 1.e-7, 100.0, maxIters}; // lm_control_float;

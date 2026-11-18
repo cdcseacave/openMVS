@@ -824,9 +824,9 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 				return false;
 			}
 			Interface::Platform::Pose pose;
-			Eigen::Map<EMat33d>(pose.R.val) = imageColmap.q.toRotationMatrix();
+			pose.R = Matrix3x3d(imageColmap.q.toRotationMatrix());
 			EnsureRotationMatrix((Matrix3x3d&)pose.R);
-			Eigen::Map<EVec3d>(&pose.C.x) = -(imageColmap.q.inverse() * imageColmap.t);
+			pose.C = Point3d(-(imageColmap.q.inverse() * imageColmap.t));
 			Interface::Image image;
 			image.name = MAKE_PATH_REL(strOutFolder,OPT::strImageFolder+imageColmap.name);
 			image.platformID = itCam->second;
@@ -1082,8 +1082,8 @@ Point2f ProjectPoint(const Camera& camera, const BrownDistortion<REAL>& distorti
 {
 	const Point3 Xc(camera.TransformPointW2C(X));
 	ASSERT(Xc.z > 0);
-	const Eigen::Vector2d u(distortion.Distort(Eigen::Vector2d(Xc.x/Xc.z, Xc.y/Xc.z)));
-	return Point2f(camera.TransformPointC2I(Point3(u.x(), u.y(), REAL(1))));
+	const Eigen::Vector2d u(distortion.Distort(static_cast<Point3::EVec>(Xc).hnormalized()));
+	return Point2f(camera.TransformPointC2I(Point3(u.homogeneous())));
 }
 
 bool ExportScene(const String& strFolder, const Interface& scene,

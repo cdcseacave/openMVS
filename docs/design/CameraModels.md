@@ -67,13 +67,16 @@ own state and call the models. The depth-map algorithms built on the models are 
 - The numeric constants of the code Ceres differentiates (`DistortBrown`, `Pinhole::Perspective`) are
   written in `ScalarOf<T>::type`, the plain scalar of `T` (the value type of a Jet): a constant Jet would
   turn each `1 + ...` or `2 * ...` into a full Jet operation. These two helpers are force-inlined.
-- `HOST_DEVICE` functions are included unchanged by CUDA code (`libs/MVS/CUDA/Camera.h` includes
-  `CameraModels.h`; `LinearCameraModel::AsPinhole()` yields the shared model), so the host and the
-  device evaluate the same source. The depth geometry written over the models is
-  `libs/Common/DepthGeometry.h`.
+- `HOST_DEVICE` functions are included unchanged by CUDA code, so the host and the device evaluate
+  the same source. `libs/MVS/CUDA/Camera.h` stores a view's intrinsics in the fields of the models
+  (`fx, fy, cx, cy`) without its model; the kernel reading the view knows the model and builds it with
+  `Camera::Model<PinholeModel>()` or `Model<SphericalModel>()`. The depth geometry written over the
+  models is `libs/Common/DepthGeometry.h`.
 - Metal Shading Language cannot include Eigen: `libs/MVS/PatchMatchMetal.metal` carries one delimited
-  hand mirror of `CameraModels.h` and `DepthGeometry.h`, covered by a unit test that evaluates the
-  mirror against the C++ models (`SphericalPatchMatch.md`, Metal estimator).
+  hand mirror of `CameraModels.h` and `DepthGeometry.h` (with the pinhole closed forms of
+  `InterpolatePlaneDepth` and `NormalFromDepthGradient`), covered by a unit test that evaluates the
+  mirror against the C++ models (`SphericalPatchMatch.md`, Metal estimator); its `Camera` holds the
+  same four fields and `AsPinhole`/`AsSpherical` build the models.
 
 ### Resampling (`libs/Math/Camera/CameraUndistort.h/.cpp`)
 

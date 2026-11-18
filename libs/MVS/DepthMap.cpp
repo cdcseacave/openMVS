@@ -610,9 +610,9 @@ bool DepthEstimatorT<MODEL>::FillPixelPatch()
 			0.f, el.c, (float)X0.y,
 			-lon.s, el.s*lon.c, (float)X0.z);
 	} else {
-		X0 = camera0.Ray(Eigen::Vector2d((REAL)x0.x, (REAL)x0.y));
+		X0 = camera0.Ray(Point2(x0));
 		if (bModelWarp)
-			rayFrame0 = camera0.RayFrame(Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)).template cast<float>();
+			rayFrame0 = camera0.RayFrame(Point2(x0)).template cast<float>();
 	}
 	if (bModelWarp) {
 		FOREACH(v, images)
@@ -917,18 +917,18 @@ float DepthEstimatorT<MODEL>::GeometricConsistency(const DepthData::ViewData& im
 	const float* const t(image1.trelDM.data());
 	const Point3f X1(MulMat3(R, float(X0.x)*depth, float(X0.y)*depth, float(X0.z)*depth) + Point3f(t[0], t[1], t[2]));
 	Eigen::Vector2f x1;
-	if (!ProjectFast(trg, Eigen::Vector3f(X1.x, X1.y, X1.z), x1))
+	if (!ProjectFast(trg, X1, x1))
 		return 4.f;
 	const Depth depth1Expected(bSphericalTrg ? norm(X1) : X1.z); // trg.Depth(X1)
 	Depth depth1;
-	if (!SampleDepth<bSphericalTrg>(image1.depthMap, Point2f(x1.x(), x1.y()), depth1,
+	if (!SampleDepth<bSphericalTrg>(image1.depthMap, Point2f(x1), depth1,
 			[depth1Expected](Depth d) { return IsDepthSimilar(depth1Expected, d, 0.03f); }))
 		return 4.f;
 	// the target point at the sampled depth, along the ray of x1, which is X1's
 	const float s(depth1/depth1Expected);
 	const Point3f Xb(MulMat3T(R, X1.x*s - t[0], X1.y*s - t[1], X1.z*s - t[2]));
 	Eigen::Vector2f xb;
-	if (!ProjectFast(camera0f, Eigen::Vector3f(Xb.x, Xb.y, Xb.z), xb))
+	if (!ProjectFast(camera0f, Xb, xb))
 		return 4.f;
 	float dx(float(x0.x)-xb.x());
 	if constexpr (bSphericalRef)
@@ -1070,7 +1070,7 @@ float DepthEstimatorT<MODEL>::ScorePixel(Depth depth, const Normal& normal)
 	// view, the closer hypotheses that some view sees at a larger angle would win for that alone
 	if (bModelWarp) {
 		// mark the gated views with thRobust, the others with any other value, then score the others
-		const Eigen::Vector3f X(Eigen::Vector3f((float)X0.x, (float)X0.y, (float)X0.z)*depth);
+		const Eigen::Vector3f X(static_cast<Point3f::EVec>(Point3f(X0))*depth);
 		IIndex numGated(0);
 		FOREACH(idxView, images) {
 			const Eigen::Vector3f D(X - viewCenters0[idxView]);
@@ -1415,9 +1415,9 @@ Depth DepthEstimatorT<MODEL>::InterpolatePixel(const ImageRef& nx, Depth depth, 
 	if constexpr (bSphericalRef) {
 		const Eigen::Vector3f nRay(Ray0(nx.x, nx.y));
 		ASSERT(normal.dot(Normal(nRay)) <= 0);
-		return InterpolatePlaneDepth(Ray0(x0.x, x0.y), nRay, depth, Eigen::Vector3f(normal.x, normal.y, normal.z), dMin, dMax);
+		return InterpolatePlaneDepth(Ray0(x0.x, x0.y), nRay, depth, static_cast<Normal::EVec>(normal), dMin, dMax);
 	} else {
-		ASSERT(normal.dot(Normal(camera0f.Ray(Eigen::Vector2f((float)nx.x, (float)nx.y)))) <= 0);
+		ASSERT(normal.dot(Normal(camera0f.Ray(Point2f(nx)))) <= 0);
 		return InterpolatePlaneDepth(camera0f, x0, nx, depth, normal, dMin, dMax);
 	}
 }

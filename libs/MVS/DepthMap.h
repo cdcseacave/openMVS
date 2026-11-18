@@ -36,7 +36,6 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "PointCloud.h"
-#include <atomic>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -239,19 +238,15 @@ struct MVS_API DepthData {
 			Hl = camera.K * camera.R * cameraRef.R.t();
 			Hm = camera.K * camera.R * (cameraRef.C - camera.C);
 			Hr = cameraRef.K.inv();
-			const Matrix3x3 R(camera.R * cameraRef.R.t());
-			const Vec3 t(camera.R * (cameraRef.C - camera.C));
-			Rrel = Eigen::Map<const Eigen::Matrix<double,3,3,Eigen::RowMajor>>(R.val).cast<float>();
-			trel = Eigen::Map<const Eigen::Vector3d>(t.val).cast<float>();
+			Rrel = Matrix3x3f(camera.R * cameraRef.R.t());
+			trel = Point3f(camera.R * (cameraRef.C - camera.C));
 			if (!depthMap.empty()) {
 				Tl = cameraDepthMap.K * cameraDepthMap.R * cameraRef.R.t();
 				Tm = cameraDepthMap.K * cameraDepthMap.R * (cameraRef.C - cameraDepthMap.C);
 				Tr = cameraRef.K * cameraRef.R * cameraDepthMap.R.t() * cameraDepthMap.GetInvK();
 				Tn = cameraRef.K * cameraRef.R * (cameraDepthMap.C - cameraRef.C);
-				const Matrix3x3 RDM(cameraDepthMap.R * cameraRef.R.t());
-				const Vec3 tDM(cameraDepthMap.R * (cameraRef.C - cameraDepthMap.C));
-				RrelDM = Eigen::Map<const Eigen::Matrix<double,3,3,Eigen::RowMajor>>(RDM.val).cast<float>();
-				trelDM = Eigen::Map<const Eigen::Vector3d>(tDM.val).cast<float>();
+				RrelDM = Matrix3x3f(cameraDepthMap.R * cameraRef.R.t());
+				trelDM = Point3f(cameraDepthMap.R * (cameraRef.C - cameraDepthMap.C));
 			}
 		}
 		// the view is an equirectangular panorama (else a pinhole camera: Brown images are read undistorted)

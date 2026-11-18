@@ -2183,7 +2183,8 @@ bool PatchWarpModelTest()
 		const Pinhole<REAL> ref(MakeCameraModel<Pinhole<REAL>>(cameraRef)), trg(MakeCameraModel<Pinhole<REAL>>(cameraTrg));
 		const ImageRef x0(ROUND2INT(R(100, 1900)), ROUND2INT(R(100, 1400)));
 		// the estimator's reference ray is the camera's back-projection, bit for bit
-		const Point3 X0(ref.Ray(Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)));
+		const Eigen::Vector2d px0 = Point2(x0);
+		const Point3 X0(ref.Ray(px0));
 		if (X0 != cameraRef.TransformPointI2C(Cast<REAL>(x0))) {
 			VERBOSE("error: PatchWarpModelTest: the pinhole ray of pixel (%d,%d) differs from the camera back-projection", x0.x, x0.y);
 			return false;
@@ -2196,7 +2197,7 @@ bool PatchWarpModelTest()
 			VERBOSE("error: PatchWarpModelTest: a point in front of the camera is not visible");
 			return false;
 		}
-		maxProjErr = MAXF(maxProjErr, (x - Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)).norm());
+		maxProjErr = MAXF(maxProjErr, (x - px0).norm());
 		maxDepthErr = MAXF(maxDepthErr, ABS(Pinhole<REAL>::Depth(X) - (REAL)depth)/(REAL)depth);
 		// a camera-facing plane within ~60 degrees of the reversed ray
 		Eigen::Vector3f n(-Eigen::Vector3d(X0).cast<float>().normalized() + Eigen::Vector3f((float)R(-.5,.5), (float)R(-.5,.5), (float)R(-.5,.5)));
@@ -2214,12 +2215,12 @@ bool PatchWarpModelTest()
 		view.camera = cameraTrg;
 		view.Init(cameraRef);
 		const Matrix3x3f H(view.ComputeHomography(X0, depth, normal));
-		const Eigen::Matrix3d M(PlanePatchWarp(ref, trg, Rrel, t, Eigen::Vector3d(n.cast<double>()), X, Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)));
+		const Eigen::Matrix3d M(PlanePatchWarp(ref, trg, Rrel, t, Eigen::Vector3d(n.cast<double>()), X, px0));
 		for (int dy=-DepthEstimator::nSizeHalfWindow; dy<=DepthEstimator::nSizeHalfWindow; dy+=DepthEstimator::nSizeStep) {
 			for (int dx=-DepthEstimator::nSizeHalfWindow; dx<=DepthEstimator::nSizeHalfWindow; dx+=DepthEstimator::nSizeStep) {
 				const Point2f xc(H*Point3f(float(x0.x+dx), float(x0.y+dy), 1.f));
 				const Eigen::Vector2d xm((M*Eigen::Vector3d(dx, dy, 1)).hnormalized());
-				maxWarpErr = MAXF(maxWarpErr, (Eigen::Vector2d(xc.x, xc.y) - xm).norm());
+				maxWarpErr = MAXF(maxWarpErr, (static_cast<Point2f::EVec>(xc).cast<double>() - xm).norm());
 			}
 		}
 		++numWarps;

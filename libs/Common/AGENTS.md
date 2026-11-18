@@ -48,6 +48,21 @@ GET_PATH_FULL(str)    // Get full path
 - Conversion: `D2R(degrees)`, `R2D(radians)`
 - Functions: `MINF`, `MAXF`, `FLOOR`, `CEIL`, `ROUND`, `POWI` (integer power), `LOG2I`
 
+## Eigen Interop of the Math Types (`Types.h`)
+`TPoint2`/`TPoint3`/`TMatrix`/`TDMatrix` and their typedefs (`Point2f`, `Point3`, `ImageRef`, `Normal`,
+`Matrix3x3`, `RMatrix`, `KMatrix`, `CMatrix`, `PMatrix`, ...) carry their own Eigen conversions; never build an
+`Eigen::Map` over `.val`/`.ptr()` nor copy components. See the permanent rule "Eigen Interop of the OpenMVS
+Math Types" in the root `AGENTS.md`. In short:
+
+| Need | Write |
+|---|---|
+| Eigen value type | `Point3f::EVec`, `Matrix3x3::EMat` (row-major) or the column-major `Eigen::Matrix<T,m,n>` |
+| no-copy view | `static_cast<Matrix3x3::CEMatMap>(R)`, `Matrix4x4::EMatMap map(T)` |
+| non-template Eigen parameter | the OpenMVS value itself: `model.Ray(Point2(x))`, `Rrel = Matrix3x3f(R)` |
+| template Eigen function | `static_cast<Point3f::EVec>(p)` (deduction does not see conversions) |
+| back from Eigen | `Point3f(v)`, `Point3(u.homogeneous())`, `Point2f(Point2(u))` |
+| change of scalar | `Matrix3x3f(R)`, `Point3f(C)`, `Cast<float>(x)`, then convert |
+
 ## Geometry Primitives (Eigen3-based)
 
 All geometry types are templated on `TYPE` (float/double) and `DIMS` (2/3).
