@@ -462,38 +462,17 @@ bool BAInnerIterationOrderTest();
 
 // Phase 3: Global Alignment tests
 
-bool SeamGraphConsensusTest();
+// The selection of the seam graph over planted block graphs (a 16-block graph with a false chord, a rival and two lone pairs;
+// reading weights by cameras; a heavy wrong chord across two cycles; a turned direction of a bridge; a symmetric copy judged
+// by the verified pairs; a one-camera side; the inverse-error reweighting; a reading cut in one round judged again in the next)
+bool SeamGraphSelectionTest();
 
-// The selection over planted block graphs: a reading weighs the supporting cameras of its weaker side
-// times its verified pairs' share; a chord heavier than any one true seam and wrong by 30 degrees
-// across two cycles is left off; of the two directions of a block pair no cycle tests (a bridge), the
-// one turned past the rotation bar is cut; a reading whose weaker side is one camera does not enter,
-// nor one the verified pairs across it are against; the inverse-error reweighting does not follow a
-// lighter copy that a least-squares solve would sit between; a reading cut by one round's averaging
-// is judged again in the next
-bool ReadingWeightCamerasTest();
+// A ring of six blocks placed whole on its seams, honest and bent, and taken to the truth by the final adjustment
+bool RingMergeTest();
 
-bool HeavyWrongChordTest();
-
-bool TwoDirectionBridgeTest();
-
-bool SymmetricBridgePairsTest();
-
-bool OneCameraReadingTest();
-
-bool ReweightingStartTest();
-
-bool BarsReEntryTest();
-
-bool RingPlacementTest();
-
-// The cross-block track join: seam matches first, every match on the duplicate-image and length guards, the merged
-// model's adjustment keeping the right observations
-bool CrossBlockJoinTest();
-
-bool MergeJoinReprojectionTest();
-
-bool MergeTrackLengthTest();
+// The cross-block track join: seam matches first, the join guard off and at its default, the 255-observation cap on a chain of
+// pool images, the merged model's adjustment keeping the right observations, and every seam inlier landing on one track
+bool MergeTrackJoinTest();
 
 bool PooledSeamReadingTest();
 
@@ -502,64 +481,30 @@ bool PooledSeamReadingTest();
 // alone refused; from round 2 on the merged model is the one holding block 0, whatever the other models weigh
 bool MergeRoundsTest();
 
+// A block of two cameras a millimetre apart, and two side by side, are placed at the ring's scale
 bool UnobservableScaleTest();
 
-bool UnobservableScalePairTest();
+// The verified pairs across a seam decide by inlier weight: a planted reading refused and the true one kept, a seam its cameras
+// carry but the pairs contradict places no block (GlobalAlignmentConfig::maxPairRotationResidual), two thin disagreeing pairs
+// cannot outvote twenty-four heavy agreeing ones
+bool PairAgreementMergeTest();
 
-bool AmbiguousPairTest();
+// The closing of a ring on a biased seam, a thin seam, a heavier copy one period along the wall (the cycle chooses the true one),
+// a planted chord, and a single bridge
+bool RingClosingSeamTest();
 
-// A seam its cameras carry but the verified image pairs across it contradict places no block
-// (GlobalAlignmentConfig::maxPairRotationResidual)
-bool ContradictedPlacementTest();
+// A seam one camera holds weighs one camera and no block is placed on it; a direction seen by one camera gives no reading and a
+// block joined by single cameras only is released; a rig whose second camera holds too few inliers observes no scale
+bool SeamCameraSupportTest();
 
-// The verified pairs across a seam decide by inlier weight over all of them, not by counting pairs:
-// two thin disagreeing pairs cannot outvote twenty-four heavy agreeing ones.
-bool PairAgreementWeightTest();
-
-bool RingLoopClosureTest();
-
-bool BiasedClosingSeamTest();
-
-bool WeakClosingSeamTest();
-
-// A ring pair carrying the true reading and a heavier copy of one block's structure one period
-// along the wall: the cycle the pair closes chooses the true one by the translation it implies
-bool RivalModesOnCycleTest();
-
-// A seam one camera holds on its side weighs one camera, however many correspondences it carries,
-// and no block is placed on it
-bool OneCameraSideTest();
-
-// A direction seen by one camera gives no reading; a block joined by single cameras only is released
-bool OneCameraDirectionTest();
-
-bool RigScaleTwoCamerasTest();
-
-// The correspondences a ring of bent blocks leaves past the bar and within the loose bar join their
-// tracks at the merge and end inliers within the bar after the final adjustment
-bool BentBlockClosureTest();
-
-bool SecondModelTest();
-
+// A block folded by half a turn or by 45 degrees leaves one of its seams off the model and does not put the rest wrong
 bool FoldedBlockTest();
-
-// A ring of blocks bent half a degree each keeps every seam between neighbours and ends on the truth
-bool BentRingKeepsSeamsTest();
-
-// A block folded by 45 degrees does not put the rest of the model wrong
-bool FoldedBlock45Test();
-
-bool FalseChordTest();
-
-bool SeamInliersBecomeTracksTest();
 
 bool UnplacedBlocksReportedTest();
 
-bool BentBlocksAdjustmentTest();
-
-bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();
-
-bool GlobalAlignmentTrackMerge3DProximityGuardTest();
+// A ring of bent blocks keeps every seam, its far correspondences join their tracks and end inliers within the bar after the
+// final adjustment, which straightens the cameras to under half the rigid block poses' error
+bool BentRingTest();
 
 bool HierarchicalCameraAlignmentTest();
 
