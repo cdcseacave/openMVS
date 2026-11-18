@@ -1608,7 +1608,7 @@ bool BundleAdjustment::Adjust()
 
 	// Configure solver
 	ceres::Solver::Options options;
-	if (numReprojResiduals < 500000) {
+	if (numReprojResiduals < config.minResidualsForSparseSolver) {
 		options.linear_solver_type = ceres::DENSE_SCHUR;
 		options.preconditioner_type = ceres::IDENTITY; // Not used with DENSE_SCHUR
 	} else {

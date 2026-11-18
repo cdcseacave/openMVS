@@ -216,7 +216,7 @@ triangulated and adjusted once (`AdjustMergedScene`).
 
 ## The solver
 
-- Linear solver: `DENSE_SCHUR` below 500,000 reprojection residuals; above, `SPARSE_SCHUR` with inner
+- Linear solver: `DENSE_SCHUR` below `minResidualsForSparseSolver` (500,000) reprojection residuals; from there on, `SPARSE_SCHUR` with inner
   iterations in an order that depends on the problem alone (the order Ceres picks itself depends on
   allocator addresses). A local solve is always `SPARSE_SCHUR`. A failed sparse solve is retried once
   with `ITERATIVE_SCHUR` and the `SCHUR_JACOBI` preconditioner.
@@ -244,6 +244,7 @@ triangulated and adjusted once (`AdjustMergedScene`).
 | `relativeRotationSigma`, `relativeTranslationSigma` | `--ba-pair-sigma` | 1 degree, 2 degrees |
 | intrinsic flags | `--refine-intrinsics` | 1 |
 | `gpsPositionWeight`, `gpsPositionWeightZ` | `--gps-position-weight`, `--gps-position-weight-z` | 0 (off) |
+| `minResidualsForSparseSolver` | none | 500,000 |
 | `maxIterations`, `functionTolerance` | none | 100, 1e-6 |
 
 ## Invariants

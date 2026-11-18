@@ -14280,23 +14280,27 @@ bool BAObservationCapWideViewTest()
 }
 
 // The same bundle adjustment solved twice, the second time with the small blocks it allocates laid out
-// in the reverse order, ends at the same bits. Past half a million reprojection residuals a solve also
-// refines its blocks by inner iterations, one round of mutually independent blocks after another, and
-// which blocks share a round is a choice among blocks with as many neighbours as one another: made by
-// where the solver's records of the blocks lie in memory, a reconstruction would follow from what the
-// heap held before it as much as from its input. Ten cameras along the arc, each joined by a verified
-// pair to its two nearest neighbours on either side -- a pose graph whose cameras tie in their number
-// of links: the two ends, the two next to them and the six between -- and 168000 three-view tracks,
-// moved off the truth with the poses so the solve has work to do.
+// in the reverse order, ends at the same bits. From BAConfig::minResidualsForSparseSolver reprojection
+// residuals on a solve also refines its blocks by inner iterations, one round of mutually independent
+// blocks after another, and which blocks share a round is a choice among blocks with as many neighbours
+// as one another: made by where the solver's records of the blocks lie in memory, a reconstruction would
+// follow from what the heap held before it as much as from its input. Ten cameras along the arc, each
+// joined by a verified pair to its two nearest neighbours on either side -- a pose graph whose cameras
+// tie in their number of links: the two ends, the two next to them and the six between -- and 1200
+// three-view tracks, moved off the truth with the poses so the solve has work to do. The switch is set
+// under the scene's residuals so that it takes the inner iterations; a third solve with the switch
+// left at its default takes the dense solver, ends close to the first and not at its bits, which shows
+// the switch is what the setting moved.
 bool BAInnerIterationOrderTest()
 {
-	TD_TIMER_START();
+	TestScope scope("BAInnerIterationOrderTest");
 	constexpr unsigned NUM_IMAGES = 10;
-	constexpr unsigned NUM_TRACKS_PER_TRIPLE = 21000; // 8 triples of consecutive cameras: 504000 residuals
-	constexpr unsigned MIN_RESIDUALS = 500000;        // where BundleAdjustment::Adjust turns to inner iterations
+	constexpr unsigned NUM_TRACKS_PER_TRIPLE = 150; // 8 triples of consecutive cameras: 3600 residuals
+	constexpr unsigned MIN_RESIDUALS = 3000;        // the switch to inner iterations, under the scene's residuals
 	constexpr unsigned PAIR_INLIERS = 300;
-	constexpr REAL ROTATION_NOISE_DEG = 0.2;          // each pose turned this far about each axis, at most
-	constexpr REAL CENTER_NOISE = 0.02;               // each centre and each point moved this far per axis, at most
+	constexpr REAL ROTATION_NOISE_DEG = 0.2;        // each pose turned this far about each axis, at most
+	constexpr REAL CENTER_NOISE = 0.02;             // each centre and each point moved this far per axis, at most
+	constexpr double MAX_SOLVER_GAP = 1e-3;         // the dense and the inner-iteration solve end this close, in units
 
 	const auto buildScene = [&](Scene& scene) {
 		std::mt19937 rng(20261015);
@@ -14321,23 +14325,18 @@ bool BAInnerIterationOrderTest()
 	};
 	BAConfig config;
 	config.numThreads = 1; // the solver's own threads sum in the order they finish
+	config.minResidualsForSparseSolver = MIN_RESIDUALS;
 
 	Scene first;
 	buildScene(first);
 	{
 		BundleAdjustment ba(first, config);
-		if (!ba.Adjust()) {
-			VERBOSE("BAInnerIterationOrderTest FAILED: the first bundle adjustment did not solve the scene");
-			return false;
-		}
+		TEST_CHECK(ba.Adjust(), "the first bundle adjustment did not solve the scene");
 		unsigned numResiduals = 0;
 		for (const unsigned numImageResiduals : ba.GetNumReprojResidualsPerImage())
 			numResiduals += numImageResiduals;
-		if (numResiduals < MIN_RESIDUALS) {
-			VERBOSE("BAInnerIterationOrderTest FAILED: the scene gave %u reprojection residuals, under the %u past "
-				"which the solve refines by inner iterations", numResiduals, MIN_RESIDUALS);
-			return false;
-		}
+		TEST_CHECK(numResiduals >= MIN_RESIDUALS, "the scene gave %u reprojection residuals, under the %u from which the solve "
+			"refines by inner iterations", numResiduals, MIN_RESIDUALS);
 	}
 
 	// the second solve with every small block it allocates placed below the one before, so the
@@ -14347,10 +14346,7 @@ bool BAInnerIterationOrderTest()
 	size_t pooledBytes;
 	{
 		const ScopedDescendingHeap descendingHeap;
-		if (!BundleAdjustment::Adjust(second, config)) {
-			VERBOSE("BAInnerIterationOrderTest FAILED: the second bundle adjustment did not solve the scene");
-			return false;
-		}
+		TEST_CHECK(BundleAdjustment::Adjust(second, config), "the second bundle adjustment did not solve the scene");
 		pooledBytes = descendingHeap.BytesHandedOut();
 	}
 
@@ -14372,16 +14368,27 @@ bool BAInnerIterationOrderTest()
 			maxPointApart = MAXF(maxPointApart, (double)norm(a - b));
 		}
 	}
-	if (numPosesApart > 0 || numPointsApart > 0) {
-		VERBOSE("BAInnerIterationOrderTest FAILED: solved twice from the same start, the scene ended with %u of %u "
-			"poses (centres up to %g apart) and %u of %u points (up to %g apart) not the same",
-			numPosesApart, first.images.size(), maxCenterApart, numPointsApart, first.tracks.size(), maxPointApart);
-		return false;
+	TEST_CHECK(numPosesApart == 0 && numPointsApart == 0, "solved twice from the same start, the scene ended with %u of %u "
+		"poses (centres up to %g apart) and %u of %u points (up to %g apart) not the same",
+		numPosesApart, first.images.size(), maxCenterApart, numPointsApart, first.tracks.size(), maxPointApart);
+
+	// the switch left at its default: the dense solver, a different path to the same optimum
+	Scene dense;
+	buildScene(dense);
+	config.minResidualsForSparseSolver = BAConfig().minResidualsForSparseSolver;
+	TEST_CHECK(BundleAdjustment::Adjust(dense, config), "the dense bundle adjustment did not solve the scene");
+	bool sameBits = true;
+	double maxGap = 0;
+	FOREACH(i, first.images) {
+		sameBits = sameBits && memcmp(&first.images[i].C, &dense.images[i].C, sizeof(first.images[i].C)) == 0;
+		maxGap = MAXF(maxGap, (double)norm(first.images[i].C - dense.images[i].C));
 	}
-	VERBOSE("BAInnerIterationOrderTest PASSED: a bundle adjustment refined by inner iterations ends at the same bits "
-		"with the first %s of the small blocks it allocates placed in the reverse order (%s)",
-		Util::formatBytes(pooledBytes).c_str(), TD_TIMER_GET_FMT().c_str());
-	return true;
+	TEST_CHECK(!sameBits, "the solve below the switch ended at the very bits of the one past it: the setting did not move the switch");
+	TEST_CHECK(maxGap < MAX_SOLVER_GAP, "the dense solve and the inner-iteration solve end %g apart in a camera centre, over the %g bar",
+		maxGap, MAX_SOLVER_GAP);
+	return scope.Pass("a bundle adjustment refined by inner iterations ends at the same bits with the first %s of the small blocks it "
+		"allocates placed in the reverse order, and within %.2g of the dense solve of the same scene",
+		Util::formatBytes(pooledBytes).c_str(), maxGap);
 }
 
 // An image whose described observations fix its pose on their own hears its dense ones less: each

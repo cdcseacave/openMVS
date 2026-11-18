@@ -134,6 +134,9 @@ struct SFM_API BAConfig
 	// too once the scene it is part of has grown large.
 	unsigned minObservationsForCap = 1500000;
 
+	// Reprojection residuals from which the adjustment factorizes the reduced camera system sparsely, with inner iterations, instead of densely.
+	unsigned minResidualsForSparseSolver = 500000;
+
 	// Solver parameters
 	unsigned maxIterations = 100;    // Maximum solver iterations
 	float robustThreshold = 2.f;     // Huber loss threshold (pixels, 0 = disabled)
