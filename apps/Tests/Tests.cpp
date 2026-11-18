@@ -38,6 +38,7 @@
 #include "TestsMVS.h"
 #include "Tests.h"
 #include <atomic>
+#include <functional>
 #include <new>
 
 
@@ -249,6 +250,9 @@ bool UnitTests()
 
 
 
+// one entry of the table of SFM tests that main() walks in order
+#define SFM_TEST(name) {#name, SFM::name}
+
 int main(int argc, LPCTSTR* argv)
 {
 	// Flush stdout/stderr per write so CI logs aren't lost on SIGKILL.
@@ -284,395 +288,211 @@ int main(int argc, LPCTSTR* argv)
 			if (!UnitTests())
 				return false;
 		} else if (std::atoi(argv[1]) == 1) {
-			// Run SFM smoke tests
-			// import is the pipeline's first stage, and every test below starts with one
-			if (!SFM::ImportMetadataDeterminismTest())
-				return false;
-			if (!SFM::ExifFocalUntrustedTest())
-				return false;
-			if (!SFM::CameraTypeImportTest())
-				return false;
-			if (!SFM::SphericalImageSizeImportTest())
-				return false;
-			if (!SFM::TestSimilarityTransform())
-				return false;
-			if (!SFM::KnownPosesImportTest())
-				return false;
-			if (!SFM::FramesPoseFrameDetectionTest())
-				return false;
-			if (!SFM::KnownPosePairSelectionTest())
-				return false;
-			if (!SFM::SequentialPairsPriorTest())
-				return false;
-			if (!SFM::AlignToPriorPosesTest())
-				return false;
-			if (!SFM::AlignToPriorPosesCollinearTest())
-				return false;
-			if (!SFM::AlignToGPSDegenerateTest())
-				return false;
-			if (!SFM::PairsWeightingTest())
-				return false;
-			if (!SFM::PairsWeightingDenseFrameEvidenceTest())
-				return false;
-			if (!SFM::PairCompositeWeightTest())
-				return false;
-			if (!SFM::ViewGraphCalibratorTest())
-				return false;
-			if (!SFM::BAPinholeReprojectionJacobianTest())
-				return false;
-			if (!SFM::ObservationSigmasTest())
-				return false;
-			if (!SFM::DenseObservationWeightEstimateTest())
-				return false;
-			if (!SFM::BAIntrinsicFlagsTest())
-				return false;
-			if (!SFM::BundleAdjustmentPairConstraintTest())
-				return false;
-			if (!SFM::ReprojectionReportOverUsedTest())
-				return false;
-			if (!SFM::BAObservationCapTest())
-				return false;
-			if (!SFM::BAObservationCapWideViewTest())
-				return false;
-			if (!SFM::BAInnerIterationOrderTest())
-				return false;
-			if (!SFM::BADenseWeightPerImageTest())
-				return false;
-			if (!SFM::BADenseWeightCeilingTest())
-				return false;
-			if (!SFM::RotationEstimatorTest())
-				return false;
-			if (!SFM::RotationWeightScaleTest())
-				return false;
-			if (!SFM::ContradictionCutTest())
-				return false;
-			if (!SFM::TranslationCutTest())
-				return false;
-			if (!SFM::FilteredSceneReloadTest())
-				return false;
-			if (!SFM::ScaleEstimatorTest())
-				return false;
-			if (!SFM::TranslationEstimatorTest())
-				return false;
-			if (!SFM::TranslationNormalEquationsTest())
-				return false;
-			if (!SFM::ScaleComponentsTest())
-				return false;
-			if (!SFM::ScaleConjugateGradientsTest())
-				return false;
-			if (!SFM::TripletStarInitTest())
-				return false;
-			if (!SFM::PairScalesTest())
-				return false;
-			if (!SFM::PreMatchTest())
-				return false;
-			if (!SFM::PairMatcherTest())
-				return false;
-			if (!SFM::MatchPairsFailureTest())
-				return false;
-			if (!SFM::MatchRoundFatalSignalTest())
-				return false;
-			if (!SFM::TwoViewTest())
-				return false;
-			if (!SFM::FundamentalPoseTwoCamerasTest())
-				return false;
-			if (!SFM::VocabularyTreeTest())
-				return false;
-			if (!SFM::DenseWarpGridConventionTest())
-				return false;
-			if (!SFM::DenseWarpTrackingTest())
-				return false;
-			if (!SFM::DenseCoverageSampleTest())
-				return false;
-			if (!SFM::DenseComplementaryDrawTest())
-				return false;
-			if (!SFM::DenseFillDensityTest())
-				return false;
-			if (!SFM::DenseFillCeilingTest())
-				return false;
-			if (!SFM::DenseVerdictTest())
-				return false;
-			if (!SFM::DenseGuidedMatchTest())
-				return false;
-			if (!SFM::DenseGuidedBandTest())
-				return false;
-			if (!SFM::BuildTracksConflictTest())
-				return false;
-			if (!SFM::DenseAssemblyTest())
-				return false;
-			if (!SFM::DenseFitWeightTest())
-				return false;
-			if (!SFM::PlanarTwinSwitchTest())
-				return false;
-			if (!SFM::DenseLensInlierTest())
-				return false;
-			if (!SFM::DenseKeypointBoundaryTest())
-				return false;
-			if (!SFM::SupplementEvidenceIsolationTest())
-				return false;
-			if (!SFM::GlobalDescriptorsQueryTest())
-				return false;
-			if (!SFM::RetrievalModeTest())
-				return false;
-			if (!SFM::VocabularyIgnoresGlobalDescriptorsTest())
-				return false;
-			if (!SFM::RoMa2PreprocessTest())
-				return false;
-			if (!SFM::RoMa2ManifestVersionTest())
-				return false;
-			if (!SFM::FlexGlueManifestTest())
-				return false;
-			if (!SFM::ResolveModelPathTest())
-				return false;
-			if (!SFM::RoMa2OnnxParityTest())
-				return false;
-			if (!SFM::ROMA2ReconstructTest())
-				return false;
-			if (!SFM::FlexGlueReconstructTest())
-				return false;
-			if (!SFM::PipelineTest())
-				return false;
-			if (!SFM::GPSPriorPoseUncertaintyTest())
-				return false;
-			if (!SFM::PoseUncertaintyExportTest())
-				return false;
-			if (!SFM::ReconstructSphericalSyntheticTest())
-				return false;
-			if (!SFM::SphericalBottomBandTest())
-				return false;
-			if (!SFM::SphericalBottomBandDenseTest())
-				return false;
-			if (!SFM::FeatureTypeNameTest())
-				return false;
-			if (!SFM::PairsMatcherSphericalTest())
-				return false;
-			if (!SFM::MatchGeometricSphericalTest())
-				return false;
-			if (!SFM::MatchGeometricLensTest())
-				return false;
-			if (!SFM::LensFitRecoveryTest())
-				return false;
-			if (!SFM::LensFitFocalTest())
-				return false;
-			if (!SFM::LensFitRefusalTest())
-				return false;
-			if (!SFM::LensFitMinimumPairsTest())
-				return false;
-			if (!SFM::DenseReverifyPartitionTest())
-				return false;
-			if (!SFM::DenseReverifyLensTest())
-				return false;
-			if (!SFM::LensFitStageTest())
-				return false;
-			if (!SFM::LensFitFocalStageTest())
-				return false;
-			if (!SFM::LensFitUntrustedFocalTest())
-				return false;
-			if (!SFM::CubeMapFaceRenderTest())
-				return false;
-			if (!SFM::CubeMapBridgeGeometryTest())
-				return false;
-			if (!SFM::CubeMapBridgeEndToEndTest())
-				return false;
-			if (!SFM::CubeMapBridgeMVSLoadTest())
-				return false;
-			if (!SFM::CubeMapBridgeMixedSceneTest())
-				return false;
-			if (!SFM::CubeMapBridgeDropTopBottomTest())
-				return false;
-			if (!SFM::RealImagesPipelineTest(verbose))
-				return false;
-			if (!SFM::DefaultDetectorTest())
-				return false;
-			if (!SFM::TripletFilterTest())
-				return false;
-			if (!SFM::StarReferenceViewTest())
-				return false;
-			if (!SFM::StarEvidenceTest())
-				return false;
-			if (!SFM::StarScaleGaugeTest())
-				return false;
-			if (!SFM::NearDuplicateYardstickTest())
-				return false;
-			if (!SFM::ResectionLinkChecksTest())
-				return false;
-			if (!SFM::ResectionWeakEvidenceTest())
-				return false;
-			if (!SFM::ResectionNextImageOrderTest())
-				return false;
-			if (!SFM::ResectionTriesEveryCandidateTest())
-				return false;
-			if (!SFM::ResectionRefusedAverageTest())
-				return false;
-			if (!SFM::ResectionStallRetryTest())
-				return false;
-			if (!SFM::ResectionClosingAlwaysTest())
-				return false;
-			if (!SFM::ResectionRemovalStallTest())
-				return false;
-			if (!SFM::ResectionInlierBarTest())
-				return false;
-			if (!SFM::ResectionDenseFitWeightTest())
-				return false;
-			if (!SFM::ResectionWeightedInlierBarTest())
-				return false;
-			if (!SFM::LinkWalksTest())
-				return false;
-			if (!SFM::ResectionLinkGateTest())
-				return false;
-			if (!SFM::RepeatedFullAdjustmentTest())
-				return false;
-			if (!SFM::CappedAdjustmentTriangulationTest())
-				return false;
-			if (!SFM::CappedSolveScaleTest())
-				return false;
-			if (!SFM::DenseReprojectionBarTest())
-				return false;
-			if (!SFM::FilterTracksUnposedTrackTest())
-				return false;
-			if (!SFM::FilterTracksUntriangulatedTrackTest())
-				return false;
-			if (!SFM::TriangulationFailureTest())
-				return false;
-			if (!SFM::SphericalTriangulationTest())
-				return false;
-			if (!SFM::ContradictingImagesTest())
-				return false;
-			// Hierarchical SFM tests - Phase 1: Scene Clustering
-			if (!SFM::SceneClusterSingleClusterTest())
-				return false;
-			if (!SFM::SceneClusterSizeConstraintsTest())
-				return false;
-			if (!SFM::SceneClusterDisconnectedComponentsTest())
-				return false;
-			if (!SFM::SceneClusterTargetSizeTest())
-				return false;
-			if (!SFM::SceneClusterSeamTracksTest())
-				return false;
-			if (!SFM::SceneClusterLeafMergeTest())
-				return false;
-			if (!SFM::SceneClusterMemoryProtocolTest())
-				return false;
-			if (!SFM::SceneClusterIDRemappingTest())
-				return false;
-			if (!SFM::SceneClusterSmallClusterRescueTest())
-				return false;
-			if (!SFM::SceneClusterSubFloorCouplingTest())
-				return false;
-			if (!SFM::SceneClusterStandaloneCommunityTest())
-				return false;
-			if (!SFM::SceneClusterCoupledOrphanSkippedTest())
-				return false;
-			if (!SFM::SceneClusterBalanceCouplingTest())
-				return false;
-			if (!SFM::SceneClusterThinStretchTest())
-				return false;
-			if (!SFM::SceneBlocksInsertReleaseTest())
-				return false;
-			if (!SFM::SceneBlocksInsertRebuildTest())
-				return false;
-			if (!SFM::PoolResectionWrongClusterTest())
-				return false;
-			if (!SFM::PoolResectionLinkOnlyTest())
-				return false;
-			// Hierarchical SFM tests - Phase 3: Global Alignment
-			if (!SFM::GlobalAlignmentBuildGlobalToLocalMapTest())
-				return false;
-			if (!SFM::GlobalAlignmentRotationAveragingExtendedTest())
-				return false;
-			if (!SFM::GlobalAlignmentScaleAveragingExtendedTest())
-				return false;
-			if (!SFM::GlobalAlignmentScaleAveragingFallbackTest())
-				return false;
-			if (!SFM::GlobalAlignmentTranslationAveragingExtendedTest())
-				return false;
-			if (!SFM::RobustAveragingScaleTest())
-				return false;
-			if (!SFM::RobustAveragingTranslationTest())
-				return false;
-			if (!SFM::SeamGraphConsensusTest())
-				return false;
-			if (!SFM::ReadingWeightCamerasTest())
-				return false;
-			if (!SFM::HeavyWrongChordTest())
-				return false;
-			if (!SFM::TwoDirectionBridgeTest())
-				return false;
-			if (!SFM::SymmetricBridgePairsTest())
-				return false;
-			if (!SFM::OneCameraReadingTest())
-				return false;
-			if (!SFM::ReweightingStartTest())
-				return false;
-			if (!SFM::BarsReEntryTest())
-				return false;
-			if (!SFM::RingPlacementTest())
-				return false;
-			if (!SFM::CrossBlockJoinTest())
-				return false;
-			if (!SFM::MergeJoinReprojectionTest())
-				return false;
-			if (!SFM::MergeTrackLengthTest())
-				return false;
-			if (!SFM::PooledSeamReadingTest())
-				return false;
-			if (!SFM::MergeRoundsTest())
-				return false;
-			if (!SFM::UnobservableScaleTest())
-				return false;
-			if (!SFM::UnobservableScalePairTest())
-				return false;
-			if (!SFM::AmbiguousPairTest())
-				return false;
-			if (!SFM::ContradictedPlacementTest())
-				return false;
-			if (!SFM::PairAgreementWeightTest())
-				return false;
-			if (!SFM::RivalModesOnCycleTest())
-				return false;
-			if (!SFM::OneCameraSideTest())
-				return false;
-			if (!SFM::OneCameraDirectionTest())
-				return false;
-			if (!SFM::RigScaleTwoCamerasTest())
-				return false;
-			if (!SFM::RingLoopClosureTest())
-				return false;
-			if (!SFM::BiasedClosingSeamTest())
-				return false;
-			if (!SFM::WeakClosingSeamTest())
-				return false;
-			if (!SFM::SecondModelTest())
-				return false;
-			if (!SFM::FoldedBlockTest())
-				return false;
-			if (!SFM::FoldedBlock45Test())
-				return false;
-			if (!SFM::FalseChordTest())
-				return false;
-			if (!SFM::SeamInliersBecomeTracksTest())
-				return false;
-			if (!SFM::UnplacedBlocksReportedTest())
-				return false;
-			if (!SFM::BentBlocksAdjustmentTest())
-				return false;
-			if (!SFM::BentBlockClosureTest())
-				return false;
-			if (!SFM::BentRingKeepsSeamsTest())
-				return false;
-			if (!SFM::GlobalAlignmentMergeSingleSceneTest())
-				return false;
-			if (!SFM::GlobalAlignmentTrackMergeDuplicateImageGuardTest())
-				return false;
-			if (!SFM::GlobalAlignmentTrackMerge3DProximityGuardTest())
-				return false;
-			if (!SFM::HierarchicalCameraAlignmentTest())
-				return false;
-			// Hierarchical SFM tests - End-to-End
-			if (!SFM::HierarchicalSFMSplitMergeRoundtripTest())
-				return false;
-			if (!SFM::HierarchicalSFMWithRandomTransformTest())
-				return false;
+			// Run SFM smoke tests, in this order: the table names the test that failed
+			const std::vector<std::pair<const char*, std::function<bool()>>> sfmTests = {
+				// import is the pipeline's first stage, and every test below starts with one
+				SFM_TEST(ImportMetadataDeterminismTest),
+				SFM_TEST(ExifFocalUntrustedTest),
+				SFM_TEST(CameraTypeImportTest),
+				SFM_TEST(SphericalImageSizeImportTest),
+				SFM_TEST(TestSimilarityTransform),
+				SFM_TEST(KnownPosesImportTest),
+				SFM_TEST(FramesPoseFrameDetectionTest),
+				SFM_TEST(KnownPosePairSelectionTest),
+				SFM_TEST(SequentialPairsPriorTest),
+				SFM_TEST(AlignToPriorPosesTest),
+				SFM_TEST(AlignToPriorPosesCollinearTest),
+				SFM_TEST(AlignToGPSDegenerateTest),
+				SFM_TEST(PairsWeightingTest),
+				SFM_TEST(PairsWeightingDenseFrameEvidenceTest),
+				SFM_TEST(PairCompositeWeightTest),
+				SFM_TEST(ViewGraphCalibratorTest),
+				SFM_TEST(BAPinholeReprojectionJacobianTest),
+				SFM_TEST(ObservationSigmasTest),
+				SFM_TEST(DenseObservationWeightEstimateTest),
+				SFM_TEST(BAIntrinsicFlagsTest),
+				SFM_TEST(BundleAdjustmentPairConstraintTest),
+				SFM_TEST(ReprojectionReportOverUsedTest),
+				SFM_TEST(BAObservationCapTest),
+				SFM_TEST(BAObservationCapWideViewTest),
+				SFM_TEST(BAInnerIterationOrderTest),
+				SFM_TEST(BADenseWeightPerImageTest),
+				SFM_TEST(BADenseWeightCeilingTest),
+				SFM_TEST(RotationEstimatorTest),
+				SFM_TEST(RotationWeightScaleTest),
+				SFM_TEST(ContradictionCutTest),
+				SFM_TEST(TranslationCutTest),
+				SFM_TEST(FilteredSceneReloadTest),
+				SFM_TEST(ScaleEstimatorTest),
+				SFM_TEST(TranslationEstimatorTest),
+				SFM_TEST(TranslationNormalEquationsTest),
+				SFM_TEST(ScaleComponentsTest),
+				SFM_TEST(ScaleConjugateGradientsTest),
+				SFM_TEST(TripletStarInitTest),
+				SFM_TEST(PairScalesTest),
+				SFM_TEST(PreMatchTest),
+				SFM_TEST(PairMatcherTest),
+				SFM_TEST(MatchPairsFailureTest),
+				SFM_TEST(MatchRoundFatalSignalTest),
+				SFM_TEST(TwoViewTest),
+				SFM_TEST(FundamentalPoseTwoCamerasTest),
+				SFM_TEST(VocabularyTreeTest),
+				SFM_TEST(DenseWarpGridConventionTest),
+				SFM_TEST(DenseWarpTrackingTest),
+				SFM_TEST(DenseCoverageSampleTest),
+				SFM_TEST(DenseComplementaryDrawTest),
+				SFM_TEST(DenseFillDensityTest),
+				SFM_TEST(DenseFillCeilingTest),
+				SFM_TEST(DenseVerdictTest),
+				SFM_TEST(DenseGuidedMatchTest),
+				SFM_TEST(DenseGuidedBandTest),
+				SFM_TEST(BuildTracksConflictTest),
+				SFM_TEST(DenseAssemblyTest),
+				SFM_TEST(DenseFitWeightTest),
+				SFM_TEST(PlanarTwinSwitchTest),
+				SFM_TEST(DenseLensInlierTest),
+				SFM_TEST(DenseKeypointBoundaryTest),
+				SFM_TEST(SupplementEvidenceIsolationTest),
+				SFM_TEST(GlobalDescriptorsQueryTest),
+				SFM_TEST(RetrievalModeTest),
+				SFM_TEST(VocabularyIgnoresGlobalDescriptorsTest),
+				SFM_TEST(RoMa2PreprocessTest),
+				SFM_TEST(RoMa2ManifestVersionTest),
+				SFM_TEST(FlexGlueManifestTest),
+				SFM_TEST(ResolveModelPathTest),
+				SFM_TEST(RoMa2OnnxParityTest),
+				SFM_TEST(ROMA2ReconstructTest),
+				SFM_TEST(FlexGlueReconstructTest),
+				SFM_TEST(PipelineTest),
+				SFM_TEST(GPSPriorPoseUncertaintyTest),
+				SFM_TEST(PoseUncertaintyExportTest),
+				SFM_TEST(ReconstructSphericalSyntheticTest),
+				SFM_TEST(SphericalBottomBandTest),
+				SFM_TEST(SphericalBottomBandDenseTest),
+				SFM_TEST(FeatureTypeNameTest),
+				SFM_TEST(PairsMatcherSphericalTest),
+				SFM_TEST(MatchGeometricSphericalTest),
+				SFM_TEST(MatchGeometricLensTest),
+				SFM_TEST(LensFitRecoveryTest),
+				SFM_TEST(LensFitFocalTest),
+				SFM_TEST(LensFitRefusalTest),
+				SFM_TEST(LensFitMinimumPairsTest),
+				SFM_TEST(DenseReverifyPartitionTest),
+				SFM_TEST(DenseReverifyLensTest),
+				SFM_TEST(LensFitStageTest),
+				SFM_TEST(LensFitFocalStageTest),
+				SFM_TEST(LensFitUntrustedFocalTest),
+				SFM_TEST(CubeMapFaceRenderTest),
+				SFM_TEST(CubeMapBridgeGeometryTest),
+				SFM_TEST(CubeMapBridgeEndToEndTest),
+				SFM_TEST(CubeMapBridgeMVSLoadTest),
+				SFM_TEST(CubeMapBridgeMixedSceneTest),
+				SFM_TEST(CubeMapBridgeDropTopBottomTest),
+				{"RealImagesPipelineTest", [&]() { return SFM::RealImagesPipelineTest(verbose); }},
+				SFM_TEST(DefaultDetectorTest),
+				SFM_TEST(TripletFilterTest),
+				SFM_TEST(StarReferenceViewTest),
+				SFM_TEST(StarEvidenceTest),
+				SFM_TEST(StarScaleGaugeTest),
+				SFM_TEST(NearDuplicateYardstickTest),
+				SFM_TEST(ResectionLinkChecksTest),
+				SFM_TEST(ResectionWeakEvidenceTest),
+				SFM_TEST(ResectionNextImageOrderTest),
+				SFM_TEST(ResectionTriesEveryCandidateTest),
+				SFM_TEST(ResectionRefusedAverageTest),
+				SFM_TEST(ResectionStallRetryTest),
+				SFM_TEST(ResectionClosingAlwaysTest),
+				SFM_TEST(ResectionRemovalStallTest),
+				SFM_TEST(ResectionInlierBarTest),
+				SFM_TEST(ResectionDenseFitWeightTest),
+				SFM_TEST(ResectionWeightedInlierBarTest),
+				SFM_TEST(LinkWalksTest),
+				SFM_TEST(ResectionLinkGateTest),
+				SFM_TEST(RepeatedFullAdjustmentTest),
+				SFM_TEST(CappedAdjustmentTriangulationTest),
+				SFM_TEST(CappedSolveScaleTest),
+				SFM_TEST(DenseReprojectionBarTest),
+				SFM_TEST(FilterTracksUnposedTrackTest),
+				SFM_TEST(FilterTracksUntriangulatedTrackTest),
+				SFM_TEST(TriangulationFailureTest),
+				SFM_TEST(SphericalTriangulationTest),
+				SFM_TEST(ContradictingImagesTest),
+				// Hierarchical SFM tests - Phase 1: Scene Clustering
+				SFM_TEST(SceneClusterSingleClusterTest),
+				SFM_TEST(SceneClusterSizeConstraintsTest),
+				SFM_TEST(SceneClusterDisconnectedComponentsTest),
+				SFM_TEST(SceneClusterTargetSizeTest),
+				SFM_TEST(SceneClusterSeamTracksTest),
+				SFM_TEST(SceneClusterLeafMergeTest),
+				SFM_TEST(SceneClusterMemoryProtocolTest),
+				SFM_TEST(SceneClusterIDRemappingTest),
+				SFM_TEST(SceneClusterSmallClusterRescueTest),
+				SFM_TEST(SceneClusterSubFloorCouplingTest),
+				SFM_TEST(SceneClusterStandaloneCommunityTest),
+				SFM_TEST(SceneClusterCoupledOrphanSkippedTest),
+				SFM_TEST(SceneClusterBalanceCouplingTest),
+				SFM_TEST(SceneClusterThinStretchTest),
+				SFM_TEST(SceneBlocksInsertReleaseTest),
+				SFM_TEST(SceneBlocksInsertRebuildTest),
+				SFM_TEST(PoolResectionWrongClusterTest),
+				SFM_TEST(PoolResectionLinkOnlyTest),
+				// Hierarchical SFM tests - Phase 3: Global Alignment
+				SFM_TEST(GlobalAlignmentBuildGlobalToLocalMapTest),
+				SFM_TEST(GlobalAlignmentRotationAveragingExtendedTest),
+				SFM_TEST(GlobalAlignmentScaleAveragingExtendedTest),
+				SFM_TEST(GlobalAlignmentScaleAveragingFallbackTest),
+				SFM_TEST(GlobalAlignmentTranslationAveragingExtendedTest),
+				SFM_TEST(RobustAveragingScaleTest),
+				SFM_TEST(RobustAveragingTranslationTest),
+				SFM_TEST(SeamGraphConsensusTest),
+				SFM_TEST(ReadingWeightCamerasTest),
+				SFM_TEST(HeavyWrongChordTest),
+				SFM_TEST(TwoDirectionBridgeTest),
+				SFM_TEST(SymmetricBridgePairsTest),
+				SFM_TEST(OneCameraReadingTest),
+				SFM_TEST(ReweightingStartTest),
+				SFM_TEST(BarsReEntryTest),
+				SFM_TEST(RingPlacementTest),
+				SFM_TEST(CrossBlockJoinTest),
+				SFM_TEST(MergeJoinReprojectionTest),
+				SFM_TEST(MergeTrackLengthTest),
+				SFM_TEST(PooledSeamReadingTest),
+				SFM_TEST(MergeRoundsTest),
+				SFM_TEST(UnobservableScaleTest),
+				SFM_TEST(UnobservableScalePairTest),
+				SFM_TEST(AmbiguousPairTest),
+				SFM_TEST(ContradictedPlacementTest),
+				SFM_TEST(PairAgreementWeightTest),
+				SFM_TEST(RivalModesOnCycleTest),
+				SFM_TEST(OneCameraSideTest),
+				SFM_TEST(OneCameraDirectionTest),
+				SFM_TEST(RigScaleTwoCamerasTest),
+				SFM_TEST(RingLoopClosureTest),
+				SFM_TEST(BiasedClosingSeamTest),
+				SFM_TEST(WeakClosingSeamTest),
+				SFM_TEST(SecondModelTest),
+				SFM_TEST(FoldedBlockTest),
+				SFM_TEST(FoldedBlock45Test),
+				SFM_TEST(FalseChordTest),
+				SFM_TEST(SeamInliersBecomeTracksTest),
+				SFM_TEST(UnplacedBlocksReportedTest),
+				SFM_TEST(BentBlocksAdjustmentTest),
+				SFM_TEST(BentBlockClosureTest),
+				SFM_TEST(BentRingKeepsSeamsTest),
+				SFM_TEST(GlobalAlignmentMergeSingleSceneTest),
+				SFM_TEST(GlobalAlignmentTrackMergeDuplicateImageGuardTest),
+				SFM_TEST(GlobalAlignmentTrackMerge3DProximityGuardTest),
+				SFM_TEST(HierarchicalCameraAlignmentTest),
+				// Hierarchical SFM tests - End-to-End
+				SFM_TEST(HierarchicalSFMSplitMergeRoundtripTest),
+				SFM_TEST(HierarchicalSFMWithRandomTransformTest),
+			};
+			for (const auto& test : sfmTests) {
+				if (!test.second()) {
+					VERBOSE("ERROR: %s failed!", test.first);
+					return false;
+				}
+			}
 		} else {
 			// Run MVS pipeline test
 			if (!MVS::PipelineTest(forceCPU, verbose))
