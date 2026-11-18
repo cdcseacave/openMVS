@@ -68,13 +68,21 @@ DEFINE_LOG_NAME(lt, _T("TestSFM "));
 
 namespace SFM {
 
-// Test 1: Single cluster passthrough and disabled clustering
-bool SceneClusterSingleClusterTest()
+// The clustering of a view graph into sub-scenes (SceneCluster::Partition, ExtractBlocks), on generated scenes:
+// (1) a scene within the view limit, and one with the limit disabled (0), stay a single sub-scene holding every image;
+// (2) the size constraints on two clusters of 15 images: no sub-scene past the maximum and its slack, no image in two
+//     sub-scenes and at most three dropped as undersized;
+// (3) two groups with no pair between them (and no track across) never share a sub-scene;
+// (4) on two clusters of 12, the memory protocol (the keypoints of the assigned images moved to the sub-scenes, only the
+//     cross-sub-scene pairs left in the global scene, the pairs conserved) and the ID remapping of the same sub-scenes
+//     (the local to global maps hold valid IDs once, the tracks' observations and the pairs of a sub-scene index its own
+//     images and keypoints, pairs ordered).
+bool SceneClusterBasicsTest()
 {
-	TD_TIMER_START();
+	TestScope scope("SceneClusterBasicsTest");
 
-	// Sub-test A: nViews <= maxViewsPerCluster → no split
-	{
+	// 1. a single sub-scene: within the limit, and with the limit off
+	for (const unsigned maxViews : {10u, 0u}) {
 		Scene scene;
 		SceneConfig cfg;
 		cfg.numImages = 8;
@@ -83,344 +91,131 @@ bool SceneClusterSingleClusterTest()
 		cfg.generateDescriptors = true;
 		GenerateTestScene(scene, cfg);
 		ComputePairsWeights(scene);
-
 		ClusterConfig clusterCfg;
-		clusterCfg.maxViewsPerCluster = 10; // 8 <= 10, no split
+		clusterCfg.maxViewsPerCluster = maxViews; // 8 <= 10: no split; 0: clustering disabled
+		SceneCluster cluster(scene, clusterCfg);
+		const std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition());
+		TEST_CHECK(subScenes.size() == 1, "maxViewsPerCluster %u: expected 1 sub-scene, got %u", maxViews, (unsigned)subScenes.size());
+		TEST_CHECK(subScenes[0].images.size() == 8, "maxViewsPerCluster %u: expected 8 images, got %u", maxViews, (unsigned)subScenes[0].images.size());
+	}
+
+	// 2. size constraints and coverage
+	{
+		Scene scene;
+		GenerateTwoClusterScene(scene, 15, 15, 4, 40);
+		const unsigned totalImages = (unsigned)scene.images.size();
+		ClusterConfig clusterCfg;
+		clusterCfg.maxViewsPerCluster = 18;
+		clusterCfg.targetViewsPerCluster = 12;
+		clusterCfg.minViewsPerCluster = 5;
+		clusterCfg.maxOverCapacity = 5;
 		SceneCluster cluster(scene, clusterCfg);
 		std::vector<IIndexArr> localToGlobals;
-		std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-		if (subScenes.size() != 1) {
-			VERBOSE("SceneClusterSingleClusterTest FAILED: expected 1 sub-scene, got %u", (unsigned)subScenes.size());
-			return false;
+		const std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
+		TEST_CHECK(subScenes.size() >= 2, "size constraints: expected >= 2 sub-scenes, got %u", (unsigned)subScenes.size());
+		for (unsigned s = 0; s < subScenes.size(); ++s)
+			TEST_CHECK(subScenes[s].images.size() <= clusterCfg.maxViewsPerCluster + clusterCfg.maxOverCapacity,
+				"size constraints: sub-scene %u has %u images > max %u", s, (unsigned)subScenes[s].images.size(),
+				clusterCfg.maxViewsPerCluster + clusterCfg.maxOverCapacity);
+		std::vector<int> imageCounts(totalImages, 0);
+		for (const IIndexArr& localToGlobal : localToGlobals)
+			for (IIndex globalID : localToGlobal)
+				if (globalID < totalImages)
+					++imageCounts[globalID];
+		unsigned missingImages = 0;
+		for (unsigned i = 0; i < totalImages; ++i) {
+			TEST_CHECK(imageCounts[i] <= 1, "size constraints: image %u in %d sub-scenes", i, imageCounts[i]);
+			missingImages += imageCounts[i] == 0;
 		}
-		// The scene was std::move'd into subScenes[0]
-		if (subScenes[0].images.size() != 8) {
-			VERBOSE("SceneClusterSingleClusterTest FAILED: expected 8 images, got %u", (unsigned)subScenes[0].images.size());
-			return false;
-		}
+		TEST_CHECK(missingImages <= 3, "size constraints: %u missing images, at most 3 may be dropped as undersized", missingImages);
 	}
 
-	// Sub-test B: maxViewsPerCluster == 0 → disabled
+	// 3. disconnected components get split into separate clusters: 20 images in two groups with no pair between them
 	{
 		Scene scene;
 		SceneConfig cfg;
-		cfg.numImages = 8;
-		cfg.numPoints = 60;
-		cfg.generatePairs = true;
+		cfg.numImages = 20;
+		cfg.numPoints = 80;
+		cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
+		cfg.rotationAngleStep = 18.0; // 360/20
 		cfg.generateDescriptors = true;
+		cfg.generatePairs = true;
 		GenerateTestScene(scene, cfg);
 		ComputePairsWeights(scene);
-
+		RFOREACH(i, scene.pairs)
+			if ((scene.pairs[i].ID1 < 10) != (scene.pairs[i].ID2 < 10))
+				scene.pairs.RemoveAtMove(i); // across the groups A (0-9) and B (10-19)
+		// the two groups were never seen together, so no track may span them either: the split rebuilds
+		// them from the pairs that remain
+		scene.tracks.Release();
 		ClusterConfig clusterCfg;
-		clusterCfg.maxViewsPerCluster = 0;
+		clusterCfg.maxViewsPerCluster = 15; // smaller than 20 to force the split
+		clusterCfg.minViewsPerCluster = 5;
 		SceneCluster cluster(scene, clusterCfg);
-		std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition());
-
-		if (subScenes.size() != 1) {
-			VERBOSE("SceneClusterSingleClusterTest FAILED: disabled clustering should return 1 sub-scene, got %u", (unsigned)subScenes.size());
-			return false;
+		std::vector<IIndexArr> localToGlobals;
+		const std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
+		TEST_CHECK(subScenes.size() >= 2, "disconnected groups: expected >= 2 sub-scenes, got %u", (unsigned)subScenes.size());
+		for (unsigned s = 0; s < localToGlobals.size(); ++s) {
+			bool hasFirst = false, hasSecond = false;
+			for (IIndex gid : localToGlobals[s])
+				(gid < 10 ? hasFirst : hasSecond) = true;
+			TEST_CHECK(!(hasFirst && hasSecond), "disconnected groups: sub-scene %u mixes the groups", s);
 		}
 	}
 
-	VERBOSE("SceneClusterSingleClusterTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// Test 2: Size constraints and coverage
-bool SceneClusterSizeConstraintsTest()
-{
-	TD_TIMER_START();
-
-	Scene scene;
-	GenerateTwoClusterScene(scene, 15, 15, 4, 40);
-
-	const unsigned totalImages = (unsigned)scene.images.size();
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 18;
-	clusterCfg.targetViewsPerCluster = 12;
-	clusterCfg.minViewsPerCluster = 5;
-	clusterCfg.maxOverCapacity = 5;
-
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	if (subScenes.size() < 2) {
-		VERBOSE("SceneClusterSizeConstraintsTest FAILED: expected >= 2 sub-scenes, got %u", (unsigned)subScenes.size());
-		return false;
-	}
-
-	// Verify size constraints
-	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		const unsigned sz = (unsigned)subScenes[s].images.size();
-		if (sz > clusterCfg.maxViewsPerCluster + clusterCfg.maxOverCapacity) {
-			VERBOSE("SceneClusterSizeConstraintsTest FAILED: sub-scene %u has %u images > max %u",
-				s, sz, clusterCfg.maxViewsPerCluster + clusterCfg.maxOverCapacity);
-			return false;
-		}
-	}
-
-	// Verify every image appears exactly once
-	std::vector<int> imageCounts(totalImages, 0);
-	for (unsigned s = 0; s < localToGlobals.size(); ++s) {
-		for (IIndex globalID : localToGlobals[s]) {
-			if (globalID < totalImages)
-				++imageCounts[globalID];
-		}
-	}
-	unsigned missingImages = 0;
-	for (unsigned i = 0; i < totalImages; ++i) {
-		if (imageCounts[i] > 1) {
-			VERBOSE("SceneClusterSizeConstraintsTest FAILED: image %u in %d sub-scenes", i, imageCounts[i]);
-			return false;
-		}
-		if (imageCounts[i] == 0)
-			++missingImages;
-	}
-	// Allow a few images to be dropped (undersized clusters)
-	if (missingImages > 3) {
-		VERBOSE("SceneClusterSizeConstraintsTest FAILED: %u missing images (> 3 allowed)", missingImages);
-		return false;
-	}
-
-	VERBOSE("SceneClusterSizeConstraintsTest PASSED: %u sub-scenes, %u missing images (%s)",
-		(unsigned)subScenes.size(), missingImages, TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// Test 3: Disconnected components get split into separate clusters
-bool SceneClusterDisconnectedComponentsTest()
-{
-	TD_TIMER_START();
-
-	// Create 20 images in two disconnected groups
-	Scene scene;
-	SceneConfig cfg;
-	cfg.numImages = 20;
-	cfg.numPoints = 80;
-	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
-	cfg.rotationAngleStep = 18.0; // 360/20
-	cfg.generateDescriptors = true;
-	cfg.generatePairs = true;
-	GenerateTestScene(scene, cfg);
-	ComputePairsWeights(scene);
-
-	// Remove all cross-group pairs (group A: 0-9, group B: 10-19)
-	RFOREACH(i, scene.pairs) {
-		const ImagePair& pair = scene.pairs[i];
-		const bool aInFirst = pair.ID1 < 10;
-		const bool bInFirst = pair.ID2 < 10;
-		if (aInFirst != bInFirst) {
-			scene.pairs.RemoveAtMove(i);
-		}
-	}
-	// the two groups were never seen together, so no track may span them either: the split rebuilds
-	// them from the pairs that remain
-	scene.tracks.Release();
-
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 15; // Smaller than 20 to force split attempt
-	clusterCfg.minViewsPerCluster = 5;
-
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	if (subScenes.size() < 2) {
-		VERBOSE("SceneClusterDisconnectedComponentsTest FAILED: expected >= 2 sub-scenes, got %u", (unsigned)subScenes.size());
-		return false;
-	}
-
-	// Verify the two groups are separated: check no sub-scene mixes images from both groups
-	for (unsigned s = 0; s < localToGlobals.size(); ++s) {
-		bool hasFirst = false, hasSecond = false;
-		for (IIndex gid : localToGlobals[s]) {
-			if (gid < 10) hasFirst = true;
-			else hasSecond = true;
-		}
-		if (hasFirst && hasSecond) {
-			VERBOSE("SceneClusterDisconnectedComponentsTest FAILED: sub-scene %u mixes disconnected groups", s);
-			return false;
-		}
-	}
-
-	VERBOSE("SceneClusterDisconnectedComponentsTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// Test 4: Memory protocol — keypoints MOVED, cross-pairs LEFT
-bool SceneClusterMemoryProtocolTest()
-{
-	TD_TIMER_START();
-
+	// 4. memory protocol (keypoints MOVED, cross-pairs LEFT) and ID remapping, on two clusters of 12
 	Scene scene;
 	GenerateTwoClusterScene(scene, 12, 12, 4, 40, 80);
-
-	// Record pre-split state
 	const unsigned totalImages = (unsigned)scene.images.size();
-	std::vector<size_t> origKeypointCounts(totalImages);
-	for (unsigned i = 0; i < totalImages; ++i)
-		origKeypointCounts[i] = scene.images[i].keypoints.size();
 	const unsigned origPairCount = (unsigned)scene.pairs.size();
-
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 14;
 	clusterCfg.minViewsPerCluster = 5;
 	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
 	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
 	clusterCfg.minClusterDegree = 0;
-
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	if (subScenes.size() < 2) {
-		VERBOSE("SceneClusterMemoryProtocolTest FAILED: expected >= 2 sub-scenes, got %u", (unsigned)subScenes.size());
-		return false;
-	}
-
-	// Build set of assigned global images
-	std::set<IIndex> assignedImages;
-	for (const IIndexArr& mapping : localToGlobals)
-		for (IIndex gid : mapping)
-			assignedImages.insert(gid);
-
-	// Check 1: Global images have empty keypoints (for assigned images)
-	for (IIndex gid : assignedImages) {
-		if (!scene.images[gid].keypoints.empty()) {
-			VERBOSE("SceneClusterMemoryProtocolTest FAILED: global image %u still has keypoints after split", gid);
-			return false;
+	const std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
+	TEST_CHECK(subScenes.size() >= 2, "memory protocol: expected >= 2 sub-scenes, got %u", (unsigned)subScenes.size());
+	std::vector<int> subSceneOf(totalImages, -1);
+	FOREACH(s, localToGlobals)
+		for (const IIndex gid : localToGlobals[s]) {
+			TEST_CHECK(gid < totalImages, "ID remapping: invalid global ID %u in sub-scene %u", gid, (unsigned)s);
+			TEST_CHECK(subSceneOf[gid] < 0, "ID remapping: global ID %u in multiple sub-scenes", gid);
+			subSceneOf[gid] = (int)s;
+			TEST_CHECK(scene.images[gid].keypoints.empty(), "memory protocol: global image %u still has keypoints after the split", gid);
 		}
-	}
-
-	// Check 2: Sub-scene images have non-empty keypoints
 	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		for (const Image& img : subScenes[s].images) {
-			if (img.keypoints.empty()) {
-				VERBOSE("SceneClusterMemoryProtocolTest FAILED: sub-scene %u has image with empty keypoints", s);
-				return false;
+		const Scene& sub = subScenes[s];
+		for (const Image& img : sub.images)
+			TEST_CHECK(!img.keypoints.empty(), "memory protocol: sub-scene %u has an image with empty keypoints", s);
+		for (const Track& track : sub.tracks)
+			for (const Observation& obs : track) {
+				TEST_CHECK(obs.imageID < sub.images.size(), "ID remapping: track obs imageID %u >= %u in sub-scene %u", obs.imageID, (unsigned)sub.images.size(), s);
+				TEST_CHECK(obs.featureID < sub.images[obs.imageID].keypoints.size(), "ID remapping: track obs featureID %u >= %u in sub-scene %u",
+					obs.featureID, (unsigned)sub.images[obs.imageID].keypoints.size(), s);
 			}
+		for (const ImagePair& pair : sub.pairs) {
+			TEST_CHECK(pair.ID1 < sub.images.size() && pair.ID2 < sub.images.size(), "ID remapping: pair (%u,%u) exceeds image count %u in sub-scene %u",
+				pair.ID1, pair.ID2, (unsigned)sub.images.size(), s);
+			TEST_CHECK(pair.ID1 < pair.ID2, "ID remapping: pair (%u,%u) not ordered in sub-scene %u", pair.ID1, pair.ID2, s);
 		}
 	}
-
-	// Check 3: Global scene retains only cross-sub-scene pairs
+	// the global scene retains only the cross-sub-scene pairs, and no pair is lost
+	unsigned subScenePairCount = 0, globalPairCount = 0;
+	for (const Scene& sub : subScenes)
+		subScenePairCount += (unsigned)sub.pairs.size();
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.HasMatches())
 			continue;
-		// Both images must belong to different sub-scenes
-		int sceneA = -1, sceneB = -1;
-		for (unsigned s = 0; s < localToGlobals.size(); ++s) {
-			for (IIndex gid : localToGlobals[s]) {
-				if (gid == pair.ID1) sceneA = (int)s;
-				if (gid == pair.ID2) sceneB = (int)s;
-			}
-		}
-		if (sceneA == sceneB && sceneA != -1) {
-			VERBOSE("SceneClusterMemoryProtocolTest FAILED: intra-cluster pair (%u,%u) remains in global", pair.ID1, pair.ID2);
-			return false;
-		}
+		++globalPairCount;
+		TEST_CHECK(subSceneOf[pair.ID1] != subSceneOf[pair.ID2] || subSceneOf[pair.ID1] < 0, "memory protocol: intra-cluster pair (%u,%u) remains in the global scene", pair.ID1, pair.ID2);
 	}
-
-	// Check 4: Total pair count conservation
-	unsigned subScenePairCount = 0;
-	for (const Scene& sub : subScenes)
-		subScenePairCount += (unsigned)sub.pairs.size();
-	unsigned globalPairCount = 0;
-	for (const ImagePair& p : scene.pairs)
-		if (p.HasMatches())
-			++globalPairCount;
-	if (subScenePairCount + globalPairCount != origPairCount) {
-		VERBOSE("SceneClusterMemoryProtocolTest FAILED: pair count mismatch: %u + %u != %u",
-			subScenePairCount, globalPairCount, origPairCount);
-		return false;
-	}
-
-	VERBOSE("SceneClusterMemoryProtocolTest PASSED: %u sub-scenes, %u cross-pairs remain (%s)",
-		(unsigned)subScenes.size(), globalPairCount, TD_TIMER_GET_FMT().c_str());
-	return true;
+	TEST_CHECK(subScenePairCount + globalPairCount == origPairCount, "memory protocol: pair count mismatch: %u + %u != %u", subScenePairCount, globalPairCount, origPairCount);
+	return scope.Pass("single sub-scene, size constraints, disconnected groups; memory protocol and ID remapping on %u sub-scenes, %u cross-pairs left", (unsigned)subScenes.size(), globalPairCount);
 }
-
-// Test 5: ID remapping consistency
-bool SceneClusterIDRemappingTest()
-{
-	TD_TIMER_START();
-
-	Scene scene;
-	GenerateTwoClusterScene(scene, 12, 12, 4, 40, 80);
-
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 14;
-	clusterCfg.minViewsPerCluster = 5;
-	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
-	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
-	clusterCfg.minClusterDegree = 0;
-
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	if (subScenes.size() < 2) {
-		VERBOSE("SceneClusterIDRemappingTest FAILED: expected >= 2 sub-scenes");
-		return false;
-	}
-
-	// Check 1: localToGlobal maps to valid global IDs, no duplicates across sub-scenes
-	std::set<IIndex> allGlobalIDs;
-	for (unsigned s = 0; s < localToGlobals.size(); ++s) {
-		for (IIndex localID = 0; localID < localToGlobals[s].size(); ++localID) {
-			const IIndex globalID = localToGlobals[s][localID];
-			if (globalID >= scene.images.size()) {
-				VERBOSE("SceneClusterIDRemappingTest FAILED: invalid global ID %u in sub-scene %u", globalID, s);
-				return false;
-			}
-			if (allGlobalIDs.count(globalID)) {
-				VERBOSE("SceneClusterIDRemappingTest FAILED: global ID %u in multiple sub-scenes", globalID);
-				return false;
-			}
-			allGlobalIDs.insert(globalID);
-		}
-	}
-
-	// Check 2: Track observations use valid local IDs
-	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		const Scene& sub = subScenes[s];
-		for (const Track& track : sub.tracks) {
-			for (const Observation& obs : track) {
-				if (obs.imageID >= sub.images.size()) {
-					VERBOSE("SceneClusterIDRemappingTest FAILED: track obs imageID %u >= %u in sub-scene %u",
-						obs.imageID, (unsigned)sub.images.size(), s);
-					return false;
-				}
-				if (obs.featureID >= sub.images[obs.imageID].keypoints.size()) {
-					VERBOSE("SceneClusterIDRemappingTest FAILED: track obs featureID %u >= %u in sub-scene %u",
-						obs.featureID, (unsigned)sub.images[obs.imageID].keypoints.size(), s);
-					return false;
-				}
-			}
-		}
-	}
-
-	// Check 3: Sub-scene pair IDs are valid local indices
-	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		const Scene& sub = subScenes[s];
-		for (const ImagePair& pair : sub.pairs) {
-			if (pair.ID1 >= sub.images.size() || pair.ID2 >= sub.images.size()) {
-				VERBOSE("SceneClusterIDRemappingTest FAILED: pair (%u,%u) exceeds image count %u in sub-scene %u",
-					pair.ID1, pair.ID2, (unsigned)sub.images.size(), s);
-				return false;
-			}
-			if (pair.ID1 >= pair.ID2) {
-				VERBOSE("SceneClusterIDRemappingTest FAILED: pair (%u,%u) not ordered in sub-scene %u",
-					pair.ID1, pair.ID2, s);
-				return false;
-			}
-		}
-	}
-
-	VERBOSE("SceneClusterIDRemappingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
+/*----------------------------------------------------------------*/
 
 // The small-cluster pass of SceneCluster::Partition, on view graphs of two established clusters A and B and a small community W.
 // A and B are built as a hub and a chain (so the greedy assembles them one image at a time), W as a clique of weight 50 (3000 in
@@ -576,122 +371,73 @@ bool SceneClusterSmallClusterPassTest()
 }
 /*----------------------------------------------------------------*/
 
-// The balance pass (RefineClustersBalance) never takes an image whose departure leaves part of its
-// cluster hanging under the coupling floor: X holds a 10-image body, a 5-image stretch and the one
-// image bridging them, which leans toward the smaller cluster Y (affinity 1.5, past the pass's 0.7);
-// moving it would leave the stretch on the body by a pair of weight 4 against its own 550. It stays,
-// and so does the stretch, where moving the bridge would strand it.
-bool SceneClusterBalanceCouplingTest()
+// The refinement passes of the clustering, on hand-made view graphs (PairGraph: every pair weighs exactly its number, the
+// bodies are chains of (k,k+1) at 100 and (k,k+2) at 50):
+// (1) the balance pass (RefineClustersBalance) never takes an image whose departure leaves part of its cluster hanging
+//     under the coupling floor: X holds a 10-image body, a 5-image stretch and the one image bridging them, which leans
+//     toward the smaller cluster Y (affinity 1.5, past the pass's 0.7); moving it would leave the stretch on the body by a
+//     pair of weight 4 against its own 550. It stays, and so does the stretch, where moving the bridge would strand it;
+// (2) the thin-waist check (RefineClustersSplitThinWaist) weighs every prefix cut along the Fiedler order: a 4-image
+//     stretch hanging on its 12-image cluster C by a pair of weight 5 (coupling 0.0125), too small for a sub-scene of its
+//     own and heavily coupled to the cluster D (250 against its own 400), moves whole to D; with no neighbour holding it at
+//     the floor it stays where it is; and an 8-image side under-coupled to its cluster, large enough to stand, is split
+//     off as before.
+bool SceneClusterRefinePassesTest()
 {
-	TD_TIMER_START();
-
-	// images: body 0-9, bridge 10, stretch 11-15 (cluster X, 16 images); Y 16-23 (8 images)
-	Scene scene;
-	SceneConfig cfg;
-	cfg.numImages = 24;
-	cfg.numPoints = 0;
-	cfg.generatePairs = false;
-	cfg.generateDescriptors = false;
-	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
-	cfg.rotationAngleStep = 360.0 / 24;
-	GenerateTestScene(scene, cfg);
-	scene.pairs.clear();
-	scene.tracks.clear();
-
-	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.75 (0.25 + 0.75 = 1)
-	const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
-		ImagePair pair(a, b);
-		pair.weightedInliers = weight;
-		pair.weightSpatial = 1.f;
-		pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-		pair.weightConnectivity = 1.f;
-		pair.weightTriplet = 0.75f;
-		scene.pairs.emplace_back(std::move(pair));
+	TestScope scope("SceneClusterRefinePassesTest");
+	// the body of images [first, last]: a chain of 100 and the pairs two apart at 50
+	const auto Body = [](PairGraph& g, IIndex first, IIndex last) {
+		g.Chain(first, last, 100.f);
+		for (IIndex k = first; k + 1 < last; ++k)
+			g.Pair(k, k + 2, 50.f);
 	};
-	const auto AddChain = [&](IIndex first, IIndex last) {
-		for (IIndex k = first; k < last; ++k) AddPair(k, k + 1, 100.f);
-		for (IIndex k = first; k + 1 < last; ++k) AddPair(k, k + 2, 50.f);
+	// the images [first, last) as one cluster
+	const auto Range = [](IIndex first, IIndex last) {
+		IIndexArr cluster;
+		for (IIndex i = first; i < last; ++i)
+			cluster.push_back(i);
+		return cluster;
 	};
-	AddChain(0, 9);                     // the body
-	AddChain(11, 15);                   // the stretch: internal weight 4 x 100 + 3 x 50 = 550
-	AddChain(16, 23);                   // Y
-	AddPair(9, 10, 100.f); AddPair(8, 10, 50.f);    // the bridge holds the body: 150
-	AddPair(10, 11, 100.f); AddPair(10, 12, 50.f);  // and the stretch: 150
-	AddPair(9, 11, 4.f);                            // the stretch's own link to the body, under the floor
-	AddPair(10, 16, 300.f); AddPair(10, 17, 150.f); // and leans toward Y: 450 against its 300 in X
+	const auto Holds = [](const IIndexArr& cluster, IIndex i) { return std::find(cluster.begin(), cluster.end(), i) != cluster.end(); };
 
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 20;
-	clusterCfg.targetViewsPerCluster = 16;
-	clusterCfg.minViewsPerCluster = 4;
-	clusterCfg.minWaistSideViews = 3;
-	clusterCfg.minClusterDegree = 0;
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> clusters(2);
-	for (IIndex i = 0; i <= 15; ++i) clusters[0].push_back(i);
-	for (IIndex i = 16; i <= 23; ++i) clusters[1].push_back(i);
-	cluster.RefineClustersBalance(clusters);
-
-	const auto Holds = [&](size_t c, IIndex i) { return std::find(clusters[c].begin(), clusters[c].end(), i) != clusters[c].end(); };
-	for (IIndex i = 0; i <= 15; ++i) {
-		if (!Holds(0, i)) {
-			VERBOSE("SceneClusterBalanceCouplingTest FAILED: image %u left X, %s", i,
+	// 1. balance coupling: images body 0-9, bridge 10, stretch 11-15 (cluster X, 16 images); Y 16-23 (8 images)
+	{
+		Scene scene;
+		PairGraph g(scene, 24);
+		Body(g, 0, 9);                      // the body
+		Body(g, 11, 15);                    // the stretch: internal weight 4 x 100 + 3 x 50 = 550
+		Body(g, 16, 23);                    // Y
+		g.Pair(9, 10, 100.f); g.Pair(8, 10, 50.f);    // the bridge holds the body: 150
+		g.Pair(10, 11, 100.f); g.Pair(10, 12, 50.f);  // and the stretch: 150
+		g.Pair(9, 11, 4.f);                           // the stretch's own link to the body, under the floor
+		g.Pair(10, 16, 300.f); g.Pair(10, 17, 150.f); // and leans toward Y: 450 against its 300 in X
+		ClusterConfig clusterCfg;
+		clusterCfg.maxViewsPerCluster = 20;
+		clusterCfg.targetViewsPerCluster = 16;
+		clusterCfg.minViewsPerCluster = 4;
+		clusterCfg.minWaistSideViews = 3;
+		clusterCfg.minClusterDegree = 0;
+		SceneCluster cluster(scene, clusterCfg);
+		std::vector<IIndexArr> clusters{Range(0, 16), Range(16, 24)};
+		cluster.RefineClustersBalance(clusters);
+		for (IIndex i = 0; i <= 15; ++i)
+			TEST_CHECK(Holds(clusters[0], i), "balance coupling: image %u left X, %s", i,
 				i == 10 ? "the bridge whose departure strands the stretch under the floor" : "an image the fixture never offers Y");
-			return false;
-		}
 	}
-	VERBOSE("SceneClusterBalanceCouplingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
 
-// The thin-waist check (RefineClustersSplitThinWaist) weighs every prefix cut along the Fiedler order:
-// a 4-image stretch hanging on its 12-image cluster C by a pair of weight 5 (coupling 0.0125), too
-// small for a sub-scene of its own and heavily coupled to the cluster D (250 against its own 400), moves
-// whole to D; with no neighbour holding it at the floor it stays where it is; and an 8-image side
-// under-coupled to its cluster, large enough to stand, is split off as before
-bool SceneClusterThinStretchTest()
-{
-	TD_TIMER_START();
-
+	// 2. thin stretch: C is the body 0-11 and the stretch 12..; D the 12 images after it
 	struct Variant { const char* name; unsigned stretch; bool linkedToD; };
 	for (const Variant& variant : {Variant{"a stretch D holds", 4, true}, Variant{"a stretch nothing holds", 4, false}, Variant{"a side that can stand", 8, true}}) {
-		// C: body 0-11 and the stretch 12..; D: the 12 images after it
 		const IIndex firstD = 12 + variant.stretch, numImages = firstD + 12;
 		Scene scene;
-		SceneConfig cfg;
-		cfg.numImages = numImages;
-		cfg.numPoints = 0;
-		cfg.generatePairs = false;
-		cfg.generateDescriptors = false;
-		cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
-		cfg.rotationAngleStep = 360.0 / numImages;
-		GenerateTestScene(scene, cfg);
-		scene.pairs.clear();
-		scene.tracks.clear();
-
-		// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.75 (0.25 + 0.75 = 1)
-		const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
-			ImagePair pair(a, b);
-			pair.weightedInliers = weight;
-			pair.weightSpatial = 1.f;
-			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-			pair.weightConnectivity = 1.f;
-			pair.weightTriplet = 0.75f;
-			scene.pairs.emplace_back(std::move(pair));
-		};
-		const auto AddChain = [&](IIndex first, IIndex last) {
-			for (IIndex k = first; k < last; ++k) AddPair(k, k + 1, 100.f);
-			for (IIndex k = first; k + 1 < last; ++k) AddPair(k, k + 2, 50.f);
-		};
-		AddChain(0, 11);
-		AddChain(12, firstD - 1);
-		AddChain(firstD, numImages - 1);
-		AddPair(11, 12, 5.f); // the stretch's only link to its body
+		PairGraph g(scene, numImages);
+		Body(g, 0, 11);
+		Body(g, 12, firstD - 1);
+		Body(g, firstD, numImages - 1);
+		g.Pair(11, 12, 5.f); // the stretch's only link to its body
 		if (variant.linkedToD) {
-			AddPair(12, firstD, 100.f); AddPair(13, firstD + 1, 100.f); AddPair(14, firstD + 2, 50.f);
+			g.Pair(12, firstD, 100.f); g.Pair(13, firstD + 1, 100.f); g.Pair(14, firstD + 2, 50.f);
 		}
-
 		ClusterConfig clusterCfg;
 		clusterCfg.maxViewsPerCluster = 24;
 		clusterCfg.minViewsPerCluster = 6;
@@ -699,46 +445,33 @@ bool SceneClusterThinStretchTest()
 		clusterCfg.minWaistSideViews = 3;
 		clusterCfg.minClusterDegree = 0;
 		SceneCluster cluster(scene, clusterCfg);
-		std::vector<IIndexArr> clusters(2);
-		for (IIndex i = 0; i < firstD; ++i) clusters[0].push_back(i);
-		for (IIndex i = firstD; i < numImages; ++i) clusters[1].push_back(i);
+		std::vector<IIndexArr> clusters{Range(0, firstD), Range(firstD, numImages)};
 		cluster.RefineClustersSplitThinWaist(clusters);
 
 		// the cluster holding image 12 (the stretch's first), image 0 (the body) and image firstD (D)
 		const auto ClusterOf = [&](IIndex img) {
-			for (size_t ci = 0; ci < clusters.size(); ++ci)
-				if (std::find(clusters[ci].begin(), clusters[ci].end(), img) != clusters[ci].end())
+			FOREACH(ci, clusters)
+				if (Holds(clusters[ci], img))
 					return (int)ci;
 			return -1;
 		};
 		unsigned numClusters = 0;
 		for (const IIndexArr& c : clusters)
-			if (!c.empty()) ++numClusters;
+			numClusters += !c.empty();
 		const int cBody = ClusterOf(0), cStretch = ClusterOf(12), cD = ClusterOf(firstD);
-		bool ok = true;
 		for (IIndex i = 12; i < firstD; ++i)
-			if (ClusterOf(i) != cStretch)
-				ok = false; // the stretch split instead of moving or staying whole
-		if (ok) {
-			if (variant.stretch >= clusterCfg.minViewsPerCluster)
-				// large enough to stand on its own: split off as its own cluster
-				ok = numClusters == 3 && cBody != cStretch && cStretch != cD && cBody != cD;
-			else if (variant.linkedToD)
-				// too small to stand, held more by D than by its own cluster: moves whole to D
-				ok = numClusters == 2 && cStretch == cD && cBody != cStretch;
-			else
-				// too small to stand and no neighbour holds it better: stays in place
-				ok = numClusters == 2 && cStretch == cBody && cBody != cD;
-		}
-		if (!ok) {
-			VERBOSE("SceneClusterThinStretchTest FAILED: %s, %u clusters, image 0 in %d, image 12 in %d, image %u in %d",
-				variant.name, numClusters, cBody, cStretch, firstD, cD);
-			return false;
-		}
+			TEST_CHECK(ClusterOf(i) == cStretch, "thin stretch, %s: the stretch split instead of moving or staying whole (image %u in %d, image 12 in %d)",
+				variant.name, i, ClusterOf(i), cStretch);
+		bool ok;
+		if (variant.stretch >= clusterCfg.minViewsPerCluster) // large enough to stand on its own: split off as its own cluster
+			ok = numClusters == 3 && cBody != cStretch && cStretch != cD && cBody != cD;
+		else if (variant.linkedToD) // too small to stand, held more by D than by its own cluster: moves whole to D
+			ok = numClusters == 2 && cStretch == cD && cBody != cStretch;
+		else // too small to stand and no neighbour holds it better: stays in place
+			ok = numClusters == 2 && cStretch == cBody && cBody != cD;
+		TEST_CHECK(ok, "thin stretch, %s: %u clusters, image 0 in %d, image 12 in %d, image %u in %d", variant.name, numClusters, cBody, cStretch, firstD, cD);
 	}
-
-	VERBOSE("SceneClusterThinStretchTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
+	return scope.Pass("the balance pass keeps the bridge and the stretch; the thin-waist check moves a held stretch whole, leaves an unheld one, splits a side that can stand");
 }
 /*----------------------------------------------------------------*/
 
@@ -801,200 +534,133 @@ static void BuildChainScene(unsigned numImages, unsigned tracksPerStart,
 	ComputePairsWeights(scene);
 }
 
-// Four hundred images walking a whole ring: the sub-scenes must come out sized for the merge -- none
-// under the floor, none over the ceiling and its slack, half of them around the target -- and every
-// two that touch must share a seam the merge can register
-bool SceneClusterTargetSizeTest()
+// Clustering for the merge:
+// (1) four hundred images walking a whole ring (40 blocks of 10): the sub-scenes must come out sized for the merge -- none under the floor, none over
+//     the ceiling and its slack, half of them around the target, every image in exactly one -- and every two that touch must
+//     share a seam the merge can register;
+// (2) the seam-usable tracks of a cut, counted as the merge counts them: a track one side triangulates and the other sees,
+//     credited to every camera that observed it (three-view tracks: only the two starting at 4 and 5 cross the cut between 5
+//     and 6; five-view tracks reach across it from further away and spread the seam over the cameras the merge needs), on
+//     chains of images that see their neighbours' tracks (BuildChainScene);
+// (3) a tail joined to the rest of the capture by a handful of short tracks: it is big enough to keep, but no seam of it can
+//     be registered, so it must not come out as a sub-scene of its own.
+bool SceneClusterSeamTest()
 {
-	TD_TIMER_START();
+	TestScope scope("SceneClusterSeamTest");
 
-	const RingSceneConfig cfg{40, 10};
-	Scene scene;
-	std::vector<IIndexArr> blocks;
-	std::vector<Pose3D> gtPoses;
-	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	const unsigned numImages = (unsigned)scene.images.size();
-
-	const ClusterConfig clusterCfg;
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	const std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	if (subScenes.size() < 3) {
-		VERBOSE("SceneClusterTargetSizeTest FAILED: expected >= 3 sub-scenes, got %u", (unsigned)subScenes.size());
-		return false;
-	}
-	std::vector<REAL> sizes;
-	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		const unsigned size = (unsigned)subScenes[s].images.size();
-		if (size < clusterCfg.minViewsPerCluster || size > clusterCfg.maxViewsPerCluster + clusterCfg.maxOverCapacity) {
-			VERBOSE("SceneClusterTargetSizeTest FAILED: sub-scene %u has %u images, outside [%u, %u]",
-				s, size, clusterCfg.minViewsPerCluster, clusterCfg.maxViewsPerCluster + clusterCfg.maxOverCapacity);
-			return false;
-		}
-		sizes.push_back((REAL)size);
-	}
-	const REAL median = Median(sizes);
-	const REAL medianLow = (REAL)clusterCfg.targetViewsPerCluster * REAL(0.7);
-	const REAL medianHigh = (REAL)clusterCfg.targetViewsPerCluster * REAL(1.3);
-	if (median < medianLow || median > medianHigh) {
-		VERBOSE("SceneClusterTargetSizeTest FAILED: median sub-scene size %.0f outside [%.0f, %.0f]", median, medianLow, medianHigh);
-		return false;
-	}
-
-	// every image in exactly one sub-scene
-	std::vector<unsigned> numAssignments(numImages, 0);
-	for (const IIndexArr& localToGlobal : localToGlobals)
-		for (IIndex globalID : localToGlobal)
-			++numAssignments[globalID];
-	for (unsigned i = 0; i < numImages; ++i) {
-		if (numAssignments[i] != 1) {
-			VERBOSE("SceneClusterTargetSizeTest FAILED: image %u assigned to %u sub-scenes", i, numAssignments[i]);
-			return false;
-		}
-	}
-
-	// every seam between two sub-scenes usable by the merge, by the rule the clustering applies
-	const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(localToGlobals);
-	for (const auto& [pair, seam] : seams) {
-		if (!IsStrongSeam(seam, clusterCfg)) {
-			VERBOSE("SceneClusterTargetSizeTest FAILED: sub-scenes (%u, %u) share %u seam-usable tracks over %u/%u cameras",
-				pair.first, pair.second, seam.first.usable,
-				seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks),
-				seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks));
-			return false;
-		}
-	}
-
-	VERBOSE("SceneClusterTargetSizeTest PASSED: %u images in %u sub-scenes, median %.0f images, %u seams (%s)",
-		numImages, (unsigned)subScenes.size(), median, (unsigned)seams.size(), TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// The seam-usable tracks of a cut, counted as the merge counts them: a track one side triangulates
-// and the other sees, credited to every camera that observed it
-bool SceneClusterSeamTracksTest()
-{
-	TD_TIMER_START();
-
-	const ClusterConfig clusterCfg;
-	std::vector<IIndexArr> clusters(2);
-	for (IIndex i = 0; i < 12; ++i)
-		clusters[i < 6 ? 0 : 1].push_back(i);
-
-	// three-view tracks: only the two starting at 4 and 5 cross the cut between 5 and 6
+	// 1. target size
+	unsigned numSubScenes;
+	REAL median;
 	{
+		const RingSceneConfig ringCfg{40, 10};
 		Scene scene;
-		BuildChainScene(12, 20, [](unsigned i) { return i <= 9 ? 3u : 0u; }, scene);
+		std::vector<IIndexArr> blocks;
+		std::vector<Pose3D> gtPoses;
+		GenerateRingScene(ringCfg, scene, blocks, gtPoses);
+		const unsigned numImages = (unsigned)scene.images.size();
+		const ClusterConfig clusterCfg;
 		SceneCluster cluster(scene, clusterCfg);
-		const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(clusters);
-		if (seams.size() != 1) {
-			VERBOSE("SceneClusterSeamTracksTest FAILED: expected one seam, got %u", (unsigned)seams.size());
-			return false;
+		std::vector<IIndexArr> localToGlobals;
+		const std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
+		numSubScenes = (unsigned)subScenes.size();
+		TEST_CHECK(numSubScenes >= 3, "target size: expected >= 3 sub-scenes, got %u", numSubScenes);
+		std::vector<REAL> sizes;
+		for (unsigned s = 0; s < subScenes.size(); ++s) {
+			const unsigned size = (unsigned)subScenes[s].images.size();
+			TEST_CHECK(size >= clusterCfg.minViewsPerCluster && size <= clusterCfg.maxViewsPerCluster + clusterCfg.maxOverCapacity,
+				"target size: sub-scene %u has %u images, outside [%u, %u]", s, size, clusterCfg.minViewsPerCluster,
+				clusterCfg.maxViewsPerCluster + clusterCfg.maxOverCapacity);
+			sizes.push_back((REAL)size);
 		}
-		const std::pair<SeamTrackStats, SeamTrackStats>& seam = seams.begin()->second;
-		if (seam.first.usable != 40 || seam.second.usable != 40) {
-			VERBOSE("SceneClusterSeamTracksTest FAILED: %u/%u seam-usable tracks, expected 40",
-				seam.first.usable, seam.second.usable);
-			return false;
-		}
-		const std::pair<IIndex, unsigned> expected[4] = {{5, 40}, {4, 20}, {6, 40}, {7, 20}};
-		for (unsigned k = 0; k < 4; ++k) {
-			const SeamTrackStats& stats = k < 2 ? seam.first : seam.second;
-			const auto it = stats.perCamera.find(expected[k].first);
-			if (stats.perCamera.size() != 2 || it == stats.perCamera.end() || it->second != expected[k].second) {
-				VERBOSE("SceneClusterSeamTracksTest FAILED: image %u carries %u seam-usable tracks of %u cameras, expected %u",
-					expected[k].first, it == stats.perCamera.end() ? 0 : it->second,
-					(unsigned)stats.perCamera.size(), expected[k].second);
-				return false;
+		median = Median(sizes);
+		const REAL medianLow = (REAL)clusterCfg.targetViewsPerCluster * REAL(0.7);
+		const REAL medianHigh = (REAL)clusterCfg.targetViewsPerCluster * REAL(1.3);
+		TEST_CHECK(median >= medianLow && median <= medianHigh, "target size: median sub-scene size %.0f outside [%.0f, %.0f]", median, medianLow, medianHigh);
+		// every image in exactly one sub-scene
+		std::vector<unsigned> numAssignments(numImages, 0);
+		for (const IIndexArr& localToGlobal : localToGlobals)
+			for (IIndex globalID : localToGlobal)
+				++numAssignments[globalID];
+		for (unsigned i = 0; i < numImages; ++i)
+			TEST_CHECK(numAssignments[i] == 1, "target size: image %u assigned to %u sub-scenes", i, numAssignments[i]);
+		// every seam between two sub-scenes usable by the merge, by the rule the clustering applies
+		const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(localToGlobals);
+		for (const auto& [pair, seam] : seams)
+			TEST_CHECK(IsStrongSeam(seam, clusterCfg), "target size: sub-scenes (%u, %u) share %u seam-usable tracks over %u/%u cameras",
+				pair.first, pair.second, seam.first.usable, seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks),
+				seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks));
+	}
+
+	// 2. seam tracks: twelve images cut between 5 and 6
+	{
+		const ClusterConfig clusterCfg;
+		std::vector<IIndexArr> clusters(2);
+		for (IIndex i = 0; i < 12; ++i)
+			clusters[i < 6 ? 0 : 1].push_back(i);
+		// three-view tracks: only the two starting at 4 and 5 cross the cut between 5 and 6
+		{
+			Scene scene;
+			BuildChainScene(12, 20, [](unsigned i) { return i <= 9 ? 3u : 0u; }, scene);
+			SceneCluster cluster(scene, clusterCfg);
+			const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(clusters);
+			TEST_CHECK(seams.size() == 1, "seam tracks: expected one seam, got %u", (unsigned)seams.size());
+			const std::pair<SeamTrackStats, SeamTrackStats>& seam = seams.begin()->second;
+			TEST_CHECK(seam.first.usable == 40 && seam.second.usable == 40, "seam tracks: %u/%u seam-usable tracks, expected 40", seam.first.usable, seam.second.usable);
+			const std::pair<IIndex, unsigned> expected[4] = {{5, 40}, {4, 20}, {6, 40}, {7, 20}};
+			for (unsigned k = 0; k < 4; ++k) {
+				const SeamTrackStats& stats = k < 2 ? seam.first : seam.second;
+				const auto it = stats.perCamera.find(expected[k].first);
+				TEST_CHECK(stats.perCamera.size() == 2 && it != stats.perCamera.end() && it->second == expected[k].second,
+					"seam tracks: image %u carries %u seam-usable tracks of %u cameras, expected %u", expected[k].first,
+					it == stats.perCamera.end() ? 0 : it->second, (unsigned)stats.perCamera.size(), expected[k].second);
 			}
-		}
-		if (seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks) != 1 ||
-			seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks) != 1) {
-			VERBOSE("SceneClusterSeamTracksTest FAILED: %u/%u cameras carrying minSeamCameraTracks, expected 1/1",
-				seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks),
+			TEST_CHECK(seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks) == 1 && seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks) == 1,
+				"seam tracks: %u/%u cameras carrying minSeamCameraTracks, expected 1/1", seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks),
 				seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks));
-			return false;
+		}
+		// five-view tracks reach across the cut from further away, and the seam spreads over the cameras the merge needs
+		{
+			Scene scene;
+			BuildChainScene(12, 20, [](unsigned i) { return i <= 7 ? 5u : 0u; }, scene);
+			SceneCluster cluster(scene, clusterCfg);
+			const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(clusters);
+			TEST_CHECK(seams.size() == 1, "seam tracks: expected one seam, got %u", (unsigned)seams.size());
+			const std::pair<SeamTrackStats, SeamTrackStats>& seam = seams.begin()->second;
+			const unsigned cameras[2] = {seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks), seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks)};
+			TEST_CHECK(cameras[0] >= clusterCfg.minSeamCameras && cameras[1] >= clusterCfg.minSeamCameras,
+				"seam tracks: %u/%u cameras carrying minSeamCameraTracks, expected >= %u each", cameras[0], cameras[1], clusterCfg.minSeamCameras);
 		}
 	}
 
-	// five-view tracks reach across the cut from further away, and the seam spreads over the cameras
-	// the merge needs
+	// 3. leaf merge: images 0..259 a chain of five-view tracks, images 260..304 a tail of the same, and between them only the
+	// three-view tracks starting at 255..259 -- two of which cross the cut
+	unsigned tailSubSceneSize;
 	{
 		Scene scene;
-		BuildChainScene(12, 20, [](unsigned i) { return i <= 7 ? 5u : 0u; }, scene);
+		BuildChainScene(305, 20, [](unsigned i) { return i >= 255 && i <= 259 ? 3u : 5u; }, scene);
+		const ClusterConfig clusterCfg;
 		SceneCluster cluster(scene, clusterCfg);
-		const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(clusters);
-		if (seams.size() != 1) {
-			VERBOSE("SceneClusterSeamTracksTest FAILED: expected one seam, got %u", (unsigned)seams.size());
-			return false;
-		}
-		const std::pair<SeamTrackStats, SeamTrackStats>& seam = seams.begin()->second;
-		const unsigned cameras[2] = {seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks),
-			seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks)};
-		if (cameras[0] < clusterCfg.minSeamCameras || cameras[1] < clusterCfg.minSeamCameras) {
-			VERBOSE("SceneClusterSeamTracksTest FAILED: %u/%u cameras carrying minSeamCameraTracks, expected >= %u each",
-				cameras[0], cameras[1], clusterCfg.minSeamCameras);
-			return false;
-		}
-	}
-
-	VERBOSE("SceneClusterSeamTracksTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// A tail joined to the rest of the capture by a handful of short tracks: it is big enough to keep,
-// but no seam of it can be registered, so it must not come out as a sub-scene of its own
-bool SceneClusterLeafMergeTest()
-{
-	TD_TIMER_START();
-
-	// images 0..259 a chain of five-view tracks, images 260..304 a tail of the same, and between
-	// them only the three-view tracks starting at 255..259 -- two of which cross the cut
-	Scene scene;
-	BuildChainScene(305, 20, [](unsigned i) { return i >= 255 && i <= 259 ? 3u : 5u; }, scene);
-
-	const ClusterConfig clusterCfg;
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	const std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		if (subScenes[s].images.size() < clusterCfg.minViewsPerCluster) {
-			VERBOSE("SceneClusterLeafMergeTest FAILED: sub-scene %u has %u images < %u",
+		std::vector<IIndexArr> localToGlobals;
+		const std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
+		for (unsigned s = 0; s < subScenes.size(); ++s)
+			TEST_CHECK(subScenes[s].images.size() >= clusterCfg.minViewsPerCluster, "leaf merge: sub-scene %u has %u images < %u",
 				s, (unsigned)subScenes[s].images.size(), clusterCfg.minViewsPerCluster);
-			return false;
-		}
+		// the tail sits with the end of the chain, and that sub-scene reaches back into the chain proper: a tail left to
+		// itself is the block the merge would have to leave unplaced
+		unsigned subSceneOfEnd = NO_ID;
+		FOREACH(s, localToGlobals)
+			for (IIndex globalID : localToGlobals[s])
+				if (globalID == 259)
+					subSceneOfEnd = (unsigned)s;
+		TEST_CHECK(subSceneOfEnd != NO_ID, "leaf merge: image 259 left out of the sub-scenes");
+		const std::set<IIndex> withEnd(localToGlobals[subSceneOfEnd].begin(), localToGlobals[subSceneOfEnd].end());
+		for (IIndex globalID = 260; globalID < 305; ++globalID)
+			TEST_CHECK(withEnd.count(globalID) != 0, "leaf merge: image %u is not in the sub-scene of image 259 (%u images)", globalID, (unsigned)withEnd.size());
+		TEST_CHECK(withEnd.count(250) != 0, "leaf merge: the tail and image 259 are a sub-scene of their own (%u images)", (unsigned)withEnd.size());
+		tailSubSceneSize = (unsigned)withEnd.size();
 	}
-
-	// the tail sits with the end of the chain, and that sub-scene reaches back into the chain
-	// proper: a tail left to itself is the block the merge would have to leave unplaced
-	unsigned subSceneOfEnd = NO_ID;
-	for (unsigned s = 0; s < localToGlobals.size(); ++s)
-		for (IIndex globalID : localToGlobals[s])
-			if (globalID == 259)
-				subSceneOfEnd = s;
-	if (subSceneOfEnd == NO_ID) {
-		VERBOSE("SceneClusterLeafMergeTest FAILED: image 259 left out of the sub-scenes");
-		return false;
-	}
-	std::set<IIndex> withEnd(localToGlobals[subSceneOfEnd].begin(), localToGlobals[subSceneOfEnd].end());
-	for (IIndex globalID = 260; globalID < 305; ++globalID) {
-		if (withEnd.count(globalID) == 0) {
-			VERBOSE("SceneClusterLeafMergeTest FAILED: image %u is not in the sub-scene of image 259 (%u images)",
-				globalID, (unsigned)withEnd.size());
-			return false;
-		}
-	}
-	if (withEnd.count(250) == 0) {
-		VERBOSE("SceneClusterLeafMergeTest FAILED: the tail and image 259 are a sub-scene of their own (%u images)",
-			(unsigned)withEnd.size());
-		return false;
-	}
-
-	VERBOSE("SceneClusterLeafMergeTest PASSED: %u sub-scenes, the tail merged into a %u-image one (%s)",
-		(unsigned)subScenes.size(), (unsigned)withEnd.size(), TD_TIMER_GET_FMT().c_str());
-	return true;
+	return scope.Pass("%u sub-scenes of median %.0f images on 400, the seam tracks counted as the merge does, the tail merged into a %u-image sub-scene",
+		numSubScenes, median, tailSubSceneSize);
 }
 
 } // namespace SFM

@@ -312,25 +312,21 @@ bool ViewGraphCalibratorTest();
 
 // TestsSFMViewGraph.cpp ---------------------------------------
 
-// Dense supplementation is real evidence, not noise to filter around: on a supplemented pair,
-// FilterMatches' meanRayAngle and ComputeIntrinsicWeight's grid occupancy are both measured over the
-// whole track-forming set (sparse + dense), the minimum-support floor reads that same set so a pair
-// under the sparse-only bar still counts, and GetNumWeightedInliers() scales the dense share to the
-// matcher's frame target (PairsWeightingConfig::denseFrameInliers) rather than dropping or fully
-// counting it. A degenerate all-dense baseline is still demoted, because the angle term finally has
-// something to measure.
-bool SupplementEvidenceIsolationTest();
-
 // The camera-triplet view-graph filter of Manam & Govindu (CVPR 2024): the scores, the yield
 // rule and both modes on hand-computed graphs.
 bool TripletFilterTest();
 
-// Test function for rotation estimation
-bool RotationEstimatorTest();
+// The pair weights (ComputePairsWeights, ImagePair::GetCompositeWeight): the spatial, connectivity and triplet terms of
+// hand-built pairs, the composite formula term by term, the dense inliers counted in proportion to the matcher's frame target
+// (PairsWeightingConfig::denseFrameInliers over denseMatchesPerFrame), and the dense supplement of a pair as real evidence:
+// FilterMatches' meanRayAngle and the grid occupancy are measured over the whole track-forming set (sparse + dense), the
+// minimum-support floor reads that same set, GetNumWeightedInliers() scales the dense share, and a degenerate all-dense
+// baseline is still demoted
+bool PairWeightTest();
 
-// The rotation averaging gives the same rotations, and the same pairs past its bar, whatever the
-// absolute scale of the pair weights (GlobalRotationEstimatorOptions::weightMedian)
-bool RotationWeightScaleTest();
+// The rotation estimator on the 16-camera ring, and its independence of the absolute scale of the pair weights
+// (GlobalRotationEstimatorOptions::weightMedian): the same rotations and the same pairs past the bar at weights x1, x1/128, x128
+bool RotationAveragingTest();
 
 // The contradiction cut: its rotation stage (the look-alikes of a symmetric ring, the cross-face pairs
 // of a roof and a wrong pair at the weight cap go, a bridge and a pendant pair never, the unscored
@@ -347,67 +343,32 @@ bool FilteredSceneReloadTest();
 // The flat pair-scale build equals the node-map one it replaced
 bool PairScalesTest();
 
-// Test function for global scale estimation
-bool ScaleEstimatorTest();
-
-// Test function for global translation estimation
-bool TranslationEstimatorTest();
-
-// The translation estimator's normal-equations solve factors the graph Laplacian of the pairs and
-// gives the SparseQR solution of their incidence matrix
-bool TranslationNormalEquationsTest();
-
 // The scale estimator solves every connected component of its equations on its own: the one holding the
-// fixed index (given, or the best-connected index when none is) pinned at it, any other at mean zero log
-// scale (the dense SVD's minimum-norm answer), an index no equation names at scale 1
-bool ScaleComponentsTest();
+// fixed index (given, or the best-connected index when none is, through the 3-argument overload too) pinned at it, any other at
+// mean zero log scale (the dense SVD's minimum-norm answer), an index no equation names at scale 1
+bool ScaleAveragingTest();
+
+// The translation estimator's normal-equations solve factors the graph Laplacian of the pairs and gives the SparseQR solution
+// of their incidence matrix (connected, bridged, two components, floating rings, the no-gauge 3-argument call, a view-graph size)
+bool TranslationAveragingTest();
 
 // The scale estimator's solve (conjugate gradients on the normal equations, started from the previous
 // solve) gives the sparse Cholesky solution of the gauge-pinned system, converged, and a near start saves iterations
 bool ScaleConjugateGradientsTest();
 
-// Pairs weighting test
-bool PairsWeightingTest();
-
-// A pair's dense inliers count as evidence in proportion to the matcher's frame target
-// (PairsWeightingConfig::denseFrameInliers over denseMatchesPerFrame): two dense-only pairs of one
-// image keep the order of their counts, a whole dense frame is a modest descriptor pair's evidence,
-// and the connectivity counts the dense matches at the same scale
-bool PairsWeightingDenseFrameEvidenceTest();
-
-// The composite weight of a hand-set pair equals its formula term by term (ImagePair::GetCompositeWeight)
-bool PairCompositeWeightTest();
-
-bool GlobalAlignmentRotationAveragingExtendedTest();
-
-bool GlobalAlignmentScaleAveragingExtendedTest();
-
-bool GlobalAlignmentScaleAveragingFallbackTest();
-
-bool GlobalAlignmentTranslationAveragingExtendedTest();
-
-bool RobustAveragingScaleTest();
-
-bool RobustAveragingTranslationTest();
+// The robust averaging ignores a wrong chord, in five scales and in five translations on a ring
+bool RobustAveragingTest();
 
 // TestsSFMCluster.cpp -----------------------------------------
 
 // Phase 1: Scene Clustering tests
-bool SceneClusterSingleClusterTest();
+// The clustering into sub-scenes: a single one within the view limit and with the limit off, the size constraints,
+// disconnected groups never mixed, the memory protocol (keypoints moved, cross-pairs left) and the ID remapping
+bool SceneClusterBasicsTest();
 
-bool SceneClusterSizeConstraintsTest();
-
-bool SceneClusterDisconnectedComponentsTest();
-
-bool SceneClusterTargetSizeTest();
-
-bool SceneClusterSeamTracksTest();
-
-bool SceneClusterLeafMergeTest();
-
-bool SceneClusterMemoryProtocolTest();
-
-bool SceneClusterIDRemappingTest();
+// Clustering for the merge on chains of images: the sub-scene sizes aimed at the target with a strong seam between every
+// two that touch, the seam-usable tracks counted as the merge counts them, a weakly joined tail merged into the last sub-scene
+bool SceneClusterSeamTest();
 
 // The small-cluster pass: weak images rescued, a community under the floor held to the coupling test
 // (ClusterConfig::minClusterCoupling) and placed with the neighbour it shares the most weight with,
@@ -415,16 +376,12 @@ bool SceneClusterIDRemappingTest();
 // and skipped when coupled to a cluster with no room for it
 bool SceneClusterSmallClusterPassTest();
 
-// The balance pass never takes an image whose departure would leave part of its own cluster coupled
-// under minClusterCoupling, even when the image's own affinity favours the move
-// (SceneCluster::RefineClustersBalance, SceneCluster::KeepsCoupling)
-bool SceneClusterBalanceCouplingTest();
-
-// The thin-waist check weighs every prefix cut along the Fiedler order, not only the balanced one: a
-// stretch too small to stand on its own moves whole to the cluster it is most coupled to when one
-// holds it at the floor, and otherwise stays; a stretch large enough to stand is split off as before
+// The refinement passes on hand-made graphs: the balance pass never takes an image whose departure would leave part of its
+// own cluster coupled under minClusterCoupling (SceneCluster::RefineClustersBalance, SceneCluster::KeepsCoupling); the
+// thin-waist check weighs every prefix cut along the Fiedler order: a stretch too small to stand on its own moves whole to
+// the cluster that holds it at the floor, otherwise stays, and one large enough to stand is split off
 // (SceneCluster::RefineClustersSplitThinWaist)
-bool SceneClusterThinStretchTest();
+bool SceneClusterRefinePassesTest();
 
 // TestsSFMBlock.cpp -------------------------------------------
 
