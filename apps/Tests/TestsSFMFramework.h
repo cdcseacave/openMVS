@@ -235,9 +235,9 @@ void GenerateRingScene(const RingSceneConfig& cfg, Scene& scene, std::vector<IIn
 // (SceneBlocks::Extract: features and the pairs inside the block moved in, local IDs), its cameras at
 // the given true poses, then `distort` applied (the error its reconstruction made; may be empty), its
 // tracks triangulated from those cameras and the whole block moved by a random similarity drawn from
-// `seed`. The global scene is left as the merge receives it: no tracks and no pose. Images in no
-// block form the pool. sceneBlocks is an empty SceneBlocks of `scene`; truth holds a pose per image of
-// it. Returns the similarity applied to each block.
+// `seed` (seed NO_ID: every block left in the true frame). The global scene is left as the merge
+// receives it: no tracks and no pose. Images in no block form the pool. sceneBlocks is an empty
+// SceneBlocks of `scene`; truth holds a pose per image of it. Returns the similarity applied to each block.
 // ===============================================================================
 std::vector<SEACAVE::Transform> SplitOnTruth(Scene& scene, SceneBlocks& sceneBlocks, const std::vector<IIndexArr>& blocks,
 	const std::vector<Pose3D>& truth, uint32_t seed, const std::function<void(uint32_t block, Scene& sub)>& distort = {});
@@ -303,6 +303,25 @@ inline double RotationErrorDeg(const RMatrix& a, const RMatrix& b)
 {
 	return R2D(ACOS(ComputeAngle(a, b)));
 }
+
+// ===============================================================================
+// How far a reconstruction's registered images are from the truth, in the frame the reconstruction
+// was free to choose: the best similarity of their centres onto the true ones is applied first, then
+// per image the angle between its rotation and the true one (degrees) and the distance of its centre
+// from the true one as a share of the extent of the truth (the largest distance between two true
+// centres, over every image, so the unit is the same however many came back registered).
+//   const PoseError e = PoseErrors(scene, truth);
+//   TEST_CHECK(e.count == 24 && e.rotationMax <= 0.5 && e.positionMax <= 0.01, ...);
+// ===============================================================================
+struct PoseError
+{
+	unsigned count{0};                                  // registered images measured
+	REAL rotationMedian{FLT_MAX}, rotationMax{FLT_MAX}; // degrees
+	REAL positionMedian{FLT_MAX}, positionMax{FLT_MAX}; // share of the extent of the truth
+};
+// over the registered images of subset (every image when empty); with fewer than three of them no
+// similarity is defined and the errors stay FLT_MAX
+PoseError PoseErrors(const Scene& scene, const std::vector<Pose3D>& truth, const IIndexArr& subset = {});
 /*----------------------------------------------------------------*/
 
 

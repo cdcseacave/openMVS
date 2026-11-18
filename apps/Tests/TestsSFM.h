@@ -712,7 +712,6 @@ bool SphericalTriangulationTest();
 // TestsSFMMerge.cpp -------------------------------------------
 
 // Phase 3: Global Alignment tests
-bool GlobalAlignmentBuildGlobalToLocalMapTest();
 
 bool SeamGraphConsensusTest();
 
@@ -809,18 +808,14 @@ bool UnplacedBlocksReportedTest();
 
 bool BentBlocksAdjustmentTest();
 
-bool GlobalAlignmentMergeSingleSceneTest();
-
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();
 
 bool GlobalAlignmentTrackMerge3DProximityGuardTest();
 
 bool HierarchicalCameraAlignmentTest();
 
-// End-to-end hierarchical SFM tests
-bool HierarchicalSFMSplitMergeRoundtripTest();
-
-bool HierarchicalSFMWithRandomTransformTest();
+// A scene split into blocks at the true poses and merged back, in the true frame and moved by random similarities
+bool MergeRoundtripTest();
 
 // TestsSFMPipeline.cpp ----------------------------------------
 

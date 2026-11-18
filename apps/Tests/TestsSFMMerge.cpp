@@ -68,114 +68,11 @@ DEFINE_LOG_NAME(lt, _T("TestSFM "));
 
 namespace SFM {
 
-// Helper: simulate sub-scene reconstruction by copying GT poses and triangulating tracks
-void SimulateSubSceneReconstruction(
-	Scene& subScene,
-	const Scene& gtScene,
-	const IIndexArr& localToGlobal)
-{
-	// Copy GT poses to sub-scene images
-	for (IIndex localID = 0; localID < subScene.images.size(); ++localID) {
-		const IIndex globalID = localToGlobal[localID];
-		if (globalID < gtScene.images.size() && gtScene.images[globalID].IsValid()) {
-			subScene.images[localID].R = gtScene.images[globalID].R;
-			subScene.images[localID].C = gtScene.images[globalID].C;
-		}
-	}
-	// Triangulate tracks using GT poses
-	for (Track& track : subScene.tracks) {
-		if (track.observations.size() >= 2) {
-			TriangulateSkewLLS(track, subScene.images);
-		}
-	}
-}
-/*----------------------------------------------------------------*/
 
 // ===============================================================================
 // Phase 3: Global Alignment Tests
 // ===============================================================================
 
-// Test 7: BuildGlobalToLocalMap and single-scene merge
-bool GlobalAlignmentBuildGlobalToLocalMapTest()
-{
-	TD_TIMER_START();
-
-	// Create a scene, split it, keep GT poses, merge back with 1 sub-scene
-	Scene scene;
-	SceneConfig cfg;
-	cfg.numImages = 10;
-	cfg.numPoints = 60;
-	cfg.generatePairs = true;
-	cfg.generateDescriptors = true;
-	GenerateTestScene(scene, cfg);
-	ComputePairsWeights(scene);
-
-	// Record GT poses
-	std::vector<Pose3D> gtPoses(scene.images.size());
-	for (unsigned i = 0; i < scene.images.size(); ++i) {
-		gtPoses[i].R = scene.images[i].R;
-		gtPoses[i].C = scene.images[i].C;
-	}
-
-	// Force split into 2 sub-scenes
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 6;
-	clusterCfg.minViewsPerCluster = 3;
-	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
-	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
-	clusterCfg.minClusterDegree = 0;
-
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	if (subScenes.size() < 2) {
-		VERBOSE("GlobalAlignmentBuildGlobalToLocalMapTest FAILED: expected >= 2 sub-scenes");
-		return false;
-	}
-
-	// Simulate reconstruction: copy GT poses
-	for (unsigned s = 0; s < subScenes.size(); ++s)
-		SimulateSubSceneReconstruction(subScenes[s], Scene(), localToGlobals[s]);
-	// Manually set GT poses since SimulateSubSceneReconstruction needs GT scene
-	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		for (IIndex localID = 0; localID < subScenes[s].images.size(); ++localID) {
-			const IIndex globalID = localToGlobals[s][localID];
-			subScenes[s].images[localID].R = gtPoses[globalID].R;
-			subScenes[s].images[localID].C = gtPoses[globalID].C;
-		}
-		// Triangulate tracks
-		for (Track& track : subScenes[s].tracks)
-			if (track.observations.size() >= 2)
-				TriangulateSkewLLS(track, subScenes[s].images);
-	}
-
-	// Merge
-	GlobalAlignmentConfig alignCfg;
-	GlobalAlignment alignment(scene, alignCfg);
-	MergeReport report;
-	const bool merged = alignment.MergeScenes(subScenes, localToGlobals, report);
-
-	// With GT poses (identity transforms), merge should succeed
-	if (!merged) {
-		VERBOSE("GlobalAlignmentBuildGlobalToLocalMapTest FAILED: MergeScenes returned false");
-		return false;
-	}
-
-	// Verify all images have valid poses after merge
-	unsigned calibrated = 0;
-	for (const Image& img : scene.images)
-		if (img.IsValid())
-			++calibrated;
-	if (calibrated < scene.images.size() - 2) {
-		VERBOSE("GlobalAlignmentBuildGlobalToLocalMapTest FAILED: only %u/%u calibrated", calibrated, (unsigned)scene.images.size());
-		return false;
-	}
-
-	VERBOSE("GlobalAlignmentBuildGlobalToLocalMapTest PASSED: %u calibrated (%s)",
-		calibrated, TD_TIMER_GET_FMT().c_str());
-	return true;
-}
 
 // Twelve blocks joined in a ring with chords, two wrong readings planted among them and two pairs
 // joined to nothing else: the selection must keep every true reading, cut the wrong ones, keep the
@@ -2951,96 +2848,6 @@ bool BentBlocksAdjustmentTest()
 }
 /*----------------------------------------------------------------*/
 
-// Test 12: MergeSingleScene roundtrip
-bool GlobalAlignmentMergeSingleSceneTest()
-{
-	TD_TIMER_START();
-
-	Scene scene;
-	SceneConfig cfg;
-	cfg.numImages = 10;
-	cfg.numPoints = 60;
-	cfg.generatePairs = true;
-	cfg.generateDescriptors = true;
-	GenerateTestScene(scene, cfg);
-	ComputePairsWeights(scene);
-
-	// Record pre-split state
-	std::vector<size_t> origKeypointCounts(scene.images.size());
-	for (unsigned i = 0; i < scene.images.size(); ++i)
-		origKeypointCounts[i] = scene.images[i].keypoints.size();
-
-	// Save GT poses
-	std::vector<Pose3D> gtPoses(scene.images.size());
-	for (unsigned i = 0; i < scene.images.size(); ++i) {
-		gtPoses[i].R = scene.images[i].R;
-		gtPoses[i].C = scene.images[i].C;
-	}
-
-	// Split into sub-scenes
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 6;
-	clusterCfg.minViewsPerCluster = 3;
-	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
-	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
-	clusterCfg.minClusterDegree = 0;
-
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	if (subScenes.size() < 2) {
-		VERBOSE("GlobalAlignmentMergeSingleSceneTest FAILED: expected >= 2 sub-scenes");
-		return false;
-	}
-
-	// Set GT poses and triangulate in each sub-scene
-	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		for (IIndex localID = 0; localID < subScenes[s].images.size(); ++localID) {
-			const IIndex globalID = localToGlobals[s][localID];
-			subScenes[s].images[localID].R = gtPoses[globalID].R;
-			subScenes[s].images[localID].C = gtPoses[globalID].C;
-		}
-		for (Track& track : subScenes[s].tracks)
-			if (track.observations.size() >= 2)
-				TriangulateSkewLLS(track, subScenes[s].images);
-	}
-
-	// Merge
-	GlobalAlignmentConfig alignCfg;
-	GlobalAlignment alignment(scene, alignCfg);
-	MergeReport report;
-	if (!alignment.MergeScenes(subScenes, localToGlobals, report)) {
-		VERBOSE("GlobalAlignmentMergeSingleSceneTest FAILED: MergeScenes returned false");
-		return false;
-	}
-
-	// Verify keypoints restored
-	unsigned restoredCount = 0;
-	for (unsigned i = 0; i < scene.images.size(); ++i) {
-		if (scene.images[i].keypoints.size() == origKeypointCounts[i])
-			++restoredCount;
-	}
-	if (restoredCount < scene.images.size() - 2) {
-		VERBOSE("GlobalAlignmentMergeSingleSceneTest FAILED: only %u/%u images have restored keypoints",
-			restoredCount, (unsigned)scene.images.size());
-		return false;
-	}
-
-	// Verify tracks use global IDs
-	for (const Track& track : scene.tracks) {
-		for (const Observation& obs : track) {
-			if (obs.imageID >= scene.images.size()) {
-				VERBOSE("GlobalAlignmentMergeSingleSceneTest FAILED: track has invalid global imageID %u", obs.imageID);
-				return false;
-			}
-		}
-	}
-
-	VERBOSE("GlobalAlignmentMergeSingleSceneTest PASSED: %u keypoints restored, %u tracks (%s)",
-		restoredCount, (unsigned)scene.tracks.size(), TD_TIMER_GET_FMT().c_str());
-	return true;
-}
 
 // Test 13: Track merge duplicate image guard
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest()
@@ -3186,255 +2993,79 @@ bool GlobalAlignmentTrackMerge3DProximityGuardTest()
 // End-to-End Hierarchical SFM Tests
 // ===============================================================================
 
-// Test 15: Full split → GT reconstruct → merge roundtrip
-bool HierarchicalSFMSplitMergeRoundtripTest()
+// A scene split into blocks (SceneCluster), each block handed to the merge at the true poses of its cameras (SplitOnTruth),
+// and merged back (GlobalAlignment::MergeScenes); every arm keeps the bars of the test it came from:
+// 1. ten images of the default circle in blocks of 3-6, left in the true frame: the merge succeeds, at most two images are
+//    left out, the keypoints the split moved into the blocks come back to at least all but two images, and every merged
+//    track names global images;
+// 2. 24 images every 15 degrees in blocks of 5-14, left in the true frame: at most two left out, every image within 5
+//    degrees and 10% of the extent of the truth, 70% of the tracks back;
+// 3. 20 images every 18 degrees in blocks of 5-12, each block moved by a random similarity: at most four left out, every
+//    image within 8 degrees, half of the tracks back.
+bool MergeRoundtripTest()
 {
-	TD_TIMER_START();
-
-	Scene scene;
-	SceneConfig cfg;
-	cfg.numImages = 24;
-	cfg.numPoints = 150;
-	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
-	cfg.rotationAngleStep = 15.0;
-	cfg.generateDescriptors = true;
-	cfg.generatePairs = true;
-	GenerateTestScene(scene, cfg);
-	ComputePairsWeights(scene);
-
-	// Save GT
-	const unsigned origTrackCount = (unsigned)scene.tracks.size();
-	std::vector<Pose3D> gtPoses(scene.images.size());
-	for (unsigned i = 0; i < scene.images.size(); ++i) {
-		gtPoses[i].R = scene.images[i].R;
-		gtPoses[i].C = scene.images[i].C;
-	}
-
-	// Phase 1: Split
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 14;
-	clusterCfg.minViewsPerCluster = 5;
-
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	if (subScenes.size() < 2) {
-		VERBOSE("HierarchicalSFMSplitMergeRoundtripTest FAILED: expected >= 2 sub-scenes, got %u",
-			(unsigned)subScenes.size());
-		return false;
-	}
-
-	// Phase 2: Simulate reconstruction with GT poses
-	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		for (IIndex localID = 0; localID < subScenes[s].images.size(); ++localID) {
-			const IIndex globalID = localToGlobals[s][localID];
-			subScenes[s].images[localID].R = gtPoses[globalID].R;
-			subScenes[s].images[localID].C = gtPoses[globalID].C;
+	TestScope scope("MergeRoundtripTest");
+	struct Arm {
+		const char* name; unsigned numImages, numPoints; REAL stepDeg; unsigned maxViews, minViews; bool everyCluster; bool moved;
+		unsigned maxLeftOut; REAL maxRotation, maxPosition, minTrackShare; bool restoresKeypoints;
+	};
+	const Arm arms[] = {
+		{"10 images", 10, 60, 15, 6, 3, true, false, 2, 180, FLT_MAX, 0, true},
+		{"24 images", 24, 150, 15, 14, 5, false, false, 2, 5, 0.1, 0.7, false},
+		{"20 images moved", 20, 120, 18, 12, 5, true, true, 4, 8, FLT_MAX, 0.5, false},
+	};
+	String summary;
+	for (const Arm& arm : arms) {
+		Scene scene;
+		SceneConfig cfg;
+		cfg.numImages = arm.numImages;
+		cfg.numPoints = arm.numPoints;
+		cfg.rotationAngleStep = arm.stepDeg;
+		cfg.generateDescriptors = true;
+		cfg.generatePairs = true;
+		GenerateTestScene(scene, cfg);
+		ComputePairsWeights(scene);
+		const unsigned numTracks = (unsigned)scene.tracks.size();
+		std::vector<Pose3D> truth;
+		std::vector<size_t> numKeypoints;
+		for (const Image& img : scene.images) {
+			truth.emplace_back(img.R, img.C);
+			numKeypoints.push_back(img.keypoints.size());
 		}
-		for (Track& track : subScenes[s].tracks)
-			if (track.observations.size() >= 2)
-				TriangulateSkewLLS(track, subScenes[s].images);
-	}
-
-	// Phase 3: Merge
-	GlobalAlignmentConfig alignCfg;
-	GlobalAlignment alignment(scene, alignCfg);
-	MergeReport report;
-	if (!alignment.MergeScenes(subScenes, localToGlobals, report)) {
-		VERBOSE("HierarchicalSFMSplitMergeRoundtripTest FAILED: MergeScenes returned false");
-		return false;
-	}
-
-	// Verify: all images calibrated
-	unsigned calibrated = 0;
-	for (const Image& img : scene.images)
-		if (img.IsValid())
-			++calibrated;
-	if (calibrated < 22) { // allow 2 missing
-		VERBOSE("HierarchicalSFMSplitMergeRoundtripTest FAILED: only %u/24 calibrated", calibrated);
-		return false;
-	}
-
-	// Verify: rotation errors
-	double maxRotErr = 0, sumRotErr = 0;
-	unsigned rotCount = 0;
-	// Account for gauge freedom: compare relative to image 0
-	IIndex refImg = NO_ID;
-	for (unsigned i = 0; i < scene.images.size(); ++i) {
-		if (scene.images[i].IsValid()) { refImg = i; break; }
-	}
-	if (refImg == NO_ID) {
-		VERBOSE("HierarchicalSFMSplitMergeRoundtripTest FAILED: no valid reference image");
-		return false;
-	}
-	const RMatrix R0_gt = gtPoses[refImg].R;
-	const RMatrix R0_est = scene.images[refImg].R;
-	for (unsigned i = 0; i < scene.images.size(); ++i) {
-		if (!scene.images[i].IsValid()) continue;
-		const RMatrix Ri_rel_gt = gtPoses[i].R * R0_gt.t();
-		const RMatrix Ri_rel_est = scene.images[i].R * R0_est.t();
-		const double err = ACOS(CLAMP(ComputeAngle(Ri_rel_est, Ri_rel_gt), REAL(-1), REAL(1)));
-		maxRotErr = MAXF(maxRotErr, err);
-		sumRotErr += err;
-		++rotCount;
-	}
-	const double meanRotErr = rotCount > 0 ? R2D(sumRotErr / rotCount) : 0;
-	if (meanRotErr > 5.0) {
-		VERBOSE("HierarchicalSFMSplitMergeRoundtripTest FAILED: mean rotation error %.2f deg > 5.0", meanRotErr);
-		return false;
-	}
-
-	// Verify: position errors (relative to scene scale)
-	AABB3 sceneBbox(true);
-	for (const auto& pose : gtPoses)
-		sceneBbox.InsertFull(pose.C);
-	const REAL sceneScale = sceneBbox.GetSize().norm();
-	double sumPosErr = 0;
-	unsigned posCount = 0;
-	// Align via reference image
-	const Point3 posOffset = scene.images[refImg].C - gtPoses[refImg].C;
-	for (unsigned i = 0; i < scene.images.size(); ++i) {
-		if (!scene.images[i].IsValid()) continue;
-		const REAL err = norm(scene.images[i].C - posOffset - gtPoses[i].C);
-		sumPosErr += err;
-		++posCount;
-	}
-	const double meanPosErr = posCount > 0 ? sumPosErr / posCount / sceneScale : 0;
-	if (meanPosErr > 0.1) {
-		VERBOSE("HierarchicalSFMSplitMergeRoundtripTest FAILED: mean position error %.4f > 10%% of scene scale", meanPosErr);
-		return false;
-	}
-
-	// Verify: track recovery
-	const unsigned finalTracks = (unsigned)scene.tracks.size();
-	const double trackRecovery = origTrackCount > 0 ? (double)finalTracks / origTrackCount : 0;
-	if (trackRecovery < 0.7) {
-		VERBOSE("HierarchicalSFMSplitMergeRoundtripTest FAILED: track recovery %.1f%% < 70%% (%u/%u)",
-			trackRecovery * 100, finalTracks, origTrackCount);
-		return false;
-	}
-
-	VERBOSE("HierarchicalSFMSplitMergeRoundtripTest PASSED: %u calibrated, rot=%.2f deg, pos=%.4f, tracks=%u/%u (%s)",
-		calibrated, meanRotErr, meanPosErr, finalTracks, origTrackCount, TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// Test 16: Split → random transforms → merge
-bool HierarchicalSFMWithRandomTransformTest()
-{
-	TD_TIMER_START();
-	std::mt19937 rng(123);
-
-	Scene scene;
-	SceneConfig cfg;
-	cfg.numImages = 20;
-	cfg.numPoints = 120;
-	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
-	cfg.rotationAngleStep = 18.0;
-	cfg.generateDescriptors = true;
-	cfg.generatePairs = true;
-	GenerateTestScene(scene, cfg);
-	ComputePairsWeights(scene);
-
-	// Save GT
-	const unsigned origTrackCount = (unsigned)scene.tracks.size();
-	std::vector<Pose3D> gtPoses(scene.images.size());
-	for (unsigned i = 0; i < scene.images.size(); ++i) {
-		gtPoses[i].R = scene.images[i].R;
-		gtPoses[i].C = scene.images[i].C;
-	}
-
-	// Phase 1: Split
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 12;
-	clusterCfg.minViewsPerCluster = 5;
-	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
-	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
-	clusterCfg.minClusterDegree = 0;
-
-	SceneCluster cluster(scene, clusterCfg);
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
-
-	if (subScenes.size() < 2) {
-		VERBOSE("HierarchicalSFMWithRandomTransformTest FAILED: expected >= 2 sub-scenes");
-		return false;
-	}
-
-	// Phase 2: Set GT poses then apply random transforms to each sub-scene
-	for (unsigned s = 0; s < subScenes.size(); ++s) {
-		for (IIndex localID = 0; localID < subScenes[s].images.size(); ++localID) {
-			const IIndex globalID = localToGlobals[s][localID];
-			subScenes[s].images[localID].R = gtPoses[globalID].R;
-			subScenes[s].images[localID].C = gtPoses[globalID].C;
+		ClusterConfig clusterCfg;
+		clusterCfg.maxViewsPerCluster = arm.maxViews;
+		clusterCfg.minViewsPerCluster = arm.minViews;
+		// the blocks are this fixture, and its handful of points makes every seam look thin to a rule written for a
+		// capture's tracks: no cluster is merged away here for want of strong neighbours
+		if (arm.everyCluster)
+			clusterCfg.minClusterDegree = 0;
+		const std::vector<IIndexArr> blocks(SceneCluster(scene, clusterCfg).Partition().clusters);
+		TEST_CHECK(blocks.size() >= 2, "%s: %u blocks, the split is what is tested", arm.name, (unsigned)blocks.size());
+		SceneBlocks split(scene);
+		SplitOnTruth(scene, split, blocks, truth, arm.moved ? 123 : NO_ID);
+		MergeReport report;
+		GlobalAlignment alignment(scene, GlobalAlignmentConfig());
+		TEST_CHECK(alignment.MergeScenes(split.blocks, split.localToGlobal, report), "%s: MergeScenes failed", arm.name);
+		const PoseError e = PoseErrors(scene, truth);
+		TEST_CHECK(e.count + arm.maxLeftOut >= arm.numImages && e.rotationMax <= arm.maxRotation && e.positionMax <= arm.maxPosition,
+			"%s: %u of %u images merged (%u may be left out), %.3f deg and %.4f of the extent off the truth at most (%.1f and %.2f allowed)",
+			arm.name, e.count, arm.numImages, arm.maxLeftOut, e.rotationMax, e.positionMax, arm.maxRotation, arm.maxPosition);
+		TEST_CHECK(scene.tracks.size() >= arm.minTrackShare * numTracks, "%s: %u of %u tracks back (%.0f%% expected)", arm.name,
+			(unsigned)scene.tracks.size(), numTracks, arm.minTrackShare * 100);
+		for (const Track& track : scene.tracks)
+			for (const Observation& obs : track.observations)
+				TEST_CHECK(obs.imageID < scene.images.size(), "%s: a merged track names image %u, not a global image", arm.name, obs.imageID);
+		if (arm.restoresKeypoints) {
+			unsigned restored = 0;
+			FOREACH(i, scene.images)
+				if (scene.images[i].keypoints.size() == numKeypoints[i])
+					++restored;
+			TEST_CHECK(restored + 2 >= arm.numImages, "%s: only %u of %u images got their keypoints back", arm.name, restored, arm.numImages);
 		}
-		for (Track& track : subScenes[s].tracks)
-			if (track.observations.size() >= 2)
-				TriangulateSkewLLS(track, subScenes[s].images);
-
-		// Apply random similarity transform to simulate independent coordinate systems
-		SEACAVE::Transform T = SEACAVE::Transform::Random(rng);
-		subScenes[s].Transform(T);
+		summary += String::FormatString("%s%s: %u blocks, %u merged, %.3f deg and %.4f off at most, %u of %u tracks", summary.empty() ? "" : "; ",
+			arm.name, (unsigned)blocks.size(), e.count, e.rotationMax, e.positionMax, (unsigned)scene.tracks.size(), numTracks);
 	}
-
-	// Phase 3: Merge (alignment should recover the transforms)
-	GlobalAlignmentConfig alignCfg;
-	GlobalAlignment alignment(scene, alignCfg);
-	MergeReport report;
-	if (!alignment.MergeScenes(subScenes, localToGlobals, report)) {
-		VERBOSE("HierarchicalSFMWithRandomTransformTest FAILED: MergeScenes returned false");
-		return false;
-	}
-
-	// Verify calibrated images
-	unsigned calibrated = 0;
-	for (const Image& img : scene.images)
-		if (img.IsValid())
-			++calibrated;
-	if (calibrated < scene.images.size() - 4) {
-		VERBOSE("HierarchicalSFMWithRandomTransformTest FAILED: only %u/%u calibrated",
-			calibrated, (unsigned)scene.images.size());
-		return false;
-	}
-
-	// Verify rotation errors (with gauge freedom)
-	IIndex refImg = NO_ID;
-	for (unsigned i = 0; i < scene.images.size(); ++i)
-		if (scene.images[i].IsValid()) { refImg = i; break; }
-	if (refImg == NO_ID) {
-		VERBOSE("HierarchicalSFMWithRandomTransformTest FAILED: no valid reference image");
-		return false;
-	}
-	const RMatrix R0_gt = gtPoses[refImg].R;
-	const RMatrix R0_est = scene.images[refImg].R;
-	double sumRotErr = 0;
-	unsigned rotCount = 0;
-	for (unsigned i = 0; i < scene.images.size(); ++i) {
-		if (!scene.images[i].IsValid()) continue;
-		const RMatrix Ri_rel_gt = gtPoses[i].R * R0_gt.t();
-		const RMatrix Ri_rel_est = scene.images[i].R * R0_est.t();
-		const double err = ACOS(CLAMP(ComputeAngle(Ri_rel_est, Ri_rel_gt), REAL(-1), REAL(1)));
-		sumRotErr += err;
-		++rotCount;
-	}
-	const double meanRotErr = rotCount > 0 ? R2D(sumRotErr / rotCount) : 0;
-	if (meanRotErr > 8.0) {
-		VERBOSE("HierarchicalSFMWithRandomTransformTest FAILED: mean rotation error %.2f deg > 8.0", meanRotErr);
-		return false;
-	}
-
-	// Verify track recovery
-	const unsigned finalTracks = (unsigned)scene.tracks.size();
-	const double trackRecovery = origTrackCount > 0 ? (double)finalTracks / origTrackCount : 0;
-	if (trackRecovery < 0.5) {
-		VERBOSE("HierarchicalSFMWithRandomTransformTest FAILED: track recovery %.1f%% < 50%%", trackRecovery * 100);
-		return false;
-	}
-
-	VERBOSE("HierarchicalSFMWithRandomTransformTest PASSED: %u calibrated, rot=%.2f deg, tracks=%u/%u (%s)",
-		calibrated, meanRotErr, finalTracks, origTrackCount, TD_TIMER_GET_FMT().c_str());
-	return true;
+	return scope.Pass("%s", summary.c_str());
 }
 /*----------------------------------------------------------------*/
 

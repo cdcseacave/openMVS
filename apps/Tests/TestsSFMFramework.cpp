@@ -737,6 +737,8 @@ std::vector<SEACAVE::Transform> SplitOnTruth(Scene& scene, SceneBlocks& sceneBlo
 		for (Track& track : sub.tracks)
 			if (track.observations.size() >= 2)
 				TriangulateSkewLLS(track, sub.images, 4.f, 0.f);
+		if (seed == NO_ID)
+			continue;
 		applied[b] = SEACAVE::Transform::Random(rng, 180, 10, 0.5);
 		sub.Transform(applied[b]);
 	}
@@ -844,6 +846,49 @@ Scene MakeSphereScene(const std::vector<Point3>& centres, unsigned numPoints, ui
 	scene.status.nTracks = scene.tracks.size();
 	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
 	return scene;
+}
+/*----------------------------------------------------------------*/
+
+
+PoseError PoseErrors(const Scene& scene, const std::vector<Pose3D>& truth, const IIndexArr& subset)
+{
+	ASSERT(truth.size() == scene.images.size() && truth.size() >= 2);
+	IIndexArr measured;
+	Point3Arr centres, trueCentres;
+	const auto Measure = [&](IIndex i) {
+		ASSERT(i < scene.images.size());
+		if (!scene.images[i].IsValid())
+			return;
+		measured.push_back(i);
+		centres.push_back(scene.images[i].C);
+		trueCentres.push_back(truth[i].C);
+	};
+	if (subset.empty())
+		FOREACH(i, scene.images)
+			Measure((IIndex)i);
+	else
+		for (IIndex i : subset)
+			Measure(i);
+	PoseError e;
+	e.count = (unsigned)measured.size();
+	if (e.count < 3)
+		return e;
+	REAL extent = 0;
+	FOREACH(i, truth)
+		for (IIndex j = i + 1; j < truth.size(); ++j)
+			extent = MAXF(extent, norm(truth[i].C - truth[j].C));
+	ASSERT(extent > 0);
+	const SEACAVE::Transform T(EstimateSimilarityTransform(centres, trueCentres));
+	std::vector<REAL> rotations, positions;
+	FOREACH(k, measured) {
+		rotations.push_back(RotationErrorDeg(RMatrix(scene.images[measured[k]].R * T.R.t()), truth[measured[k]].R));
+		positions.push_back(norm(T * centres[k] - trueCentres[k]) / extent);
+	}
+	e.rotationMax = *std::max_element(rotations.begin(), rotations.end());
+	e.positionMax = *std::max_element(positions.begin(), positions.end());
+	e.rotationMedian = Median(rotations);
+	e.positionMedian = Median(positions);
+	return e;
 }
 /*----------------------------------------------------------------*/
 

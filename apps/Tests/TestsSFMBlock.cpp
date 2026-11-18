@@ -1083,7 +1083,9 @@ bool ResectionLinkChecksTest()
 	const auto Decoy = [&] { return LinkScene(20260908, 5, {{3, 400}}, 0, &decoy, 20); };
 	// the quorum: the pose found is the right one, but the strongest pair is to image 3, whose stored pose is then
 	// displaced 40 degrees along the arc, so it predicts a rotation that far off; the weaker pairs to images 2 and 1
-	// agree with the pose
+	// agree with the pose. The adjustments that follow start from the displaced image 3 and, the scale of the model
+	// being free (only image 1 is held), settle at another scale: every image ends up exactly on the truth after one
+	// similarity of scale 0.43, image 4 3.49 units from its true centre before it, hence RIGHT_SHAPE
 	const auto Quorum = [&](bool corroborating) {
 		ArcScene arc(LinkScene(20260908, 5, corroborating ?
 			std::vector<Link>{{3, 400}, {2, 300}, {1, 250}} : std::vector<Link>{{3, 400}}));
@@ -1127,9 +1129,10 @@ bool ResectionLinkChecksTest()
 	linkRotationOff.maxLinkRotationDisagreement = 0.f;
 
 	// REFUSED: image 4 stays unregistered; REGISTERED: it registers; RIGHT_ROTATION: it registers within 1 degree of its
-	// true rotation; RIGHT_POSE: and within 1% of the arc's extent of its true centre; WRONG: it registers more than 15
-	// degrees off its true rotation
-	enum Expect { REFUSED, REGISTERED, RIGHT_ROTATION, RIGHT_POSE, WRONG };
+	// true rotation; RIGHT_POSE: and within 1% of the arc's extent of its true centre; RIGHT_SHAPE: RIGHT_ROTATION, and every
+	// registered image is within 1 degree and 1% of the extent of its true pose after the best similarity (PoseErrors);
+	// WRONG: it registers more than 15 degrees off its true rotation
+	enum Expect { REFUSED, REGISTERED, RIGHT_ROTATION, RIGHT_POSE, RIGHT_SHAPE, WRONG };
 	struct Case {
 		const char* name; std::function<ArcScene()> scene; const ResectionConfig& config; Expect expect; const char* why;
 		bool single = false;         // RegisterImage(4) alone, not the resection's loop
@@ -1140,7 +1143,7 @@ bool ResectionLinkChecksTest()
 		{"decoy, every rule off", Decoy, allOff, WRONG, "with the share, the composed rotation, the link direction and the link rotation off, the decoy pose is accepted, so the rules are what keeps it out"},
 		{"decoy, share off", Decoy, ratioOff, REFUSED, "the pose is 40 degrees from the rotation its strongest pair composes, and its 20% share does not earn it the benefit of the doubt"},
 		{"decoy, share and direction off", Decoy, ratioAndDirectionOff, REFUSED, "with every direction check off the composed-rotation check still refuses it"},
-		{"quorum", [&] { return Quorum(true); }, quorumOnly, RIGHT_ROTATION, "two of three pairs agree with the pose and overrule the strongest pair, to the displaced image 3"},
+		{"quorum", [&] { return Quorum(true); }, quorumOnly, RIGHT_SHAPE, "two of three pairs agree with the pose and overrule the strongest pair, to the displaced image 3"},
 		{"false witness alone", [&] { return Quorum(false); }, defaults, REFUSED, "the pair to the displaced image 3 is the only witness left"},
 		{"1 of 3 turned", [&] { return Turned(1, 20); }, direction5, RIGHT_ROTATION, "the two agreeing pairs outweigh the turned one: a single misplaced neighbour cannot refuse a right pose"},
 		{"2 of 3 turned", [&] { return Turned(2, 20); }, direction5, REFUSED, "the links that contradict the direction outweigh the one that agrees"},
@@ -1165,7 +1168,8 @@ bool ResectionLinkChecksTest()
 	};
 	const auto Describe = [](Expect e) {
 		return e == REFUSED ? "refused" : e == REGISTERED ? "registered" : e == RIGHT_ROTATION ? "registered at its true rotation" :
-			e == RIGHT_POSE ? "registered at its true pose" : "registered more than 15 degrees off";
+			e == RIGHT_POSE ? "registered at its true pose" : e == RIGHT_SHAPE ? "registered, the model its true shape" :
+			"registered more than 15 degrees off";
 	};
 	for (const Case& c : cases) {
 		ArcScene arc(c.scene());
@@ -1181,11 +1185,14 @@ bool ResectionLinkChecksTest()
 		const bool registered = img.HasPose();
 		const double rotErr = registered ? RotationErrorDeg(img.R, arc.truth[4].R) : 0.0;
 		const REAL centreErr = registered ? norm(img.C - arc.truth[4].C) : REAL(0);
+		const PoseError shape = PoseErrors(arc.scene, arc.truth);
 		const bool met = c.expect == REFUSED ? !registered : c.expect == REGISTERED ? registered :
 			c.expect == RIGHT_ROTATION ? registered && rotErr <= 1.0 :
-			c.expect == RIGHT_POSE ? registered && rotErr <= 1.0 && centreErr <= 0.01 * ArcScene::EXTENT : registered && rotErr > 15.0;
-		TEST_CHECK(met, "%s: image 4 %s (%.2f deg and %.4f units off its true pose), expected %s: %s", c.name,
-			registered ? "registered" : "was refused", rotErr, centreErr, Describe(c.expect), c.why);
+			c.expect == RIGHT_POSE ? registered && rotErr <= 1.0 && centreErr <= 0.01 * ArcScene::EXTENT :
+			c.expect == RIGHT_SHAPE ? registered && rotErr <= 1.0 && shape.rotationMax <= 1.0 && shape.positionMax <= 0.01 : registered && rotErr > 15.0;
+		TEST_CHECK(met, "%s: image 4 %s (%.2f deg and %.4f units off its true pose; the model %.2f deg and %.4f of its extent "
+			"off the truth after the best similarity), expected %s: %s", c.name, registered ? "registered" : "was refused", rotErr,
+			centreErr, shape.rotationMax, shape.positionMax, Describe(c.expect), c.why);
 		TEST_CHECK(c.logged == NULL || log->Contains(c.logged), "%s: the log does not say \"%s\": %s", c.name, c.logged, c.why);
 	}
 

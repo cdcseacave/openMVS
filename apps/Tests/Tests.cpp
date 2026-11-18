@@ -436,7 +436,6 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(PoolResectionWrongClusterTest),
 				SFM_TEST(PoolResectionLinkOnlyTest),
 				// Hierarchical SFM tests - Phase 3: Global Alignment
-				SFM_TEST(GlobalAlignmentBuildGlobalToLocalMapTest),
 				SFM_TEST(GlobalAlignmentRotationAveragingExtendedTest),
 				SFM_TEST(GlobalAlignmentScaleAveragingExtendedTest),
 				SFM_TEST(GlobalAlignmentScaleAveragingFallbackTest),
@@ -478,13 +477,11 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(BentBlocksAdjustmentTest),
 				SFM_TEST(BentBlockClosureTest),
 				SFM_TEST(BentRingKeepsSeamsTest),
-				SFM_TEST(GlobalAlignmentMergeSingleSceneTest),
 				SFM_TEST(GlobalAlignmentTrackMergeDuplicateImageGuardTest),
 				SFM_TEST(GlobalAlignmentTrackMerge3DProximityGuardTest),
 				SFM_TEST(HierarchicalCameraAlignmentTest),
 				// Hierarchical SFM tests - End-to-End
-				SFM_TEST(HierarchicalSFMSplitMergeRoundtripTest),
-				SFM_TEST(HierarchicalSFMWithRandomTransformTest),
+				SFM_TEST(MergeRoundtripTest),
 			};
 			for (const auto& test : sfmTests) {
 				if (!test.second()) {
