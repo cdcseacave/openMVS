@@ -251,7 +251,7 @@ bool RoMa2OnnxParityTest();
 // every pair; a run with the dense matching pass on is compared against a baseline run with it off
 // (the same pair set, every pair carrying a dense segment of its own and a sparse segment the
 // guided matching produced), survives an .sfm round-trip of the descriptors and the pairs,
-// and then goes through ReconstructTest's own reconstruction stage; and two runs of one awkward
+// and then goes through RealImagesPipelineTest's own reconstruction stage; and two runs of one awkward
 // configuration (single thread, a slot pool too small for the scene) must match identical pairs,
 // which is what pins the determinism of the pass. Skipped unless OPENMVS_ROMA2_MODEL_PATH points
 // at an exported model folder; OPENMVS_ROMA2_PROVIDER and OPENMVS_ROMA2_SETTING narrow the
@@ -259,7 +259,7 @@ bool RoMa2OnnxParityTest();
 bool ROMA2ReconstructTest();
 
 // FlexGlue as the dense matcher on the same bundled 4-image scene: 256-D unit retrieval descriptors, a covisibility score and a coarse relative pose
-// on every pair (the pose close to the pair's own), the pairs CSV columns, the covisibility gate, and ReconstructTest's reconstruction stage,
+// on every pair (the pose close to the pair's own), the pairs CSV columns, the covisibility gate, and RealImagesPipelineTest's reconstruction stage,
 // with no RoMa2 model reachable. Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at a FlexGlue bundle
 bool FlexGlueReconstructTest();
 
@@ -362,9 +362,6 @@ bool SphericalBottomBandDenseTest();
 // The detector words of FeatureTypeFromString: AKAZE, ORB, SIFT and SIFTGPU in any letter case, any other word is NONE.
 bool FeatureTypeNameTest();
 
-// A positive --gps-position-weight or --gps-position-weight-z is refused by Scene::Reconstruct for a scene with a spherical camera, before feature extraction.
-bool GPSWeightSphericalTest();
-
 // Integration test for the PairsMatcher -> poselib::estimate_relative_pose_bearings
 // path on a full-sphere spherical scene. Validates RANSAC scoring with
 // cheirality disabled for spherical cameras, plus the Sampson-on-sphere
@@ -398,7 +395,7 @@ bool TripletStarInitTest();
 // length agreeing with the classic stream scan, GPS), the "don't rotate twice" orientation
 // guard for a container 'irot' that duplicates an EXIF Orientation, and the LoadPixels
 // fallback for a format cv::imread cannot decode -- in both color and gray, the latter being
-// what feature extraction uses. Pixel content as a whole is covered by ReconstructTest and the
+// what feature extraction uses. Pixel content as a whole is covered by RealImagesPipelineTest and the
 // MVS PipelineTest, two of whose four images are HEIC.
 bool HEIFMetadataTest();
 #endif
@@ -438,22 +435,14 @@ bool TwoViewTest();
 // is the true one for two cameras of different intrinsics and image sizes, as for two cameras of one size
 bool FundamentalPoseTwoCamerasTest();
 
-// Reconstruction test: Import images, extract features, match pairs, build tracks, and initialize
-bool ReconstructTest(bool verbose = false);
-
-// --export-pairs-csv is written by Scene::Reconstruct()
-// right after pair matching, from both call sites (fresh import + match, and an already-matched
-// .sfm given back as source), before any reconstruction step can drop pairs
-bool ReconstructExportCSVTest();
-
-// --match-mode -1 (SKIP): reconstructs a saved scene from its own matches, refuses a scene that holds none
-bool SkipMatchModeTest();
+// The pipeline on the bundled images, each stage from the state the one before left: the refusals before any work
+// (SKIP without matches, a GPS weight with panoramas), the match-images-only run writing --export-pairs-csv right
+// after the matching (from the images and from the saved .sfm), --match-mode -1 (SKIP) from the saved matches,
+// --use-global-solver (Scene::ReconstructGlobal), and the incremental reconstruction recovering wrong intrinsics
+bool RealImagesPipelineTest(bool verbose = false);
 
 // one default detector: every configuration starts from FeatureType::DEFAULT, MatchConfig's thresholds included
 bool DefaultDetectorTest();
-
-// --use-global-solver: Scene::ReconstructGlobal registers the images of the bundled scene
-bool GlobalSolverTest();
 
 // The camera-triplet view-graph filter of Manam & Govindu (CVPR 2024): the scores, the yield
 // rule and both modes on hand-computed graphs.
@@ -475,37 +464,14 @@ bool StarEvidenceTest();
 bool StarScaleGaugeTest();
 bool NearDuplicateYardstickTest();
 
-// A resected pose enters the model only when its support is credible: enough of its 2D-3D
-// correspondences agree with it (ResectionConfig::minInlierRatio / minInliersAbsolute), and a
-// weakly supported one also agrees with the rotation the quorum of its verified pairs to registered
-// images composes -- the largest group of them agreeing on one rotation, so that one pair among
-// several cannot speak for the image (ResectionConfig::maxRelativeRotationError) -- and with the
-// baseline direction that quorum predicts (ResectionConfig::maxLinkDirectionError); each of the
-// three alone keeps this misregistration out, and with all three off it enters the model.
-bool ResectionAcceptanceTest();
-
-// A weakly supported pose must also agree with the baseline direction its verified pairs to
-// registered images predict: it is refused when the quorum links that contradict the direction
-// carry more weighted inliers than the ones that agree (ResectionConfig::maxLinkDirectionError) --
-// the weight they carry and not their number, so the strongest link alone outweighs two weak ones
-// that agree -- each link's tolerance growing as the larger of its ray angle and the model's
-// parallax shrinks, so a near-duplicate pair fixes no direction and a small-baseline pair forgives
-// no more than the model's parallax of the two cameras allows (ResectionModelParallaxTest)
-bool ResectionLinkDirectionTest();
-
-// The direction a quorum link predicts is also held to the model's parallax of the link (the
-// baseline the pose makes with the neighbour over the median distance of its inlier points): a
-// link the model sees under 2 degrees abstains, or agrees when its pair is a near-duplicate too,
-// and otherwise the larger of the pair's ray angle and the model's parallax sets the tolerance, so
-// the pose under test cannot widen its own; ResectionConfig::maxLinkDirectionError 0 turns every
-// direction check off and leaves the rotation check on
-bool ResectionModelParallaxTest();
-
-// Every link of a pose to a registered image weighs on it, not only the quorum's: a pose is refused
-// when its mean angle to the rotations all its links predict, weighted by the pair weights, exceeds
-// ResectionConfig::maxLinkRotationDisagreement, also when the quorum passes it; 0 turns the check
-// off, and an image with no link to a registered image is not judged
-bool ResectionLinkRotationTest();
+// A resected pose enters the model only when its support is credible: enough of its 2D-3D correspondences agree
+// with it (ResectionConfig::minInlierRatio), and a weakly supported one also agrees with the rotation the quorum of
+// its verified pairs to registered images composes (maxRelativeRotationError: one pair among several cannot speak for
+// the image), with the baseline direction each link predicts, weighed in weighted inliers with the pose's own inliers
+// voting for it and forgiven by the larger of the pair's ray angle and the model's parallax (maxLinkDirectionError),
+// and with the rotation all its links predict, weighted (maxLinkRotationDisagreement); one pair's direction tolerance
+// follows its ray angle (MeasurePairDisagreement)
+bool ResectionLinkChecksTest();
 
 // The resection's next image is the candidate whose verified pairs to registered images weigh most
 // (their composite weight), among every image holding ResectionConfig::minCorrespondences 2D-3D
@@ -604,9 +570,6 @@ bool SphericalTriangulationTest();
 // resection that follows, the latter get another chance once the model has grown.
 bool ContradictingImagesTest();
 
-// A pair's baseline direction is held to the rotation tolerance as seen from the structure the pair
-// triangulates: a near-parallel pair forgives a wide direction error, a wide-baseline pair little.
-bool PairDirectionToleranceTest();
 
 // Test function for rotation estimation
 bool RotationEstimatorTest();
@@ -751,14 +714,10 @@ bool CrossBlockJoinTest();
 bool MergeJoinReprojectionTest();
 bool MergeTrackLengthTest();
 bool PooledSeamReadingTest();
-// The merge in rounds: a block kept whole, the regrouping around the merged model, the release (driven by hand)
+// The merge in rounds: a block kept whole, the regrouping around the merged model, the release (driven by hand); the
+// merge's own loop (SceneBlocks::MergeInRounds) releasing at the fixed point; a seam through pool-registered cameras
+// alone refused; from round 2 on the merged model is the one holding block 0, whatever the other models weigh
 bool MergeRoundsTest();
-// The merge's own loop (SceneBlocks::MergeInRounds): a block no seam reaches is kept, read again and released at the fixed point
-bool MergeInRoundsTest();
-// A block whose only link to the merged model goes through images a pool step registered is not placed through them
-bool MergePoolCamerasTest();
-// From round 2 on the merged model is the one holding block 0, whatever the other models weigh
-bool MergeAnchorTest();
 bool UnobservableScaleTest();
 bool UnobservableScalePairTest();
 bool AmbiguousPairTest();

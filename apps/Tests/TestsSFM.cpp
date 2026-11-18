@@ -53,6 +53,7 @@
 #include "../../libs/MVS.h"
 #include <nlohmann/json.hpp>
 #include "Tests.h"
+#include "TestsSFMFramework.h"
 #include <filesystem>
 #include <chrono>
 #include <random>
@@ -242,7 +243,7 @@ static float Percentile(std::vector<float>& values, double percent)
 
 #ifdef _IMAGE_HEIF
 // HEIF/HEIC integration at the SFM layer; see the declaration for the coverage list.
-// There are no HEIF-only fixtures: two of the four pipeline images are HEIC, so ReconstructTest
+// There are no HEIF-only fixtures: two of the four pipeline images are HEIC, so RealImagesPipelineTest
 // and the MVS PipelineTest decode them for real on every run -- which is what covers pixel
 // content as a whole, far more sharply than a mean-absolute-difference check could:
 //  - 00001.heic: decodes 640x479, no container rotation, carrying a genuine fully opaque alpha
@@ -251,7 +252,7 @@ static float Percentile(std::vector<float>& values, double percent)
 //                portrait 479x640, AND a stored EXIF Orientation=8 naming the same rotation --
 //                locks the "don't rotate twice" guard. SFM turns it back into the landscape
 //                working raster (View::ToWorkingOrientation rotates 90deg CW), so the whole
-//                rotate-back path runs inside ReconstructTest. MVS has no EXIF-rotation concept,
+//                rotate-back path runs inside RealImagesPipelineTest. MVS has no EXIF-rotation concept,
 //                so scene.mvs gives this one image its own portrait camera (K with fx/fy swapped
 //                and the principal point mapped by (cx,cy) -> (cy, W-1-cx), rotation Rz(-90)
 //                relative to the platform), which describes exactly the same rays.
@@ -372,7 +373,7 @@ bool HEIFMetadataTest()
 		// Alpha is constant on real photos, so the buffer came out flat -- 0 SIFT features on
 		// every image, with correct dimensions and no error logged anywhere. Only a check on
 		// the *spread* of the content catches it, which is why this asserts a stddev. Since
-		// 00001.heic is a pipeline image, ReconstructTest gray-loads it on every run too.
+		// 00001.heic is a pipeline image, RealImagesPipelineTest gray-loads it on every run too.
 		SFM::Image img(0, pathAlpha);
 		if (!img.LoadMetadata() || !img.LoadPixels(true)) {
 			VERBOSE("ERROR: HEIFMetadataTest: LoadPixels(gray) failed for '%s'", pathAlpha.c_str());
@@ -6631,9 +6632,9 @@ bool RoMa2OnnxParityTest()
 }
 
 #ifdef _USE_ONNXRUNTIME
-// The reconstruction stage of ReconstructTest (tracks, star initialization, colors and the
+// The reconstruction stage of RealImagesPipelineTest (tracks, star initialization, colors and the
 // checks on what they produce), shared with ROMA2ReconstructTest so that both hold a matched
-// scene to exactly the same expectations; defined next to ReconstructTest itself
+// scene to exactly the same expectations; defined next to RealImagesPipelineTest itself
 static bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned minTracks, unsigned maxTracks, REAL maxDistortion);
 
 // One matched pair of a DenseReconstructScene run, reduced to what the checks below compare:
@@ -6698,7 +6699,7 @@ static bool DenseReconstructScene(Scene& scene, DenseMatchConfig denseCfg,
 	const String& provider = denseCfg.provider;
 	const bool bUseMatching = denseCfg.useMatching;
 	const unsigned slotBudget = denseCfg.slotBudget;
-	// the images' own focal, given and so trusted (720.51 px, no distortion), unlike ReconstructTest,
+	// the images' own focal, given and so trusted (720.51 px, no distortion), unlike RealImagesPipelineTest,
 	// which forces a deliberately wrong 900 px / k1=0.6 / k2=-0.09 and leans on the view-graph
 	// calibrator to recover them from the fundamental matrices. That recovery is exactly what
 	// warp-guided matching cannot feed: it keeps, per keypoint of A, the descriptor-best keypoint
@@ -6723,7 +6724,7 @@ static bool DenseReconstructScene(Scene& scene, DenseMatchConfig denseCfg,
 		return false;
 	}
 	// two of the four bundled images are HEIC, which only libheif can decode (OpenCV has no
-	// HEIF codec), so a build without it enumerates just the two JPGs (ReconstructTest carries
+	// HEIF codec), so a build without it enumerates just the two JPGs (RealImagesPipelineTest carries
 	// the same guard); every pair-count expectation below is expressed in terms of however
 	// many images were actually enumerated, so this test still asserts real numbers either way
 	#ifdef _IMAGE_HEIF
@@ -6799,7 +6800,7 @@ static bool DenseReconstructScene(Scene& scene, DenseMatchConfig denseCfg,
 	// (== dot product, both unit-norm) essentially 1: the graph is deterministic, so describing
 	// twice from one buffer returns the very same vector and the cosine lands within float
 	// rounding of exactly 1. The 4 bundled images are close-up shots of the same small scene
-	// (ReconstructTest reconstructs ~2000 shared tracks from them), so even genuinely distinct
+	// (RealImagesPipelineTest reconstructs ~2000 shared tracks from them), so even genuinely distinct
 	// descriptors sit close to 1 by content similarity alone -- measured empirically at up to
 	// 0.99985546 (turbo) and 0.99994838 (base) across both providers here, on this dataset.
 	// The worst of those sits 5.2e-5 below 1, so 1-1e-6
@@ -6850,7 +6851,7 @@ static bool DenseReconstructScene(Scene& scene, DenseMatchConfig denseCfg,
 }
 #endif // _USE_ONNXRUNTIME
 
-// ROMA2 reconstruct test: runs the whole import/AKAZE/RETRIEVAL pipeline of ReconstructTest
+// ROMA2 reconstruct test: runs the whole import/AKAZE/RETRIEVAL pipeline of RealImagesPipelineTest
 // with the in-process ROMAv2 model attached, and checks both of its passes -- the describe pass
 // (per-image global retrieval descriptors, 2048-D, the graph's own on-device pooling) and the ONE
 // PASS that replaces the descriptor batch outright when --dense-match is on: every candidate pair
@@ -6858,7 +6859,7 @@ static bool DenseReconstructScene(Scene& scene, DenseMatchConfig denseCfg,
 // pass is measured against a baseline run of the very same configuration with it switched off, so
 // what is asserted is what the warps actually produced; the run is then repeated on a fresh scene
 // to prove determinism (design decision 11), round-tripped through Scene::Save/Load, and finished
-// with ReconstructTest's own reconstruction stage. Configured by the environment like
+// with RealImagesPipelineTest's own reconstruction stage. Configured by the environment like
 // RoMa2OnnxParityTest: OPENMVS_ROMA2_MODEL_PATH (unset => skipped), OPENMVS_ROMA2_SETTING
 // (default "base", matching DenseMatchConfig::setting's own default and the published model bundle),
 // OPENMVS_ROMA2_PROVIDER (default "auto")
@@ -6991,10 +6992,10 @@ bool ROMA2ReconstructTest()
 			}
 		}
 
-		// the rest of the ReconstructTest flow still passes on the one-pass scene; it needs all four
+		// the rest of the RealImagesPipelineTest flow still passes on the one-pass scene; it needs all four
 		// bundled images (the star initializer asks for three views per track), so it only runs in
 		// a build that can decode the two HEIC ones.
-		// ReconstructTest's expectations, at two bounds this path has to set for itself:
+		// RealImagesPipelineTest's expectations, at two bounds this path has to set for itself:
 		//  - THE TRACK COUNT. The dense fill draws --dense-matches correspondences per full
 		//    frame of the overlap its guided matches did not already cover, each one a keypoint in
 		//    both images, so the pass hands the track builder several times what the descriptor
@@ -7011,12 +7012,12 @@ bool ROMA2ReconstructTest()
 		//    keypoint of B inside a disc around the warp's prediction, and the dense segment is the
 		//    warp itself, so the correspondences carry that warp's bias and the bundle absorbs it
 		//    into the distortion coefficients of a scene that has none: measured at 10.1 px (turbo,
-		//    CUDA) against the 1.5 px of ReconstructTest. 20 px keeps the check meaningful (a
+		//    CUDA) against the 1.5 px of RealImagesPipelineTest. 20 px keeps the check meaningful (a
 		//    blown-up distortion is still caught) while leaving room above the measured value.
-		// Note what the focal check means here, which differs from ReconstructTest: the focal given
+		// Note what the focal check means here, which differs from RealImagesPipelineTest: the focal given
 		// at import is 720.51 px, so the `focal_error > 100` bound is already satisfied before the
 		// bundle runs and this stage asserts that the one-pass scene keeps the focal stable, not
-		// that it recovers it -- recovery from a deliberately wrong 900 px is what ReconstructTest
+		// that it recovers it -- recovery from a deliberately wrong 900 px is what RealImagesPipelineTest
 		// still tests, on the descriptor matches that can support it.
 		#ifdef _IMAGE_HEIF
 		if (!ReconstructMatchedScene(scene, "ROMA2ReconstructTest", 5000, 12000, 20))
@@ -7074,7 +7075,7 @@ static double RotationAngleDeg(const Matrix3x3f& R)
 // FlexGlue as the dense matcher, on the bundled 4-image scene through Scene::MatchPairs (docs/design/DenseMatching.md): the 256-D retrieval
 // descriptors its backbone pools (unit, distinct per image), every pair stored with its covisibility score and its coarse relative pose
 // (a rotation, a unit baseline direction, close to the pose the pair's own matches give: the check of the pose head's convention),
-// the pairs CSV carrying both, the covisibility gate dropping exactly the pairs below it, and ReconstructTest's
+// the pairs CSV carrying both, the covisibility gate dropping exactly the pairs below it, and RealImagesPipelineTest's
 // reconstruction stage on the matched scene. The run sees no RoMa2 model at all (its explicit path names a folder that does not exist and
 // OPENMVS_ROMA2_MODEL_PATH is unset for the duration): the describe pass, the retrieval and the matching load the FlexGlue bundle alone.
 // Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at a FlexGlue bundle (flexglue_base.json and its two graphs); OPENMVS_ROMA2_PROVIDER
@@ -7223,7 +7224,7 @@ bool FlexGlueReconstructTest()
 			}
 	}
 
-	// 3) the reconstruction stage of ReconstructTest on the matched scene
+	// 3) the reconstruction stage of RealImagesPipelineTest on the matched scene
 	#ifdef _IMAGE_HEIF
 	if (!ReconstructMatchedScene(scene, "FlexGlueReconstructTest", 4000, 12000, 20))
 		return false;
@@ -7284,322 +7285,6 @@ bool TestSimilarityTransform()
 	}
 	VERBOSE("SimilarityTransformUnitTest: All tests passed (max residual = %.6g)", maxErr);
 	return maxErr < 1e-6;
-}
-/*----------------------------------------------------------------*/
-
-
-// ===============================================================================
-// Helper: Generate Test Scene with configurable cameras, images, and points
-// ===============================================================================
-struct SceneConfig {
-	enum CameraType { PINHOLE, SPHERICAL };
-	enum PoseMode { SIMPLE_TRANSLATION, RANDOM_POSES, CIRCULAR_ARRANGEMENT };
-	enum PerturbOptions {
-		PERTURB_NONE = 0,
-		PERTURB_POSES = 1 << 0,
-		PERTURB_POINTS = 1 << 1,
-		PERTURB_INTRINSICS = 1 << 2,
-		PERTURB_KEYPOINTS = 1 << 3,
-		PERTURB_PAIR_POSES = 1 << 4,
-		PERTURB_ALL = PERTURB_POSES | PERTURB_POINTS | PERTURB_INTRINSICS | PERTURB_KEYPOINTS | PERTURB_PAIR_POSES
-	};
-	struct CameraSpec {
-		CameraType type;
-		int width{640}, height{480};
-		REAL focal{400.0}; // For pinhole
-		REAL cx{width/2.0}, cy{height/2.0}; // For pinhole principal point
-		REAL k1{0}, k2{0}; // Radial distortion
-	};
-	std::vector<CameraSpec> cameras{CameraSpec()}; // Camera specifications
-	unsigned numImages{3}; // Number of images/views
-	unsigned numPoints{60}; // Number of 3D points (0 for none)
-	PoseMode poseMode{CIRCULAR_ARRANGEMENT}; // Pose generation mode
-	bool addPoseRotations{false}; // Add Y-axis rotations (for SIMPLE_TRANSLATION, crucial for gauge ambiguity)
-	int perturbOptions{PERTURB_NONE}; // Bitmask of PerturbOptions
-	REAL rotationAngleStep{15.0}; // Rotation step in degrees
-	REAL cameraSeparation{0.3}; // Distance between cameras (SIMPLE_TRANSLATION)
-	REAL circularRadius{3.0}; // Radius for CIRCULAR_ARRANGEMENT
-	bool generateDescriptors{false}; // Generate random descriptors
-	bool binaryDescriptors{false}; // Binary vs float descriptors
-	int descriptorDim{128}; // Descriptor dimensionality
-	bool generatePairs{false}; // Generate image pairs with matches from tracks
-	bool generateGPS{false}; // Generate GPS metadata for images
-	uint32_t randomSeed{42}; // For reproducible random generation
-};
-
-// Helper: Generate random rotation
-Matrix3x3 GenerateRandomRotation(std::mt19937& rng, REAL angleRng = 0.3) {
-	std::uniform_real_distribution<REAL> angleDist(-angleRng, angleRng);
-	Eigen::Vector3d axis(angleDist(rng), angleDist(rng), angleDist(rng));
-	axis.normalize();
-	REAL angle = angleDist(rng);
-	Eigen::AngleAxisd aa(angle, axis);
-	Matrix3x3 R_rel = aa.toRotationMatrix();
-	return R_rel;
-}
-// Helper: Generate random translation
-Point3 GenerateRandomTranslation(std::mt19937& rng, REAL transRng = 1.0) {
-	std::uniform_real_distribution<REAL> transDist(-transRng, transRng);
-	Point3 t_rel;
-	do
-		t_rel = Point3(transDist(rng), transDist(rng), transDist(rng));
-	while (norm(t_rel) < 0.1);
-	return t_rel;
-}
-// Helper: Generate random pose
-Pose3D GenerateRandomPose(std::mt19937& rng, REAL angleRng = 0.3, REAL transRng = 1.0) {
-	Matrix3x3 R_rel = GenerateRandomRotation(rng, angleRng);
-	Point3 t_rel = GenerateRandomTranslation(rng, transRng);
-	Pose3D pose;
-	pose.R = R_rel;
-	pose.SetT(t_rel);
-	return pose;
-}
-
-// GenerateTestScene: Returns ground truth scene, optionally perturbed scene
-void GenerateTestScene(Scene& scene, const SceneConfig& cfg, Scene* scenePerturbed = nullptr) {
-	std::mt19937 rng(cfg.randomSeed);
-
-	// Create cameras
-	for (const auto& camSpec : cfg.cameras) {
-		Camera* cam = nullptr;
-		if (camSpec.type == SceneConfig::PINHOLE) {
-			PinholeCamera* pinhole = new PinholeCamera(cv::Size(camSpec.width, camSpec.height),
-			                        camSpec.focal, camSpec.focal,
-			                        camSpec.cx, camSpec.cy);
-			pinhole->k1 = camSpec.k1;
-			pinhole->k2 = camSpec.k2;
-			// intrinsics come straight from the ground-truth spec, so they are trusted:
-			// tests exercising the calibrated (essential-matrix) matching branch rely on it;
-			// tests exercising focal refinement clear the flag explicitly
-			pinhole->trustIntrinsics = true;
-			cam = pinhole;
-		} else {
-			cam = new SphericalCamera(cv::Size(camSpec.width, camSpec.height));
-		}
-		scene.cameras.emplace_back(cam);
-	}
-
-	// Generate poses based on mode
-	std::vector<Pose3D> poses;
-	if (cfg.poseMode == SceneConfig::RANDOM_POSES) {
-		Pose3D pose = GenerateRandomPose(rng);
-		poses.push_back(pose);
-		for (unsigned i = 1; i < cfg.numImages; ++i) {
-			pose = GenerateRandomPose(rng) * pose;
-			poses.push_back(pose);
-		}
-	} else if (cfg.poseMode == SceneConfig::CIRCULAR_ARRANGEMENT) {
-		for (unsigned i = 0; i < cfg.numImages; ++i) {
-			const REAL angle = D2R(i * cfg.rotationAngleStep);
-			Pose3D pose;
-			pose.C.x = cfg.circularRadius * COS(angle);
-			pose.C.y = 0;
-			pose.C.z = cfg.circularRadius * SIN(angle);
-			// Camera looks at origin, Up is (0,1,0)
-			pose.R.LookAt(pose.C, Point3(0,0,0), Point3(0,1,0));
-			poses.push_back(pose);
-		}
-	} else { // SIMPLE_TRANSLATION
-		for (unsigned i = 0; i < cfg.numImages; ++i) {
-			Pose3D pose;
-			if (cfg.addPoseRotations) {
-				const REAL angle = D2R(i * cfg.rotationAngleStep);
-				pose.R = Matrix3x3(
-					COS(angle), 0, SIN(angle),
-					0, 1, 0,
-					-SIN(angle), 0, COS(angle)
-				);
-			} else {
-				pose.R = Matrix3x3::IDENTITY;
-			}
-			pose.C.x = i * cfg.cameraSeparation;
-			pose.C.y = (i % 2) * cfg.cameraSeparation * 0.5;
-			pose.C.z = 0;
-			poses.push_back(pose);
-		}
-	}
-
-	// Create images
-	for (unsigned i = 0; i < cfg.numImages; ++i) {
-		const IIndex camID = static_cast<IIndex>(i % cfg.cameras.size());
-		Camera* cam = scene.cameras[camID];
-		scene.images.emplace_back(static_cast<IIndex>(i), "", poses[i], camID, cam);
-	}
-	scene.status.nCalibratedImages = scene.images.size();
-
-	// Generate 3D points and project to all images
-	if (cfg.numPoints > 0) {
-		Image& img0 = scene.images[0];
-		std::uniform_int_distribution<int> pixelWidthDist(10, img0.GetWidth() - 10);
-		std::uniform_int_distribution<int> pixelHeightDist(10, img0.GetHeight() - 10);
-		std::uniform_real_distribution<REAL> depthDist(1, 10);
-		for (unsigned p = 0; p < cfg.numPoints; ++p) {
-			Point2 pixel(pixelWidthDist(rng), pixelHeightDist(rng));
-			REAL depth = depthDist(rng);
-			Point3 X = img0.UnprojectPoint(pixel, depth);
-			Track track(X);
-			for (unsigned v = 0; v < cfg.numImages; ++v) {
-				Image& img = scene.images[v];
-				const auto [proj, valid] = img.ProjectPoint(X);
-				if (!valid || !Image8U::isInside(proj, img.GetSize()))
-					continue;
-				const uint32_t featID = static_cast<uint32_t>(img.keypoints.size());
-				img.keypoints.emplace_back(proj, 0.f, 0.f, 10.f);
-				track.observations.emplace_back(img.ID, featID);
-			}
-			if (track.observations.size() < 2) {
-				// Regenerate track if not enough observations
-				// and remove added keypoints
-				for (const auto& obs : track.observations)
-					scene.images[obs.imageID].keypoints.pop_back();
-				--p;
-				continue;
-			}
-			track.numInliers = static_cast<uint8_t>(track.observations.size());
-			scene.tracks.emplace_back(std::move(track));
-		}
-		scene.status.nTracks = scene.tracks.size();
-		scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
-	}
-
-	// Generate descriptors if requested
-	if (cfg.generateDescriptors) {
-		// First pass: generate random descriptors for all keypoints
-		std::uniform_int_distribution<int> byteDist(0, 255);
-		for (Image& img : scene.images) {
-			const size_t numKeypoints = img.keypoints.size();
-			img.descriptors.create((int)numKeypoints, cfg.descriptorDim, CV_8U);
-			for (size_t k = 0; k < numKeypoints; ++k) {
-				uint8_t* desc = img.descriptors.ptr<uint8_t>((int)k);
-				for (int d = 0; d < cfg.descriptorDim; ++d)
-					desc[d] = (uint8_t)byteDist(rng);
-			}
-		}
-		// Second pass: make corresponding keypoints have similar descriptors
-		std::normal_distribution<float> noise(0.f, cfg.binaryDescriptors ? 2.f : 8.f);
-		for (const Track& track : scene.tracks) {
-			// Use the first observation's descriptor as the base
-			ASSERT(!track.observations.empty());
-			const auto& firstObs = track.observations[0];
-			const Image& firstImg = scene.images[firstObs.imageID];
-			const uint8_t* baseDesc = firstImg.descriptors.ptr<uint8_t>((int)firstObs.featureID);
-			// Regenerate descriptors for remaining observations as noisy versions
-			for (size_t i = 1; i < track.observations.size(); ++i) {
-				const auto& obs = track.observations[i];
-				Image& img = scene.images[obs.imageID];
-				uint8_t* desc = img.descriptors.ptr<uint8_t>((int)obs.featureID);
-				for (int d = 0; d < cfg.descriptorDim; ++d) {
-					int v = ROUND2INT((float)baseDesc[d] + noise(rng));
-					desc[d] = (uint8_t)CLAMP(v, 0, 255);
-				}
-			}
-		}
-		scene.status.nFeaturesType = (cfg.binaryDescriptors ? FeatureType::AKAZE : FeatureType::SIFT);
-	}
-
-	// Generate image pairs with matches if requested
-	if (cfg.generatePairs) {
-		const unsigned nImages = static_cast<unsigned>(scene.images.size());
-		// Create pairs for all image combinations
-		for (unsigned i = 0; i + 1 < nImages; ++i) {
-			for (unsigned j = i + 1; j < nImages; ++j) {
-				ImagePair& pair = scene.pairs.emplace_back(i, j);
-				// Build matches from track observations
-				for (const Track& track : scene.tracks) {
-					uint32_t obs_i = NO_ID, obs_j = NO_ID;
-					for (const auto& obs : track.observations) {
-						if (obs.imageID == i) obs_i = obs.featureID;
-						else if (obs.imageID == j) obs_j = obs.featureID;
-					}
-					if (obs_i != NO_ID && obs_j != NO_ID)
-						pair.matches.emplace_back(obs_i, obs_j);
-				}
-				// Compute ground truth relative pose
-				pair.relativePose = scene.images[j] / scene.images[i];
-				pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
-				pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[i].GetK(), scene.images[j].GetK());
-			}
-		}
-		scene.status.nState.set(Scene::Status::STATE::MATCHED);
-	}
-
-	// Generate GPS metadata if requested
-	if (cfg.generateGPS) {
-		// Base GPS location: Mountain View, CA (Googleplex)
-		const double base_latitude = 37.3861;  // degrees North
-		const double base_longitude = -122.0839; // degrees West
-		const double base_altitude = 30.0;      // meters (approximate)
-		// GPS conversion factors (approximate)
-		const double metersPerDegLat = 111132.0; // meters per degree latitude
-		for (Image& img : scene.images) {
-			// Convert camera position (meters) to GPS offset
-			// Camera coordinate system: X=East, Y=North, Z=Up (assumed)
-			const double lat_offset_deg = img.C.y / metersPerDegLat;
-			const double lat = base_latitude + lat_offset_deg;
-			// Longitude offset depends on latitude (cosine correction)
-			const double metersPerDegLon = metersPerDegLat * COS(D2R(lat));
-			const double lon_offset_deg = img.C.x / metersPerDegLon;
-			const double lon = base_longitude + lon_offset_deg;
-			const double alt = base_altitude + img.C.z;
-			// Set GPS metadata via View cast
-			View::Metadata& meta = static_cast<View&>(img).metadata;
-			meta.latitude = lat;
-			meta.longitude = lon;
-			meta.altitude = alt;
-			meta.positionAccuracy = 0.1;  // 10cm horizontal accuracy
-			meta.positionAccuracyZ = 0.5; // 50cm vertical accuracy
-		}
-		// Align to GPS first
-		scene.AlignToGPS();
-	}
-
-	// Create perturbed copy if requested
-	if (scenePerturbed) {
-		*scenePerturbed = scene;
-		std::uniform_real_distribution<REAL> perturbDist(-0.01, 0.01);
-		// Optionally perturb intrinsics
-		if (cfg.perturbOptions & SceneConfig::PERTURB_INTRINSICS) {
-			for (Camera* cam : scenePerturbed->cameras)
-				if (auto* pinhole = dynamic_cast<PinholeCamera*>(cam))
-					pinhole->fy = pinhole->fx += pinhole->fx * perturbDist(rng) * 3.0; // 3% noise
-		}
-		// Optionally perturb poses
-		if (cfg.perturbOptions & SceneConfig::PERTURB_POSES) {
-			for (Image& img : scenePerturbed->images) {
-				img.C.x += perturbDist(rng) * 0.01; // 1cm translation noise
-				img.C.y += perturbDist(rng) * 0.01;
-				img.C.z += perturbDist(rng) * 0.01;
-				img.R = img.R * GenerateRandomRotation(rng, 0.01); // 0.1 rad rotation noise
-			}
-		}
-		// Optionally perturb pairwise poses
-		if (cfg.perturbOptions & SceneConfig::PERTURB_PAIR_POSES) {
-			for (ImagePair& pair : scenePerturbed->pairs) {
-				pair.relativePose->C.x += perturbDist(rng) * 0.01; // 1cm translation noise
-				pair.relativePose->C.y += perturbDist(rng) * 0.01;
-				pair.relativePose->C.z += perturbDist(rng) * 0.01;
-				pair.relativePose->R = pair.relativePose->R * GenerateRandomRotation(rng, 0.01); // 0.1 rad rotation noise
-			}
-		}
-		// Optionally perturb keypoints
-		if (cfg.perturbOptions & SceneConfig::PERTURB_KEYPOINTS) {
-			for (Image& img : scenePerturbed->images) {
-				for (auto& kp : img.keypoints) {
-					kp.pt.x += static_cast<float>(perturbDist(rng) * 10.0); // 0.1 pixel noise
-					kp.pt.y += static_cast<float>(perturbDist(rng) * 10.0);
-				}
-			}
-		}
-		// Optionally perturb tracks
-		if (cfg.perturbOptions & SceneConfig::PERTURB_POINTS) {
-			for (Track& track : scenePerturbed->tracks) {
-				track.position.x += perturbDist(rng) * 0.5; // 0.5cm noise
-				track.position.y += perturbDist(rng) * 0.5;
-				track.position.z += perturbDist(rng) * 0.5;
-			}
-		}
-	}
 }
 /*----------------------------------------------------------------*/
 
@@ -8094,97 +7779,6 @@ bool AlignToPriorPosesCollinearTest()
 /*----------------------------------------------------------------*/
 
 
-// ===============================================================================
-// Helper: Generate a scene with known 2-cluster structure for clustering tests
-// ===============================================================================
-void GenerateTwoClusterScene(
-	Scene& scene,
-	unsigned clusterSizeA,
-	unsigned clusterSizeB,
-	unsigned numCrossPairs,
-	unsigned matchesPerCrossPair,
-	unsigned numPoints = 100,
-	uint32_t seed = 42,
-	bool hubBridge = false)
-{
-	const unsigned totalImages = clusterSizeA + clusterSizeB;
-	SceneConfig cfg;
-	cfg.randomSeed = seed;
-	cfg.numImages = totalImages;
-	cfg.numPoints = numPoints;
-	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
-	cfg.rotationAngleStep = 360.0 / totalImages;
-	cfg.generateDescriptors = true;
-	cfg.generatePairs = true;
-	GenerateTestScene(scene, cfg);
-
-	// Choose the cross-cluster pairs to keep before touching the array, preferring the ones that
-	// bring in an image neither side has used yet: a bridge spread over distinct cameras is what a
-	// seam looks like, and it is what an alignment registering one side's cameras needs.
-	// With hubBridge the choice is the opposite one: every cross pair runs through a single image
-	// of cluster A, so that side of the seam has one camera to register with -- too few to observe
-	// a scale -- while the other side keeps one camera per pair.
-	std::vector<bool> keepCross(scene.pairs.size(), false);
-	if (hubBridge) {
-		const IIndex hub = clusterSizeA - 1;
-		unsigned kept = 0;
-		FOREACH(i, scene.pairs) {
-			if (kept >= numCrossPairs)
-				break;
-			const ImagePair& pair = scene.pairs[i];
-			if ((pair.ID1 < clusterSizeA) == (pair.ID2 < clusterSizeA) || (pair.ID1 != hub && pair.ID2 != hub))
-				continue;
-			keepCross[i] = true;
-			++kept;
-		}
-	} else {
-		std::set<IIndex> usedA, usedB;
-		unsigned kept = 0;
-		for (unsigned pass = 0; pass < 2 && kept < numCrossPairs; ++pass) {
-			FOREACH(i, scene.pairs) {
-				if (kept >= numCrossPairs)
-					break;
-				const ImagePair& pair = scene.pairs[i];
-				if (keepCross[i] || (pair.ID1 < clusterSizeA) == (pair.ID2 < clusterSizeA))
-					continue;
-				const IIndex idA = pair.ID1 < clusterSizeA ? pair.ID1 : pair.ID2;
-				const IIndex idB = pair.ID1 < clusterSizeA ? pair.ID2 : pair.ID1;
-				if (pass == 0 && (usedA.count(idA) || usedB.count(idB)))
-					continue;
-				usedA.insert(idA);
-				usedB.insert(idB);
-				keepCross[i] = true;
-				++kept;
-			}
-		}
-	}
-
-	// Weight intra-cluster pairs high, cross-cluster pairs low or remove them
-	// Cluster A: images [0, clusterSizeA), Cluster B: images [clusterSizeA, totalImages)
-	RFOREACH(i, scene.pairs) {
-		ImagePair& pair = scene.pairs[i];
-		const bool inA = pair.ID1 < clusterSizeA && pair.ID2 < clusterSizeA;
-		const bool inB = pair.ID1 >= clusterSizeA && pair.ID2 >= clusterSizeA;
-		if (inA || inB) {
-			// Intra-cluster: keep all matches, boost weight
-			pair.weightSpatial = 10.f;
-			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-			pair.weightConnectivity = 10.f;
-			pair.weightTriplet = 10.f;
-		} else if (keepCross[i]) {
-			// Cross-cluster pair: keep but with fewer matches
-			if (pair.matches.size() > matchesPerCrossPair)
-				pair.matches.resize(matchesPerCrossPair);
-			pair.weightSpatial = 1.f;
-			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-			pair.weightConnectivity = 1.f;
-			pair.weightTriplet = 0.f;
-		} else {
-			scene.pairs.RemoveAtMove(i);
-		}
-	}
-}
-
 // Helper: simulate sub-scene reconstruction by copying GT poses and triangulating tracks
 void SimulateSubSceneReconstruction(
 	Scene& subScene,
@@ -8456,28 +8050,6 @@ bool SphericalBottomBandDenseTest()
 		}
 	}
 	VERBOSE("SphericalBottomBandDenseTest PASSED");
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-
-// a positive GPS weight is refused with a spherical camera before any work: the scene is left without features
-bool GPSWeightSphericalTest()
-{
-	VERBOSE("\n=== GPSWeightSphericalTest: GPS prior weight with panoramas ===");
-	for (int axis = 0; axis < 2; ++axis) {
-		Scene scene;
-		scene.cameras.emplace_back(new SphericalCamera(cv::Size(64, 32)));
-		for (unsigned i = 0; i < 2; ++i)
-			scene.images.emplace_back(static_cast<IIndex>(i), String(), Pose3D(), 0, scene.cameras[0]);
-		ReconstructionConfig cfg;
-		(axis ? cfg.baConfig.gpsPositionWeightZ : cfg.baConfig.gpsPositionWeight) = 1.0;
-		if (scene.Reconstruct(String(), cfg) || scene.status.nState.isSet(Scene::Status::STATE::FEATURES_EXTRACTED)) {
-			VERBOSE("GPSWeightSphericalTest FAILED: the %s weight was not refused at the start", axis ? "vertical" : "horizontal");
-			return false;
-		}
-	}
-	VERBOSE("GPSWeightSphericalTest PASSED");
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -10973,7 +10545,7 @@ bool FundamentalPoseTwoCamerasTest()
 	return true;
 }
 
-// Reconstruction stage of ReconstructTest: build the tracks of an already matched scene of the
+// Reconstruction stage of RealImagesPipelineTest: build the tracks of an already matched scene of the
 // four bundled images, initialize it, and check what that produced -- all images calibrated, the
 // forced intrinsics refined back to the truth, and a plausible number of inlier tracks.
 // Shared with ROMA2ReconstructTest, which runs it on the same scene matched through the ROMAv2
@@ -11058,267 +10630,119 @@ static bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned
 	return true;
 }
 
-// Reconstruction test: Import images, extract features, match pairs, build tracks, and initialize
-bool ReconstructTest(bool verbose)
+// The pipeline on the four bundled photographs (BundledImagesConfig: AKAZE, every pair matched), each stage from the
+// state the one before left:
+// 1. refused before any work (no feature extracted): a SKIP run (--match-mode -1) on a scene without matches, and a
+//    GPS prior weight, horizontal or vertical, with a spherical camera;
+// 2. a match-images-only Scene::Reconstruct from the images: pairs matched, the pairs CSV (--export-pairs-csv) written
+//    right after the matching, before any later step could drop a pair; the scene saved;
+// 3. that .sfm as the source: neither matched nor filtered again (PAIRS_FILTERED), its pairs only weighed and exported;
+// 4. SKIP on that .sfm: reconstructed from its own matches, the pair list untouched; SKIP on a saved scene holding
+//    features but no matches: refused;
+// 5. the global solver (--use-global-solver: Scene::ReconstructGlobal) on the matched scene registers every image;
+// 6. the incremental reconstruction from deliberately wrong intrinsics (900 px, k1 0.6, k2 -0.09, untrusted):
+//    tracks, the star, the adjustment refining them (ReconstructMatchedScene) recover the focal and the distortion.
+bool RealImagesPipelineTest(bool verbose)
 {
-	TD_TIMER_START();
-
-	// Create empty scene
-	Scene scene(2);
-
-	// 1) Import images with forced intrinsics
-	ImportConfig importCfg;
-	importCfg.focalLength = 900.f;
-	importCfg.k1 = 0.60f;
-	importCfg.k2 = -0.09f;
-	if (!scene.Import(MAKE_PATH("images"), importCfg)) {
-		VERBOSE("ReconstructTest: Import failed");
-		return false;
-	}
-	if (scene.images.size() != 4) {
-		// two of the four bundled images are HEIC, which only libheif can decode (OpenCV has no
-		// HEIF codec), so a build without it enumerates just the two JPGs
-		#ifdef _IMAGE_HEIF
-		constexpr const char* reason = "";
-		#else
-		constexpr const char* reason = " (built without libheif, so the two HEIC images were skipped)";
-		#endif
-		VERBOSE("ReconstructTest: Expected 4 images, got %u%s", (unsigned)scene.images.size(), reason);
-		return false;
-	}
-	static_cast<PinholeCamera*>(scene.cameras[0])->trustIntrinsics = false;
-	VERBOSE("ReconstructTest: Imported %u images", (unsigned)scene.images.size());
-
-	// 2) Extract features with AKAZE
-	FeatureExtractionConfig featuresCfg;
-	featuresCfg.detectorType = FeatureType::AKAZE;
-	featuresCfg.maxFeaturesPerCell = 900;
-	featuresCfg.minFeaturesPerCell = 400;
-	if (!scene.ExtractFeatures(featuresCfg)) {
-		VERBOSE("ReconstructTest: ExtractFeatures failed");
-		return false;
-	}
-	VERBOSE("ReconstructTest: Extracted features from %u images", (unsigned)scene.images.size());
-
-	// 3) Match pairs with exhaustive matching
-	MatchConfig matchCfg;
-	matchCfg.mode = MatchConfig::EXHAUSTIVE;
-	matchCfg.DefaultsForFeatureType(featuresCfg.detectorType);
-	if (!scene.MatchPairs(matchCfg)) {
-		VERBOSE("ReconstructTest: MatchPairs failed");
-		return false;
-	}
-	VERBOSE("ReconstructTest: Matched %u pairs", (unsigned)scene.pairs.size());
-
-	#if 0
-	// Refine intrinsics with view graph calibrator
-	ASSERT(static_cast<const PinholeCamera*>(scene.cameras[0])->trustIntrinsics == false); // allow focal length refinement
-	ViewGraphCalibratorConfig vgConfig;
-	ViewGraphCalibrator calibrator(vgConfig);
-	if (!calibrator.Solve(scene)) {
-		VERBOSE("ERROR: ViewGraphCalibratorTest failed! Calibrator.Solve() returned false");
-		return false;
-	}
-	#endif
-
-	#if 0
-	ReconstructionConfig reconCfg;
-	scene.ReconstructGlobal(reconCfg);
-	#endif
-
-	// 4-6) Build tracks, initialize, sample colors, and check the reconstruction
-	if (!ReconstructMatchedScene(scene, "ReconstructTest", 1500, 3000, 10)) // allow 10 pixels error in distortion
-		return false;
-
-	VERBOSE("ReconstructTest: All tests passed (%s)", TD_TIMER_GET_FMT().c_str());
-
-	if (verbose) {
-		// Dump the reconstructed scene in both native SfM and MVS formats.
-		const String sfmPath(MAKE_PATH("reconstruct_test.sfm"));
-		if (!scene.Save(sfmPath)) {
-			VERBOSE("ReconstructTest: failed to save SfM scene '%s'", sfmPath.c_str());
-			return false;
-		}
-		const String mvsPath(MAKE_PATH("reconstruct_test.mvs"));
-		if (!SFM::ExportMVS(mvsPath, scene)) {
-			VERBOSE("ReconstructTest: failed to export MVS scene '%s'", mvsPath.c_str());
-			return false;
-		}
-	}
-	return true;
-}
-
-// Scene::Reconstruct() must write the --export-pairs-csv /
-// --export-retrieval-csv diagnostics right after pair matching, before any later reconstruction
-// step (largest-connected-component clustering, weak-image filtering, resection) can drop pairs
-// or leave images unregistered. Runs match-images-only mode on the bundled 4-image scene (fast,
-// and it is exactly the scenario the two Scene::Reconstruct() export call sites cover):
-// (a) fresh import + match, right after MatchPairs() succeeds and before the matchImagesOnly
-//     return;
-// (b) the matched and filtered .sfm given back as source, which is neither matched nor filtered
-//     again (PAIRS_FILTERED): its pairs are only weighed and exported.
-// This tiny scene never triggers SceneCluster::Partition (well under the default
-// 200-image cluster threshold) and match-images-only mode stops before any reconstruction step
-// runs, so scene.pairs is never touched after matching -- the exported CSV row count is checked
-// against scene.pairs.size() right after Reconstruct() returns, rather than against a count
-// captured separately right after matching.
-bool ReconstructExportCSVTest()
-{
-	TD_TIMER_START();
-	const ScopedTempDir tmpDir(_T("ReconstructExportCSVTest"));
-	if (!tmpDir.IsValid())
-		return false;
-
-	auto countCSVLines = [](const String& path) -> int {
+	TestScope scope("RealImagesPipelineTest");
+	const ScopedTempDir tmpDir(_T("RealImagesPipelineTest"));
+	TEST_CHECK(tmpDir.IsValid(), "no temporary folder");
+	const auto NumLines = [](const String& path) {
 		std::ifstream ifs(path);
 		if (!ifs.is_open())
 			return -1;
 		int numLines = 0;
-		std::string line;
-		while (std::getline(ifs, line))
+		for (std::string line; std::getline(ifs, line); )
 			++numLines;
 		return numLines;
 	};
 
-	// (a) fresh import + match
-	Scene scene(2);
-	ReconstructionConfig cfg;
-	cfg.featuresCfg.detectorType = FeatureType::AKAZE;
-	cfg.featuresCfg.maxFeaturesPerCell = 900;
-	cfg.featuresCfg.minFeaturesPerCell = 400;
-	cfg.matchCfg.mode = MatchConfig::EXHAUSTIVE;
-	cfg.matchCfg.DefaultsForFeatureType(cfg.featuresCfg.detectorType);
-	cfg.matchImagesOnly = true;
-	const String pairsCsvA = tmpDir(_T("pairs_a.csv"));
-	cfg.exportPairsCSV = pairsCsvA;
-	if (!scene.Reconstruct(MAKE_PATH("images"), cfg)) {
-		VERBOSE("ReconstructExportCSVTest FAILED: Reconstruct (fresh import) failed");
-		return false;
-	}
-	if (scene.pairs.empty()) {
-		VERBOSE("ReconstructExportCSVTest FAILED: no pairs matched");
-		return false;
-	}
-	const int numLinesA = countCSVLines(pairsCsvA);
-	if (numLinesA != (int)scene.pairs.size() + 1) {
-		VERBOSE("ReconstructExportCSVTest FAILED: pairs CSV (a) has %d lines, expected %u matched pairs + 1 header",
-			numLinesA, (unsigned)scene.pairs.size());
-		return false;
-	}
-
-	// (b) an already matched and filtered .sfm given as source must still export, from the
-	// branch that neither matches nor filters it again
-	const String sfmPath = tmpDir(_T("matched.sfm"));
-	if (!scene.Save(sfmPath)) {
-		VERBOSE("ReconstructExportCSVTest FAILED: cannot save matched scene '%s'", sfmPath.c_str());
-		return false;
-	}
-	Scene scene2(2);
-	ReconstructionConfig cfg2 = cfg;
-	const String pairsCsvB = tmpDir(_T("pairs_b.csv"));
-	cfg2.exportPairsCSV = pairsCsvB;
-	if (!scene2.Reconstruct(sfmPath, cfg2)) {
-		VERBOSE("ReconstructExportCSVTest FAILED: Reconstruct (already-matched .sfm source) failed");
-		return false;
-	}
-	if (!scene2.status.nState.isSet(Scene::Status::STATE::MATCHED)) {
-		VERBOSE("ReconstructExportCSVTest FAILED: reloaded scene is not MATCHED");
-		return false;
-	}
-	const int numLinesB = countCSVLines(pairsCsvB);
-	if (numLinesB != (int)scene2.pairs.size() + 1) {
-		VERBOSE("ReconstructExportCSVTest FAILED: pairs CSV (b) has %d lines, expected %u matched pairs + 1 header",
-			numLinesB, (unsigned)scene2.pairs.size());
-		return false;
-	}
-
-	VERBOSE("ReconstructExportCSVTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// --match-mode -1 (SKIP) runs no matching: a scene whose pairs hold matches (here the saved result of a
-// match-images-only run) is reconstructed from them, with the pair list untouched, and a scene without matches is
-// refused before any work (no feature extracted)
-bool SkipMatchModeTest()
-{
-	VERBOSE("\n=== SkipMatchModeTest: --match-mode -1 needs the scene's own matches ===");
-	const ScopedTempDir tmpDir(_T("SkipMatchModeTest"));
-	if (!tmpDir.IsValid())
-		return false;
-
-	// a scene without matches is refused at the start
-	{
+	// 1. refused before any work
+	const auto Refused = [](Camera* camera, const ReconstructionConfig& cfg) {
 		Scene scene;
-		scene.cameras.emplace_back(new PinholeCamera(cv::Size(64, 48), REAL(60), REAL(60), REAL(32), REAL(24)));
-		for (unsigned i = 0; i < 2; ++i)
-			scene.images.emplace_back(static_cast<IIndex>(i), String(), Pose3D(), 0, scene.cameras[0]);
-		ReconstructionConfig cfg;
-		cfg.matchCfg.mode = MatchConfig::SKIP;
-		if (scene.Reconstruct(String(), cfg) || scene.status.nState.isSet(Scene::Status::STATE::FEATURES_EXTRACTED)) {
-			VERBOSE("SkipMatchModeTest FAILED: a scene without matches was not refused at the start");
-			return false;
-		}
-	}
+		scene.cameras.emplace_back(camera);
+		for (IIndex i = 0; i < 2; ++i)
+			scene.images.emplace_back(i, String(), Pose3D(), 0, scene.cameras[0]);
+		return !scene.Reconstruct(String(), cfg) && !scene.status.nState.isSet(Scene::Status::STATE::FEATURES_EXTRACTED);
+	};
+	ReconstructionConfig skip, gpsHorizontal, gpsVertical;
+	skip.matchCfg.mode = MatchConfig::SKIP;
+	gpsHorizontal.baConfig.gpsPositionWeight = 1.0;
+	gpsVertical.baConfig.gpsPositionWeightZ = 1.0;
+	TEST_CHECK(Refused(new PinholeCamera(cv::Size(64, 48), REAL(60), REAL(60), REAL(32), REAL(24)), skip),
+		"a SKIP run on a scene without matches was not refused at the start");
+	TEST_CHECK(Refused(new SphericalCamera(cv::Size(64, 32)), gpsHorizontal), "the horizontal GPS weight was not refused at the start with panoramas");
+	TEST_CHECK(Refused(new SphericalCamera(cv::Size(64, 32)), gpsVertical), "the vertical GPS weight was not refused at the start with panoramas");
 
-	// the matches of a match-images-only run
-	ReconstructionConfig cfg;
-	cfg.featuresCfg.detectorType = FeatureType::AKAZE;
-	cfg.featuresCfg.maxFeaturesPerCell = 900;
-	cfg.featuresCfg.minFeaturesPerCell = 400;
-	cfg.matchCfg.mode = MatchConfig::EXHAUSTIVE;
-	cfg.matchCfg.DefaultsForFeatureType(cfg.featuresCfg.detectorType);
-	cfg.matchImagesOnly = true;
+	// 2. the images matched, the pairs CSV written right after the matching
+	ReconstructionConfig matchOnly = BundledImagesConfig();
+	matchOnly.matchImagesOnly = true;
+	ReconstructionConfig cfg = matchOnly;
+	cfg.exportPairsCSV = tmpDir(_T("pairs_a.csv"));
 	Scene matched(2);
-	if (!matched.Reconstruct(MAKE_PATH("images"), cfg) || matched.pairs.empty()) {
-		VERBOSE("SkipMatchModeTest FAILED: the match-images-only run produced no pairs");
-		return false;
-	}
-	const String sfmPath = tmpDir(_T("matched.sfm"));
-	if (!matched.Save(sfmPath)) {
-		VERBOSE("SkipMatchModeTest FAILED: cannot save the matched scene");
-		return false;
-	}
+	TEST_CHECK(matched.Reconstruct(MAKE_PATH("images"), cfg) && !matched.pairs.empty() &&
+		!matched.status.nState.isSet(Scene::Status::STATE::CALIBRATED), "the match-images-only run matched %u pairs", (unsigned)matched.pairs.size());
+	TEST_CHECK(NumLines(cfg.exportPairsCSV) == (int)matched.pairs.size() + 1, "the pairs CSV has %d lines, expected %u matched pairs + 1 header",
+		NumLines(cfg.exportPairsCSV), (unsigned)matched.pairs.size());
+	const String matchedPath(tmpDir(_T("matched.sfm")));
+	TEST_CHECK(matched.Save(matchedPath), "cannot save the matched scene");
 
-	// the saved scene reconstructs from its own matches
-	cfg.matchImagesOnly = false;
-	cfg.matchCfg.mode = MatchConfig::SKIP;
-	Scene scene(2);
-	if (!scene.Reconstruct(sfmPath, cfg)) {
-		VERBOSE("SkipMatchModeTest FAILED: the saved scene did not reconstruct with SKIP");
-		return false;
-	}
-	if (scene.pairs.size() != matched.pairs.size() || scene.status.nCalibratedImages < 2) {
-		VERBOSE("SkipMatchModeTest FAILED: %u pairs (expected the saved %u), %u images registered",
-			(unsigned)scene.pairs.size(), (unsigned)matched.pairs.size(), (unsigned)scene.status.nCalibratedImages);
-		return false;
-	}
-
-	// a saved scene holding features but no matches is refused
-	Scene unmatched(2);
+	// 3. the saved scene as the source: weighed and exported, not matched or filtered again
 	{
-		Scene featured(2);
-		cfg.matchImagesOnly = true;
-		cfg.matchCfg.mode = MatchConfig::EXHAUSTIVE;
-		if (!featured.Import(MAKE_PATH("images"), cfg.importCfg) || !featured.ExtractFeatures(cfg.featuresCfg)) {
-			VERBOSE("SkipMatchModeTest FAILED: cannot extract the features of the images");
-			return false;
-		}
-		if (!featured.Save(tmpDir(_T("featured.sfm")))) {
-			VERBOSE("SkipMatchModeTest FAILED: cannot save the scene with features");
-			return false;
-		}
-	}
-	cfg.matchImagesOnly = false;
-	cfg.matchCfg.mode = MatchConfig::SKIP;
-	if (unmatched.Reconstruct(tmpDir(_T("featured.sfm")), cfg)) {
-		VERBOSE("SkipMatchModeTest FAILED: a saved scene without matches was not refused");
-		return false;
+		Scene reloaded(2);
+		cfg.exportPairsCSV = tmpDir(_T("pairs_b.csv"));
+		TEST_CHECK(reloaded.Reconstruct(matchedPath, cfg) && reloaded.status.nState.isSet(Scene::Status::STATE::MATCHED),
+			"the saved matched scene was not taken as the source");
+		TEST_CHECK(NumLines(cfg.exportPairsCSV) == (int)reloaded.pairs.size() + 1, "the pairs CSV of the saved scene has %d lines, expected %u "
+			"matched pairs + 1 header", NumLines(cfg.exportPairsCSV), (unsigned)reloaded.pairs.size());
 	}
 
-	VERBOSE("SkipMatchModeTest PASSED");
-	return true;
+	// 4. SKIP: the saved scene reconstructs from its own matches; a saved scene with features and no matches is refused
+	{
+		ReconstructionConfig skipCfg = BundledImagesConfig();
+		skipCfg.matchCfg.mode = MatchConfig::SKIP;
+		Scene scene(2);
+		TEST_CHECK(scene.Reconstruct(matchedPath, skipCfg), "the saved scene did not reconstruct with SKIP");
+		TEST_CHECK(scene.pairs.size() == matched.pairs.size() && scene.status.nCalibratedImages >= 2,
+			"SKIP left %u pairs (the saved %u expected) and registered %u images", (unsigned)scene.pairs.size(),
+			(unsigned)matched.pairs.size(), scene.status.nCalibratedImages);
+		const String featuredPath(tmpDir(_T("featured.sfm")));
+		{
+			Scene featured(2);
+			TEST_CHECK(featured.Import(MAKE_PATH("images"), skipCfg.importCfg) && featured.ExtractFeatures(skipCfg.featuresCfg) &&
+				featured.Save(featuredPath), "cannot save the scene with features");
+		}
+		Scene unmatched(2);
+		TEST_CHECK(!unmatched.Reconstruct(featuredPath, skipCfg), "a saved scene without matches was not refused by SKIP");
+	}
+
+	// 5. the global solver on the matched scene
+	TEST_CHECK(matched.ReconstructGlobal(matchOnly), "the global solver failed");
+	TEST_CHECK(matched.status.nState.isSet(Scene::Status::STATE::CALIBRATED) && matched.status.nCalibratedImages == matched.images.size() &&
+		matched.status.nTracks >= 100, "the global solver registered %u of %u images, %u points",
+		matched.status.nCalibratedImages, (unsigned)matched.images.size(), matched.status.nTracks);
+
+	// 6. the incremental reconstruction recovering wrong intrinsics
+	Scene scene(2);
+	ImportConfig forced;
+	forced.focalLength = 900.f;
+	forced.k1 = 0.60f;
+	forced.k2 = -0.09f;
+	const ReconstructionConfig reconstructCfg = BundledImagesConfig();
+	TEST_CHECK(ImportBundledImages(scene, forced), "the bundled images were not imported");
+	static_cast<PinholeCamera*>(scene.cameras[0])->trustIntrinsics = false;
+	TEST_CHECK(scene.ExtractFeatures(reconstructCfg.featuresCfg) && scene.MatchPairs(reconstructCfg.matchCfg),
+		"the features of the bundled images were not extracted and matched");
+	// tracks, the star and the adjustment; the focal within 100 px of 700, at most 10 px of distortion
+	TEST_CHECK(ReconstructMatchedScene(scene, "RealImagesPipelineTest", 1500, 3000, 10), "the reconstruction from the wrong intrinsics");
+	if (verbose) {
+		// the reconstructed scene in both native SfM and MVS formats, into the data folder
+		TEST_CHECK(scene.Save(MAKE_PATH("reconstruct_test.sfm")) && SFM::ExportMVS(MAKE_PATH("reconstruct_test.mvs"), scene),
+			"cannot save the reconstructed scene");
+	}
+	return scope.Pass("refusals before any work, matching with the pairs CSV from the images and from the saved scene, SKIP from "
+		"saved matches, the global solver, and the incremental reconstruction recovering wrong intrinsics (%u tracks)", scene.status.nTracks);
 }
-/*----------------------------------------------------------------*/
 
 
 // FeatureType::DEFAULT is the detector of a default-constructed FeatureExtractionConfig and KeyframeConfig, and a
@@ -11358,38 +10782,6 @@ bool DefaultDetectorTest()
 		}
 	}
 	VERBOSE("DefaultDetectorTest PASSED");
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-// --use-global-solver: Scene::ReconstructGlobal (rotation averaging, positioning, two adjustments) run on the bundled
-// images, matched and filtered by a match-images-only Reconstruct, registers every image with points
-bool GlobalSolverTest()
-{
-	VERBOSE("\n=== GlobalSolverTest: Scene::ReconstructGlobal on the bundled images ===");
-	ReconstructionConfig cfg;
-	cfg.featuresCfg.detectorType = FeatureType::AKAZE;
-	cfg.featuresCfg.maxFeaturesPerCell = 900;
-	cfg.featuresCfg.minFeaturesPerCell = 400;
-	cfg.matchCfg.mode = MatchConfig::EXHAUSTIVE;
-	cfg.matchCfg.DefaultsForFeatureType(cfg.featuresCfg.detectorType);
-	cfg.matchImagesOnly = true;
-	Scene scene(2);
-	if (!scene.Reconstruct(MAKE_PATH("images"), cfg) || scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED)) {
-		VERBOSE("GlobalSolverTest FAILED: the images were not matched");
-		return false;
-	}
-	if (!scene.ReconstructGlobal(cfg)) {
-		VERBOSE("GlobalSolverTest FAILED: the global solver failed");
-		return false;
-	}
-	if (!scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED) || scene.status.nCalibratedImages != scene.images.size() || scene.status.nTracks < 100) {
-		VERBOSE("GlobalSolverTest FAILED: %u of %u images registered, %u points",
-			(unsigned)scene.status.nCalibratedImages, (unsigned)scene.images.size(), (unsigned)scene.status.nTracks);
-		return false;
-	}
-	VERBOSE("GlobalSolverTest PASSED: %u of %u images registered, %u points",
-		(unsigned)scene.status.nCalibratedImages, (unsigned)scene.images.size(), (unsigned)scene.status.nTracks);
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -11765,32 +11157,6 @@ bool StarReferenceViewTest()
 		"and the heaviest such image when none is named or usable (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
-
-// Everything the log recorded while it was alive, so a test can assert on what the merge reported.
-// The verbosity is raised for its lifetime, the per-candidate gate reports being written at the
-// ultimate level.
-struct LogCapture
-{
-	String text;
-	int verbosity;
-
-	LogCapture() : verbosity(g_nVerbosityLevel) {
-		g_nVerbosityLevel = 3;
-		GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogCapture::Record, this));
-	}
-	~LogCapture() {
-		GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogCapture::Record, this));
-		g_nVerbosityLevel = verbosity;
-	}
-	void Record(const String& msg) { text += msg; }
-	bool Contains(const char* what) const { return text.find(what) != String::npos; }
-	unsigned Count(const char* what) const {
-		unsigned num = 0;
-		for (size_t pos = text.find(what); pos != String::npos; pos = text.find(what, pos + 1))
-			++num;
-		return num;
-	}
-};
 
 // The star initializer lists, for the reference view, only the neighbours whose matches fix their
 // distance: the pair's inliers whose ray angle reaches the reconstruction's triangulation bar
@@ -12463,10 +11829,6 @@ namespace {
 constexpr REAL RESECTION_ARC_RADIUS = 5;
 constexpr REAL RESECTION_ARC_STEP = 10; // degrees between consecutive cameras
 constexpr REAL RESECTION_ARC_EXTENT = 5; // 2*RESECTION_ARC_RADIUS*sin(3*RESECTION_ARC_STEP)
-// How far along the arc a camera's stored pose is moved to make it a misregistered one, while the
-// pairs it takes part in keep the relative poses its true place gives: every link to it then
-// predicts a rotation this many degrees away from the truth.
-constexpr REAL RESECTION_DISPLACEMENT = 40;
 
 Pose3D ResectionArcPose(REAL angleDegrees)
 {
@@ -12534,53 +11896,6 @@ void AddResectionPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers)
 	scene.pairs.emplace_back(std::move(pair));
 }
 
-// Angle in degrees between two rotations
-inline double RotationErrorDeg(const RMatrix& a, const RMatrix& b)
-{
-	return R2D(ACOS(ComputeAngle(a, b)));
-}
-
-// The five-camera scene of ResectionAcceptanceTest: images 0-3 registered with 150 triangulated
-// tracks, image 4 unregistered and observing 100 of those tracks. Only 20 of the 100 observations
-// are the projections a camera really has: they are the ones a camera 40 degrees further along the
-// arc would see, a decoy pose. The other 80 are random pixels. So the strongest consensus a robust
-// absolute pose estimator can find is 20 of 100 correspondences, at a pose 40 degrees away from
-// image 4's own -- exactly the shape of a misregistration: a small, self-consistent minority.
-// The verified pair (3,4) carries image 4's true relative pose to image 3.
-constexpr REAL RESECTION_DECOY_OFFSET = 40; // degrees between image 4's pose and the decoy one
-constexpr unsigned RESECTION_DECOY_CORRESPONDENCES = 20;
-constexpr unsigned RESECTION_RANDOM_CORRESPONDENCES = 80;
-
-void BuildResectionAcceptanceScene(Scene& scene, Pose3D& truePose, std::mt19937& rng)
-{
-	BuildResectionArc(scene, 5);
-	truePose = static_cast<const Pose3D&>(scene.images[4]);
-	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
-
-	// image 4's correspondences with the first 100 of those tracks
-	const Pose3D decoyPose = ResectionArcPose(4 * RESECTION_ARC_STEP + RESECTION_DECOY_OFFSET);
-	Image& img = scene.images[4];
-	static_cast<Pose3D&>(img) = decoyPose;
-	std::uniform_real_distribution<float> pixelX(10.f, 630.f), pixelY(10.f, 470.f);
-	for (unsigned i = 0; i < RESECTION_DECOY_CORRESPONDENCES + RESECTION_RANDOM_CORRESPONDENCES; ++i) {
-		Track& track = scene.tracks[i];
-		cv::Point2f pt(pixelX(rng), pixelY(rng));
-		if (i < RESECTION_DECOY_CORRESPONDENCES) {
-			const auto [proj, valid] = img.ProjectPoint(track.position);
-			ASSERT(valid && Image8U::isInside(proj, img.GetSize()));
-			pt = cv::Point2f((float)proj.x, (float)proj.y);
-		}
-		track.observations.emplace_back(IIndex(4), (uint32_t)img.keypoints.size());
-		img.keypoints.emplace_back(pt, 1.f);
-	}
-
-	static_cast<Pose3D&>(img) = truePose;
-	AddResectionPair(scene, 3, 4, 400);
-	img.InvalidatePose();
-	scene.status.nCalibratedImages = 4;
-	TriangulateTracks(scene, false, 4.f, 1.f);
-}
-
 // The given image's correspondences with the first numTrue + numNoise tracks of the scene: the
 // first numTrue at the projections the image's own pose gives and the rest at random pixels, so the
 // pose an estimator recovers from them is the image's own on a numTrue / (numTrue + numNoise) share
@@ -12601,116 +11916,10 @@ void AddResectionCorrespondences(Scene& scene, IIndex imageID, unsigned numTrue,
 	}
 }
 
-// The five-camera scene of the acceptance test's quorum case: images 0-3 registered with 150
-// triangulated tracks, image 4 unregistered and observing the first 100 of them -- 40 at the
-// projections its own pose gives and 60 at random pixels, so the pose an estimator recovers is
-// image 4's true one on a 40% inlier share, low enough for the rotation check to apply. Its pairs
-// carry the true relative poses, and image 3's stored pose is then displaced along the arc: the
-// strongest pair, (3,4), therefore predicts a rotation that far from the recovered one, while the
-// weaker pairs to the correctly placed images 2 and 1 predict the recovered one. Without those two
-// the displaced neighbour is the only witness and the pose is refused on its word alone.
+// Image 4's correspondences in the resection cases: 40 at the projections its own pose gives and 60 at random
+// pixels, so the pose an estimator recovers is its true one on a 40% inlier share, low enough for the link checks to apply
 constexpr unsigned RESECTION_TRUE_CORRESPONDENCES = 40;
 constexpr unsigned RESECTION_NOISE_CORRESPONDENCES = 60;
-
-void BuildResectionQuorumScene(Scene& scene, Pose3D& truePose, bool corroboratingPairs, std::mt19937& rng)
-{
-	BuildResectionArc(scene, 5);
-	truePose = static_cast<const Pose3D&>(scene.images[4]);
-	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
-
-	AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
-
-	AddResectionPair(scene, 3, 4, 400); // strongest, and to the image displaced below
-	if (corroboratingPairs) {
-		AddResectionPair(scene, 2, 4, 300);
-		AddResectionPair(scene, 1, 4, 250);
-	}
-	scene.images[4].InvalidatePose();
-	scene.status.nCalibratedImages = 4;
-	TriangulateTracks(scene, false, 4.f, 1.f);
-	static_cast<Pose3D&>(scene.images[3]) = ResectionArcPose(3 * RESECTION_ARC_STEP + RESECTION_DISPLACEMENT);
-}
-
-// The five-camera scene of the direction case: images 0-3 registered with 150 triangulated tracks
-// and correctly posed, image 4 unregistered and observing the first 100 of them, 40 at the
-// projections its own pose gives and 60 at random pixels, so the recovered pose is image 4's true
-// one on a 40% inlier share, low enough for the link checks to apply. Its three pairs carry the
-// true relative rotations and the given weighted inliers, strongest first; the strongest numTurned
-// of them have their relative translation turned RESECTION_DIRECTION_TURN degrees away, the shape of
-// a pair whose translation is wrong, and every pair reports the given ray angle, which is what sets
-// how much direction error a pair may forgive.
-constexpr REAL RESECTION_DIRECTION_TURN = 40; // degrees
-
-// Turn the relative translation of the given pair by the given degrees, keeping its length and the
-// rotation: a unit vector perpendicular to the translation mixes into it with the sine of the angle
-void TurnPairTranslation(ImagePair& pair, REAL degrees)
-{
-	Point3& C = pair.relativePose->C;
-	const REAL length = norm(C);
-	ASSERT(length > 0);
-	const Point3 dir(C / length);
-	Point3 perp(dir.cross(Point3(0, 1, 0)));
-	if (norm(perp) < 1e-6) perp = dir.cross(Point3(1, 0, 0));
-	perp /= norm(perp);
-	const REAL turn = D2R(degrees);
-	C = (dir * COS(turn) + perp * SIN(turn)) * length;
-}
-
-void BuildResectionDirectionScene(Scene& scene, Pose3D& truePose, unsigned numTurned, REAL rayAngleDegrees, std::mt19937& rng,
-	const std::array<unsigned, 3>& pairWeights = {400, 300, 250})
-{
-	ASSERT(numTurned <= 3);
-	BuildResectionArc(scene, 5);
-	truePose = static_cast<const Pose3D&>(scene.images[4]);
-	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
-	AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
-
-	AddResectionPair(scene, 3, 4, pairWeights[0]);
-	AddResectionPair(scene, 2, 4, pairWeights[1]);
-	AddResectionPair(scene, 1, 4, pairWeights[2]);
-	for (unsigned k = 0; k < numTurned; ++k)
-		TurnPairTranslation(scene.pairs[scene.pairs.size() - 3 + k], RESECTION_DIRECTION_TURN);
-	for (size_t k = scene.pairs.size() - 3; k < scene.pairs.size(); ++k)
-		scene.pairs[k].meanRayAngle = (float)D2R(rayAngleDegrees);
-	scene.images[4].InvalidatePose();
-	scene.status.nCalibratedImages = 4;
-	TriangulateTracks(scene, false, 4.f, 1.f);
-}
-
-// The six-camera scene of the model-parallax cases: images 0-3 of the arc and image 5, placed the
-// given degrees along the arc from image 4 (by default one: 0.087 world units, so that from points
-// about 5 units away the model sees the two under 1 degree of parallax, against 10 for images 4 and
-// 3; the parallax is about the step), registered with 150
-// triangulated tracks; image 4 unregistered and observing the first 100 of them, 40 at the
-// projections the given pose gives (its true one when none is given) and 60 at random pixels. Its
-// pairs to registered images are the given links: each carries the true relative pose and the given
-// weighted inliers, reports the given ray angle and has its translation turned by the given degrees.
-struct ResectionLinkSpec { IIndex neighborID; unsigned numInliers; REAL rayAngleDeg; REAL turnDeg; };
-constexpr REAL RESECTION_CLOSE_STEP = 1; // degrees along the arc between images 4 and 5, by default
-
-void BuildResectionParallaxScene(Scene& scene, const std::vector<ResectionLinkSpec>& links, const Pose3D* projectingPose,
-	std::mt19937& rng, REAL closeStep = RESECTION_CLOSE_STEP)
-{
-	BuildResectionArc(scene, 6);
-	static_cast<Pose3D&>(scene.images[5]) = ResectionArcPose(4 * RESECTION_ARC_STEP + closeStep);
-	AddResectionTracks(scene, {0, 1, 2, 3, 5}, 150, rng);
-	Image& img = scene.images[4];
-	const Pose3D truePose = static_cast<const Pose3D&>(img);
-	if (projectingPose)
-		static_cast<Pose3D&>(img) = *projectingPose;
-	AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
-	static_cast<Pose3D&>(img) = truePose;
-	for (const ResectionLinkSpec& link : links) {
-		AddResectionPair(scene, MINF(link.neighborID, IIndex(4)), MAXF(link.neighborID, IIndex(4)), link.numInliers);
-		ImagePair& pair = scene.pairs.back();
-		pair.meanRayAngle = (float)D2R(link.rayAngleDeg);
-		if (link.turnDeg != 0)
-			TurnPairTranslation(pair, link.turnDeg);
-	}
-	img.InvalidatePose();
-	scene.status.nCalibratedImages = 5;
-	TriangulateTracks(scene, false, 4.f, 1.f);
-}
 
 // The arc scene of the weak-evidence case: eight cameras, images 0-3 registered with 150
 // triangulated tracks, image 4 unregistered with the 40 true and 60 random correspondences of the
@@ -12750,441 +11959,182 @@ size_t LogFirstAttempt(const LogCapture& log, IIndex imageID, bool registered)
 
 } // namespace
 
-bool ResectionAcceptanceTest()
+// The checks a resected pose passes before it enters the model (Resection::RegisterImage), each case a row on the
+// arc of cameras (ArcScene) whose image 4 is resected: the minimum inlier share and the rotation its strongest pair
+// composes, the quorum of agreeing pairs that overrules a false witness, the baseline direction each link predicts
+// (weighed in weighted inliers, the pose's own inliers voting for it, and forgiven by the larger of the pair's ray
+// angle and the model's parallax), the rotation all links predict (weighted mean), and at the end the direction
+// tolerance of one pair alone (MeasurePairDisagreement)
+bool ResectionLinkChecksTest()
 {
-	TD_TIMER_START();
+	TestScope scope("ResectionLinkChecksTest");
+	constexpr REAL STEP = ArcScene::STEP;
 
-	// With the defaults, the 20 of 100 inliers the estimator can muster are 20% of the
-	// correspondences, below the 25% minimum share and far below the 100 inliers that would waive
-	// it, so the pose is refused and the image stays unregistered
+	// Image 4's scene: an arc of numImages whose images 0-3 hold 150 tracks; image 4 sees the first 100 of them,
+	// numTrue at the projections of `projecting` (its own pose when NULL) and the rest at random pixels (40 of 100
+	// by default: a share low enough for every link check to apply), and is linked to the given images. closeStep > 0
+	// places image 5 that many degrees along the arc from image 4, registered and seeing the tracks too; every other
+	// image from 4 on is unregistered.
+	struct Link { IIndex image; unsigned inliers; ArcLinkSpec spec; };
+	const auto LinkScene = [](uint32_t seed, unsigned numImages, const std::vector<Link>& links, REAL closeStep = 0,
+		const Pose3D* projecting = NULL, unsigned numTrue = 40)
 	{
-		std::mt19937 rng(20260908);
-		Scene scene;
-		Pose3D truePose;
-		BuildResectionAcceptanceScene(scene, truePose, rng);
-		Resection resection(scene, ResectionConfig());
-		resection.RegisterImages();
-		if (scene.images[4].HasPose()) {
-			VERBOSE("ResectionAcceptanceTest FAILED: the pose was accepted with the default minimum inlier share, "
-				"%.2f deg off the truth", RotationErrorDeg(scene.images[4].R, truePose.R));
-			return false;
-		}
-	}
+		ArcScene arc(numImages, seed);
+		if (closeStep > 0)
+			arc.Place(5, 4 * STEP + closeStep);
+		arc.Tracks(closeStep > 0 ? IIndexArr{0, 1, 2, 3, 5} : IIndexArr{0, 1, 2, 3}, 150);
+		arc.Correspondences(4, numTrue, 100 - numTrue, projecting);
+		for (const Link& link : links)
+			arc.Pair(link.image, 4, link.inliers, link.spec);
+		IIndexArr unregistered;
+		for (IIndex i = 4; i < numImages; ++i)
+			if (closeStep == 0 || i != 5)
+				unregistered.push_back(i);
+		arc.Unregister(unregistered);
+		return arc;
+	};
 
-	// Every acceptance rule off -- the inlier share, the rotation the pairs compose, the direction
-	// they predict and the rotation all links predict: the same pose is accepted, and it is the wrong one -- which is what makes the
-	// rules the reason the image does not enter the model
+	// the scenes. The decoy: 20 of image 4's 100 correspondences are the projections of a pose 40 degrees further
+	// along the arc and 80 random, so the strongest consensus a robust estimator finds is that wrong pose, on 20%
+	const Pose3D decoy(ArcScene::Pose(4 * STEP + 40));
+	const auto Decoy = [&] { return LinkScene(20260908, 5, {{3, 400}}, 0, &decoy, 20); };
+	// the quorum: the pose found is the right one, but the strongest pair is to image 3, whose stored pose is then
+	// displaced 40 degrees along the arc, so it predicts a rotation that far off; the weaker pairs to images 2 and 1
+	// agree with the pose
+	const auto Quorum = [&](bool corroborating) {
+		ArcScene arc(LinkScene(20260908, 5, corroborating ?
+			std::vector<Link>{{3, 400}, {2, 300}, {1, 250}} : std::vector<Link>{{3, 400}}));
+		static_cast<Pose3D&>(arc.scene.images[3]) = ArcScene::Pose(3 * STEP + 40);
+		return arc;
+	};
+	// the direction cases: pairs to images 3, 2, 1 of the given weights, all reporting the given ray angle, the first
+	// numTurned with their translation turned 40 degrees, the shape of a pair whose translation is wrong
+	const auto Turned = [&](unsigned numTurned, REAL rayAngleDeg, std::array<unsigned, 3> weights = {400, 300, 250}) {
+		std::vector<Link> links;
+		for (unsigned k = 0; k < 3; ++k)
+			links.push_back({IIndex(3 - k), weights[k], {rayAngleDeg, k < numTurned ? REAL(40) : REAL(0)}});
+		return LinkScene(20260918, 5, links);
+	};
+	// the model-parallax cases: a wrong pose with image 4's rotation at a centre whose baseline to image 3 is the true
+	// one lifted 25 degrees out of the arc's plane, 0.38 units from the true centre
+	Pose3D lifted(ArcScene::Pose(4 * STEP));
 	{
-		std::mt19937 rng(20260908);
-		Scene scene;
-		Pose3D truePose;
-		BuildResectionAcceptanceScene(scene, truePose, rng);
-		ResectionConfig config;
-		config.minInlierRatio = 0.f;
-		config.maxRelativeRotationError = 180.f;
-		config.maxLinkDirectionError = 0.f;
-		config.maxLinkRotationDisagreement = 0.f;
-		Resection resection(scene, config);
-		resection.RegisterImages();
-		if (!scene.images[4].HasPose()) {
-			VERBOSE("ResectionAcceptanceTest FAILED: the pose was refused with every acceptance rule off");
-			return false;
-		}
-		const double rotErr = RotationErrorDeg(scene.images[4].R, truePose.R);
-		DEBUG("ResectionAcceptanceTest: with every rule off the image registers %.2f deg off the truth", rotErr);
-		if (rotErr <= 15.0) {
-			VERBOSE("ResectionAcceptanceTest FAILED: the pose accepted with every rule off is only %.2f deg off the "
-				"truth, so it is not the misregistration the rules are meant to stop", rotErr);
-			return false;
-		}
+		const Point3 C3(ArcScene::Pose(3 * STEP).C), baseline(lifted.C - C3);
+		lifted.C = C3 + baseline * COS(D2R(25.0)) + Point3(0, norm(baseline) * SIN(D2R(25.0)), 0);
 	}
+	const auto Parallax = [&](const std::vector<Link>& links, REAL closeStep = 1, const Pose3D* projecting = NULL) {
+		return LinkScene(20261025, 6, links, closeStep, projecting);
+	};
+	// the link rotation cases: pairs of the given weights with their rotation turned about the vertical axis
+	const auto Rotated = [&](const std::vector<Link>& links) { return LinkScene(20261105, 6, links); };
 
-	// The ratio rule off but the relative-pose check on: the pose is 40 degrees away from the one
-	// its strongest verified pair to image 3 composes, and its 20% inlier share does not earn it the
-	// benefit of the doubt, so it is refused on that alone
-	{
-		std::mt19937 rng(20260908);
-		Scene scene;
-		Pose3D truePose;
-		BuildResectionAcceptanceScene(scene, truePose, rng);
-		ResectionConfig config;
-		config.minInlierRatio = 0.f;
-		Resection resection(scene, config);
-		resection.RegisterImages();
-		if (scene.images[4].HasPose()) {
-			VERBOSE("ResectionAcceptanceTest FAILED: the pose was accepted although it is %.2f deg away from the "
-				"rotation its pair composes", RotationErrorDeg(scene.images[4].R, truePose.R));
-			return false;
-		}
-	}
+	ResectionConfig defaults, ratioOff, ratioAndDirectionOff, allOff, quorumOnly, direction5, direction3, direction0, linkRotationOff;
+	ratioOff.minInlierRatio = 0.f;
+	ratioAndDirectionOff = ratioOff;
+	ratioAndDirectionOff.maxLinkDirectionError = 0.f;
+	allOff = ratioAndDirectionOff;
+	allOff.maxRelativeRotationError = 180.f;
+	allOff.maxLinkRotationDisagreement = 0.f;
+	quorumOnly.maxLinkRotationDisagreement = 0.f; // the link rotation check hears every link, the false witness too
+	direction5.maxLinkDirectionError = 5.f;
+	// a premise of the parallax cases, not the default: their numbers (31, 36.9, 16.7, 2.15 degrees) are read
+	// against 3 degrees, and the default 5 would forgive the lifted pose and the turns of the first two
+	direction3.maxLinkDirectionError = 3.f;
+	direction0.maxLinkDirectionError = 0.f;
+	linkRotationOff.maxLinkRotationDisagreement = 0.f;
 
-	// A pair to a misregistered neighbour is a false witness: the strongest pair of image 4 is to the
-	// displaced image 3 and puts its rotation 40 degrees away from the recovered one, while the two
-	// weaker pairs, to the correctly placed images 2 and 1, agree with it. The pose is accepted on
-	// the word of those two. The case tests the quorum, so the link rotation check is off: it hears
-	// every link, and the false witness's 400 of the 950 weighted inliers, 40 degrees off, make a
-	// weighted mean of 16.8 degrees, past its bar (ResectionLinkRotationTest)
-	{
-		std::mt19937 rng(20260908);
-		Scene scene;
-		Pose3D truePose;
-		BuildResectionQuorumScene(scene, truePose, true, rng);
-		ResectionConfig config;
-		config.maxLinkRotationDisagreement = 0.f;
-		Resection resection(scene, config);
-		resection.RegisterImages();
-		if (!scene.images[4].HasPose()) {
-			VERBOSE("ResectionAcceptanceTest FAILED: the pose was refused although two of its three pairs agree with it");
-			return false;
-		}
-		const double rotErr = RotationErrorDeg(scene.images[4].R, truePose.R);
-		DEBUG("ResectionAcceptanceTest: the pose its quorum vouches for is %.2f deg off the truth", rotErr);
-		if (rotErr > 1.0) {
-			VERBOSE("ResectionAcceptanceTest FAILED: the accepted pose is %.2f deg off the truth, so it is not the one "
-				"the two agreeing pairs vouch for", rotErr);
-			return false;
-		}
-	}
-
-	// The same scene without those two pairs: the displaced neighbour is the only witness left, and
-	// the pose is refused on its word alone -- which is what the quorum above overrules
-	{
-		std::mt19937 rng(20260908);
-		Scene scene;
-		Pose3D truePose;
-		BuildResectionQuorumScene(scene, truePose, false, rng);
-		Resection resection(scene, ResectionConfig());
-		resection.RegisterImages();
-		if (scene.images[4].HasPose()) {
-			VERBOSE("ResectionAcceptanceTest FAILED: the pose was accepted with only the pair to the misplaced image "
-				"left, so the scene does not show what the agreeing pairs are worth");
-			return false;
-		}
-	}
-
-	VERBOSE("ResectionAcceptanceTest PASSED: a pose supported by a fifth of its correspondences is refused, by the "
-		"inlier share, by the rotation its pairs compose and by the direction they predict alike, and a pose two of "
-		"three pairs agree with is accepted over the strongest pair's objection (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-bool ResectionLinkDirectionTest()
-{
-	TD_TIMER_START();
-
+	// REFUSED: image 4 stays unregistered; REGISTERED: it registers; RIGHT_ROTATION: it registers within 1 degree of its
+	// true rotation; RIGHT_POSE: and within 1% of the arc's extent of its true centre; WRONG: it registers more than 15
+	// degrees off its true rotation
+	enum Expect { REFUSED, REGISTERED, RIGHT_ROTATION, RIGHT_POSE, WRONG };
 	struct Case {
-		unsigned numTurned; REAL rayAngleDeg; float maxLinkDirectionError; bool accepted; const char* why;
+		const char* name; std::function<ArcScene()> scene; const ResectionConfig& config; Expect expect; const char* why;
+		bool single = false;         // RegisterImage(4) alone, not the resection's loop
+		const char* logged = NULL;   // a line the log must hold
 	};
 	const Case cases[] = {
-		{ 1, 20, 5.f, true,  "one turned pair of three: the two agreeing ones outweigh it, so a single misplaced neighbour cannot refuse a right pose" },
-		{ 2, 20, 5.f, false, "two turned pairs of three: the links that contradict the direction outweigh the one that agrees" },
-		{ 2, 20, 0.f, true,  "the same two turned pairs with the direction check off: the pose is accepted, so the check is what refused it" },
-		{ 2, 1,  5.f, true,  "near-duplicate pairs (rays 1 degree apart) fix no direction at all: their translation is unreliable, so they are judged on the rotation alone" },
-		{ 2, 4,  5.f, false, "pairs whose rays are 4 degrees apart would forgive a 40-degree direction error (51 degrees), but the model places images 3 and 2 10 and 20 degrees of parallax from the pose and the larger angle sets the tolerance (27 and 14 degrees), so the two turned links outweigh the one that agrees" },
+		{"decoy, defaults", Decoy, defaults, REFUSED, "20 of 100 inliers is under the 25% minimum share and far under the 100 that would waive it"},
+		{"decoy, every rule off", Decoy, allOff, WRONG, "with the share, the composed rotation, the link direction and the link rotation off, the decoy pose is accepted, so the rules are what keeps it out"},
+		{"decoy, share off", Decoy, ratioOff, REFUSED, "the pose is 40 degrees from the rotation its strongest pair composes, and its 20% share does not earn it the benefit of the doubt"},
+		{"decoy, share and direction off", Decoy, ratioAndDirectionOff, REFUSED, "with every direction check off the composed-rotation check still refuses it"},
+		{"quorum", [&] { return Quorum(true); }, quorumOnly, RIGHT_ROTATION, "two of three pairs agree with the pose and overrule the strongest pair, to the displaced image 3"},
+		{"false witness alone", [&] { return Quorum(false); }, defaults, REFUSED, "the pair to the displaced image 3 is the only witness left"},
+		{"1 of 3 turned", [&] { return Turned(1, 20); }, direction5, RIGHT_ROTATION, "the two agreeing pairs outweigh the turned one: a single misplaced neighbour cannot refuse a right pose"},
+		{"2 of 3 turned", [&] { return Turned(2, 20); }, direction5, REFUSED, "the links that contradict the direction outweigh the one that agrees"},
+		{"2 of 3 turned, direction off", [&] { return Turned(2, 20); }, direction0, RIGHT_ROTATION, "the direction check is what refused the case above"},
+		{"2 of 3 turned, 1-degree rays", [&] { return Turned(2, 1); }, direction5, RIGHT_ROTATION, "near-duplicate pairs fix no direction: they are judged on the rotation alone"},
+		{"2 of 3 turned, 4-degree rays", [&] { return Turned(2, 4); }, direction5, REFUSED, "4-degree rays would forgive 51 degrees, but the model places images 3 and 2 10 and 20 degrees of parallax from the pose and the larger angle sets the tolerance (27 and 14 degrees)"},
+		{"turned 400 against 150+150", [&] { return Turned(1, 20, {400, 150, 150}); }, defaults, REFUSED, "weighed in weighted inliers, not links: the 400 that contradict outweigh the 300 that agree, which a count of links would have outvoted two to one"},
+		{"turned 335 against 150+150", [&] { return Turned(1, 20, {335, 150, 150}); }, defaults, RIGHT_ROTATION, "the pose's own 40 inliers vote for it: 335 outweighs the 300 links that agree but not the 340 with the pose"},
+		{"turned 345 against 150+150", [&] { return Turned(1, 20, {345, 150, 150}); }, defaults, REFUSED, "345 outweighs the 340 of the agreeing links and the pose together"},
+		{"parallax 1: close in the model only", [&] { return Parallax({{5, 400, {5, 40}}, {3, 100, {20}}}); }, direction3, RIGHT_POSE, "the heaviest link, to image 5, is a pair of 5-degree rays turned 40 degrees (its own tolerance, 31, would refuse), but the model sees images 4 and 5 under 2 degrees of parallax: it abstains and the right link to image 3 vouches"},
+		{"parallax 2: the model tightens", [&] { return Parallax({{3, 400, {4}}}, 1, &lifted); }, direction3, REFUSED, "the lifted pose is 25 degrees off its only link's direction; the pair's 4-degree rays forgive 36.9, but the model places the pose 10 degrees of parallax from image 3 and the larger angle holds it to 16.7"},
+		{"parallax 3: close in both", [&] { return Parallax({{5, 400, {1}}, {3, 100, {20, 40}}}); }, direction3, RIGHT_POSE, "the pair to image 5 is a near-duplicate the model also sees under 2 degrees, so it agrees and its 400 outweigh the 100 of the turned pair to image 3"},
+		{"parallax 4: direction off", [&] { return Parallax({{3, 400, {4}}}, 1, &lifted); }, direction0, REGISTERED, "maxLinkDirectionError 0 turns every direction check off and the lifted pose of case 2 is accepted"},
+		{"parallax 5: a small angle forgives", [&] { return Parallax({{5, 400, {4, 20}}, {3, 100, {20}}}, 4); }, direction3, RIGHT_POSE, "image 5 4 degrees along: both the pair's rays and the model's parallax are about 4 degrees, which forgives 36.9, so the link turned 20 degrees agrees"},
+		{"parallax 6: the pair tightens", [&] { return Parallax({{5, 400, {80, 2.6}}}, 3); }, direction3, REFUSED, "the pair's 80-degree rays hold the direction to 2.15 degrees, whatever the model's 3 degrees of parallax or the plain 3 would forgive"},
+		{"rotation: heavy link off", [&] { return Rotated({{3, 800, {0, 0, 13}}, {2, 100}, {1, 100}}); }, defaults, REFUSED, "the link of 800 of the 1000 weighted inliers predicts a rotation 13 degrees off: weighted mean 10.4 over the 8-degree bar (an unweighted 4.3 would accept), while the quorum and the composed rotation pass it",
+			false, "away from the rotations its 3 links predict"},
+		{"rotation: check off", [&] { return Rotated({{3, 800, {0, 0, 13}}, {2, 100}, {1, 100}}); }, linkRotationOff, REGISTERED, "maxLinkRotationDisagreement 0 turns the check off: it is what refused the case above"},
+		{"rotation: light links off", [&] { return Rotated({{3, 800}, {2, 100, {0, 0, 13}}, {1, 100, {0, 0, 13}}}); }, defaults, REGISTERED, "the weighted mean is 2.6 degrees (an unweighted 8.7 would refuse)"},
+		{"rotation: no registered link", [&] { return Rotated({{5, 800, {0, 0, 30}}}); }, defaults, REGISTERED, "an image whose only pair is to the unregistered image 5 is not judged (the loop does not try it: RegisterImage alone)",
+			true},
+	};
+	const auto Describe = [](Expect e) {
+		return e == REFUSED ? "refused" : e == REGISTERED ? "registered" : e == RIGHT_ROTATION ? "registered at its true rotation" :
+			e == RIGHT_POSE ? "registered at its true pose" : "registered more than 15 degrees off";
 	};
 	for (const Case& c : cases) {
-		std::mt19937 rng(20260918);
-		Scene scene;
-		Pose3D truePose;
-		BuildResectionDirectionScene(scene, truePose, c.numTurned, c.rayAngleDeg, rng);
-		ResectionConfig config;
-		config.maxLinkDirectionError = c.maxLinkDirectionError;
-		Resection resection(scene, config);
-		resection.RegisterImages();
-		const bool accepted = scene.images[4].HasPose();
-		if (accepted != c.accepted) {
-			VERBOSE("ResectionLinkDirectionTest FAILED: with %u of 3 pairs turned %.0f degrees at a ray angle of %.0f degrees and a "
-				"direction tolerance of %.0f degrees the pose was %s; %s", c.numTurned, RESECTION_DIRECTION_TURN, c.rayAngleDeg,
-				c.maxLinkDirectionError, accepted ? "accepted" : "refused", c.why);
-			return false;
-		}
-		if (accepted) {
-			const double rotErr = RotationErrorDeg(scene.images[4].R, truePose.R);
-			if (rotErr > 1.0) {
-				VERBOSE("ResectionLinkDirectionTest FAILED: the accepted pose is %.2f deg off the truth", rotErr);
-				return false;
-			}
-		}
-	}
-
-	// What outweighs what is read in weighted inliers, not in links: with the strongest of the three
-	// pairs turned and the two that agree weakened to 150 each, a count of the links would accept the
-	// pose two to one, while the 400 inliers that contradict the direction outweigh the 300 that
-	// agree and it is refused
-	{
-		std::mt19937 rng(20260918);
-		Scene scene;
-		Pose3D truePose;
-		BuildResectionDirectionScene(scene, truePose, 1, 20, rng, {400, 150, 150});
-		Resection resection(scene, ResectionConfig());
-		resection.RegisterImages();
-		if (scene.images[4].HasPose()) {
-			VERBOSE("ResectionLinkDirectionTest FAILED: the pose was accepted although the one turned pair carries 400 of the "
-				"700 weighted inliers that fix a direction, which the two agreeing links would have outvoted by count alone");
-			return false;
-		}
-	}
-
-	// The pose's own inliers vote for it: the pose holds 40 inliers, so with the two agreeing links at 150
-	// each (300) the turned one must carry more than 340 to refuse it. At 335 it outweighs the links that
-	// agree (300) but not the links and the pose together, and the pose is accepted; at 345 it is refused.
-	for (const unsigned turnedWeight : {335u, 345u}) {
-		std::mt19937 rng(20260918);
-		Scene scene;
-		Pose3D truePose;
-		BuildResectionDirectionScene(scene, truePose, 1, 20, rng, {turnedWeight, 150, 150});
-		Resection resection(scene, ResectionConfig());
-		resection.RegisterImages();
-		const bool accepted = scene.images[4].HasPose(), expected = turnedWeight < 340;
-		if (accepted != expected) {
-			VERBOSE("ResectionLinkDirectionTest FAILED: the one turned pair carries %u weighted inliers against 300 that agree and "
-				"the pose's own 40; the pose was %s, expected %s", turnedWeight, accepted ? "accepted" : "refused",
-				expected ? "accepted" : "refused");
-			return false;
-		}
-	}
-
-	VERBOSE("ResectionLinkDirectionTest PASSED: a weakly supported pose is refused when the links that contradict its baseline "
-		"direction outweigh, in weighted inliers and not in links, the ones that agree together with the pose's own inliers, "
-		"near-duplicate links fix no direction and "
-		"a small ray angle forgives no more than the model's parallax allows (%s)",
-		TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// The direction a quorum link predicts is held to what the model sees as well as to what the pair
-// measured: the model's parallax of the link is the baseline the pose makes with the neighbour over
-// the median distance of the pose's inlier points. Each case is checked and reported on its own.
-bool ResectionModelParallaxTest()
-{
-	TD_TIMER_START();
-	const Pose3D truePose = ResectionArcPose(4 * RESECTION_ARC_STEP);
-	// image 4's resection in the parallax scene with the given links and config: whether it was
-	// registered, and how far its rotation and centre are from the truth
-	struct Outcome { bool registered; double rotErr; REAL centreErr; };
-	const auto resect = [&truePose](const std::vector<ResectionLinkSpec>& links, const Pose3D* projectingPose, const ResectionConfig& config,
-		REAL closeStep = RESECTION_CLOSE_STEP) {
-		std::mt19937 rng(20261025);
-		Scene scene;
-		BuildResectionParallaxScene(scene, links, projectingPose, rng, closeStep);
-		Resection resection(scene, config);
-		resection.RegisterImages();
-		const Image& img = scene.images[4];
-		if (!img.HasPose())
-			return Outcome{false, 0, 0};
-		return Outcome{true, RotationErrorDeg(img.R, truePose.R), norm(img.C - truePose.C)};
-	};
-	const auto atTruth = [](const Outcome& o) {
-		return o.registered && o.rotErr <= 1.0 && o.centreErr <= 0.01 * RESECTION_ARC_EXTENT;
-	};
-	const auto describe = [](const Outcome& o) {
-		return o.registered ? String::FormatString("registered %.2f deg and %.4f units off the truth", o.rotErr, o.centreErr) : String("refused");
-	};
-	// a wrong pose: image 4's rotation at a centre whose baseline to image 3 is the true one lifted
-	// RESECTION_DECOY_LIFT degrees out of the arc's plane, 0.38 units from the true centre
-	constexpr REAL RESECTION_DECOY_LIFT = 25;
-	Pose3D decoyPose = truePose;
-	{
-		const Point3 C3(ResectionArcPose(3 * RESECTION_ARC_STEP).C), baseline(truePose.C - C3);
-		decoyPose.C = C3 + baseline * COS(D2R(RESECTION_DECOY_LIFT)) + Point3(0, norm(baseline) * SIN(D2R(RESECTION_DECOY_LIFT)), 0);
-	}
-	bool passed = true;
-
-	// Every case computes its numbers (31, 36.9, 16.7, 2.15 degrees) against a 3-degree bar: a premise of
-	// the mechanism under test (the larger of the pair's ray angle and the model's parallax sets the
-	// tolerance), not of the default, which is 5 and would forgive the decoy and the turns of cases 1 and 2
-	ResectionConfig bar3;
-	bar3.maxLinkDirectionError = 3.f;
-
-	// 1. The model sees the cameras close, the pair does not: the heaviest link, to image 5, is a pair
-	// of 5-degree rays whose translation is turned 40 degrees (its own tolerance, 31 degrees, would
-	// refuse the right pose), while the model sees images 4 and 5 under 2 degrees of parallax: the
-	// link abstains and the lighter, right link to image 3 accepts the pose
-	{
-		const Outcome o = resect({{5, 400, 5, RESECTION_DIRECTION_TURN}, {3, 100, 20, 0}}, NULL, bar3);
-		if (!atTruth(o)) {
-			VERBOSE("ResectionModelParallaxTest FAILED: case 1: the right pose was %s; its heaviest link, to image 5, is a pair "
-				"of 5-degree rays whose translation is turned 40 degrees, but the model sees images 4 and 5 under 2 degrees of "
-				"parallax, so that link abstains and the right link to image 3 vouches for the pose", describe(o).c_str());
-			passed = false;
-		}
-	}
-
-	// 2. The model's parallax tightens a wide pair tolerance: the wrong pose's centre lies 25 degrees
-	// off the direction its only link, to image 3, predicts; the pair's 4-degree rays forgive 36.9
-	// degrees, but the model places the pose 10 degrees of parallax from image 3, and the larger of
-	// the two angles holds the direction to 16.7 degrees
-	{
-		const Outcome o = resect({{3, 400, 4, 0}}, &decoyPose, bar3);
-		if (o.registered) {
-			VERBOSE("ResectionModelParallaxTest FAILED: case 2: the wrong pose, its centre 25 degrees off the direction its "
-				"pair to image 3 predicts, was %s; the pair's 4-degree rays forgive 36.9 degrees, but the model places the "
-				"pose 10 degrees of parallax from image 3 and the larger angle holds the direction to 16.7", describe(o).c_str());
-			passed = false;
-		}
-	}
-
-	// 3. Both see the cameras close: the pair to image 5 is a near-duplicate (1-degree rays) that the
-	// model also sees under 2 degrees, so it agrees, and its 400 weighted inliers outweigh the 100 of
-	// the pair to image 3, whose translation is turned 40 degrees
-	{
-		const Outcome o = resect({{5, 400, 1, 0}, {3, 100, 20, RESECTION_DIRECTION_TURN}}, NULL, bar3);
-		if (!atTruth(o)) {
-			VERBOSE("ResectionModelParallaxTest FAILED: case 3: the right pose was %s; its pair to image 5 is a near-duplicate "
-				"that the model also sees under 2 degrees of parallax, so its 400 weighted inliers agree and outweigh the 100 "
-				"of the pair to image 3 whose translation is turned 40 degrees", describe(o).c_str());
-			passed = false;
-		}
-	}
-
-	// 4. maxLinkDirectionError 0 turns every direction check off: the wrong pose of case 2 is
-	// accepted, while a pose 40 degrees away from the rotation its pair composes is still refused
-	// (the rotation check stays)
-	{
-		ResectionConfig config;
-		config.maxLinkDirectionError = 0.f;
-		const Outcome o = resect({{3, 400, 4, 0}}, &decoyPose, config);
-		if (!o.registered) {
-			VERBOSE("ResectionModelParallaxTest FAILED: case 4: with maxLinkDirectionError 0 the pose of case 2 was refused; "
-				"0 turns every direction check off");
-			passed = false;
-		}
-		std::mt19937 rng(20260908);
-		Scene scene;
-		Pose3D acceptancePose;
-		BuildResectionAcceptanceScene(scene, acceptancePose, rng);
-		config.minInlierRatio = 0.f;
-		Resection resection(scene, config);
-		resection.RegisterImages();
-		if (scene.images[4].HasPose()) {
-			VERBOSE("ResectionModelParallaxTest FAILED: case 4: with maxLinkDirectionError 0 a pose %.2f deg away from the "
-				"rotation its pair composes was accepted; the rotation check stays", RotationErrorDeg(scene.images[4].R, acceptancePose.R));
-			passed = false;
-		}
-	}
-
-	// 5. A small angle forgives a wide error: image 5 placed 4 degrees along the arc (the model's
-	// parallax about 4 degrees, past the near-duplicate bar), its pair of 4-degree rays and 400
-	// weighted inliers turned 20 degrees, and the right link to image 3 (100, 20 degrees): the larger
-	// angle, about 4 degrees, gives a 36.9-degree tolerance, the link agrees and the right pose is
-	// accepted; held to the plain 3 degrees it would contradict and outweigh the link to image 3
-	{
-		const Outcome o = resect({{5, 400, 4, 20}, {3, 100, 20, 0}}, NULL, bar3, 4);
-		if (!atTruth(o)) {
-			VERBOSE("ResectionModelParallaxTest FAILED: case 5: the right pose was %s; its link to image 5 is turned 20 degrees, "
-				"but both the pair's rays and the model's parallax are about 4 degrees apart, which forgives 36.9 degrees",
-				describe(o).c_str());
-			passed = false;
-		}
-	}
-
-	// 6. The pair's larger angle tightens: image 5 placed 3 degrees along the arc (the model's
-	// parallax about 3 degrees, which alone would forgive 45), its only link a pair of 80-degree rays
-	// turned 2.6 degrees: the larger angle, 80 degrees, holds the direction to 2.15 degrees, tighter
-	// than the plain 3, and the pose is refused
-	{
-		const Outcome o = resect({{5, 400, 80, 2.6}}, NULL, bar3, 3);
-		if (o.registered) {
-			VERBOSE("ResectionModelParallaxTest FAILED: case 6: the pose whose link to image 5 is turned 2.6 degrees was %s; "
-				"the pair's 80-degree rays hold the direction to 2.15 degrees, whatever the model's 3 degrees of parallax "
-				"or the plain 3-degree bar would forgive", describe(o).c_str());
-			passed = false;
-		}
-	}
-	if (!passed)
-		return false;
-
-	VERBOSE("ResectionModelParallaxTest PASSED: a link the model sees close abstains unless its pair is a near-duplicate too, "
-		"when it agrees; otherwise the larger of the pair's ray angle and the model's parallax sets the tolerance, a small "
-		"one forgiving a wide error and either one tightening it; at 0 no direction check runs and the rotation check still "
-		"does (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// The rotation every link predicts weighs on the pose, not only the quorum's: a pose is refused when
-// its mean angle to the rotations of all its links to registered images, weighted by the pair
-// weights, exceeds ResectionConfig::maxLinkRotationDisagreement. Each case is checked on its own.
-bool ResectionLinkRotationTest()
-{
-	TD_TIMER_START();
-	// the six-camera arc: images 0-3 registered with 150 triangulated tracks, image 4 unregistered with
-	// the 40 true and 60 random correspondences of the direction case (so the pose found is its true
-	// one), image 5 unregistered with none; image 4's pairs carry the true relative poses and the given
-	// weighted inliers, each with its relative rotation turned the given degrees about the vertical axis
-	// and its translation kept, so the link predicts a rotation that far off and the true direction.
-	// Returns whether image 4 registered (the adjustments after it pull its pose towards the turned
-	// links' rotations, so the pose is not held to the truth here), through RegisterImages, or through
-	// RegisterImage alone when single is set
-	struct Link { IIndex neighborID; unsigned numInliers; REAL turnDeg; };
-	const auto registers = [](const std::vector<Link>& links, float maxLinkRotationDisagreement, bool single = false) {
-		std::mt19937 rng(20261105);
-		Scene scene;
-		BuildResectionArc(scene, 6);
-		AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
-		AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
-		for (const Link& link : links) {
-			AddResectionPair(scene, MINF(link.neighborID, IIndex(4)), MAXF(link.neighborID, IIndex(4)), link.numInliers);
-			Pose3D& relPose = scene.pairs.back().relativePose.value();
-			relPose.R = RMatrix(Point3(0, D2R(link.turnDeg), 0)) * relPose.R;
-		}
-		scene.images[4].InvalidatePose();
-		scene.images[5].InvalidatePose();
-		scene.status.nCalibratedImages = 4;
-		TriangulateTracks(scene, false, 4.f, 1.f);
-		ResectionConfig config;
-		config.maxLinkRotationDisagreement = maxLinkRotationDisagreement;
-		Resection resection(scene, config);
-		if (single)
+		ArcScene arc(c.scene());
+		std::optional<LogCapture> log;
+		if (c.logged != NULL)
+			log.emplace();
+		Resection resection(arc.scene, c.config);
+		if (c.single)
 			resection.RegisterImage(4);
 		else
 			resection.RegisterImages();
-		return scene.images[4].HasPose();
-	};
-	const float defaultBar = ResectionConfig().maxLinkRotationDisagreement;
-	bool passed = true;
+		const Image& img = arc.scene.images[4];
+		const bool registered = img.HasPose();
+		const double rotErr = registered ? RotationErrorDeg(img.R, arc.truth[4].R) : 0.0;
+		const REAL centreErr = registered ? norm(img.C - arc.truth[4].C) : REAL(0);
+		const bool met = c.expect == REFUSED ? !registered : c.expect == REGISTERED ? registered :
+			c.expect == RIGHT_ROTATION ? registered && rotErr <= 1.0 :
+			c.expect == RIGHT_POSE ? registered && rotErr <= 1.0 && centreErr <= 0.01 * ArcScene::EXTENT : registered && rotErr > 15.0;
+		TEST_CHECK(met, "%s: image 4 %s (%.2f deg and %.4f units off its true pose), expected %s: %s", c.name,
+			registered ? "registered" : "was refused", rotErr, centreErr, Describe(c.expect), c.why);
+		TEST_CHECK(c.logged == NULL || log->Contains(c.logged), "%s: the log does not say \"%s\": %s", c.name, c.logged, c.why);
+	}
 
-	// the strongest link (800) predicts a rotation 13 degrees off, the two weak ones (100 each) the true
-	// one: the quorum holds all three and the pose is 13 degrees from the rotation its strongest link
-	// composes, inside the 15 the rotation check allows, but the weighted mean is 10.4 degrees and the
-	// pose is refused by this check (an unweighted mean, 4.3 degrees, would accept it)
+	// One pair alone: a pose shifted sideways by 0.14 of a unit baseline is 7.97 degrees off the direction the pair
+	// predicts; the tolerance follows the pair's ray angle, atan(tan(5 deg) / rayAngle) as seen from what it triangulates
 	{
-		LogCapture log;
-		if (registers({{3, 800, 13}, {2, 100, 0}, {1, 100, 0}}, defaultBar)) {
-			VERBOSE("ResectionLinkRotationTest FAILED: case 1: the pose was accepted although the link carrying 800 of the 1000 "
-				"weighted inliers predicts a rotation 13 degrees off (weighted mean 10.4 > %.0f degrees)", defaultBar);
-			passed = false;
-		} else if (!log.Contains("away from the rotations its 3 links predict")) {
-			VERBOSE("ResectionLinkRotationTest FAILED: case 1: the pose was refused, but not by the link rotation check");
-			passed = false;
+		Pose3D neighbour, image, placed;
+		neighbour.R = image.R = placed.R = Matrix3x3::IDENTITY;
+		neighbour.C = Point3(0, 0, 0);
+		image.C = Point3(1, 0, 0);
+		placed.C = Point3(1, 0.14, 0);
+		ImagePair pair(0, 1);
+		pair.relativePose = image / neighbour;
+		pair.weightedInliers = 100.f;
+		pair.weightSpatial = pair.overlapArea = pair.weightConnectivity = 1.f;
+		struct Tolerance { float rayAngleDeg; bool within; const char* why; };
+		for (const Tolerance& t : {
+			Tolerance{4.f, true, "a pair whose rays are 4 degrees apart cannot place its image nearer than 50 degrees of direction"},
+			Tolerance{60.f, false, "a pair whose rays are 60 degrees apart fixes the direction to about the rotation tolerance"},
+			Tolerance{0.f, false, "a pair of unknown ray angle is held to the plain tolerance"}})
+		{
+			pair.meanRayAngle = (float)D2R(t.rayAngleDeg);
+			const PairDisagreement d = MeasurePairDisagreement(pair, placed, neighbour, 0);
+			TEST_CHECK(d.rotation <= 1e-3 && d.HasDirection() && ABS(d.direction - R2D(ATAN(0.14))) <= 0.1,
+				"the pair measures %.2f degrees of rotation and %.2f of direction against a pose shifted by 0.14 of its baseline", d.rotation, d.direction);
+			TEST_CHECK(d.Within(5.f) == t.within, "at a ray angle of %.0f degrees the %.2f-degree direction error was %s the 5-degree tolerance: %s",
+				t.rayAngleDeg, d.direction, t.within ? "held against" : "forgiven by", t.why);
 		}
 	}
-	// the same links with the check off: the pose is accepted, so the check is what refused it
-	if (!registers({{3, 800, 13}, {2, 100, 0}, {1, 100, 0}}, 0.f)) {
-		VERBOSE("ResectionLinkRotationTest FAILED: case 2: with maxLinkRotationDisagreement 0 the pose of case 1 was refused");
-		passed = false;
-	}
-	// the strongest link (800) predicts the true rotation, the two weak ones (100 each) one 13 degrees
-	// off: the weighted mean is 2.6 degrees and the pose is accepted (an unweighted mean, 8.7 degrees,
-	// would refuse it)
-	if (!registers({{3, 800, 0}, {2, 100, 13}, {1, 100, 13}}, defaultBar)) {
-		VERBOSE("ResectionLinkRotationTest FAILED: case 3: the pose was refused although the links carrying 800 of "
-			"the 1000 weighted inliers predict its rotation (weighted mean 2.6 degrees)");
-		passed = false;
-	}
-	// no link to a registered image, only a pair to the unregistered image 5 predicting a rotation 30
-	// degrees off: the image is not judged and its pose is accepted (by RegisterImage itself: the
-	// resection's loop does not try an image without a link, ResectionLinkGateTest)
-	if (!registers({{5, 800, 30}}, defaultBar, true)) {
-		VERBOSE("ResectionLinkRotationTest FAILED: case 4: the pose of an image with no link to a registered image was refused");
-		passed = false;
-	}
-	if (!passed)
-		return false;
-
-	VERBOSE("ResectionLinkRotationTest PASSED: a pose whose mean angle to the rotations of all its links, weighted by the pair "
-		"weights, exceeds %.0f degrees is refused although its quorum passes it, weighted and not counted by links; at 0 the "
-		"check is off, and an image with no link is not judged (%s)", defaultBar, TD_TIMER_GET_FMT().c_str());
-	return true;
+	return scope.Pass("%u resections on the arc met their expectation: the share, the composed rotation, the quorum, the weighted "
+		"link direction with its parallax tolerance and the weighted link rotation; one pair's tolerance follows its ray angle",
+		(unsigned)(sizeof(cases) / sizeof(cases[0])));
 }
 
 // An image whose evidence lies almost entirely in unregistered images is registered all the same,
@@ -14904,57 +13854,6 @@ bool ContradictingImagesTest()
 
 	VERBOSE("ContradictingImagesTest PASSED: the one image whose pairs disagree with its pose is named, the three "
 		"removed without a pair that does are not (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// The baseline direction a pair predicts is held to the same tolerance as the rotation, measured from
-// the structure the pair triangulates rather than from the neighbour: a pose off by the tolerance as
-// seen from that structure swings the direction by atan(tan(tolerance) / rayAngle), so a pair of
-// nearly parallel rays forgives a wide direction error and a wide-baseline pair forgives little
-bool PairDirectionToleranceTest()
-{
-	TD_TIMER_START();
-	constexpr float MAX_ANGLE = 5.f;      // degrees, the rotation tolerance
-	constexpr REAL DIRECTION_OFF = 0.14;  // sideways shift of a unit baseline: about 8 degrees
-
-	Pose3D neighbour;
-	neighbour.R = Matrix3x3::IDENTITY;
-	neighbour.C = Point3(0, 0, 0);
-	Pose3D image(neighbour);
-	image.C = Point3(1, 0, 0);
-	ImagePair pair(0, 1);
-	pair.relativePose = image / neighbour;
-	pair.weightedInliers = 100.f;
-	pair.weightSpatial = 1.f;
-	pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
-	pair.weightConnectivity = 1.f;
-	Pose3D placed(image);
-	placed.C = Point3(1, DIRECTION_OFF, 0);
-
-	struct Case { float rayAngleDeg; bool within; const char* why; };
-	const Case cases[] = {
-		{ 4.f, true, "a pair whose rays are 4 degrees apart cannot place its image nearer than 50 degrees of direction" },
-		{ 60.f, false, "a pair whose rays are 60 degrees apart fixes the direction to about the rotation tolerance" },
-		{ 0.f, false, "a pair of unknown ray angle is held to the plain tolerance" },
-	};
-	for (const Case& c : cases) {
-		pair.meanRayAngle = (float)D2R(c.rayAngleDeg);
-		const PairDisagreement d = MeasurePairDisagreement(pair, placed, neighbour, 0);
-		if (d.rotation > 1e-3 || !d.HasDirection() || ABS(d.direction - R2D(ATAN(DIRECTION_OFF))) > 0.1) {
-			VERBOSE("PairDirectionToleranceTest FAILED: the pair measures %.2f degrees of rotation and %.2f of direction "
-				"against a pose shifted by %.2f of its baseline", d.rotation, d.direction, DIRECTION_OFF);
-			return false;
-		}
-		if (d.Within(MAX_ANGLE) != c.within) {
-			VERBOSE("PairDirectionToleranceTest FAILED: at a ray angle of %.0f degrees the %.2f-degree direction error "
-				"was %s the %.0f-degree tolerance; %s", c.rayAngleDeg, d.direction, c.within ? "held against" : "forgiven by",
-				MAX_ANGLE, c.why);
-			return false;
-		}
-	}
-
-	VERBOSE("PairDirectionToleranceTest PASSED: the direction tolerance follows the pair's ray angle (%s)",
-		TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -20204,150 +19103,12 @@ bool BarsReEntryTest()
 	return true;
 }
 
-// ===============================================================================
-// A capture walking around a loop: blocks of cameras on a circle looking outward at a cylinder
-// wall. Every merge test builds its scene from these helpers, so a defect one of them reproduces
-// is described by the same handful of numbers.
-// ===============================================================================
-
-struct RingSceneConfig
-{
-	unsigned numBlocks{12}, camsPerBlock{10}, numPoints{3000};
-	REAL cameraRadius{5}, wallRadius{9}, wallHeight{4};
-	REAL driftDegPerBlock{0};    // internal bend of every block (rotation ramp about the ring axis)
-	REAL driftScalePerBlock{0};  // internal scale ramp of every block (centres scaled about the block's first camera)
-	REAL noisePx{0.3};           // keypoint noise
-	std::set<uint32_t> tinyBlocks; // these blocks get two cameras 1 mm apart instead of camsPerBlock
-	uint32_t foldedBlock{NO_ID}; // this block's second half is reconstructed folded by foldDeg
-	REAL foldDeg{180};           // the turn of the folded half about the ring axis
-	uint32_t seed{7};
-};
-
-// Two images belong to a pair only when this many tracks join them, the bar a real matcher's
-// geometric verification leaves behind
-static constexpr unsigned kRingMinSharedTracks = 20;
-// How far a ring camera may be tilted off the radial direction
-static constexpr REAL kRingTiltDeg = 10;
-
 // Rotation of the world frame about the ring axis (z through the ring centre, the origin) by `deg`
 static SEACAVE::Transform RingRotation(REAL deg)
 {
 	SEACAVE::Transform T;
 	T.R.SetRotationAxisAngle(Point3(0, 0, D2R(deg)));
 	return T;
-}
-
-// One camera of the ring: its centre on the circle at the given angle, moved along the tangent by
-// `tangentOffset`, looking radially outward and tilted up or down by a random angle. The tilt turns
-// the camera about its own right axis and leaves it pointing outward, so how far around the wall a
-// camera reaches -- which decides what two cameras share and therefore where the blocks meet -- is
-// the same for every camera of the ring.
-static Pose3D RingCamera(REAL angle, REAL radius, REAL tangentOffset, std::mt19937& rng)
-{
-	const REAL c = COS(angle), s = SIN(angle);
-	Pose3D pose;
-	pose.C = Point3(radius * c - tangentOffset * s, radius * s + tangentOffset * c, 0);
-	std::uniform_real_distribution<REAL> tiltDist(-kRingTiltDeg, kRingTiltDeg);
-	RMatrix tilt;
-	tilt.SetRotationAxisAngle(Point3(D2R(tiltDist(rng)), 0, 0));
-	// the camera axes as the rows of the world-to-camera rotation: right along the tangent, down
-	// along the ring axis, forward radially outward
-	pose.R = RMatrix(tilt * Matrix3x3(
-		 s, -c,  0,
-		 0,  0, -1,
-		 c,  s,  0));
-	return pose;
-}
-
-static void GenerateRingScene(const RingSceneConfig& cfg, Scene& scene, std::vector<IIndexArr>& blocks, std::vector<Pose3D>& gtPoses)
-{
-	std::mt19937 rng(cfg.seed);
-	scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240)));
-
-	// the cameras, block by block, so every block owns a contiguous arc and contiguous global IDs
-	const REAL slotAngle = REAL(2) * REAL(M_PI) / REAL(cfg.numBlocks * cfg.camsPerBlock);
-	blocks.assign(cfg.numBlocks, IIndexArr());
-	const auto AddCamera = [&](uint32_t block, const Pose3D& pose) {
-		blocks[block].push_back((IIndex)scene.images.size());
-		scene.images.emplace_back((IIndex)scene.images.size(), String(), pose, 0, scene.cameras[0]);
-	};
-	for (uint32_t b = 0; b < cfg.numBlocks; ++b) {
-		if (cfg.tinyBlocks.count(b) > 0) {
-			// two cameras a millimetre apart at the centre of the block's arc: a rig too short to
-			// observe a scale of its own
-			const REAL angle = slotAngle * (REAL(b * cfg.camsPerBlock) + REAL(cfg.camsPerBlock - 1) / 2);
-			AddCamera(b, RingCamera(angle, cfg.cameraRadius, REAL(-0.0005), rng));
-			AddCamera(b, RingCamera(angle, cfg.cameraRadius, REAL(0.0005), rng));
-			continue;
-		}
-		for (unsigned k = 0; k < cfg.camsPerBlock; ++k)
-			AddCamera(b, RingCamera(slotAngle * REAL(b * cfg.camsPerBlock + k), cfg.cameraRadius, 0, rng));
-	}
-	scene.status.nCalibratedImages = scene.images.size();
-	gtPoses.assign(scene.images.size(), Pose3D());
-	FOREACH(i, scene.images) {
-		gtPoses[i].R = scene.images[i].R;
-		gtPoses[i].C = scene.images[i].C;
-	}
-
-	// the wall the ring looks at, and what every camera sees of it
-	std::uniform_real_distribution<REAL> wallAngleDist(0, REAL(2) * REAL(M_PI));
-	std::uniform_real_distribution<REAL> wallHeightDist(-cfg.wallHeight / 2, cfg.wallHeight / 2);
-	std::normal_distribution<REAL> keypointNoise(0, cfg.noisePx);
-	for (unsigned p = 0; p < cfg.numPoints; ++p) {
-		const REAL a = wallAngleDist(rng);
-		const Point3 X(cfg.wallRadius * COS(a), cfg.wallRadius * SIN(a), wallHeightDist(rng));
-		std::vector<std::pair<IIndex, Point2>> projections;
-		FOREACH(i, scene.images) {
-			const auto [proj, valid] = scene.images[i].ProjectPoint(X);
-			if (valid && Image8U::isInside(proj, scene.images[i].GetSize()))
-				projections.emplace_back(i, proj);
-		}
-		if (projections.size() < 2)
-			continue;
-		Track track(X);
-		for (const auto& [image, proj] : projections) {
-			Image& img = scene.images[image];
-			track.observations.emplace_back(image, (uint32_t)img.keypoints.size());
-			img.keypoints.emplace_back(Point2(proj.x + keypointNoise(rng), proj.y + keypointNoise(rng)), 0.f, 0.f, 10.f);
-		}
-		track.numInliers = (uint8_t)MINF(track.observations.size(), (IIndex)UINT8_MAX);
-		scene.tracks.emplace_back(std::move(track));
-	}
-
-	// a pair per image couple the tracks join often enough, matched through those very tracks
-	std::unordered_map<PairIdx::PairIndex, unsigned> numShared;
-	const auto ForEachTrackPair = [&scene](const std::function<void(const Observation&, const Observation&)>& visit) {
-		for (const Track& track : scene.tracks)
-			FOREACH(i, track.observations)
-				for (IIndex j = i + 1; j < track.observations.size(); ++j)
-					visit(track.observations[i], track.observations[j]);
-	};
-	ForEachTrackPair([&numShared](const Observation& first, const Observation& second) {
-		++numShared[PairIdx(first.imageID, second.imageID).idx];
-	});
-	std::unordered_map<PairIdx::PairIndex, uint32_t> pairOf;
-	for (const auto& [key, num] : numShared) {
-		if (num < kRingMinSharedTracks)
-			continue;
-		const PairIdx images(key);
-		pairOf.emplace(key, (uint32_t)scene.pairs.size());
-		scene.pairs.emplace_back(images.i, images.j);
-	}
-	ForEachTrackPair([&scene, &pairOf](const Observation& first, const Observation& second) {
-		const auto it = pairOf.find(PairIdx(first.imageID, second.imageID).idx);
-		if (it != pairOf.end())
-			scene.pairs[it->second].matches.emplace_back(first.featureID, second.featureID);
-	});
-	for (ImagePair& pair : scene.pairs) {
-		pair.relativePose = scene.images[pair.ID2] / scene.images[pair.ID1];
-		pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
-		pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[pair.ID1].GetK(), scene.images[pair.ID2].GetK());
-	}
-	scene.status.nTracks = scene.tracks.size();
-	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
-	scene.status.nState.set(Scene::Status::STATE::MATCHED);
-	ComputePairsWeights(scene);
 }
 
 // A block whose two halves were never seen together: the pairs that would have joined them are
@@ -20413,53 +19174,14 @@ static void BuildRingBlocks(const RingSceneConfig& cfg, Scene& scene, const std:
 {
 	if (cfg.foldedBlock != NO_ID)
 		DropFoldPairs(scene, blocks[cfg.foldedBlock], cfg.camsPerBlock / 2);
-
-	localToGlobals.clear();
-	const ClusterConfig clusterCfg;
-	// the given blocks, each sorted; an image in none of them is in the pool
-	ScenePartition partition;
-	partition.clusters = blocks;
-	std::vector<bool> inBlock(scene.images.size(), false);
-	for (IIndexArr& cluster : partition.clusters) {
-		cluster.Sort();
-		for (IIndex g : cluster)
-			inBlock[g] = true;
-	}
-	FOREACH(g, scene.images)
-		if (!inBlock[g])
-			partition.pool.push_back(g);
-	subScenes = ExtractBlocks(scene, partition, &localToGlobals);
-
-	// the reconstruction hands the merge a scene without tracks; the blocks carry them
-	scene.tracks.Release();
-	scene.status.nTracks = 0;
-
-	// the blocks carry the poses from here on: the global scene is the uncalibrated one a merge
-	// writes its answer into, exactly as the reconstruction hands it over
-	FOREACH(i, scene.images)
-		scene.images[i].InvalidatePose();
-	scene.status.nCalibratedImages = 0;
-
-	std::mt19937 rng(cfg.seed + 1);
-	applied.assign(subScenes.size(), SEACAVE::Transform());
-	FOREACH(b, subScenes) {
-		Scene& sub = subScenes[b];
-		FOREACH(localID, sub.images) {
-			sub.images[localID].R = gtPoses[localToGlobals[b][localID]].R;
-			sub.images[localID].C = gtPoses[localToGlobals[b][localID]].C;
-		}
+	SceneBlocks sceneBlocks(scene);
+	applied = SplitOnTruth(scene, sceneBlocks, blocks, gtPoses, cfg.seed + 1, [&cfg](uint32_t b, Scene& sub) {
 		BendRingBlock(cfg, sub);
 		if (b == cfg.foldedBlock)
 			FoldRingBlock(sub, cfg.camsPerBlock / 2, cfg.foldDeg);
-		sub.RecomputeCalibratedImages();
-		// the block's own points, from the cameras it ended up with; a rig a millimetre wide has
-		// nothing left once the angle bar is applied, so it is lifted here
-		for (Track& track : sub.tracks)
-			if (track.observations.size() >= 2)
-				TriangulateSkewLLS(track, sub.images, 4.f, 0.f);
-		applied[b] = SEACAVE::Transform::Random(rng, 180, 10, 0.5);
-		sub.Transform(applied[b]);
-	}
+	});
+	subScenes = std::move(sceneBlocks.blocks);
+	localToGlobals = std::move(sceneBlocks.localToGlobal);
 }
 
 // The middle value of a sample, its own numbers left in place
@@ -21451,224 +20173,133 @@ bool PooledSeamReadingTest()
 }
 /*----------------------------------------------------------------*/
 
-// The merge as rounds: a ring whose block MERGE_ROUNDS_KEPT has no cross match to any other block. A round that keeps
-// the unplaced blocks whole (MergeScenes with releaseUnplaced false) merges the eleven others and leaves that block in
-// its scene with its features and tracks, its images with no features and no pose in the global scene;
-// SceneBlocks::RegroupAfterMerge makes the merged model block 0 (every posed image, its features and the scene's
-// tracks moved in) and the kept block block 1, as it was; the next round, releasing and anchored at block 0 as
-// MergeInRounds anchors it, places the model again and merges the kept block without its poses, its features back in
-// the global scene for the resection. These are the states between rounds, which MergeInRoundsTest does not see.
+// The merge as rounds (GlobalAlignment::MergeScenes keeping or releasing the unplaced blocks, SceneBlocks::RegroupAfterMerge,
+// SceneBlocks::MergeInRounds), each part on a ring (RingFixture) some of whose seams are cut (ThinSeam with no track kept):
+// 1. the states between rounds: a round keeping the unplaced blocks whole leaves the cut-off block in its scene, the regrouping
+//    makes the merged model block 0, and the next round, anchored at block 0 and releasing, places the model again and hands the
+//    kept block's images back to the global scene for the resection;
+// 2. the merge's own loop on a ring cut in two halves that weigh alike: three rounds, one half posed, the other released;
+// 3. a seam resting on pool-registered cameras alone is refused and its block released, one a model camera supports is not;
+// 4. the anchor: the model holding block 0 is merged whatever the other models weigh.
 bool MergeRoundsTest()
 {
-	TD_TIMER_START();
-	constexpr uint32_t MERGE_ROUNDS_KEPT = 5;
-	const RingSceneConfig cfg{12, 10};
-	Scene scene;
-	std::vector<IIndexArr> blocks;
-	std::vector<Pose3D> gtPoses;
-	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	ThinSeam(scene, blocks, MERGE_ROUNDS_KEPT - 1, MERGE_ROUNDS_KEPT, 0, cfg.camsPerBlock);
-	ThinSeam(scene, blocks, MERGE_ROUNDS_KEPT, MERGE_ROUNDS_KEPT + 1, 0, cfg.camsPerBlock);
-	SceneBlocks sceneBlocks(scene);
-	std::vector<SEACAVE::Transform> applied;
-	BuildRingBlocks(cfg, scene, blocks, gtPoses, sceneBlocks.blocks, sceneBlocks.localToGlobal, applied);
-	sceneBlocks.blockOf.resize(scene.images.size());
-	sceneBlocks.blockOf.MemsetValue(NO_ID);
-	FOREACH(b, sceneBlocks.localToGlobal)
-		for (const IIndex g : sceneBlocks.localToGlobal[b])
-			sceneBlocks.blockOf[g] = (IIndex)b;
-	const IIndexArr keptImages(sceneBlocks.localToGlobal[MERGE_ROUNDS_KEPT]);
-	const size_t keptTracks = sceneBlocks.blocks[MERGE_ROUNDS_KEPT].tracks.size();
-	const GlobalAlignmentConfig alignCfg;
-	MergeReport rep;
-	{
-		GlobalAlignment ga(scene, alignCfg);
-		ga.MergeScenes(sceneBlocks.blocks, sceneBlocks.localToGlobal, rep, false);
-	}
-	const Scene& keptBlock = sceneBlocks.blocks[MERGE_ROUNDS_KEPT];
-	bool keptWhole = rep.numPlaced == cfg.numBlocks - 1 && rep.poses[MERGE_ROUNDS_KEPT].state != BlockPose::ADMITTED &&
-		keptBlock.images.size() == keptImages.size() && keptBlock.tracks.size() == keptTracks;
-	for (const Image& img : keptBlock.images)
-		keptWhole = keptWhole && img.HasFeatures() && img.HasPose();
-	for (const IIndex g : keptImages)
-		keptWhole = keptWhole && !scene.images[g].HasFeatures() && !scene.images[g].HasPose();
-	if (!keptWhole) {
-		VERBOSE("MergeRoundsTest FAILED: round 1 placed %u of %u blocks; block %u (no cross match) is not left whole in its scene "
-			"with its %u images, features and %u tracks, its images without features and pose in the global scene",
-			rep.numPlaced, cfg.numBlocks, MERGE_ROUNDS_KEPT, (unsigned)keptImages.size(), (unsigned)keptTracks);
-		return false;
-	}
-	std::vector<bool> placed(rep.poses.size());
-	FOREACH(b, rep.poses)
-		placed[b] = rep.poses[b].state == BlockPose::ADMITTED;
-	sceneBlocks.RegroupAfterMerge(placed);
-	const unsigned numModel = (unsigned)(scene.images.size() - keptImages.size());
-	bool regrouped = sceneBlocks.blocks.size() == 2 && sceneBlocks.blocks[0].images.size() == numModel &&
-		sceneBlocks.blocks[0].status.nCalibratedImages == numModel && !sceneBlocks.blocks[0].tracks.empty() &&
-		scene.tracks.empty() && sceneBlocks.localToGlobal[1] == keptImages && sceneBlocks.blocks[1].tracks.size() == keptTracks;
-	FOREACH(g, scene.images)
-		regrouped = regrouped && sceneBlocks.blockOf[g] == (std::find(keptImages.begin(), keptImages.end(), (IIndex)g) != keptImages.end() ? 1u : 0u);
-	for (const Image& img : sceneBlocks.blocks[0].images)
-		regrouped = regrouped && img.HasFeatures() && img.HasPose();
-	if (!regrouped) {
-		VERBOSE("MergeRoundsTest FAILED: after the regrouping %u blocks (2 expected: the model of %u posed images with its "
-			"features and tracks, then block %u as it was), %u tracks left in the global scene",
-			(unsigned)sceneBlocks.blocks.size(), numModel, MERGE_ROUNDS_KEPT, (unsigned)scene.tracks.size());
-		return false;
-	}
-	{
-		GlobalAlignment ga(scene, alignCfg);
-		ga.MergeScenes(sceneBlocks.blocks, sceneBlocks.localToGlobal, rep, true, 0u);
-	}
-	bool released = rep.numPlaced == 1 && rep.numImagesUnplaced == keptImages.size() && scene.status.nCalibratedImages == numModel;
-	for (const IIndex g : keptImages)
-		released = released && scene.images[g].HasFeatures() && !scene.images[g].HasPose();
-	if (!released) {
-		VERBOSE("MergeRoundsTest FAILED: the releasing round placed %u blocks (the model alone expected), %u images unplaced "
-			"(%u expected, back in the global scene with their features and no pose), %u calibrated (%u expected)",
-			rep.numPlaced, rep.numImagesUnplaced, (unsigned)keptImages.size(), scene.status.nCalibratedImages, numModel);
-		return false;
-	}
-	VERBOSE("MergeRoundsTest PASSED: round 1 placed %u blocks and kept block %u whole, the regrouped model of %u images "
-		"was placed again and the kept block released (%s)", cfg.numBlocks - 1, MERGE_ROUNDS_KEPT, numModel, TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
+	TestScope scope("MergeRoundsTest");
+	constexpr unsigned CAMS = 10; // cameras per block of every ring below
+	// a ring of numBlocks blocks with the given seams cut, handed out to the merge
+	const auto CutRing = [](RingFixture& ring, const std::vector<std::pair<uint32_t, uint32_t>>& cuts) {
+		for (const auto& [pointBlock, rigBlock] : cuts)
+			ThinSeam(ring.scene, ring.blocks, pointBlock, rigBlock, 0, CAMS);
+		ring.Split();
+	};
+	const auto HasPose = [](const Scene& scene, const IIndexArr& images) {
+		return std::all_of(images.begin(), images.end(), [&](IIndex g) { return scene.images[g].HasPose(); });
+	};
+	// back in the global scene for the resection: features, no pose
+	const auto Released = [](const Scene& scene, const IIndexArr& images) {
+		return std::all_of(images.begin(), images.end(), [&](IIndex g) { return scene.images[g].HasFeatures() && !scene.images[g].HasPose(); });
+	};
 
-// The merge's own loop (SceneBlocks::MergeInRounds) on a ring of four blocks cut in two: blocks 0-1 and blocks 2-3,
-// no cross match between the halves, two models of 20 images that weigh alike. Round 1 merges one half and keeps
-// the other whole; the pool step enters no image; round 2 reads the kept half against the merged model, block 0,
-// and with the two models still weighing alike only the anchor at block 0 makes it merge block 0's; so nothing
-// is placed, the fixed point is reached and round 3 releases the kept half: three rounds, one half posed, the
-// other half's images back in the global scene with their features and without poses.
-bool MergeInRoundsTest()
-{
-	TD_TIMER_START();
-	const RingSceneConfig cfg{4, 10};
-	Scene scene;
-	std::vector<IIndexArr> blocks;
-	std::vector<Pose3D> gtPoses;
-	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	ThinSeam(scene, blocks, 1, 2, 0, cfg.camsPerBlock);
-	ThinSeam(scene, blocks, 3, 0, 0, cfg.camsPerBlock);
-	SceneBlocks sceneBlocks(scene);
-	std::vector<SEACAVE::Transform> applied;
-	BuildRingBlocks(cfg, scene, blocks, gtPoses, sceneBlocks.blocks, sceneBlocks.localToGlobal, applied);
-	sceneBlocks.blockOf.resize(scene.images.size());
-	sceneBlocks.blockOf.MemsetValue(NO_ID);
-	FOREACH(b, sceneBlocks.localToGlobal)
-		for (const IIndex g : sceneBlocks.localToGlobal[b])
-			sceneBlocks.blockOf[g] = (IIndex)b;
-	ReconstructionConfig config;
-	ResectionConfig resectionCfg = config.resectionCfg;
-	resectionCfg.DeriveBAConfigs(config.baConfig);
-	const unsigned numRounds = sceneBlocks.MergeInRounds(resectionCfg, config);
-	// one half posed, the other released whole
-	unsigned numPosedHalves = 0, numReleasedHalves = 0;
-	for (const IIndexArr& half : {IIndexArr{blocks[0]}.Join(blocks[1]), IIndexArr{blocks[2]}.Join(blocks[3])}) {
-		bool posed = true, released = true;
-		for (const IIndex g : half) {
-			posed = posed && scene.images[g].HasPose();
-			released = released && scene.images[g].HasFeatures() && !scene.images[g].HasPose();
-		}
-		numPosedHalves += posed ? 1u : 0u;
-		numReleasedHalves += released ? 1u : 0u;
+	// 1. rounds on a ring of MERGE_ROUNDS_BLOCKS whose block KEPT has no cross match to any other block
+	{
+		// six blocks: the states between rounds are the same as on twelve, at a quarter of the time
+		constexpr uint32_t MERGE_ROUNDS_BLOCKS = 6, KEPT = 5;
+		RingFixture ring({MERGE_ROUNDS_BLOCKS, CAMS});
+		CutRing(ring, {{KEPT - 1, KEPT}, {KEPT, (KEPT + 1) % MERGE_ROUNDS_BLOCKS}});
+		SceneBlocks& split = ring.split;
+		const IIndexArr keptImages(split.localToGlobal[KEPT]);
+		const size_t keptTracks = split.blocks[KEPT].tracks.size();
+		// round 1, keeping the unplaced blocks whole: every block but KEPT placed, KEPT left in its scene with its images,
+		// features and tracks, its images without features and pose in the global scene
+		MergeReport rep = ring.Merge(false);
+		const Scene& keptBlock = split.blocks[KEPT];
+		bool keptWhole = rep.numPlaced == MERGE_ROUNDS_BLOCKS - 1 && rep.poses[KEPT].state != BlockPose::ADMITTED &&
+			keptBlock.images.size() == keptImages.size() && keptBlock.tracks.size() == keptTracks;
+		for (const Image& img : keptBlock.images)
+			keptWhole = keptWhole && img.HasFeatures() && img.HasPose();
+		for (const IIndex g : keptImages)
+			keptWhole = keptWhole && !ring.scene.images[g].HasFeatures() && !ring.scene.images[g].HasPose();
+		TEST_CHECK(keptWhole, "round 1 placed %u of %u blocks; block %u (no cross match) is not left whole in its scene with its "
+			"%u images, features and %u tracks, its images without features and pose in the global scene",
+			rep.numPlaced, MERGE_ROUNDS_BLOCKS, KEPT, (unsigned)keptImages.size(), (unsigned)keptTracks);
+		// the regrouping: the merged model is block 0 (every posed image, its features and the scene's tracks moved in), the
+		// kept block is block 1 as it was
+		std::vector<bool> placed(rep.poses.size());
+		FOREACH(b, rep.poses)
+			placed[b] = rep.poses[b].state == BlockPose::ADMITTED;
+		split.RegroupAfterMerge(placed);
+		const unsigned numModel = (unsigned)(ring.scene.images.size() - keptImages.size());
+		bool regrouped = split.blocks.size() == 2 && split.blocks[0].images.size() == numModel &&
+			split.blocks[0].status.nCalibratedImages == numModel && !split.blocks[0].tracks.empty() &&
+			ring.scene.tracks.empty() && split.localToGlobal[1] == keptImages && split.blocks[1].tracks.size() == keptTracks;
+		FOREACH(g, ring.scene.images)
+			regrouped = regrouped && split.blockOf[g] == (std::find(keptImages.begin(), keptImages.end(), (IIndex)g) != keptImages.end() ? 1u : 0u);
+		for (const Image& img : split.blocks[0].images)
+			regrouped = regrouped && img.HasFeatures() && img.HasPose();
+		TEST_CHECK(regrouped, "after the regrouping %u blocks (2 expected: the model of %u posed images with its features and tracks, "
+			"then block %u as it was), %u tracks left in the global scene",
+			(unsigned)split.blocks.size(), numModel, KEPT, (unsigned)ring.scene.tracks.size());
+		// round 2, releasing and anchored at block 0 as MergeInRounds anchors it: the model placed again, the kept block's
+		// images released
+		rep = ring.Merge(true, 0u);
+		TEST_CHECK(rep.numPlaced == 1 && rep.numImagesUnplaced == keptImages.size() && ring.scene.status.nCalibratedImages == numModel &&
+			Released(ring.scene, keptImages), "the releasing round placed %u blocks (the model alone expected), %u images unplaced (%u "
+			"expected, back in the global scene with their features and no pose), %u calibrated (%u expected)",
+			rep.numPlaced, rep.numImagesUnplaced, (unsigned)keptImages.size(), ring.scene.status.nCalibratedImages, numModel);
 	}
-	if (numRounds != 3 || numPosedHalves != 1 || numReleasedHalves != 1 || scene.status.nCalibratedImages != 2 * cfg.camsPerBlock) {
-		VERBOSE("MergeInRoundsTest FAILED: %u rounds (3 expected), %u halves posed and %u released (1 and 1 expected), %u calibrated images (%u expected)",
-			numRounds, numPosedHalves, numReleasedHalves, scene.status.nCalibratedImages, 2 * cfg.camsPerBlock);
-		return false;
-	}
-	VERBOSE("MergeInRoundsTest PASSED: %u rounds, one half merged, the other released at the fixed point (%s)",
-		numRounds, TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
 
-// A round of the merge on the merged model, block 0, with the images a pool step registered on it (the images
-// of block 0, global IDs `poolImages`): block 1 links to the model by one seam, which lands on block 0's cameras
-// only. When all of them are pool images no camera supports the reading on the model's side, the entry test
-// refuses it ("cameras"), block 1 stays unplaced and the releasing round leaves its images to the resection
-// (features, no pose). When only one of them is a pool image, the others support the seam and block 1 is placed.
-bool MergePoolCamerasTest()
-{
-	TD_TIMER_START();
-	const RingSceneConfig cfg{4, 10};
-	struct Outcome { bool placed, released; unsigned numPlaced; };
-	const auto Run = [&](bool allPool) {
-		Scene scene;
-		std::vector<IIndexArr> blocks;
-		std::vector<Pose3D> gtPoses;
-		GenerateRingScene(cfg, scene, blocks, gtPoses);
-		ThinSeam(scene, blocks, 1, 2, 0, cfg.camsPerBlock);
-		ThinSeam(scene, blocks, 3, 0, 0, cfg.camsPerBlock);
-		std::vector<Scene> subScenes;
-		std::vector<IIndexArr> localToGlobals;
-		std::vector<SEACAVE::Transform> applied;
-		BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+	// 2. MergeInRounds on a ring of four blocks cut between blocks 1-2 and 3-0: two models of 20 images that weigh alike.
+	// Round 1 merges one half and keeps the other whole; the pool step enters no image; round 2 reads the kept half
+	// against the merged model, block 0, and with the two models still weighing alike only the anchor at block 0 makes
+	// it merge block 0's; nothing is placed, the fixed point is reached and round 3 releases the kept half.
+	{
+		RingFixture ring({4, CAMS});
+		CutRing(ring, {{1, 2}, {3, 0}});
+		const ReconstructionConfig config;
+		ResectionConfig resectionCfg = config.resectionCfg;
+		resectionCfg.DeriveBAConfigs(config.baConfig);
+		const unsigned numRounds = ring.split.MergeInRounds(resectionCfg, config);
+		const IIndexArr halves[2] = {IIndexArr{ring.blocks[0]}.Join(ring.blocks[1]), IIndexArr{ring.blocks[2]}.Join(ring.blocks[3])};
+		const bool onePosed = HasPose(ring.scene, halves[0]) != HasPose(ring.scene, halves[1]);
+		const bool oneReleased = Released(ring.scene, halves[0]) != Released(ring.scene, halves[1]);
+		TEST_CHECK(numRounds == 3 && onePosed && oneReleased && ring.scene.status.nCalibratedImages == 2 * CAMS,
+			"%u rounds (3 expected), one half posed %d and the other released %d (1 and 1 expected), %u calibrated images (%u expected)",
+			numRounds, (int)onePosed, (int)oneReleased, ring.scene.status.nCalibratedImages, 2 * CAMS);
+	}
+
+	// 3. A round on the model, block 0, with the images a pool step registered on it: on the ring cut in halves block 1
+	// links to the model by one seam, which lands on block 0's cameras only. When all of them are pool images no camera
+	// supports the reading on the model's side, the entry test refuses it ("cameras"), block 1 stays unplaced and the
+	// releasing round leaves its images to the resection; when only one is, the others support the seam and block 1 is placed.
+	for (const bool allPool : {true, false}) {
+		RingFixture ring({4, CAMS});
+		CutRing(ring, {{1, 2}, {3, 0}});
 		std::unordered_set<IIndex> poolImages;
 		if (allPool)
-			poolImages.insert(blocks[0].begin(), blocks[0].end());
+			poolImages.insert(ring.blocks[0].begin(), ring.blocks[0].end());
 		else
-			poolImages.insert(blocks[0][0]);
-		const GlobalAlignmentConfig alignCfg;
-		MergeReport rep;
-		GlobalAlignment ga(scene, alignCfg, poolImages);
-		ga.MergeScenes(subScenes, localToGlobals, rep, true, 0u);
-		Outcome out{rep.poses[1].state == BlockPose::ADMITTED, true, rep.numPlaced};
-		for (const IIndex g : blocks[1])
-			out.released = out.released && scene.images[g].HasFeatures() && !scene.images[g].HasPose();
-		return out;
-	};
-	const Outcome refused = Run(true), supported = Run(false);
-	if (refused.placed || !refused.released || refused.numPlaced != 1 || !supported.placed || supported.numPlaced != 2) {
-		VERBOSE("MergePoolCamerasTest FAILED: with every camera of the model a pool image block 1 is %s, %s, %u blocks placed "
-			"(unplaced, released, 1 expected); with one pool image it is %s, %u blocks placed (placed, 2 expected)",
-			refused.placed ? "placed" : "unplaced", refused.released ? "released" : "not released", refused.numPlaced,
-			supported.placed ? "placed" : "unplaced", supported.numPlaced);
-		return false;
+			poolImages.insert(ring.blocks[0][0]);
+		const MergeReport rep = ring.Merge(true, 0u, poolImages);
+		const bool placed1 = rep.poses[1].state == BlockPose::ADMITTED;
+		TEST_CHECK(allPool ? !placed1 && Released(ring.scene, ring.blocks[1]) && rep.numPlaced == 1 : placed1 && rep.numPlaced == 2,
+			"with %s of the model's cameras pool images block 1 is %s, %s, %u blocks placed (%s expected)", allPool ? "every one" : "one",
+			placed1 ? "placed" : "unplaced", Released(ring.scene, ring.blocks[1]) ? "released" : "not released", rep.numPlaced,
+			allPool ? "unplaced, released, 1 placed" : "placed, 2 placed");
 	}
-	VERBOSE("MergePoolCamerasTest PASSED: a seam resting on pool-registered cameras is refused and its block released, "
-		"one a camera of the model also supports places its block (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
 
-// From round 2 on the merged model is the one holding block 0 (the previous rounds' merged model), whatever the other
-// models weigh: a ring of four blocks of 10 where block 0 has no cross match to any other, so the averaging gives it a
-// model of its own and blocks 1-3 one model of 30 images. Anchored at block 0 the merge places block 0 alone and keeps
-// blocks 1-3 whole; unanchored it merges the heavier model.
-bool MergeAnchorTest()
-{
-	TD_TIMER_START();
-	const RingSceneConfig cfg{4, 10};
-	const auto Run = [&](uint32_t anchor, MergeReport& rep) {
-		Scene scene;
-		std::vector<IIndexArr> blocks;
-		std::vector<Pose3D> gtPoses;
-		GenerateRingScene(cfg, scene, blocks, gtPoses);
-		ThinSeam(scene, blocks, 0, 1, 0, cfg.camsPerBlock);
-		ThinSeam(scene, blocks, 3, 0, 0, cfg.camsPerBlock);
-		std::vector<Scene> subScenes;
-		std::vector<IIndexArr> localToGlobals;
-		std::vector<SEACAVE::Transform> applied;
-		BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
-		const GlobalAlignmentConfig alignCfg;
-		GlobalAlignment ga(scene, alignCfg);
-		ga.MergeScenes(subScenes, localToGlobals, rep, false, anchor);
-	};
-	MergeReport anchored, free;
-	Run(0u, anchored);
-	Run(NO_ID, free);
-	const auto Placed = [](const MergeReport& rep, uint32_t b) { return rep.poses[b].state == BlockPose::ADMITTED; };
-	if (anchored.numPlaced != 1 || !Placed(anchored, 0) || free.numPlaced != 3 || Placed(free, 0)) {
-		VERBOSE("MergeAnchorTest FAILED: anchored at block 0, %u blocks placed (block 0 %s; block 0 alone expected); unanchored, "
-			"%u placed (block 0 %s; blocks 1-3 expected)", anchored.numPlaced, Placed(anchored, 0) ? "placed" : "not placed",
-			free.numPlaced, Placed(free, 0) ? "placed" : "not placed");
-		return false;
+	// 4. The anchor: on a ring of four whose block 0 has no cross match to any other, the averaging gives block 0 a model
+	// of its own and blocks 1-3 one of 30 images. Anchored at block 0 the merge places block 0 alone and keeps blocks 1-3
+	// whole; unanchored it merges the heavier model.
+	for (const uint32_t anchor : {0u, NO_ID}) {
+		RingFixture ring({4, CAMS});
+		CutRing(ring, {{0, 1}, {3, 0}});
+		const MergeReport rep = ring.Merge(false, anchor);
+		const bool placed0 = rep.poses[0].state == BlockPose::ADMITTED;
+		TEST_CHECK(anchor == 0 ? rep.numPlaced == 1 && placed0 : rep.numPlaced == 3 && !placed0,
+			"%s, %u blocks placed, block 0 %s (%s expected)", anchor == 0 ? "anchored at block 0" : "unanchored", rep.numPlaced,
+			placed0 ? "placed" : "not placed", anchor == 0 ? "block 0 alone" : "blocks 1-3");
 	}
-	VERBOSE("MergeAnchorTest PASSED: the model holding block 0 merged over the heavier one of blocks 1-3 (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
+	return scope.Pass("round 1 kept the cut-off block whole, the regrouped model was placed again and the kept block released; "
+		"the loop ends in 3 rounds with one half posed; a seam on pool cameras alone is refused; the anchor's model is merged");
 }
 /*----------------------------------------------------------------*/
 

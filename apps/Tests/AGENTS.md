@@ -53,9 +53,25 @@ new (shared objects on Linux), and has no effect where they do not.
 
 All in `namespace SFM`. Called sequentially when `argv[1] == 1`.
 
+### Shared framework (`TestsSFMFramework.h` / `.cpp`)
+
+The building blocks the SFM tests share; a converted test reads as the scene it builds and the checks it makes:
+
+- `TestScope scope("XTest")` + `TEST_CHECK(cond, fmt, ...)`: a failed check prints `XTest FAILED: <file>:<line>: <cond>: <message>`
+  and returns false; `return scope.Pass(fmt, ...)` prints `XTest PASSED: <message> (<time>)`
+- `LogCapture`: the log text while it is alive (verbosity raised), for checks on what a stage reported
+- `SceneConfig` / `GenerateTestScene()` / `GenerateTwoClusterScene()`: the configurable synthetic scene (below)
+- `ArcScene`: posed cameras on an arc looking at the origin, with `Tracks`, `Correspondences`, `Pair` (`ArcLinkSpec`:
+  ray angle, turned translation or rotation) and `Unregister`, the scene of the resection tests
+- `RingSceneConfig` / `GenerateRingScene()`, `SplitOnTruth()` and `RingFixture`: a ring of camera blocks looking at a
+  wall, split into blocks as their reconstructions hand them to the merge, and merged (`RingFixture::Merge`)
+- `BundledImagesConfig()` / `ImportBundledImages()`: the four photographs of `data/images` and the AKAZE configuration
+  the real-images tests run them through
+- `RotationErrorDeg()`
+
 ### Synthetic Scene Generator
 
-`SceneConfig` (line ~244) drives most SFM tests:
+`SceneConfig` (`TestsSFMFramework.h`) drives most SFM tests:
 - `CameraType`: PINHOLE or SPHERICAL
 - `PoseMode`: SIMPLE_TRANSLATION, RANDOM_POSES, CIRCULAR_ARRANGEMENT
 - `PerturbOptions`: Bitmask — PERTURB_POSES, PERTURB_POINTS, PERTURB_INTRINSICS, PERTURB_KEYPOINTS, PERTURB_PAIR_POSES, PERTURB_ALL
@@ -77,7 +93,9 @@ All in `namespace SFM`. Called sequentially when `argv[1] == 1`.
 | `PoseUncertaintyExportTest()` | Pose-quality report roundtrip: covariance recorded on the scene, CSV export re-read, ExportMVS image-ID preservation, `Scene::Transform` covariance mapping, `.sfm` serialization | 1 datum row; IDs match; Cov' = s²RCovRᵀ; save/load identical |
 | `TripletStarInitTest()` | 3-view initialization via `StarInitializer` with track building and intrinsic refinement | >75% tracks recovered; focal < 5%; k1/k2 < 0.01 |
 | `TwoViewTest()` | Epipolar geometry: essential/fundamental matrix, pose recovery, distortion roundtrip | Rotation < 0.1 rad; translation dot > 0.95; distortion reproj < 1e-4 |
-| `ReconstructTest()` | Full SFM on real images: import → AKAZE features → exhaustive matching → geometric filter → tracks → BA | 4 images loaded; BA converges; tracks non-empty |
+| `RealImagesPipelineTest()` | The pipeline on the bundled images: refusals before any work (SKIP without matches, GPS weight with panoramas), match-images-only run with the pairs CSV from the images and from the saved `.sfm`, SKIP from saved matches, the global solver, the incremental reconstruction from wrong intrinsics (900 px, k1 0.6) | CSV rows = pairs + 1; every image registered by the global solver; focal within 100 px of 700, distortion < 10 px, tracks in [1500, 3000] |
+| `ResectionLinkChecksTest()` | The checks a resected pose passes (inlier share, composed rotation, quorum, weighted link direction with its parallax tolerance, weighted link rotation) as rows on one `ArcScene`, and one pair's direction tolerance | Each row refused / registered at the expected pose |
+| `MergeRoundsTest()` | The merge as rounds on `RingFixture` rings: a cut-off block kept whole, the regrouping, the release; `MergeInRounds` to its fixed point; a seam on pool cameras alone refused; the anchor | Exact block and image counts |
 | `RotationEstimatorTest()` | Global rotation averaging (16 circular cameras, 1 disconnected) | Relative rotation < 5 deg |
 | `ScaleEstimatorTest()` | Global scale averaging from pairwise ratios (auto + fixed gauge) | Scale ratio error < 1e-4 |
 | `ScaleComponentsTest()` | Global scale averaging of two components plus an unnamed index (fixed index in either, a dropped bridge) against a dense SVD of the whole system | Log scales within 1e-9 of the SVD; unreached component at mean zero; unnamed index at 1 |
@@ -112,7 +130,7 @@ runs entirely off the bundled fixture files.
 | `RetrievalModeTest()` | `RETRIEVAL` match mode: ranks purely on the global descriptors with no ROMAv2 opt-in, agrees pair-for-pair with `VOCABULARY`, a missing descriptor is a hard error | Identical candidate set to VOCABULARY; no vocabulary-tree fallback |
 | `RoMa2PreprocessTest()` | CPU preprocessing: constant image to constant planes with the R/G/B swap, and resampling against torch's `F.interpolate(bicubic, align_corners=False, antialias=True)` | Within 1e-5 of the torch reference |
 | `RoMa2OnnxParityTest()` | The exported descriptor and coarse-match graphs through `RoMa2Onnx` against the Python reference dumps shipped with the models | Per-preset parity thresholds of the dumps |
-| `ROMA2ReconstructTest()` | The full in-process path on the bundled 4-image scene through `Scene::MatchPairs`, four times: the 2048-D retrieval descriptors, a dense run compared against a baseline run with dense matching off, an `.sfm` round-trip, `ReconstructTest`'s reconstruction stage, and two runs of one awkward configuration (1 thread, 2 slots) | Same pair set as the baseline, a dense segment on every pair and a differing sparse count on most; tracks in [5000, 12000] (measured, see the comment); max distortion < 20 px; the two awkward runs bit-identical |
+| `ROMA2ReconstructTest()` | The full in-process path on the bundled 4-image scene through `Scene::MatchPairs`, four times: the 2048-D retrieval descriptors, a dense run compared against a baseline run with dense matching off, an `.sfm` round-trip, `RealImagesPipelineTest`'s reconstruction stage, and two runs of one awkward configuration (1 thread, 2 slots) | Same pair set as the baseline, a dense segment on every pair and a differing sparse count on most; tracks in [5000, 12000] (measured, see the comment); max distortion < 20 px; the two awkward runs bit-identical |
 
 ### Key Helpers
 

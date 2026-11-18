@@ -444,8 +444,6 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::FeatureTypeNameTest())
 				return false;
-			if (!SFM::GPSWeightSphericalTest())
-				return false;
 			if (!SFM::PairsMatcherSphericalTest())
 				return false;
 			if (!SFM::MatchGeometricSphericalTest())
@@ -482,15 +480,9 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::CubeMapBridgeDropTopBottomTest())
 				return false;
-			if (!SFM::ReconstructTest(verbose))
-				return false;
-			if (!SFM::ReconstructExportCSVTest())
-				return false;
-			if (!SFM::SkipMatchModeTest())
+			if (!SFM::RealImagesPipelineTest(verbose))
 				return false;
 			if (!SFM::DefaultDetectorTest())
-				return false;
-			if (!SFM::GlobalSolverTest())
 				return false;
 			if (!SFM::TripletFilterTest())
 				return false;
@@ -502,13 +494,7 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::NearDuplicateYardstickTest())
 				return false;
-			if (!SFM::ResectionAcceptanceTest())
-				return false;
-			if (!SFM::ResectionLinkDirectionTest())
-				return false;
-			if (!SFM::ResectionModelParallaxTest())
-				return false;
-			if (!SFM::ResectionLinkRotationTest())
+			if (!SFM::ResectionLinkChecksTest())
 				return false;
 			if (!SFM::ResectionWeakEvidenceTest())
 				return false;
@@ -551,8 +537,6 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::SphericalTriangulationTest())
 				return false;
 			if (!SFM::ContradictingImagesTest())
-				return false;
-			if (!SFM::PairDirectionToleranceTest())
 				return false;
 			// Hierarchical SFM tests - Phase 1: Scene Clustering
 			if (!SFM::SceneClusterSingleClusterTest())
@@ -633,12 +617,6 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::PooledSeamReadingTest())
 				return false;
 			if (!SFM::MergeRoundsTest())
-				return false;
-			if (!SFM::MergeInRoundsTest())
-				return false;
-			if (!SFM::MergePoolCamerasTest())
-				return false;
-			if (!SFM::MergeAnchorTest())
 				return false;
 			if (!SFM::UnobservableScaleTest())
 				return false;

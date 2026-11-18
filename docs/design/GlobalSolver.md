@@ -114,6 +114,6 @@ the solver, so they are not refused.
 ## Open items
 
 - A measurement of the solver on more captures, and a decision whether it stays a first-class option.
-- `GlobalSolverTest` (`apps/Tests/TestsSFM.cpp`) runs `ReconstructGlobal` on the four bundled images and asserts that
+- `RealImagesPipelineTest` (`apps/Tests/TestsSFM.cpp`) runs `ReconstructGlobal` on the four bundled images and asserts that
   every image registers with points; no test measures the accuracy of the result or runs it through the
   `--use-global-solver` route of `Reconstruct`.
