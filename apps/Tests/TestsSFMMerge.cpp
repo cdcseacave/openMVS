@@ -1480,7 +1480,7 @@ bool PairAgreementMergeTest()
 }
 /*----------------------------------------------------------------*/
 
-// The closing of a ring on one seam, five arms on rings of six blocks (the closing pair is (0, 5)):
+// The closing of a ring on one seam, five arms, on rings of six blocks (the closing pair is (0, 5)) but the third:
 // 1. biased: the drifting ring with the seam that closes it wrong by three quarters of a degree: the closing pair keeps no
 //    true evidence and is read on planted correspondences alone, so the graph reads there a seam nothing can tell from a true
 //    one, its error the size of the drift the ring already carries, within every bar. The averaging spreads it over the ring
@@ -1489,10 +1489,10 @@ bool PairAgreementMergeTest()
 //    at best, held by the two or three cameras of each block the tracks concentrate on. The seams that were measured carry
 //    the chain around to within a fraction of a degree of its far end, the closing pair's correspondences join their tracks,
 //    and the final adjustment closes the ring on them;
-// 3. rival modes: a pair (1, 2) carrying two consistent readings on the cameras of block 2 nearest block 1, the true one
-//    thinned on the first two and a copy of block 1's structure one period along the wall on the first five (the reading
-//    a repeated facade gives). The copy weighs at least what the truth weighs (as many cameras on its weaker side), so the
-//    pair on its own could take it; only the cycle the pair closes, by the translation it puts block 2 at, can tell it is
+// 3. rival modes: a pair (3, 4) on a ring of twelve blocks carrying two consistent readings on the cameras of block 4 nearest block 3, the true one
+//    thinned on the first three and a copy of block 3's structure one period along the wall on the first five (the reading
+//    a repeated facade gives). The copy weighs more than the truth (more cameras on its weaker side), so the
+//    pair on its own could take it; only the cycle the pair closes, by the translation it puts block 4 at, can tell it is
 //    the wrong one;
 // 4. false chord: two cameras of block 1 given block 4's wall, turned half a turn about the ring axis onto block 1's own arc
 //    and pushed out to 1.6 times the radius, so the implied placement sits outside block 4's own cameras while the chord
@@ -1576,14 +1576,15 @@ bool RingClosingSeamTest()
 
 	// 3. a repeated facade: the truth thinned against a heavier copy one period along the wall
 	{
-		constexpr uint32_t PAIR_A = 1, PAIR_B = 2;
-		constexpr REAL PERIOD = 10;  // how far along the wall the copy sits, in the ring's units
-		constexpr REAL KEEP = 0.4;   // the share of its true evidence block PAIR_B keeps on its first two cameras
-		RingFixture ring({NUM_BLOCKS, CAMS});
-		DropCrossObservations(ring.scene, ring.blocks, PAIR_B, {2, 3, 4, 5, 6, 7, 8, 9}, PAIR_A, 0);
-		DropCrossObservations(ring.scene, ring.blocks, PAIR_B, {0, 1}, PAIR_A, KEEP);
+		constexpr unsigned RIVAL_BLOCKS = 12; // the copy outweighs the truth only where the cameras of both blocks are as close as on this ring
+		constexpr uint32_t PAIR_A = 3, PAIR_B = 4;
+		constexpr REAL PERIOD = 5;   // how far along the wall the copy sits, in the ring's units
+		constexpr REAL KEEP = 0.4;   // the share of its true evidence block PAIR_B keeps on its first three cameras
+		RingFixture ring({RIVAL_BLOCKS, CAMS});
+		DropCrossObservations(ring.scene, ring.blocks, PAIR_B, {3, 4, 5, 6, 7, 8, 9}, PAIR_A, 0);
+		DropCrossObservations(ring.scene, ring.blocks, PAIR_B, {0, 1, 2}, PAIR_A, KEEP);
 		const unsigned planted = PlantFalseSeam(ring.scene, ring.blocks, PAIR_B, PAIR_A, 600, 5,
-			WallCopy(REAL(2) * REAL(M_PI) * PAIR_B / NUM_BLOCKS, PERIOD));
+			WallCopy(REAL(2) * REAL(M_PI) * PAIR_B / RIVAL_BLOCKS, PERIOD));
 		TEST_CHECK(planted >= 150, "rival: only %u tracks of block %u could be copied onto block %u (150 expected)", planted, PAIR_A, PAIR_B);
 		ComputePairsWeights(ring.scene);
 		ring.Split();
@@ -1594,10 +1595,10 @@ bool RingClosingSeamTest()
 		GlobalAlignmentConfig unreadCfg;
 		unreadCfg.maxPairRotationResidual = 0;
 		const MergeReport rep = ring.Merge(true, NO_ID, {}, unreadCfg);
-		if (!CheckRingMerge(scope, "rival", rep, ring.scene, ring.truth, NUM_BLOCKS, kRingMergeRotation, kRingMergePosition))
+		if (!CheckRingMerge(scope, "rival", rep, ring.scene, ring.truth, RIVAL_BLOCKS, kRingMergeRotation, kRingMergePosition))
 			return false;
 		RunFinalAdjustment(ring.scene);
-		if (!CheckRingMerge(scope, "rival, adjusted", rep, ring.scene, ring.truth, NUM_BLOCKS, 0.1, 0.001))
+		if (!CheckRingMerge(scope, "rival, adjusted", rep, ring.scene, ring.truth, RIVAL_BLOCKS, 0.1, 0.001))
 			return false;
 		// the pair's hypotheses: the copy, the heaviest, and the true one, the one the model rests on
 		uint32_t right = NO_ID, copy = NO_ID;
@@ -1615,8 +1616,8 @@ bool RingClosingSeamTest()
 			else if (translation > 1 && (copy == NO_ID || c.weight > rep.candidates[copy].weight))
 				copy = (uint32_t)i;
 		}
-		TEST_CHECK(right != NO_ID && copy != NO_ID && rep.candidates[copy].weight >= rep.candidates[right].weight, "rival: the pair holds %s true "
-			"hypothesis and %s copy, the copy %s (both expected, the copy not lighter than the truth)", right == NO_ID ? "no" : "a",
+		TEST_CHECK(right != NO_ID && copy != NO_ID && rep.candidates[copy].weight > rep.candidates[right].weight, "rival: the pair holds %s true "
+			"hypothesis and %s copy, the copy %s (both expected, the copy heavier than the truth)", right == NO_ID ? "no" : "a",
 			copy == NO_ID ? "no" : "a", right == NO_ID || copy == NO_ID ? "-" : "lighter than the truth");
 		const auto RestsOn = [&rep](uint32_t i) { return std::find(rep.modelSeams.begin(), rep.modelSeams.end(), i) != rep.modelSeams.end(); };
 		TEST_CHECK(RestsOn(right) && !RestsOn(copy), "rival: the merged model rests on the %s (the true reading expected)",
