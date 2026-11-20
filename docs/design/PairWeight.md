@@ -109,6 +109,9 @@ follow it (78 images right in their own blocks, wrong in the model). The 342 pai
   scale: it flattens every link of an image whose pairs all exceed it, so on a textureless interior
   a near and a far link weigh the same through the connectivity term.
 - A dense frame target of 100 (1/20 of the draw): 77 to 80 wrong images against 50 to 61 at 50; 150 is refused too.
+- A finer coverage grid (20 cells per side, or the side taken from the number of matches): closer to the true overlap (mean error +0.10 against +0.17 on
+  12,000 pairs with depth), but it scales every weight by 0.7 to 0.86 and, with the bars scaled alone, folds a symmetric building in the contradiction
+  cut; it needs everything that reads the weight calibrated again, so the 10 x 10 grid stays.
 
 ## Open items
 
