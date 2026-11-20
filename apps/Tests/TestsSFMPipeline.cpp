@@ -70,7 +70,8 @@ namespace SFM {
 
 // The estimators that bring a scene into the frame of external positions. EstimateSimilarityTransform recovers a known
 // scale, rotation and translation from six exact correspondences (the scale to 1e-2 and the mapped source points to
-// 1e-6) and refuses coincident destination points (a scale-0 transform would collapse a scene). Scene::AlignToPriorPoses
+// 1e-6) and refuses coincident destination points (a scale-0 transform would collapse a scene), with and without the refinement behind it.
+// An exactly collinear capture takes its rotation from the paired rotations (EstimateSimilarityTransformWithRotations). Scene::AlignToPriorPoses
 // re-aligns a scene transformed away from its imported camera frame: on a circle of cameras, and on a straight-line
 // (collinear) capture, where the camera centers alone leave the roll about the trajectory unconstrained so that it must
 // recover the rotation from the camera rotations (the collinear fallback of EstimateSimilarityTransformWithRotations).
@@ -101,17 +102,40 @@ bool SceneAlignmentTest()
 			maxErr = MAXF(maxErr, norm(tr.scale * tr.R * src[i] + tr.t - dst[i]));
 		TEST_CHECK(maxErr < 1e-6, "the transform maps the source points %.6g from the destination (1e-6 at most)", maxErr);
 	}
-	// the closed-form estimation must reject coincident destination points
-	{
+	// the closed-form estimation must reject coincident destination points: on 12 points the refinement behind it would
+	// refuse the scale-0 start as well, on 6 (under the 10 the refinement needs) nothing but the guard on the estimated scale does
+	for (const int numPoints : {12, 6}) {
 		std::mt19937 rng(42);
 		std::uniform_real_distribution<REAL> dist(-10, 10);
 		Point3Arr src, dst;
-		for (int i = 0; i < 12; ++i) {
+		for (int i = 0; i < numPoints; ++i) {
 			src.emplace_back(dist(rng), dist(rng), dist(rng));
 			dst.emplace_back(1.0, 2.0, 3.0);
 		}
 		SEACAVE::Transform t;
-		TEST_CHECK(EstimateSimilarityTransform(src, dst, t, 0.0) == 0, "a scale-0 similarity transform was accepted");
+		TEST_CHECK(EstimateSimilarityTransform(src, dst, t, 0.0) == 0, "%d points: a scale-0 similarity transform was accepted", numPoints);
+	}
+	// an exactly collinear capture: the centres leave the roll about the line free (the plain similarity maps them right with
+	// any roll), so the alignment must take the rotation from the paired rotations; the true similarity comes back
+	{
+		std::mt19937 rng(77);
+		const Transform truth(Transform::Random(rng));
+		Matrix3x3 truthR(truth.R);
+		Point3Arr srcCenters, dstCenters;
+		Matrix3x3Arr srcRots, dstRots;
+		for (int k = 0; k < 8; ++k) {
+			srcCenters.emplace_back(0.7 * k, 0.35 * k, 0.14 * k);
+			dstCenters.emplace_back(truth * srcCenters.back());
+			srcRots.emplace_back(Eigen::AngleAxisd(0.09 * k, Eigen::Vector3d(0.2, 1.0, 0.1).normalized()).toRotationMatrix());
+			dstRots.emplace_back(srcRots.back() * truthR.t());
+		}
+		Transform tr;
+		TEST_CHECK(EstimateSimilarityTransformWithRotations(srcCenters, dstCenters, srcRots, dstRots, tr, 0.05) != 0,
+			"the alignment of an exactly collinear capture failed");
+		const REAL cosError = ComputeAngle(tr.R, truth.R);
+		TEST_CHECK(cosError >= COS(D2R(0.01)) && ABS(tr.scale / truth.scale - 1) < 1e-6,
+			"collinear capture: the rotation is %.4f degrees from the true one and the scale %g of %g (the roll about the line is not constrained by the centres)",
+			R2D(ACOS(MINF(cosError, REAL(1)))), tr.scale, truth.scale);
 	}
 
 	// 2. the prior poses: the scene is moved by a random similarity and brought back to its imported frame
