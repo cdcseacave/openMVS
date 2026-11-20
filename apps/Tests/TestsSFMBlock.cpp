@@ -1627,7 +1627,9 @@ bool SameBlock(const Scene& a, const Scene& b, String& diff)
 //    from the start: images 16-18 of B are inserted together into B's block, the pairs among them weigh the most (consecutive
 //    frames of a real capture) and the middle one has no pair to the block at all, so it reaches the block only through its two
 //    neighbours; the tracks after Insert, as sets of observations in global IDs, are the tracks of BuildTracks over the block
-//    holding them from the start, and every inserted image holds keypoints on triangulated tracks
+//    holding them from the start, and every inserted image holds keypoints on triangulated tracks;
+// 3. matches in conflict: an inserted image's heavy pairs are read before the block's weak pair although they come after it
+//    in the block's pair array, so the block ends with the tracks of the heavy pairs (the veto settling keeps the first link read)
 bool SceneBlocksInsertTest()
 {
 	TestScope scope("SceneBlocksInsertTest");
@@ -1775,6 +1777,42 @@ bool SceneBlocksInsertTest()
 	}
 	FOREACH(i, chain)
 		TEST_CHECK(reference[i] != 0 && inserted[i] != 0, "image %u holds %u keypoints on triangulated tracks after Insert (%u in the reference)", chain[i], inserted[i], reference[i]);
+
+	// 3. matches in conflict: the heavier pairs are read first. Images 0 and 1 are the block, image 2 the pool: the block's weak pair
+	// matches keypoint 0 of image 0 with keypoint 0 of image 1, and the two heavy pairs of image 2 match them with its keypoints 0 and 1
+	// (far apart), so the three matches cannot all stand (they would put two keypoints of image 2 in one track). Insert appends the
+	// heavy pairs after the weak one; the settling that keeps the link read first (the veto) must still read them heaviest first, and
+	// the block ends with the two tracks of the heavy pairs, as when it held image 2 from the start
+	{
+		ReconstructionConfig vetoConfig;
+		vetoConfig.trackConflictCfg.cut = false;
+		Scene scene;
+		PairGraph graph(scene, 3);
+		for (Image& img : scene.images) {
+			img.keypoints.emplace_back(cv::Point2f(100.f, 100.f), 1.f);
+			img.keypoints.emplace_back(cv::Point2f(500.f, 400.f), 1.f);
+		}
+		const auto Match = [&graph](IIndex a, IIndex b, float weight, uint32_t keypointA, uint32_t keypointB) {
+			ImagePair& pair = graph.Pair(a, b, weight);
+			pair.matches.emplace_back(keypointA, keypointB);
+			pair.numFilteredInliers = 1;
+		};
+		Match(0, 1, 10.f, 0, 0);
+		Match(0, 2, 100.f, 0, 0);
+		Match(1, 2, 100.f, 0, 1);
+		ScenePartition partition;
+		partition.clusters.push_back({0, 1});
+		partition.pool.push_back(2);
+		SceneBlocks sceneBlocks(scene);
+		sceneBlocks.Extract(partition);
+		sceneBlocks.Insert(0, {2}, vetoConfig, resectionCfg);
+		std::set<std::vector<std::pair<IIndex, uint32_t>>> expected, tracks;
+		expected.insert({{0, 0}, {2, 0}});
+		expected.insert({{1, 0}, {2, 1}});
+		tracks = TrackSets(sceneBlocks.blocks[0], sceneBlocks.localToGlobal[0]);
+		TEST_CHECK(tracks == expected, "conflicting matches: the block holds %u tracks after Insert, expected the two of the heavy pairs "
+			"(image 0 with image 2 at keypoint 0, image 1 with image 2 at keypoint 1); the weak pair read first joins images 0 and 1 instead", (unsigned)tracks.size());
+	}
 	return scope.Pass("Insert took %u pairs and %u observations, the refusal returned the block's cameras, images and pairs byte for byte and left valid tracks; %u tracks "
 		"after Insert, the same observation sets as BuildTracks over the block holding the images from the start; keypoints on triangulated tracks %u/%u/%u (reference %u/%u/%u)",
 		(unsigned)numPairsInserted, (unsigned)numObservationsInserted, (unsigned)insertedTracks.size(), inserted[0], inserted[1], inserted[2], reference[0], reference[1], reference[2]);
