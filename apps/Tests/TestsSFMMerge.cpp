@@ -1705,6 +1705,8 @@ bool RingClosingSeamTest()
 //    block 0's points while its correspondences still hold on block 2's points seen by block 0's cameras: two cameras support
 //    each side of the seam (the other direction's reading enters with the weight the cameras bar asks) and the rig reading is
 //    refused for its scale alone. With the second camera's keypoints in place it observes one and enters.
+//    The thin arm is read a second time with no bar on the rig's spread: one camera has no spread, and the reading must
+//    still be refused.
 bool SeamCameraSupportTest()
 {
 	TestScope scope("SeamCameraSupportTest");
@@ -1780,7 +1782,7 @@ bool SeamCameraSupportTest()
 
 	// 3. a rig whose second camera holds too few inliers observes no scale
 	{
-		const auto ReadPair02 = [&](bool displaceSecond) {
+		const auto ReadPair02 = [&](bool displaceSecond, const GlobalAlignmentConfig& readCfg) {
 			RingFixture ring(cfg);
 			const std::set<IIndex> a(ring.blocks[0].begin(), ring.blocks[0].end());
 			const IIndex first = ring.blocks[2].back(), second = ring.blocks[2][ring.blocks[2].size() - 2];
@@ -1809,13 +1811,13 @@ bool SeamCameraSupportTest()
 							ring.split.blocks[2].images[l].keypoints[feature].pt += cv::Point2f(shift(rng), shift(rng));
 						}
 			}
-			GlobalAlignment alignment(ring.scene, alignCfg);
+			GlobalAlignment alignment(ring.scene, readCfg);
 			alignment.PrepareSeamEvidence(ring.split.blocks, ring.split.localToGlobal);
 			std::vector<SeamCandidate> readings;
 			alignment.EstimateSeamPair(ring.split.blocks, 0, 2, readings);
 			return readings;
 		};
-		const std::vector<SeamCandidate> thin = ReadPair02(true), full = ReadPair02(false);
+		const std::vector<SeamCandidate> thin = ReadPair02(true, alignCfg), full = ReadPair02(false, alignCfg);
 		const SeamCandidate* const thinOther = ReadingOf(thin, SeamCandidate::RIG_A_ON_B);
 		TEST_CHECK(ReadingOf(thin, SeamCandidate::RIG_B_ON_A) == NULL && thinOther != NULL && thinOther->score.Weight() >= alignCfg.minSeamWeight &&
 			ReadingOf(full, SeamCandidate::RIG_B_ON_A) != NULL, "rig scale: the rig of block 2 with one camera holding inliers %s the block graph (it "
@@ -1823,6 +1825,13 @@ bool SeamCameraSupportTest()
 			"cameras holding theirs %s (expected)", ReadingOf(thin, SeamCandidate::RIG_B_ON_A) ? "entered" : "did not enter",
 			thinOther ? "did" : "did not", thinOther ? thinOther->score.Weight() : 0u, alignCfg.minSeamWeight,
 			ReadingOf(full, SeamCandidate::RIG_B_ON_A) ? "entered" : "did not enter");
+		// the rule is two cameras, whatever the bar on their spread: one camera has no spread, and with the bar at 0 (anything observes a
+		// scale) the rig of one camera holding inliers must still observe none
+		GlobalAlignmentConfig noSpreadBar = alignCfg;
+		noSpreadBar.minRigSpreadRatio = 0.f;
+		const std::vector<SeamCandidate> thinNoBar = ReadPair02(true, noSpreadBar);
+		TEST_CHECK(ReadingOf(thinNoBar, SeamCandidate::RIG_B_ON_A) == NULL, "rig scale with no bar on the spread: the rig of block 2 with one camera holding "
+			"inliers entered the block graph (one camera observes no scale whatever the bar)");
 	}
 	return scope.Pass("a seam one camera holds weighs one camera and places no block, a pair seen by one camera gives no reading and a block joined by "
 		"single cameras only is released, a rig whose second camera holds too few inliers observes no scale and does not enter");
@@ -1913,6 +1922,67 @@ bool UnplacedBlocksReportedTest()
 }
 /*----------------------------------------------------------------*/
 
+// The correspondences of the model's block pairs that the merged block poses leave past the reprojection bar and within the
+// loose one (a bent block is off by that at its far end)
+static std::vector<SeamCorrespondence> FarSeamMatches(const MergeReport& rep, const std::vector<BlockPairCorrespondences>& blockPairs,
+	const GlobalAlignmentConfig& alignCfg)
+{
+	const REAL bar = alignCfg.maxReprojError, looseBar = alignCfg.looseSeamFactor * alignCfg.maxReprojError;
+	const std::set<std::pair<uint32_t, uint32_t>> modelPairs(ModelBlockPairs(rep));
+	std::vector<SeamCorrespondence> farMatches;
+	for (const BlockPairCorrespondences& pair : blockPairs) {
+		if (!modelPairs.count(std::make_pair(pair.a, pair.b)))
+			continue;
+		const SEACAVE::Transform T(rep.poses[pair.b].T.Invert() * rep.poses[pair.a].T);
+		FOREACH(i, pair.observations) {
+			const REAL error = SeamPixelError(pair.observations[i], T);
+			if (error > bar && error <= looseBar)
+				farMatches.push_back(pair.correspondences[i]);
+		}
+	}
+	return farMatches;
+}
+
+// The bent ring of BentRingTest merged once under alignCfg, and its far matches (FarSeamMatches) checked joined into one track at the
+// merge. With the cross pairs as they are the closure and the cross-block join both can join them; with lightPairs they weigh under
+// minCommonTracks, the closure takes none of them and only the cross-block join can; with alignCfg's join guard at the reprojection bar
+// the guard refuses the matches the bend leaves past it and only the closure can.
+static bool BentRingJoinCase(const TestScope& scope, const char* arm, const RingSceneConfig& cfg, const GlobalAlignmentConfig& alignCfg, bool lightPairs)
+{
+	constexpr float LIGHT_PAIR_WEIGHT = 12.f;
+	constexpr unsigned MIN_FAR_MATCHES = 100;
+	constexpr REAL MIN_JOINED_SHARE = 0.9;
+	RingFixture ring(cfg);
+	if (lightPairs) {
+		ASSERT(LIGHT_PAIR_WEIGHT < (float)alignCfg.minCommonTracks);
+		std::vector<uint32_t> blockOf(ring.scene.images.size(), NO_ID);
+		FOREACH(b, ring.blocks)
+			for (const IIndex image : ring.blocks[b])
+				blockOf[image] = (uint32_t)b;
+		for (ImagePair& pair : ring.scene.pairs)
+			if (blockOf[pair.ID1] != blockOf[pair.ID2])
+				pair.weightedInliers = LIGHT_PAIR_WEIGHT;
+	}
+	SplitRing(ring);
+	const std::vector<BlockPairCorrespondences> blockPairs(CollectBlockPairCorrespondences(ring));
+	const MergeReport rep = ring.Merge(true, NO_ID, {}, alignCfg);
+	TEST_CHECK(rep.numPlaced == cfg.numBlocks, "%s: %u of %u bent blocks placed", arm, rep.numPlaced, cfg.numBlocks);
+	const std::vector<SeamCorrespondence> farMatches(FarSeamMatches(rep, blockPairs, GlobalAlignmentConfig()));
+	TEST_CHECK(farMatches.size() >= MIN_FAR_MATCHES, "%s: the bend left only %u matches past the bar (%u expected)", arm, (unsigned)farMatches.size(), MIN_FAR_MATCHES);
+	std::unordered_map<PairIdx::PairIndex, uint32_t> trackOf;
+	FOREACH(t, ring.scene.tracks)
+		for (const Observation& obs : ring.scene.tracks[t].observations)
+			trackOf.emplace(PairIdx(obs.imageID, obs.featureID).idx, (uint32_t)t);
+	unsigned numJoined = 0;
+	for (const SeamCorrespondence& corr : farMatches) {
+		const auto itA = trackOf.find(PairIdx(corr.imageA, corr.featureA).idx), itB = trackOf.find(PairIdx(corr.imageB, corr.featureB).idx);
+		numJoined += itA != trackOf.end() && itB != trackOf.end() && itA->second == itB->second ? 1u : 0u;
+	}
+	TEST_CHECK(numJoined >= MIN_JOINED_SHARE * farMatches.size(), "%s: %u of the %u far matches joined their tracks at the merge (%.0f%% expected)",
+		arm, numJoined, (unsigned)farMatches.size(), MIN_JOINED_SHARE * 100);
+	return true;
+}
+
 // A ring of blocks each reconstructed bent and stretched inside, along its own cameras: the rigid block poses miss the loop by
 // more than a seam's bar while each seam is within its bar of the averaged poses, so the merged model leaves the correspondences
 // of every seam a few pixels apart, past the reprojection bar and within the loose one. In one run:
@@ -1920,6 +1990,9 @@ bool UnplacedBlocksReportedTest()
 // 2. those far matches join their tracks at the merge and hold them through the final adjustment, which ends them inliers
 //    within the bar;
 // 3. the adjustment straightens the blocks: the cameras it leaves are well under half the rigid block poses' errors, and on the truth.
+// 4. the far matches have two ways to join, the closure (heavy pairs, no guard) and the cross-block join (every cross pair, under the
+//    join guard): the ring is merged twice more, once with the guard at the reprojection bar (the closure alone joins them) and once
+//    with the cross pairs lightened under minCommonTracks (the cross-block join alone), and joins them at the merge both times.
 bool BentRingTest()
 {
 	TestScope scope("BentRingTest");
@@ -1940,19 +2013,8 @@ bool BentRingTest()
 	}
 	// the far matches: the correspondences of the model's block pairs its block poses leave past the bar and within the loose bar
 	const GlobalAlignmentConfig alignCfg;
-	const REAL bar = alignCfg.maxReprojError, looseBar = alignCfg.looseSeamFactor * alignCfg.maxReprojError;
-	const std::set<std::pair<uint32_t, uint32_t>> modelPairs(ModelBlockPairs(rep));
-	std::vector<SeamCorrespondence> farMatches;
-	for (const BlockPairCorrespondences& pair : blockPairs) {
-		if (!modelPairs.count(std::make_pair(pair.a, pair.b)))
-			continue;
-		const SEACAVE::Transform T(rep.poses[pair.b].T.Invert() * rep.poses[pair.a].T);
-		FOREACH(i, pair.observations) {
-			const REAL error = SeamPixelError(pair.observations[i], T);
-			if (error > bar && error <= looseBar)
-				farMatches.push_back(pair.correspondences[i]);
-		}
-	}
+	const REAL bar = alignCfg.maxReprojError;
+	const std::vector<SeamCorrespondence> farMatches(FarSeamMatches(rep, blockPairs, alignCfg));
 	TEST_CHECK(farMatches.size() >= MIN_FAR_MATCHES, "the bend left only %u matches past the bar (%u expected)", (unsigned)farMatches.size(), MIN_FAR_MATCHES);
 	// where every observation ended up: its track and whether it is an inlier of it
 	typedef std::unordered_map<PairIdx::PairIndex, std::pair<uint32_t, bool>> TrackIndex;
@@ -2012,8 +2074,15 @@ bool BentRingTest()
 	TEST_CHECK(adjusted.rotationMedian < rigid.rotationMedian * MAX_ROTATION_SHARE && adjusted.positionMedian < rigid.positionMedian * MAX_POSITION_SHARE,
 		"the adjusted cameras are %.4f deg and %.4f%% off the truth, against the block poses' %.4f deg and %.4f%% (under half of them expected)",
 		adjusted.rotationMedian, adjusted.positionMedian * 100, rigid.rotationMedian, rigid.positionMedian * 100);
+	// the far matches have two ways to join: the closure (the heavy pairs' correspondences within the loose bar, no guard) and the cross-block
+	// track join (every match of every cross pair, under the join guard); the run above holds both, each of the two runs below only one
+	GlobalAlignmentConfig closureOnly;
+	closureOnly.maxJoinReprojError = bar; // the join guard refuses the matches that sit past the reprojection bar: the closure alone joins them
+	if (!BentRingJoinCase(scope, "closure alone", cfg, closureOnly, false) || !BentRingJoinCase(scope, "join guard alone", cfg, alignCfg, true))
+		return false;
 	return scope.Pass("%u far matches joined and kept through the final adjustment, every seam of the bent ring in the model, the cameras straightened to "
-		"%.4f deg and %.4f%% from the truth", (unsigned)farMatches.size(), adjusted.rotationMedian, adjusted.positionMedian * 100);
+		"%.4f deg and %.4f%% from the truth, and they join by the closure alone (join guard at the bar) and by the cross-block join alone (light pairs)",
+		(unsigned)farMatches.size(), adjusted.rotationMedian, adjusted.positionMedian * 100);
 }
 /*----------------------------------------------------------------*/
 

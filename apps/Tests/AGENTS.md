@@ -200,7 +200,7 @@ Every block states its contract with `ASSERT`; a call outside it is a bug in the
 | `SeamCameraSupportTest` | a seam held by one camera weighs one camera; one-camera directions and rigs |
 | `FoldedBlockTest` | a block folded by half a turn or 45 degrees leaves a seam off and the rest right |
 | `UnplacedBlocksReportedTest` | a block with nothing to be placed against is left out, named in the report and keeps its tracks |
-| `BentRingTest` | a ring of bent blocks keeps its seams and the final adjustment straightens it |
+| `BentRingTest` | a ring of bent blocks keeps its seams and the final adjustment straightens it, and its far matches join by the closure alone and by the cross-block join alone |
 | `MergeRoundtripTest` | a scene split at the true poses and merged back, in the true frame and moved by random similarities |
 | `HierarchicalCameraAlignmentTest` | the camera alignment of two sub-scenes from each seam direction alone and both together |
 
