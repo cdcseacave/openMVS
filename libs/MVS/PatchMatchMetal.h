@@ -107,7 +107,7 @@ public:
 
 	// estimate the depth-map; given a confidence request (the last geometric-consistency iteration),
 	// also recalibrate its confidence-map from the estimates still on the GPU (confRequest->done)
-	void EstimateDepthMap(DepthData&, ConfAdjustRequest* confRequest=NULL);
+	void EstimateDepthMap(const PlatformArr&, DepthData&, ConfAdjustRequest* confRequest=NULL);
 
 	// recalibrate the confidence-map of a reference from its host maps and the request's neighbors
 	// (the epilogue when the fused recalibration did not run); false if the kernels did not run

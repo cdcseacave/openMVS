@@ -47,8 +47,16 @@
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+// the nvcc translation unit sees no MVS headers: PlatformArr is declared as in Platform.h, which the
+// host translation unit (PatchMatchCUDA.cpp) checks, as it sees both declarations
+namespace SEACAVE {
+template <typename TYPE, typename ARG_TYPE, int useConstruct, int grow, typename IDX_TYPE> class cList;
+} // namespace SEACAVE
+
 namespace MVS {
 
+class Platform;
+typedef SEACAVE::cList<Platform, const Platform&, 1, 16, uint32_t> PlatformArr;
 struct DepthData;
 struct ConfAdjustRequest; // ConfidenceGPU.h (fused confidence recalibration)
 
@@ -81,7 +89,7 @@ public:
 	// pConfRequest (optional): on the last geometric-consistency iteration, run the fused GPU
 	// confidence recalibration right after the estimation kernels, reusing the device-resident
 	// reference buffers (see ConfidenceCUDA.h ConfAdjustRequest); its done flag reports back
-	void EstimateDepthMap(DepthData&, ConfAdjustRequest* pConfRequest = NULL);
+	void EstimateDepthMap(const PlatformArr&, DepthData&, ConfAdjustRequest* pConfRequest = NULL);
 
 	float4 GetPlaneHypothesis(const int index);
 	float GetCost(const int index);

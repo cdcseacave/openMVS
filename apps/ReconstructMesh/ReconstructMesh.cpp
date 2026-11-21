@@ -434,7 +434,7 @@ int main(int argc, LPCTSTR* argv)
 				if (!imageData.IsValid())
 					continue;
 				// reset image resolution
-				if (!imageData.ReloadImage(0, false)) {
+				if (!imageData.ReloadImage(scene.platforms, 0, false)) {
 					#ifdef RECMESH_USE_OPENMP
 					bAbort = true;
 					#pragma omp flush (bAbort)

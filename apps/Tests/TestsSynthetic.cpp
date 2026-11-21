@@ -1613,7 +1613,7 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 	// the images prepared at half resolution, as a pipeline stage leaves them, the first one with its pixels
 	FOREACH(i, scene.images) {
 		Image& image = scene.images[i];
-		if (!image.ReloadImage(image.width/2, i == 0))
+		if (!image.ReloadImage(scene.platforms, image.width/2, i == 0))
 			return false;
 		image.UpdateCamera(scene.platforms);
 	}
@@ -1640,7 +1640,7 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 	ImageArr refineImages(scene.images);
 	for (Image& image: refineImages) {
 		image.ReleaseImage();
-		if (!image.ReloadImage(1024, false))
+		if (!image.ReloadImage(scene.platforms, 1024, false))
 			return false;
 		image.UpdateCamera(scene.platforms);
 	}
@@ -1660,7 +1660,7 @@ bool MVS::EstimatePointCloudNormalsSphericalTest()
 		for (const IIndex idxView: scene.pointcloud.pointViews[p]) {
 			const Image& image = refineImages[idxView];
 			const Point3f viewDir = normalized(image.camera.C - Cast<REAL>(X));
-			const auto [projection, depth] = image.GetModelCamera().ProjectPointP(X);
+			const auto [projection, depth] = image.camera.ProjectPointP(X);
 			if (projection.y < patchRadius+1 || projection.y > image.height - (patchRadius+2))
 				bPole = true;
 			if (depth <= 0 || projection.y < patchRadius+1 || projection.y > image.height - (patchRadius+2))
@@ -1875,7 +1875,7 @@ bool MVS::BrownUndistortOnLoadTest()
 	FOREACH(v, views) {
 		const IIndex i(2*v);
 		Image& imageData = scene.images[i];
-		if (!imageData.ReloadImage(0))
+		if (!imageData.ReloadImage(scene.platforms, 0))
 			return false;
 		ASSERT(imageData.IsUndistortedOnRead() && imageData.image.size() == cv::Size(lens.width, lens.height));
 		SynthView pinhole;
@@ -1888,10 +1888,10 @@ bool MVS::BrownUndistortOnLoadTest()
 		pinhole.camera.C = views[v].camera.C;
 		SynthRender(pinhole, config.supersample);
 		// the valid pixels match the render, the others are masked through the ignore mask
-		const Image8U& valid = imageData.GetUndistortMaps()->mask;
+		const Image8U& valid = imageData.GetUndistortMaps(scene.platforms)->mask;
 		BitMatrix unusedMask;
 		Image8U ignoreMask;
-		if (!DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), -1, unusedMask, &ignoreMask) ||
+		if (!DepthEstimator::ImportIgnoreMask(imageData, scene.platforms, imageData.image.size(), -1, unusedMask, &ignoreMask) ||
 			cv::countNonZero(ignoreMask != valid) != 0) {
 			VERBOSE("ERROR: BrownUndistortOnLoadTest: the ignore mask is not the undistortion mask");
 			return false;
@@ -1955,7 +1955,7 @@ bool MVS::BrownUndistortOnLoadTest()
 		std::istringstream(Attribute("PixelSizeMm")) >> pitchX >> pitchY;
 		std::istringstream(Attribute("CenterPx")) >> cx >> cy;
 		Image8U3 raster, pixels;
-		if (!raster.Load(tmpDir(String(Attribute("fileName")))) || imageData.ReadPixels(pixels) == NULL ||
+		if (!raster.Load(tmpDir(String(Attribute("fileName")))) || imageData.ReadPixels(scene.platforms, pixels) == NULL ||
 			raster.size() != imageData.GetSize() || cv::norm(raster, pixels, cv::NORM_INF) != 0 ||
 			!(std::abs(focal/pitchX - imageData.camera.K(0,0)) < 1e-3) ||
 			!(std::abs(focal/pitchY - imageData.camera.K(1,1)) < 1e-3) ||
@@ -1976,12 +1976,12 @@ bool MVS::BrownUndistortOnLoadTest()
 		const PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations[(uint32_t)j];
 		FOREACH(k, pointViews) {
 			const Image& imageData = scene.images[pointViews[k]];
-			ASSERT(imageData.IsUndistortedOnRead() && imageData.width == (uint32_t)lens.width/2 && imageData.lens.size == imageData.GetSize());
+			ASSERT(imageData.IsUndistortedOnRead() && imageData.width == (uint32_t)lens.width/2 && imageData.GetLens(scene.platforms).size == imageData.GetSize());
 			maxScaledObsErr = MAXF(maxScaledObsErr, norm(imageData.camera.TransformPointW2I(points[j].first) - Cast<REAL>(observations[k])));
 		}
 	}
 	Image8U3 scaledPixels;
-	if (scene.images[0].ReadPixels(scaledPixels) == NULL || scaledPixels.size() != scene.images[0].GetSize()) {
+	if (scene.images[0].ReadPixels(scene.platforms, scaledPixels) == NULL || scaledPixels.size() != scene.images[0].GetSize()) {
 		VERBOSE("ERROR: BrownUndistortOnLoadTest: the scaled images can not be read through their lens");
 		return false;
 	}
@@ -2201,9 +2201,9 @@ bool ToolFaceScene(int argc, LPCTSTR* argv)
 	const float scale(Camera::GetNormalizationScale(faceSize, faceSize));
 	FOREACH(i, scene.images) {
 		const Image& imageData = scene.images[i];
-		ASSERT(imageData.IsValid() && imageData.model == CameraModelType::SPHERICAL);
+		ASSERT(imageData.IsValid() && imageData.IsSpherical());
 		Image8U3 pano;
-		if (imageData.ReadPixels(pano) == NULL) {
+		if (imageData.ReadPixels(scene.platforms, pano) == NULL) {
 			std::printf("error: cannot read the image '%s'\n", imageData.name.c_str());
 			return false;
 		}

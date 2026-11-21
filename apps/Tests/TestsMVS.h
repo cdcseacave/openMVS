@@ -115,8 +115,12 @@ bool SphericalImageSizeTest();
 // them, for pinhole and spherical views, also across the seam of a spherical row
 bool GapInterpolationNormalsTest();
 
-// ModelCamera::WrapPixel wraps the columns of a spherical camera only, never rows
+// Camera::WrapPixel wraps the columns of a spherical camera only, never rows
 bool WrapPixelTest();
+
+// the transforms of a Camera follow its projection model (pinhole and spherical), VisitModel hands its
+// model, and the model survives the copies of the camera
+bool CameraModelTest();
 
 // EstimateConfidenceFromDepth/Normal read across the column seam of a spherical depth-map
 bool ConfidenceSeamTest();

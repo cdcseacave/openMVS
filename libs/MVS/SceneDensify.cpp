@@ -149,7 +149,7 @@ static size_t ComputeImagesGrayMemorySize(const ImageArr& images, const IIndexAr
 
 // decode the image file and convert it to the intensities the estimator consumes,
 // at the resolution the depth-maps are estimated at
-static bool DecodeImageGray(const Image& imageData, cv::Mat& image) {
+static bool DecodeImageGray(const Image& imageData, const PlatformArr& platforms, cv::Mat& image) {
 	ASSERT(imageData.HasResolution());
 	Image32F imageGray;
 	if (!imageData.image.empty()) {
@@ -160,7 +160,7 @@ static bool DecodeImageGray(const Image& imageData, cv::Mat& image) {
 		return true;
 	}
 	Image8U3 imageColor;
-	const auto pImage(imageData.ReadPixels(imageColor));
+	const auto pImage(imageData.ReadPixels(platforms, imageColor));
 	if (pImage == NULL) {
 		LOG("error: failed decoding image '%s'", imageData.name.c_str());
 		return false;
@@ -182,7 +182,7 @@ DepthMapsData::DepthMapsData(Scene& _scene)
 	:
 	scene(_scene),
 	arrDepthData(_scene.images.GetSize()),
-	imageCache([&images = _scene.images](IIndex idxImage, cv::Mat& image) { return DecodeImageGray(images[idxImage], image); })
+	imageCache([&images = _scene.images, &platforms = _scene.platforms](IIndex idxImage, cv::Mat& image) { return DecodeImageGray(images[idxImage], platforms, image); })
 	#ifdef _USE_CUDA
 	, pmCUDANextIdx((Thread::safe_t)-1)
 	, pmCUDAEpoch(0)
@@ -485,6 +485,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 			// which can differ from the reference image (ex: a rotated view) and from view.image
 			// (resampled by the neighbor scale)
 			ASSERT(view.depthMap.size() == view.pImageData->GetSize());
+			view.cameraDepthMap.model = view.camera.model; // the depth-map file holds the model as its spherical flag
 			if (bLoadNeighborConf) {
 				view.normalMap = std::move(normalMap);
 				// the confirmation sweep's gates are calibrated for the RAW photometric neighbor
@@ -523,7 +524,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		ASSERT(depthData.normalMap.empty() || viewRef.image.size() == depthData.normalMap.size());
 		if (depthData.normalMap.empty()) {
 			// estimate normal map
-			EstimateNormalMap(viewRef.GetModelCamera(), depthData.depthMap, depthData.normalMap);
+			EstimateNormalMap(viewRef.camera, depthData.depthMap, depthData.normalMap);
 		}
 	} else if (loadDepthMaps == 0) {
 		// initialize depth and normal maps (the sparse triangulation of InitDepthMap is pinhole only)
@@ -539,7 +540,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 				depthData.dMax = 1e+2f;
 			} else {
 				// initialize with the sparse point-cloud
-				const ModelCamera camera(viewRef.GetModelCamera());
+				const Camera& camera(viewRef.camera);
 				const int nPixelArea(2); // half windows size around a pixel to be initialize with the known depth
 				depthData.dMin = FLT_MAX;
 				depthData.dMax = 0;
@@ -805,7 +806,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		ConfAdjustRequest confRequest;
 		ConfAdjustRequest* const pConfRequest(IsFusedConfidenceIteration(nGeometricIter) &&
 			MakeConfAdjustRequest(depthData, confRequest) ? &confRequest : NULL);
-		pmCUDAPool[s_slot]->EstimateDepthMap(depthData, pConfRequest);
+		pmCUDAPool[s_slot]->EstimateDepthMap(scene.platforms, depthData, pConfRequest);
 		if (pConfRequest)
 			depthData.bConfAdjusted = confRequest.done;
 		return true;
@@ -830,7 +831,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		ConfAdjustRequest confRequest;
 		ConfAdjustRequest* const pConfRequest(IsFusedConfidenceIteration(nGeometricIter) &&
 			MakeConfAdjustRequest(depthData, confRequest) ? &confRequest : NULL);
-		pmMetalPool[s_slotM]->EstimateDepthMap(depthData, pConfRequest);
+		pmMetalPool[s_slotM]->EstimateDepthMap(scene.platforms, depthData, pConfRequest);
 		if (pConfRequest)
 			depthData.bConfAdjusted = confRequest.done;
 		return true;
@@ -904,7 +905,7 @@ bool DepthMapsData::EstimateDepthMapCPU(IIndex idxImage, int nGeometricIter)
 		#endif
 		if (prevDepthMapSize != size || OPTDENSE::nIgnoreMaskLabel >= 0 || image.pImageData->IsUndistortedOnRead()) {
 			BitMatrix mask;
-			const bool bMasked(DepthEstimatorBase::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), OPTDENSE::nIgnoreMaskLabel, mask));
+			const bool bMasked(DepthEstimatorBase::ImportIgnoreMask(*image.pImageData, scene.platforms, depthData.depthMap.size(), OPTDENSE::nIgnoreMaskLabel, mask));
 			if (bMasked)
 				depthData.ApplyIgnoreMask(mask);
 			DepthEstimatorBase::MapMatrix2ZigzagIdx(size, coords, mask, MAXF((int)DepthEstimatorBase::nZigzagMinStride,(int)nMaxThreads*8));
@@ -1266,13 +1267,13 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	const bool bHasNormal(!normalMap.empty());
 	// an equirectangular map wraps its columns
 	const bool bSpherical(depthData.GetView().IsSpherical());
-	const Pinhole<float> camera(bSpherical ? Pinhole<float>{} : MakeCameraModel<Pinhole<float>>(depthData.GetView().camera));
-	const Spherical<float> sphere(bSpherical ? MakeCameraModel<Spherical<float>>(depthData.GetView().camera) : Spherical<float>{});
+	const Pinhole<float> camera(bSpherical ? Pinhole<float>{} : depthData.GetView().camera.Model<Pinhole<float>>());
+	const Spherical<float> sphere(bSpherical ? depthData.GetView().camera.Model<Spherical<float>>() : Spherical<float>{});
 	// the ray frames of a spherical map from its sine/cosine table, as in the GPU kernels
 	std::vector<Eigen::Vector2f> trig;
 	if (bSpherical) {
 		trig.resize(depthMap.cols + depthMap.rows);
-		ComputeSphericalTrig(MakeCameraModel<Spherical<double>>(depthData.GetView().camera), depthMap.size(), trig.data(), trig.data() + depthMap.cols);
+		ComputeSphericalTrig(depthData.GetView().camera.Model<Spherical<double>>(), depthMap.size(), trig.data(), trig.data() + depthMap.cols);
 	}
 	// relative planarity band, in units of the calibrated depth noise (the GPU PriorKernel derives
 	// the same band from Params::thDepth == CONFIRM_DEPTH)
@@ -1468,16 +1469,17 @@ struct NeighborProj {
 
 	// compose the transforms of the pair in double precision; cameraN is the neighbor's camera at the
 	// resolution of its maps
-	void Init(const Camera& cameraRef, bool bSphericalRef, const Camera& cameraN, bool bSphericalN) {
+	void Init(const Camera& cameraRef, const Camera& cameraN) {
+		const bool bSphericalN(cameraN.IsSpherical());
 		const Matrix3x3 Rrel_(cameraN.R*cameraRef.R.t()); // ref-cam -> nbr-cam rotation
 		const Matrix3x3 Kn(bSphericalN ? Matrix3x3::IDENTITY : cameraN.K);
-		const Matrix3x3 invKr(bSphericalRef ? Matrix3x3::IDENTITY : cameraRef.GetInvK());
+		const Matrix3x3 invKr(cameraRef.IsSpherical() ? Matrix3x3::IDENTITY : cameraRef.GetInvK());
 		A = Matrix3x3f(Kn*Rrel_*invKr);
 		b = Point3f(Kn*cameraN.R*(cameraRef.C-cameraN.C));
 		Rrel = Matrix3x3f(Rrel_);
 		cn = Point3f(cameraRef.R*(cameraN.C-cameraRef.C));
 		bSpherical = bSphericalN;
-		sphere = bSphericalN ? MakeCameraModel<Spherical<float>>(cameraN) : Spherical<float>{};
+		sphere = bSphericalN ? cameraN.Model<Spherical<float>>() : Spherical<float>{};
 	}
 	// the neighbor pixel and depth of q (A*u + b); false if q is behind a pinhole neighbor
 	bool Project(const Point3f& q, float& px, float& py, float& depth) const {
@@ -1560,7 +1562,7 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 			continue;
 		const DepthData::ViewData& viewN = depthDataN.GetView();
 		NeighborProj& np = neighborProjs.AddEmpty();
-		np.Init(viewRef.camera, viewRef.IsSpherical(), viewN.camera, viewN.IsSpherical());
+		np.Init(viewRef.camera, viewN.camera);
 		np.depthMap = &depthDataN.depthMap;
 		np.confMap = &depthDataN.confMap;
 		np.normalMap = &depthDataN.normalMap;
@@ -1595,7 +1597,7 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef)
 		if (viewN.depthMap.empty())
 			continue; // this neighbor's depth failed to load this iteration (see InitViews)
 		NeighborProj& np = neighborProjs.AddEmpty();
-		np.Init(viewRef.camera, viewRef.IsSpherical(), viewN.cameraDepthMap, viewN.IsSpherical());
+		np.Init(viewRef.camera, viewN.cameraDepthMap);
 		np.depthMap = &viewN.depthMap;
 		np.confMap = &viewN.confMap;
 		np.normalMap = &viewN.normalMap;
@@ -1627,7 +1629,7 @@ static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<Co
 			(!viewN.normalMap.empty() && !viewN.normalMap.isContinuous()))
 			return false;
 		NeighborProj np;
-		np.Init(viewRef.camera, viewRef.IsSpherical(), viewN.cameraDepthMap, viewN.IsSpherical());
+		np.Init(viewRef.camera, viewN.cameraDepthMap);
 		ConfNeighborHost d;
 		for (int r=0;r<3;++r) for (int c=0;c<3;++c) { d.A[r*3+c]=np.A(r,c); d.Rrel[r*3+c]=np.Rrel(r,c); }
 		d.b[0]=np.b.x; d.b[1]=np.b.y; d.b[2]=np.b.z;
@@ -1694,7 +1696,7 @@ bool DepthMapsData::AdjustConfidenceGPU(DepthData& depthDataRef)
 		return false;
 	if (request.spherical) {
 		request.refTrig.resize(W + H);
-		ComputeSphericalTrig(MakeCameraModel<Spherical<double>>(depthDataRef.GetView().camera), depthMapRef.size(), request.refTrig.data(), request.refTrig.data() + W);
+		ComputeSphericalTrig(depthDataRef.GetView().camera.Model<Spherical<double>>(), depthMapRef.size(), request.refTrig.data(), request.refTrig.data() + W);
 	}
 	#ifdef _USE_CUDA
 	if (!pmCUDAPool.empty()) {
@@ -1761,7 +1763,7 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	std::vector<Eigen::Vector2f> refTrig;
 	if (bSphericalRef) {
 		refTrig.resize(depthMapRef.cols + depthMapRef.rows);
-		ComputeSphericalTrig(MakeCameraModel<Spherical<double>>(imageRef.camera), depthMapRef.size(), refTrig.data(), refTrig.data() + depthMapRef.cols);
+		ComputeSphericalTrig(imageRef.camera.Model<Spherical<double>>(), depthMapRef.size(), refTrig.data(), refTrig.data() + depthMapRef.cols);
 	}
 	// the reference camera-frame point of pixel (c,r) at the given depth
 	const auto RefPoint = [&](int c, int r, Depth depth) -> Point3f {
@@ -2065,7 +2067,7 @@ void DepthMapsData::EstimateNormalMaps()
 		ASSERT(!depthData.IsEmpty());
 		ASSERT(!scene.images[idxImage].neighbors.empty());
 		if (depthData.normalMap.empty()) {
-			EstimateNormalMap(depthData.GetView().GetModelCamera(), depthData.depthMap, depthData.normalMap);
+			EstimateNormalMap(depthData.GetView().camera, depthData.depthMap, depthData.normalMap);
 			if (!depthData.Save(fileName)) {
 				#ifdef DENSE_USE_OPENMP
 				bAbort = true;
@@ -2124,10 +2126,10 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 		// and release it below instead of keeping every image of the scene resident
 		Image& imageData = *image.pImageData;
 		if (bEstimateColor && imageData.image.empty() &&
-			!imageData.ReloadImageAtPreparedResolution())
+			!imageData.ReloadImageAtPreparedResolution(scene.platforms))
 			DEBUG("warning: image %u could not be decoded; its points stay uncolored", imageData.ID);
 		const size_t nNumPointsPrev(pointcloud.points.size());
-		const ModelCamera camera(image.GetModelCamera());
+		const Camera& camera(image.camera);
 		for (int i=0; i<depthData.depthMap.rows; ++i) {
 			for (int j=0; j<depthData.depthMap.cols; ++j) {
 				// ignore invalid depth
@@ -2202,7 +2204,7 @@ size_t FusionMemoryReserve(const PointCloud& pointcloud, PointCloud::Index first
 // need all of them at once instead of the few a cache can hold; the images without
 // one are never sampled, so decoding them would only exceed the budget the caller
 // validated over exactly this set
-bool LoadAllImages(ImageArr& images, const DepthDataArr& arrDepthData)
+bool LoadAllImages(ImageArr& images, const PlatformArr& platforms, const DepthDataArr& arrDepthData)
 {
 	ASSERT(images.size() == arrDepthData.size());
 	bool bSuccess(true);
@@ -2219,7 +2221,7 @@ bool LoadAllImages(ImageArr& images, const DepthDataArr& arrDepthData)
 			continue;
 	#endif
 		if (imageData.IsValid() && imageData.image.empty() &&
-			!imageData.ReloadImageAtPreparedResolution())
+			!imageData.ReloadImageAtPreparedResolution(platforms))
 			bSuccess = false;
 	}
 	return bSuccess;
@@ -2253,7 +2255,7 @@ size_t FusionWorkingSet(const DepthDataArr& arrDepthData)
 //   together with the depth-data, bounding what a scene with far more images
 //   than fit can use.
 // Returns the images for the cache to manage, or NULL once they are resident.
-ImageArr* PrepareFusionImages(const DepthDataArr& arrDepthData, ImageArr& images, size_t cacheMemory, size_t workingSet)
+ImageArr* PrepareFusionImages(const DepthDataArr& arrDepthData, ImageArr& images, const PlatformArr& platforms, size_t cacheMemory, size_t workingSet)
 {
 	size_t allColors(0);
 	FOREACH(idxImage, arrDepthData)
@@ -2267,7 +2269,7 @@ ImageArr* PrepareFusionImages(const DepthDataArr& arrDepthData, ImageArr& images
 			allColors/1024/1024, cacheMemory/1024/1024);
 		return &images;
 	}
-	if (!LoadAllImages(images, arrDepthData))
+	if (!LoadAllImages(images, platforms, arrDepthData))
 		VERBOSE("warning: some images could not be decoded; the points they see stay uncolored");
 	return NULL;
 } // PrepareFusionImages
@@ -2281,12 +2283,12 @@ struct FusionCacheSetup {
 	mutable bool bLowMemoryReported{false};
 	ImageArr* const pCachedImages;
 	const size_t cacheMemory; // the initial budget, taken once the colors are resident
-	FusionCacheSetup(const DepthDataArr& arrDepthData, ImageArr& images, bool bEstimateColor)
+	FusionCacheSetup(const DepthDataArr& arrDepthData, ImageArr& images, const PlatformArr& platforms, bool bEstimateColor)
 		:
 		minMemory(FusionWorkingSet(arrDepthData)),
 		maxMemory(minMemory * 4),
 		// the colors stay resident when they fit in the memory free now, not only under the cap
-		pCachedImages(bEstimateColor ? PrepareFusionImages(arrDepthData, images, Available(0, 0), minMemory) : NULL),
+		pCachedImages(bEstimateColor ? PrepareFusionImages(arrDepthData, images, platforms, Available(0, 0), minMemory) : NULL),
 		cacheMemory(Budget(0, 0))
 	{
 	}
@@ -2391,8 +2393,8 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	GET_LOGCONSOLE().Pause();
 	BoolArr fusedDMaps(arrDepthData.size());
 	fusedDMaps.Memset(0);
-	const FusionCacheSetup cacheSetup(arrDepthData, scene.images, bEstimateColor);
-	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
+	const FusionCacheSetup cacheSetup(arrDepthData, scene.images, scene.platforms, bEstimateColor);
+	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages, &scene.platforms);
 	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
 	IIndex numDMapsFused = 0;
 	for (; numDMapsFused < arrDepthData.size(); ++numDMapsFused) {
@@ -2451,7 +2453,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			depthIdxs.memset((uint8_t)NO_ID);
 		}
 		const size_t nNumPointsPrev(pointcloud.points.size());
-		const ModelCamera camera(imageData.GetModelCamera());
+		const Camera& camera(imageData.camera);
 		for (int i=0; i<depthData.size.height; ++i) {
 			for (int j=0; j<depthData.size.width; ++j) {
 				const ImageRef x(j,i);
@@ -2493,7 +2495,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 					if (depthDataB.IsEmpty())
 						continue;
 					const Image& imageDataB = scene.images[idxImageB];
-					const ModelCamera cameraB(imageDataB.GetModelCamera());
+					const Camera& cameraB(imageDataB.camera);
 					const auto [pt, depthProjB] = cameraB.ProjectPointP(point);
 					if (depthProjB <= 0)
 						continue;
@@ -2651,8 +2653,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	GET_LOGCONSOLE().Pause();
 	BoolArr fusedDMaps(arrDepthData.size());
 	fusedDMaps.Memset(0);
-	const FusionCacheSetup cacheSetup(arrDepthData, scene.images, bEstimateColor);
-	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
+	const FusionCacheSetup cacheSetup(arrDepthData, scene.images, scene.platforms, bEstimateColor);
+	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages, &scene.platforms);
 	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
 	BoolArr neighbors(arrDepthData.size());
 	PointCloud::Point refPoint;
@@ -2695,7 +2697,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			if (conf < (depthData.bConfAdjusted ? ConfRefine::FUSE_MIN_CONF : minConfidenceRaw))
 				return;
 			const DepthData::ViewData& image = depthData.GetView();
-			const ModelCamera camera(image.GetModelCamera());
+			const Camera& camera(image.camera);
 			// if the fusion depth is greater than zero, the initial reference pixel
 			// has already been added and we need to check for consistency
 			PointCloud::Normal normal;
@@ -2772,7 +2774,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				if (!neighbors[nextID])
 					continue;
 				const DepthData& nextDepthData = arrDepthData[nextID];
-				const ModelCamera nextCamera(nextDepthData.GetView().GetModelCamera());
+				const Camera& nextCamera(nextDepthData.GetView().camera);
 				ImageRef nextx;
 				if (!nextCamera.GetPixel(std::get<0>(nextCamera.ProjectPointP(X)), nextDepthData.size, nextx))
 					continue;
@@ -3053,7 +3055,7 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 				numPoints-pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 		}
 		if (pointcloud.colors.IsEmpty() && OPTDENSE::nEstimateColors == 1)
-			EstimatePointColors(images, pointcloud);
+			EstimatePointColors(images, platforms, pointcloud);
 		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
 			EstimatePointNormals(images, pointcloud);
 	}
@@ -3279,7 +3281,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			// later -- the SGM fusion modes instead work directly on the color images
 			unsigned nResolutionLevel(OPTDENSE::nResolutionLevel);
 			const unsigned nMaxResolution(imageData.RecomputeMaxResolution(nResolutionLevel, OPTDENSE::nMinResolution, OPTDENSE::nMaxResolution));
-			if (!imageData.ReloadImage(nMaxResolution, data.nFusionMode < 0)) {
+			if (!imageData.ReloadImage(platforms, nMaxResolution, data.nFusionMode < 0)) {
 				#ifdef DENSE_USE_OPENMP
 				bAbort = true;
 				#pragma omp flush (bAbort)
@@ -3718,7 +3720,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				DepthData& depthData(data.depthMaps.arrDepthData[idx]);
 				data.sgm.MatchMultiView(*this, idx, OPTDENSE::nNumViews, depthData);
 				if (OPTDENSE::nEstimateNormals == 2)
-					EstimateNormalMap(depthData.GetView().GetModelCamera(), depthData.depthMap, depthData.normalMap);
+					EstimateNormalMap(depthData.GetView().camera, depthData.depthMap, depthData.normalMap);
 				depthData.dMin = ZEROTOLERANCE<float>(); depthData.dMax = FLT_MAX;
 			} else {
 				// export the disparity-maps of the pairs this image forms with its neighbors using the SGM algorithm,
@@ -3814,7 +3816,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				// other estimation workers read the shared image concurrently
 				Image imageData(*depthData.images.First().pImageData);
 				if (imageData.image.empty())
-					imageData.ReloadImageAtPreparedResolution();
+					imageData.ReloadImageAtPreparedResolution(platforms);
 				ExportPointCloud(ComposeDepthFilePath(depthData.GetView().GetID(), "ply"), imageData, depthData.depthMap, depthData.normalMap);
 				if (VERBOSITY_LEVEL > 4) {
 					ExportNormalMap(ComposeDepthFilePath(depthData.GetView().GetID(), "normal.png"), depthData.normalMap);

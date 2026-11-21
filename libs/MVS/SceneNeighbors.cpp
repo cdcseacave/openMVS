@@ -221,7 +221,7 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 	const auto ProjectSphereGridToImage = [&](IIndex idI, IIndex idJ) {
 		const Image& imageData = images[idI];
 		const Image& imageData2 = images[idJ];
-		const ModelCamera camera(imageData.GetModelCamera()), camera2(imageData2.GetModelCamera());
+		const Camera& camera(imageData.camera), &camera2(imageData2.camera);
 		const REAL depth(norm(imageData.camera.C - imageData2.camera.C) / (2*TAN(D2R(REAL(OPTDENSE::fOptimAngle))/2)));
 		const REAL logMinDepth(LOGN(depth*REAL(0.1))), logMaxDepth(LOGN(depth*REAL(10)));
 		const unsigned rows(imageData.IsSpherical() ? maxResolution/2 : maxResolution);
@@ -318,7 +318,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		if (views.FindFirst(ID) == PointCloud::ViewArr::NO_INDEX)
 			continue;
 		const PointCloud::Point& point = pointcloud.points[idx];
-		const Depth depth((float)imageData.PointDepth(Cast<REAL>(point)));
+		const Depth depth((float)imageData.camera.PointDepth(Cast<REAL>(point)));
 		ASSERT(depth > 0);
 		if (depth <= 0)
 			continue;
@@ -337,7 +337,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			if (view == ID)
 				continue;
 			const Image& imageData2 = images[view];
-			const Depth depth2((float)imageData2.PointDepth(Cast<REAL>(point)));
+			const Depth depth2((float)imageData2.camera.PointDepth(Cast<REAL>(point)));
 			ASSERT(depth2 > 0);
 			if (depth2 <= 0)
 				continue;
@@ -383,7 +383,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	// select best neighborViews
 	if (neighbors.empty()) {
 		const auto ProjectPoint = [](const Image& image, const PointCloud::Point& X, Point2f& x) {
-			return image.GetModelCamera().ProjectPointInside(X, image.GetSize(), x);
+			return image.camera.ProjectPointInside(X, image.GetSize(), x);
 		};
 		Point2fArr projs(0, points.size());
 		FOREACH(IDB, images) {

@@ -133,7 +133,7 @@ described in `SphericalPatchMatch.md` §1. `MvgMvsPipeline.py` exports cube-maps
   image pose by the overlay shader's `model` matrix, only its far side drawn. Seen from the center every
   scene point lies on its pixel. Once loaded, a panorama stays on its globe outside the camera view mode
   too: the camera shows as a ball textured with it, depth tested with the scene.
-- Point projections (selection info, track-based neighbors, Point Observations) go through `ModelCamera`.
+- Point projections (selection info, track-based neighbors, Point Observations) go through the image cameras (`MVS::Camera`, model-aware).
   A Point Observations patch of a panorama continues across the seam and, mirrored, across a pole
   (`CropPatch`, `apps/Viewer/PointObservations.cpp`).
 - `--screenshot-show i` with `--view-camera` captures the camera view mode with its image overlay.

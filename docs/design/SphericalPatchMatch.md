@@ -13,7 +13,7 @@ per (pixel, hypothesis, view), so pinhole, Brown and spherical views can be mixe
 Scope: depth-maps (CPU with `--gpu-device -2`, CUDA, Metal), the photometric confidence, and the fusion of
 the depth-maps into the dense cloud (CPU). Not supported for a scene with spherical images, with a clear
 error: SGM (`--fusion-mode` < 0) and the neighbor views selected from a mesh. The tower mode
-(`Scene::InitTowerScene`) sees its points through `ModelCamera` and runs on spherical images as on pinhole ones.
+(`Scene::InitTowerScene`) sees its points through the image cameras and runs on spherical images as on pinhole ones.
 
 The confidence recalibration runs on spherical references and neighbours as on pinhole ones, fused
 into the last geometric-consistency iteration on CUDA and Metal (`DepthMapConfidence.md`, camera
@@ -24,7 +24,7 @@ The stages past the dense cloud project through the pinhole camera only and call
 `Scene::ReconstructMesh`, `RefineMesh`, `RefineMeshCUDA`, `TextureMesh`, `ComputeVertexColors`,
 `ExportMeshToDepthMaps`, and the apps before `RemoveUnseenMeshFaces`. `MvgMvsPipeline.py` passes
 `--spherical-export cubemap` to `CreateStructure` when the run includes a mesh step;
-`MvsScalablePipeline.py` takes a scene as it is. `Scene::Split` back-projects depth-maps through `ModelCamera`.
+`MvsScalablePipeline.py` takes a scene as it is. `Scene::Split` back-projects depth-maps through the image cameras.
 
 ## 2. Algorithm as implemented
 
@@ -206,9 +206,9 @@ reject a file whose flag disagrees with the view's model.
 
 ### Fusion, filters and other consumers of the depth-maps
 
-Everything downstream of the estimator reaches a view's geometry through `ModelCamera`
-(`libs/MVS/Image.h`, from `Image::GetModelCamera()` or `DepthData::ViewData::GetModelCamera()`): pinhole
-calls are the camera's own (bit-identical), spherical calls go through `Spherical<REAL>`.
+Everything downstream of the estimator reaches a view's geometry through its `Camera` (`libs/MVS/Camera.h`,
+`Image::camera` or `DepthData::ViewData::camera`), which carries the projection model: the pinhole branch
+of each call is the pinhole formula, the spherical one goes through `Spherical<REAL>`.
 - `TransformPointI2C/I2W(x, depth)`, `ProjectPointP(X)` (pixel and range), `ProjectPointC(Xc)`,
   `TransformPointW2I`, `RayPoint`; `WrapPixel(ir, size)` (integer pixel, column wrapped, false if
   outside), the seam primitive for integer pixels; `GetPixel(x, size, ir)` (rounded, then `WrapPixel`);
@@ -221,7 +221,7 @@ calls are the camera's own (bit-identical), spherical calls go through `Spherica
   seam is filled like any other; columns do not cross the poles) and `FilterDepthMap`;
   `EstimateNormalMaps`, `DepthData::GetNormal`, `EstimatePointColors`, `EstimatePointSegmentation`,
   `ExportPointCloud`, `Scene::EstimatePointCloudNormals`;
-  `ModelCamera::WrapPixel` also serves `EstimateConfidenceFromDepth/Normal` (their window across the seam) and
+  `Camera::WrapPixel` also serves `EstimateConfidenceFromDepth/Normal` (their window across the seam) and
   `InterfaceMetashape::AssignPoints`; `Scene::EstimatePointCloudNormals` works on 1024 px copies of the scene
   images, a panorama's copy padded with a `cv::BORDER_WRAP` margin of `patchRadius+2` columns on each side and
   its `cx` moved by the margin, so the pinhole sampling code reads across the seam;

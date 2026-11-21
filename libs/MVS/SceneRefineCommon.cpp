@@ -97,7 +97,7 @@ bool MVS::PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 	// load and init image
 	unsigned level(nResolutionLevel);
 	const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
-	if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && !imageData.ReloadImage(imageSize))
+	if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && !imageData.ReloadImage(platforms, imageSize))
 		return false;
 	imageData.image.toGray(gray, cv::COLOR_BGR2GRAY, true);
 	imageData.image.release();
@@ -115,10 +115,10 @@ bool MVS::PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 // per-view keep-mask, called right after PrepareRefineImage -- see the doc comment in
 // SceneRefineCommon.h; leaves keepMask empty unless masking is enabled and the image has a mask,
 // or the image is undistorted on read (its pixels without a source are masked)
-void MVS::PrepareRefineImageMask(const Image& imageData, const cv::Size& size, BitMatrix& keepMask)
+void MVS::PrepareRefineImageMask(const Image& imageData, const PlatformArr& platforms, const cv::Size& size, BitMatrix& keepMask)
 {
 	keepMask.release();
-	DepthEstimator::ImportIgnoreMask(imageData, size, OPTREFINE::nIgnoreMaskLabel, keepMask);
+	DepthEstimator::ImportIgnoreMask(imageData, platforms, size, OPTREFINE::nIgnoreMaskLabel, keepMask);
 }
 
 // the largest finite value of a per-vertex field, the stand-in for the vertices no view saw

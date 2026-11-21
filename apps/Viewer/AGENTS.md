@@ -93,7 +93,7 @@ the sphere of its rays around the image center, at the globe radius (one unit-sp
 `model` uniform of `imageoverlay.vert`, far side only): from outside the camera is a ball showing the
 panorama, depth tested with the scene; in its camera view mode it is drawn over the scene and the view
 keeps its field of view with the navigation target next to the center, so dragging looks around inside
-the panorama. Every projection of a scene point into an image goes through `MVS::ModelCamera`.
+the panorama. Every projection of a scene point into an image goes through its model-aware `MVS::Camera`.
 
 ### Pose-Uncertainty Ellipsoids
 `Scene::LoadPoseUncertainty(csv)` (triggered by `--pose-quality-file`) parses a CreateStructure

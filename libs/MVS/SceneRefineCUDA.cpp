@@ -351,7 +351,7 @@ bool MeshRefineCUDA::PrepareImages(float scale, float sigma)
 		if (OPTREFINE::nImageGradient == 0 || OPTREFINE::nImageGradient == 2)
 			ComputeRefineImageGradient(host.image, host.imageGrad[0], host.imageGrad[1]);
 		// per-view keep-mask at this scale's working size (the same estimator on both backends)
-		PrepareRefineImageMask(imageCopy, host.image.size(), host.keepMask);
+		PrepareRefineImageMask(imageCopy, scene.platforms, host.image.size(), host.keepMask);
 		host.width = imageCopy.width;
 		host.height = imageCopy.height;
 		host.camera = imageCopy.camera;

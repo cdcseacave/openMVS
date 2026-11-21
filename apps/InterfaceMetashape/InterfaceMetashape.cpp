@@ -731,11 +731,11 @@ void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 	const Depth thCloseDepth(0.1f);
 
 	// sort points by depth
-	const ModelCamera modelCamera(imageData.GetModelCamera());
+	const Camera& camera(imageData.camera);
 	IndexScoreArr points(0, pointcloud.points.size());
 	FOREACH(p, pointcloud.points) {
 		const PointCloud::Point& X(pointcloud.points[p]);
-		const float d((float)imageData.PointDepth(X));
+		const float d((float)imageData.camera.PointDepth(X));
 		if (d <= 0)
 			continue;
 		points.emplace_back((uint32_t)p, d);
@@ -749,20 +749,20 @@ void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 	pointMap.memset((uint8_t)NO_ID);
 	RFOREACHPTR(pPD, points) {
 		const Point3 X(pointcloud.points[pPD->idx]);
-		const auto [x, distance] = modelCamera.ProjectPointC(imageData.camera.TransformPointW2C(X));
+		const auto [x, distance] = camera.ProjectPointC(camera.TransformPointW2C(X));
 		ASSERT(distance > 0);
 		const float Xz((float)distance);
 		// skip point if its normal faces away from the view
 		if (!pointcloud.normals.empty() && Cast<float>(X - imageData.camera.C).dot(pointcloud.normals[pPD->idx]) > 0)
 			continue;
 		ImageRef ir;
-		if (!modelCamera.GetPixel(x, depthMap.size(), ir))
+		if (!camera.GetPixel(x, depthMap.size(), ir))
 			continue;
 		// skip point if the there is a very near by point closer
 		for (int i=-CHalfSize; i<=CHalfSize; ++i) {
 			for (int j=-CHalfSize; j<=CHalfSize; ++j) {
 				ImageRef nx(ir.x+j, ir.y+i);
-				if (!modelCamera.WrapPixel(nx, depthMap.size()))
+				if (!camera.WrapPixel(nx, depthMap.size()))
 					continue;
 				if (depthMap(nx) < Xz)
 					goto NEXT_POINT;
@@ -772,7 +772,7 @@ void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 		for (int i=-FHalfSize; i<=FHalfSize; ++i) {
 			for (int j=-FHalfSize; j<=FHalfSize; ++j) {
 				ImageRef nx(ir.x+j, ir.y+i);
-				if (!modelCamera.WrapPixel(nx, depthMap.size()))
+				if (!camera.WrapPixel(nx, depthMap.size()))
 					continue;
 				const Depth depth(depthMap(nx));
 				if (depth < Xz && !IsDepthSimilar(depth, Xz, thCloseDepth))
@@ -857,7 +857,7 @@ int main(int argc, LPCTSTR* argv)
 	}
 	if (!scene.pointcloud.pointObservations.empty()) {
 		// the measurements are in the image files: map them to the images as their cameras see them
-		const ObservationMapArr observationMaps(ObservationMap::MakeMaps(scene.images));
+		const ObservationMapArr observationMaps(ObservationMap::MakeMaps(scene.images, scene.platforms));
 		FOREACH(i, scene.pointcloud.pointObservations) {
 			const PointCloud::ViewArr& views = scene.pointcloud.pointViews[i];
 			PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations[i];
@@ -880,7 +880,7 @@ int main(int argc, LPCTSTR* argv)
 				const Point3 X(scene.pointcloud.points[idxPoint]);
 				for (const PointCloud::View& idxImage: scene.pointcloud.pointViews[idxPoint]) {
 					const Image& imageData = scene.images[idxImage];
-					const float depth((float)imageData.PointDepth(X));
+					const float depth((float)imageData.camera.PointDepth(X));
 					if (depth > 0) {
 						avgDepths[idxImage] += depth;
 						++numDepths[idxImage];

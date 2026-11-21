@@ -142,7 +142,7 @@ Tests (MVS suite 2), each bound being the measured accuracy less a margin:
 
 MVS suite, before the synthetic tests: `GapInterpolationNormalsTest()` (`GapInterpolation` fills a gap
 between two normals with unit normals within their angle, pinhole and spherical, also across the seam of a
-spherical row), `WrapPixelTest()` (`ModelCamera::WrapPixel` wraps the columns of a spherical camera only,
+spherical row), `WrapPixelTest()` (`Camera::WrapPixel` wraps the columns of a spherical camera only,
 never rows), `ConfidenceSeamTest()` (`EstimateConfidenceFromDepth/Normal` read across the seam of a spherical
 depth-map), `ComputeFOVTest()` (`Image::ComputeFOV`: 2π x π for a full panorama, the pinhole angles otherwise).
 

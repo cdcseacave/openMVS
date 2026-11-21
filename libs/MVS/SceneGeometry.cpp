@@ -126,7 +126,7 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 		Image& view = scaledImages[idx];
 		view = images[idx];
 		view.ReleaseImage(); // the copy shares the pixels of the scene image: decode into its own buffer
-		if (!view.ReloadImage(1024)) {
+		if (!view.ReloadImage(platforms, 1024)) {
 			++loadFailures;
 			continue;
 		}
@@ -174,7 +174,6 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 			// Ensure normal points toward target camera
 			const Image& targetImage = data.images[data.views[data.targetViewIdx]];
 			const Camera& targetCamera = targetImage.camera;
-			const ModelCamera targetModel(targetImage.GetModelCamera());
 			const Point3 viewDir = normalized(targetCamera.C - Cast<REAL>(data.point));
 			if (normal.dot(viewDir) < 0)
 				normal = -normal;
@@ -195,14 +194,14 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 					for (int dx = -patchRadius; dx <= patchRadius; ++dx) {
 						const Point2f targetPos = data.targetProjection + Point2f(dx, dy);
 						// Back-project target pixel to 3D using the refined normal
-						const Ray3 ray(targetCamera.C, normalized(targetModel.RayPoint(Cast<REAL>(targetPos))));
+						const Ray3 ray(targetCamera.C, normalized(targetCamera.RayPoint(Cast<REAL>(targetPos))));
 						// Intersect ray with plane to get 3D point
 						Point3::EVec X3D;
 						if (!ray.Intersects(plane, false, NULL, &X3D))
 							continue;
 						// Project 3D point to reference image (a plane grazing the target ray can place it
 						// behind a pinhole reference, which does not see it)
-						const auto [refPosD, refDepth] = refImage.GetModelCamera().ProjectPointP(Point3(X3D));
+						const auto [refPosD, refDepth] = refImage.camera.ProjectPointP(Point3(X3D));
 						const Point2f refPos(refPosD);
 						if (refDepth > 0 && refImage.image.isInsideWithBorder<float,1>(refPos)) {
 							const Pixel32F pixelValue = refImage.image.sample<Sampler,Pixel32F>(data.sampler, refPos);
@@ -255,7 +254,7 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 			const Camera& camera = imageData.camera;
 			const Point3f viewDir = normalized(camera.C - Cast<REAL>(point));
 			// Project point to image
-			const auto [projection, depth] = imageData.GetModelCamera().ProjectPointP(point);
+			const auto [projection, depth] = imageData.camera.ProjectPointP(point);
 			// the bilinear target patch reaches patchRadius+1 pixels past the projection
 			if (depth <= 0 || !imageData.image.isInsideWithBorder<float>(projection, patchRadius+1))
 				continue;

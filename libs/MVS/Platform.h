@@ -63,12 +63,12 @@ public:
 	//  - PINHOLE: the image files as they are
 	//  - BROWN: the undistorted images; lens describes the image files
 	//  - SPHERICAL: equirectangular images, K is the angular camera matrix (Interface::Platform::Camera)
+	// the projection model (CameraIntern::model) is the one of the image files
 	struct MVS_API Camera : CameraIntern {
-		CameraModelType model; // projection model of the image files
 		CameraLens lens; // BROWN only
 
-		inline Camera() : model(CameraModelType::PINHOLE) {}
-		inline Camera(const Matrix3x3& _K, const Matrix3x3& _R, const Point3& _C) : CameraIntern(_K, _R, _C), model(CameraModelType::PINHOLE) {}
+		inline Camera() {}
+		inline Camera(const Matrix3x3& _K, const Matrix3x3& _R, const Point3& _C) : CameraIntern(_K, _R, _C) {}
 
 		// make it a BROWN camera of the image files of the given resolution and pixel camera matrix:
 		// K becomes the normalized UndistortedK, the camera every consumer sees

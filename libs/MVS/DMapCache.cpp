@@ -45,12 +45,13 @@ using namespace MVS;
 
 DEFINE_LOG_NAME(lt, _T("DMapCach"));
 
-DMapCache::DMapCache(DepthDataArr& _arrDepthData, unsigned _loadFlags, size_t _max_memory_bytes, ImageArr* _pImages)
+DMapCache::DMapCache(DepthDataArr& _arrDepthData, unsigned _loadFlags, size_t _max_memory_bytes, ImageArr* _pImages, const PlatformArr* _pPlatforms)
 	:
-	loadFlags(_loadFlags), arrDepthData(_arrDepthData), pImages(_pImages),
+	loadFlags(_loadFlags), arrDepthData(_arrDepthData), pImages(_pImages), pPlatforms(_pPlatforms),
 	maxMemory(_max_memory_bytes), disabledMaxMemory(0), usedMemory(0),
 	skipMemoryCheckIdxImage(NO_ID)
 {
+	ASSERT(pImages == NULL || pPlatforms != NULL);
 }
 
 DMapCache::~DMapCache()
@@ -108,7 +109,7 @@ bool DMapCache::UseImage(IIndex idxImage) const {
 		// is the one Image::width/height were left at when the scene was prepared;
 		// on failure the image stays empty and the fusion skips its colors
 		Image& imageData = (*pImages)[idxImage];
-		if (imageData.image.empty() && !imageData.ReloadImageAtPreparedResolution())
+		if (imageData.image.empty() && !imageData.ReloadImageAtPreparedResolution(*pPlatforms))
 			VERBOSE("warning: image %u could not be decoded; the points it sees stay uncolored", imageData.ID);
 	}
 	lock.lock();

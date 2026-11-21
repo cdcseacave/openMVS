@@ -165,7 +165,7 @@ size_t Scene::DrawCircle(PointCloud& pc, PointCloud::PointArr& outCircle, const 
 			const Image& image = images[idxImg];
 			if (!image.IsValid())
 				continue;
-			const ModelCamera camera(image.GetModelCamera());
+			const Camera& camera(image.camera);
 			Point2f x;
 			if (!camera.ProjectPointInside(newPoint, image.GetSize(), x))
 				continue;

@@ -534,6 +534,7 @@ void MeshRefine::ListCameraFaces()
 			const Image& imageData = images[ID];
 			if (!imageData.IsValid())
 				continue;
+			ASSERT(!imageData.camera.IsSpherical());
 			const TFrustum<float,5> frustum(Matrix3x4f(imageData.camera.P), (float)imageData.width, (float)imageData.height);
 			Mesh::FacesInserter inserter(arrCameraFaces[ID]);
 			octree.Traverse(frustum, inserter);
@@ -1080,6 +1081,7 @@ void MeshRefine::ComputePhotometricGradient(
 		const Point3 X(g.rayA*REAL(g.depth)+cameraA.C);
 		// project point in second image and
 		// projection Jacobian matrix in the second image of the 3D point on the surface
+		ASSERT(!cameraB.IsSpherical());
 		[[maybe_unused]] const float depthB(ProjectVertex(cameraB.P.val, X.ptr(), xB.ptr(), xJac.val));
 		ASSERT(depthB > 0);
 		// compute gradient in image B
@@ -1264,7 +1266,7 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 		cv::merge(grad, 2, view.imageGrad);
 	}
 	// per-view keep-mask at this scale's working size (the same estimator on both backends)
-	PrepareRefineImageMask(imageData, img.size(), view.keepMask);
+	PrepareRefineImageMask(imageData, scene.platforms, img.size(), view.keepMask);
 }
 void MeshRefine::ThProjectMesh(uint32_t idxImage, const Mesh::FaceIdxArr& cameraFaces)
 {

@@ -507,12 +507,12 @@ static Image8U DetectInvalidImageRegions(const Image8U3& image)
 // with the image (>= 0), the regions invalidated by the lens undistortion detected in the image (-1),
 // or none (-2); an image undistorted on read always masks the pixels without a source in its file;
 // the returned mask is set to zero for invalid pixels, and is empty if there is nothing to mask
-static Image8U ComputeValidityMask(const Image& imageData, int nIgnoreMaskLabel)
+static Image8U ComputeValidityMask(const Image& imageData, const PlatformArr& platforms, int nIgnoreMaskLabel)
 {
 	ASSERT(!imageData.image.empty());
 	Image8U mask;
 	BitMatrix bmask;
-	DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), nIgnoreMaskLabel, bmask, &mask);
+	DepthEstimator::ImportIgnoreMask(imageData, platforms, imageData.image.size(), nIgnoreMaskLabel, bmask, &mask);
 	if (nIgnoreMaskLabel == -1) {
 		const Image8U detected(DetectInvalidImageRegions(imageData.image));
 		if (mask.empty())
@@ -593,7 +593,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			continue;
 		}
 		// load image at full native resolution
-		if (!imageData.ReloadImage(0, false)) {
+		if (!imageData.ReloadImage(scene.platforms, 0, false)) {
 			#ifdef TEXOPT_USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)
@@ -606,7 +606,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		// load image at requested working resolution
 		unsigned level(nResolutionLevel);
 		const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
-		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && !imageData.ReloadImage(imageSize)) {
+		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && !imageData.ReloadImage(scene.platforms, imageSize)) {
 			#ifdef TEXOPT_USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)
@@ -623,6 +623,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		// view offers the face, and a finer raster only multiplies the per-thread face/depth maps
 		const cv::Size highResSize(fullSize);
 		const Camera cameraHighRes(imageData.GetCamera(scene.platforms, highResSize));
+		ASSERT(!cameraHighRes.IsSpherical());
 		const TFrustum<float,5> frustum(Matrix3x4f(cameraHighRes.P), (float)highResSize.width, (float)highResSize.height);
 		octree.Traverse(frustum, inserter);
 		// project all triangles in this view and keep the closest ones
@@ -631,7 +632,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		RasterMesh rasterer(vertices, cameraHighRes, depthMap, faceMap, imageData.image.size());
 		RasterMesh::Triangle triangle;
 		RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
-		rasterer.mask = ComputeValidityMask(imageData, nIgnoreMaskLabel);
+		rasterer.mask = ComputeValidityMask(imageData, scene.platforms, nIgnoreMaskLabel);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (nIgnoreMaskLabel == -1 && VERBOSITY_LEVEL > 3)
 			SaveImage(rasterer.mask, String::FormatString("umask%04d.png", idxView));
@@ -2576,7 +2577,7 @@ bool Scene::ComputeVertexColors(unsigned nResolutionLevel, unsigned nMinResoluti
 	for (const auto& [idxView, faces]: viewFaces) {
 		Image& imageData = images[idxView];
 		ASSERT(!imageData.image.empty()); // loaded by FaceViewSelection
-		const Image8U mask(ComputeValidityMask(imageData, nIgnoreMaskLabel));
+		const Image8U mask(ComputeValidityMask(imageData, platforms, nIgnoreMaskLabel));
 		for (const FIndex idxFace: faces) {
 			const Face& face = mesh.faces[idxFace];
 			const float weight(MAXF((float)mesh.ComputeArea(idxFace), 1e-6f));

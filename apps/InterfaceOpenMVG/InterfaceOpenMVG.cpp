@@ -717,7 +717,7 @@ int main(int argc, LPCTSTR* argv)
 
 		// read images meta-data
 		FOREACHPTR(pImage, scene.images) {
-			if (!pImage->ReloadImage(0, false))
+			if (!pImage->ReloadImage(scene.platforms, 0, false))
 				LOG("error: can not read image %s", pImage->name.c_str());
 		}
 		if (OPT::bNormalizeIntrinsics) {

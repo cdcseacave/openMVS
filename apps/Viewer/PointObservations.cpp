@@ -154,14 +154,15 @@ void PointObservations::BuildObservations(const Window& window)
 		std::vector<MVS::Image> files(layer.scene.images.size());
 		FOREACH(i, layer.scene.images) {
 			const MVS::Image& imageData = layer.scene.images[i];
+			files[i].platformID = imageData.platformID;
+			files[i].cameraID = imageData.cameraID;
 			files[i].name = imageData.name;
-			files[i].model = imageData.model;
-			files[i].lens = imageData.lens;
+			files[i].camera.model = imageData.camera.model;
 		}
-		imageCache = std::make_shared<MVS::ImageCache>([files = std::move(files)](MVS::IIndex idxImage, cv::Mat& image) {
+		imageCache = std::make_shared<MVS::ImageCache>([files = std::move(files), platforms = layer.scene.platforms](MVS::IIndex idxImage, cv::Mat& image) {
 			ASSERT(idxImage < files.size());
 			Image8U3 imageColor;
-			if (files[idxImage].ReadPixels(imageColor) == NULL)
+			if (files[idxImage].ReadPixels(platforms, imageColor) == NULL)
 				return false;
 			image = imageColor;
 			return true;
@@ -179,8 +180,7 @@ void PointObservations::BuildObservations(const Window& window)
 		const MVS::IIndex idxImage(views[v]);
 		const MVS::Image& imageData = layer.scene.images[idxImage];
 		ASSERT(imageData.IsValid());
-		const MVS::ModelCamera modelCamera(imageData.GetModelCamera());
-		const auto [x, depth] = modelCamera.ProjectPointP(X);
+		const auto [x, depth] = imageData.camera.ProjectPointP(X);
 		ASSERT(depth > 0);
 		Observation& observation = observations[v];
 		observation.idxImage = idxImage;
@@ -198,7 +198,7 @@ void PointObservations::BuildObservations(const Window& window)
 			observation.feature = pointcloud.pointObservations[pointIdx][v];
 			const Point2f feature(MVS::Camera::ScaleImagePixel(observation.feature, observation.nativeScale));
 			observation.featureOffset = Point2f(
-				modelCamera.ColumnOffset(feature.x, observation.proj.x, (int)imageData.width),
+				imageData.camera.ColumnOffset(feature.x, observation.proj.x, (int)imageData.width),
 				feature.y-observation.proj.y) * (1.f/observation.nativeScale);
 		}
 		observation.weight = hasWeights ? (float)pointcloud.pointWeights[pointIdx][v] : 0.f;

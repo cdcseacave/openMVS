@@ -335,6 +335,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!MVS::WrapPixelTest())
 				return false;
+			if (!MVS::CameraModelTest())
+				return false;
 			if (!MVS::ConfidenceSeamTest())
 				return false;
 			if (!MVS::ComputeFOVTest())

@@ -373,8 +373,9 @@ struct TRasterMeshBase {
 	const Camera& camera;
 	DepthMap& depthMap;
 
+	// the triangles are rasterized straight, interpolating the depth z: pinhole cameras only
 	TRasterMeshBase(const Camera& _camera, DepthMap& _depthMap)
-		: camera(_camera), depthMap(_depthMap) {}
+		: camera(_camera), depthMap(_depthMap) { ASSERT(!camera.IsSpherical()); }
 
 	inline void Clear() {
 		depthMap.memset(0);

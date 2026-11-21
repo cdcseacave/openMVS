@@ -105,11 +105,12 @@ bool Image::ReadImage(IMAGEPTR pImage, Image8U3& image)
 	return true;
 } // ReadImage
 
-IMAGEPTR Image::ReadPixels(Image8U3& pixels) const
+IMAGEPTR Image::ReadPixels(const PlatformArr& platforms, Image8U3& pixels) const
 {
 	IMAGEPTR pImage(ReadImage(name, pixels));
 	if (pImage == NULL || !IsUndistortedOnRead())
 		return pImage;
+	const CameraLens& lens = GetLens(platforms);
 	if (pixels.size() != lens.size) {
 		LOG("error: image '%s' is %dx%d, its camera %dx%d", name.c_str(), pixels.width(), pixels.height(), lens.size.width, lens.size.height);
 		pImage.Release();
@@ -117,38 +118,39 @@ IMAGEPTR Image::ReadPixels(Image8U3& pixels) const
 	}
 	Image8U3 distorted;
 	cv::swap(distorted, pixels);
-	GetUndistortMaps()->Remap(distorted, pixels, cv::INTER_LINEAR);
+	GetUndistortMaps(platforms)->Remap(distorted, pixels, cv::INTER_LINEAR);
 	return pImage;
 } // ReadPixels
 
-bool Image::LoadMask(Image8U& mask) const
+bool Image::LoadMask(const PlatformArr& platforms, Image8U& mask) const
 {
 	if (!mask.Load(GetMaskFileName()))
 		return false;
 	if (!IsUndistortedOnRead())
 		return true;
+	const CameraLens& lens = GetLens(platforms);
 	// the mask may be stored at another resolution than the image file
 	if (mask.size() != lens.size)
 		cv::resize(mask, mask, lens.size, 0, 0, cv::INTER_NEAREST);
 	Image8U distorted;
 	cv::swap(distorted, mask);
-	GetUndistortMaps()->Remap(distorted, mask, cv::INTER_NEAREST);
+	GetUndistortMaps(platforms)->Remap(distorted, mask, cv::INTER_NEAREST);
 	return true;
 } // LoadMask
 
-std::shared_ptr<const CameraUndistortMaps> Image::GetUndistortMaps() const
+std::shared_ptr<const CameraUndistortMaps> Image::GetUndistortMaps(const PlatformArr& platforms) const
 {
-	ASSERT(IsUndistortedOnRead());
+	const CameraLens& lens = GetLens(platforms);
 	return GetCameraUndistortMaps(lens.K, lens.distortion, lens.size);
 } // GetUndistortMaps
 /*----------------------------------------------------------------*/
 
 
-bool Image::LoadImage(const String& fileName, unsigned nMaxResolution)
+bool Image::LoadImage(const PlatformArr& platforms, const String& fileName, unsigned nMaxResolution)
 {
 	name = fileName;
 	// read the image file
-	if (ReadPixels(image) == NULL) {
+	if (ReadPixels(platforms, image) == NULL) {
 		LOG("error: failed loading image '%s'", name.c_str());
 		return false;
 	}
@@ -158,9 +160,9 @@ bool Image::LoadImage(const String& fileName, unsigned nMaxResolution)
 } // LoadImage
 
 // open the stored image file name and read again the image data
-bool Image::ReloadImage(unsigned nMaxResolution, bool bLoadPixels)
+bool Image::ReloadImage(const PlatformArr& platforms, unsigned nMaxResolution, bool bLoadPixels)
 {
-	IMAGEPTR pImage(bLoadPixels ? ReadPixels(image) : ReadImageHeader(name));
+	IMAGEPTR pImage(bLoadPixels ? ReadPixels(platforms, image) : ReadImageHeader(name));
 	if (pImage == NULL) {
 		LOG("error: failed reloading image '%s'", name.c_str());
 		return false;
@@ -273,9 +275,6 @@ Camera Image::GetCamera(const PlatformArr& platforms, const cv::Size& resolution
 
 void Image::UpdateCamera(const PlatformArr& platforms)
 {
-	const Platform::Camera& platformCamera = platforms[platformID].cameras[cameraID];
-	model = platformCamera.model;
-	lens = platformCamera.lens;
 	camera = GetCamera(platforms, cv::Size(width, height));
 } // UpdateCamera
 

@@ -156,9 +156,16 @@ own state and call the models. The depth-map algorithms built on the models are 
   `Scene::InitTowerScene`).
 - The MeshLab project (`Scene::ExportCamerasMLP`) holds pinhole rasters: the image file of a Brown camera
   is written undistorted onto `K'` beside it (`<project>_rasters/`), a spherical image is left out.
-- PatchMatch: `MakeCameraModel<MODEL>(camera)` (`libs/MVS/DepthMap.h`) builds `Pinhole`/`Spherical`
-  from a view's `K`; `ModelCamera` (`libs/MVS/Image.h`) dispatches the pixel/world transforms of fusion
-  and the depth-map consumers on the image model (`SphericalPatchMatch.md`).
+- `MVS::CameraIntern` (`libs/MVS/Camera.h`) carries the projection model next to `K`, `R`, `C`: the
+  platform camera holds it with the lens of the image files, `Platform::GetCamera` and `Image::GetCamera`
+  copy it into every camera they make, so an image camera, a scaled copy of it (`Camera::GetScaled`) and a
+  depth-map view camera all know their model. `Camera::Model<MODEL>()` builds `Pinhole`/`Spherical` from
+  `K` (asserting it is the camera's model) and `Camera::VisitModel<T>(f)` calls `f` with the one the camera
+  has, so a loop templated on the model picks it once per camera. The pixel/world transforms of `Camera`
+  follow the model (`SphericalPatchMatch.md`); the pinhole-only ones (the z=1 plane, `P`, the view plane,
+  stereo rectification, the OpenGL projection) assert a pinhole camera. The lens is not copied into the
+  images: the readers of the image files (`Image::ReadPixels`, `LoadMask`, `GetUndistortMaps`,
+  `ObservationMap`) take the platforms and read it from the platform camera (`Image::GetLens`).
 
 ## 3. Parameters and defaults
 
@@ -178,7 +185,7 @@ own state and call the models. The depth-map algorithms built on the models are 
   point up to rounding (relative 1e-5: compilers that contract `a*a+b*b` into an fma, clang, GCC and
   nvcc, round the caller's and the check's expression differently, MSVC does not).
 - `Undistort` requires an invertible distortion between the distorted point and the solution.
-- `MakeCameraModel` requires zero skew.
+- `Camera::Model` requires zero skew and the camera's own model.
 - `K'` of a Brown camera depends only on its lens and resolution.
 - A Brown camera in a v8 scene carries its resolution and 5 or 8 coefficients (`LoadInterface` refuses
   the scene otherwise); a spherical `K` is the angular `K` of its image size.

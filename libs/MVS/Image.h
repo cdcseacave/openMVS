@@ -52,108 +52,6 @@ typedef _INTERFACE_NAMESPACE::Interface::Image::ViewScore ViewScore;
 typedef CLISTDEF0IDX(ViewScore, IIndex) ViewScoreArr;
 /*----------------------------------------------------------------*/
 
-// a camera seen through the projection model of its view: the depth of a pixel is the distance along
-// the model's ray (z for a pinhole, the range for an equirectangular panorama, whose columns wrap);
-// the geometry outside the PatchMatch estimator (fusion, depth-map filters, point colors and normals)
-// goes through it, so pinhole and spherical views mix; the pinhole calls are the camera's own
-class ModelCamera
-{
-public:
-	const Camera& camera;
-	const bool bSpherical;
-
-	inline ModelCamera(const Camera& _camera, CameraModelType model) : camera(_camera), bSpherical(model == CameraModelType::SPHERICAL) {}
-
-	// the equirectangular model of a spherical camera, from its angular K
-	inline Spherical<REAL> GetSpherical() const {
-		ASSERT(bSpherical && ISZERO(camera.K(0,1)));
-		return Spherical<REAL>{camera.K(0,0), camera.K(1,1), camera.K(0,2), camera.K(1,2)};
-	}
-
-	// camera-frame point of pixel x at the given depth
-	inline Point3 TransformPointI2C(const Point2& x, REAL depth) const {
-		if (!bSpherical)
-			return camera.TransformPointI2C(Point3(x.x, x.y, depth));
-		ASSERT(depth > 0);
-		return Point3(GetSpherical().Ray(x)*depth);
-	}
-	// world point of pixel x at the given depth
-	inline Point3 TransformPointI2W(const Point2& x, REAL depth) const {
-		return camera.TransformPointC2W(TransformPointI2C(x, depth));
-	}
-	// world-frame direction of the ray of pixel x (not normalized)
-	inline Point3 RayPoint(const Point2& x) const {
-		if (!bSpherical)
-			return camera.RayPoint(x);
-		return camera.R.t() * TransformPointI2C(x, REAL(1));
-	}
-	// pixel and depth of a world point; the depth is not positive if the point is behind a pinhole camera
-	template <typename TYPE>
-	inline std::tuple<TPoint2<TYPE>,TYPE> ProjectPointP(const TPoint3<TYPE>& X) const {
-		if (!bSpherical)
-			return camera.ProjectPointP(X);
-		const Point3 Xc(camera.TransformPointW2C(Cast<REAL>(X)));
-		Eigen::Vector2d x;
-		GetSpherical().Project(Xc, x);
-		return {TPoint2<TYPE>(Point2(x)), TYPE(norm(Xc))};
-	}
-	// pixel and depth of a camera-frame point; the depth is not positive if the point is behind a
-	// pinhole camera or at the center of a spherical one
-	inline std::tuple<Point2,REAL> ProjectPointC(const Point3& Xc) const {
-		if (!bSpherical)
-			return {camera.TransformPointC2I(Xc), Xc.z};
-		const Eigen::Vector3d X(Xc);
-		Eigen::Vector2d x;
-		GetSpherical().Project(X, x);
-		return {Point2(x), Spherical<REAL>::Depth(X)};
-	}
-	// pixel of a world point in front of the camera
-	inline Point2 TransformPointW2I(const Point3& X) const {
-		if (!bSpherical)
-			return camera.TransformPointW2I(X);
-		return std::get<0>(ProjectPointP(X));
-	}
-	// the position of a world point inside an image of the given size, in [0,size): false if it falls
-	// outside or behind a pinhole camera; a spherical camera sees every direction, but its projection
-	// spans [-0.5,size-0.5), so the point takes its pixel there, the column wrapped
-	template <typename TYPE>
-	inline bool ProjectPointInside(const TPoint3<TYPE>& X, const cv::Size& size, Point2f& x) const {
-		const auto [pt, depth] = ProjectPointP(X);
-		if (!bSpherical) {
-			x = Point2f(pt);
-			return depth > 0 && camera.IsInside(x, Point2f(size));
-		}
-		ImageRef ir;
-		if (depth <= 0 || !GetPixel(pt, size, ir))
-			return false;
-		x = Point2f((float)ir.x, (float)ir.y);
-		return true;
-	}
-	// pixel ir of an image of the given size, its column wrapped for a spherical camera (ir.x within one
-	// width of the image); false if outside the image
-	inline bool WrapPixel(ImageRef& ir, const cv::Size& size) const {
-		if (bSpherical)
-			ir.x = WrapColumn(ir.x, size.width);
-		return Image8U::isInside(ir, size);
-	}
-	// the pixel of an image of the given size closest to x, its column wrapped for a spherical camera;
-	// false if outside the image
-	template <typename TYPE>
-	inline bool GetPixel(const TPoint2<TYPE>& x, const cv::Size& size, ImageRef& ir) const {
-		ir = ROUND2INT(x);
-		return WrapPixel(ir, size);
-	}
-	// the column offset a-b, the shortest one around the panorama for a spherical camera
-	template <typename TYPE>
-	inline TYPE ColumnOffset(TYPE a, TYPE b, int width) const {
-		const TYPE d(a - b);
-		if (!bSpherical)
-			return d;
-		return d > TYPE(width)/2 ? d - TYPE(width) : (d < -TYPE(width)/2 ? d + TYPE(width) : d);
-	}
-};
-/*----------------------------------------------------------------*/
-
 // a view instance seeing the scene
 class MVS_API Image
 {
@@ -164,9 +62,7 @@ public:
 	uint32_t ID; // global ID of the image (the ID given outside the current scene - ex. the index in the full list of image files)
 	String name; // image file name (relative path)
 	String maskName; // segmentation file name (optional)
-	Camera camera; // view's pose
-	CameraModelType model; // projection model of the image file, from its platform camera (UpdateCamera)
-	CameraLens lens; // BROWN: the lens of the image file, removed when the pixels are read
+	Camera camera; // view's pose, intrinsics and projection model, from its platform camera (UpdateCamera)
 	uint32_t width, height; // image size
 	Image8U3 image; // image color pixels
 	Image8U mask; // image 8-bit segmentation mask, max 256 labels
@@ -175,16 +71,25 @@ public:
 	float avgDepth; // average depth of the points seen by this camera
 
 public:
-	inline Image() : platformID(NO_ID), cameraID(NO_ID), poseID(NO_ID), ID(NO_ID), model(CameraModelType::PINHOLE), width(0), height(0), scale(1), avgDepth(0) {}
+	inline Image() : platformID(NO_ID), cameraID(NO_ID), poseID(NO_ID), ID(NO_ID), width(0), height(0), scale(1), avgDepth(0) {}
 
 	inline bool IsValid() const { return poseID != NO_ID; }
 	// the pixels of the image file are undistorted when read (BROWN), which leaves the
 	// undistorted pixels without a source invalid (see GetUndistortMaps()->mask)
-	inline bool IsUndistortedOnRead() const { return model == CameraModelType::BROWN; }
-	// the depth of a world point along the ray of the camera model: z, or the range for a spherical image
-	inline REAL PointDepth(const Point3& X) const { return model == CameraModelType::SPHERICAL ? camera.Distance(X) : camera.PointDepth(X); }
-	inline bool IsSpherical() const { return model == CameraModelType::SPHERICAL; }
-	inline ModelCamera GetModelCamera() const { return ModelCamera(camera, model); }
+	inline bool IsUndistortedOnRead() const { return camera.model == CameraModelType::BROWN; }
+	inline bool IsSpherical() const { return camera.IsSpherical(); }
+	// the platform camera of the image, describing its file (the lens of a Brown camera)
+	inline const Platform::Camera& GetPlatformCamera(const PlatformArr& platforms) const {
+		ASSERT(platformID < platforms.size() && cameraID < platforms[platformID].cameras.size());
+		return platforms[platformID].cameras[cameraID];
+	}
+	// the lens of the image file; IsUndistortedOnRead() only
+	inline const CameraLens& GetLens(const PlatformArr& platforms) const {
+		ASSERT(IsUndistortedOnRead());
+		const Platform::Camera& platformCamera = GetPlatformCamera(platforms);
+		ASSERT(platformCamera.model == CameraModelType::BROWN);
+		return platformCamera.lens;
+	}
 	inline String GetMaskFileName() const { return maskName.empty() ? Util::getFileFullName(name)+".mask.png" : maskName; }
 	inline bool HasResolution() const { return width > 0 && height > 0; }
 	inline cv::Size GetSize() const { return cv::Size(width, height); }
@@ -202,19 +107,20 @@ public:
 	static IMAGEPTR ReadImage(const String& fileName, Image8U3& image);
 	static bool ReadImage(IMAGEPTR pImage, Image8U3& image);
 	// read the pixels of the image file at its resolution, as the camera sees them: undistorted if
-	// IsUndistortedOnRead(); every reader of the image pixels goes through it
-	IMAGEPTR ReadPixels(Image8U3& image) const;
+	// IsUndistortedOnRead(), through the lens of its platform camera; every reader of the image pixels
+	// goes through it
+	IMAGEPTR ReadPixels(const PlatformArr& platforms, Image8U3& image) const;
 	// read the segmentation mask file (GetMaskFileName()) as the camera sees it, at the image file
 	// resolution: undistorted with nearest-neighbor sampling if IsUndistortedOnRead()
-	bool LoadMask(Image8U& mask) const;
+	bool LoadMask(const PlatformArr& platforms, Image8U& mask) const;
 	// the undistortion maps of the image file, shared by the images of the camera; IsUndistortedOnRead() only
-	std::shared_ptr<const CameraUndistortMaps> GetUndistortMaps() const;
-	bool LoadImage(const String& fileName, unsigned nMaxResolution=0);
-	bool ReloadImage(unsigned nMaxResolution=0, bool bLoadPixels=true);
+	std::shared_ptr<const CameraUndistortMaps> GetUndistortMaps(const PlatformArr& platforms) const;
+	bool LoadImage(const PlatformArr& platforms, const String& fileName, unsigned nMaxResolution=0);
+	bool ReloadImage(const PlatformArr& platforms, unsigned nMaxResolution=0, bool bLoadPixels=true);
 	// reload the pixels at the resolution the scene was prepared at: width/height
 	// are left at that resolution when the pixels are released, so the scale
 	// recomputation reproduces them exactly
-	bool ReloadImageAtPreparedResolution(bool bLoadPixels=true) { return ReloadImage(MAXF(width, height), bLoadPixels); }
+	bool ReloadImageAtPreparedResolution(const PlatformArr& platforms, bool bLoadPixels=true) { return ReloadImage(platforms, MAXF(width, height), bLoadPixels); }
 	void ReleaseImage();
 	float ResizeImage(unsigned nMaxResolution=0);
 	// resize a raster on an image grid to its uniform size (see TImage::computeResize) with one factor on
@@ -282,10 +188,10 @@ typedef CLISTDEF2IDX(Image,IIndex) ImageArr;
 // both at the image file resolution: the identity unless the image is undistorted on read
 class ObservationMap {
 public:
-	explicit ObservationMap(const Image& imageData) : bUndistort(imageData.IsUndistortedOnRead()) {
+	ObservationMap(const Image& imageData, const PlatformArr& platforms) : bUndistort(imageData.IsUndistortedOnRead()) {
 		if (!bUndistort)
 			return;
-		const CameraLens& lens = imageData.lens;
+		const CameraLens& lens = imageData.GetLens(platforms);
 		const KMatrix undistortedK(UndistortedK(lens.K, lens.distortion, lens.size));
 		ASSERT(ISZERO(lens.K(0,1)) && ISZERO(undistortedK(0,1)));
 		file = Pinhole<REAL>{lens.K(0,0), lens.K(1,1), lens.K(0,2), lens.K(1,2)};
@@ -305,11 +211,11 @@ public:
 		return Point2f(Point2(d));
 	}
 	// one map per image
-	static std::vector<ObservationMap> MakeMaps(const ImageArr& images) {
+	static std::vector<ObservationMap> MakeMaps(const ImageArr& images, const PlatformArr& platforms) {
 		std::vector<ObservationMap> maps;
 		maps.reserve(images.size());
 		for (const Image& imageData: images)
-			maps.emplace_back(imageData);
+			maps.emplace_back(imageData, platforms);
 		return maps;
 	}
 private:

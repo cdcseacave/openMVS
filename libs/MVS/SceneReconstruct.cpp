@@ -323,6 +323,7 @@ void fetchCellFacets(const delaunay_t& Tr, const std::vector<facet_t>& hullFacet
 	// find all facets on the convex-hull in camera's view
 	// create the 4 frustum planes
 	ASSERT(facets.empty());
+	ASSERT(!imageData.camera.IsSpherical());
 	const TFrustum<REAL,4> frustum(imageData.camera.P, imageData.width, imageData.height, 0, 1);
 	// loop over all cells
 	// the orientation test runs in the working space, which is the whole point of the rescale,

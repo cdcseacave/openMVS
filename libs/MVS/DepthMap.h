@@ -251,10 +251,8 @@ struct MVS_API DepthData {
 		}
 		// the view is an equirectangular panorama (else a pinhole camera: Brown images are read undistorted)
 		inline bool IsSpherical() const {
-			return pImageData->model == CameraModelType::SPHERICAL;
-		}
-		inline ModelCamera GetModelCamera() const {
-			return ModelCamera(camera, pImageData->model);
+			ASSERT(camera.model == pImageData->camera.model);
+			return camera.IsSpherical();
 		}
 		// homography from reference pixels to this view's pixels induced by the plane through the
 		// reference camera-frame point X0*depth with the given normal (pinhole cameras, cached constants)
@@ -375,15 +373,6 @@ typedef CLISTDEFIDX(DepthData,IIndex) DepthDataArr;
 /*----------------------------------------------------------------*/
 
 
-// the camera model of a view: pinhole and spherical models are both parametrized by the focal
-// lengths and the principal point of the view's K
-template<typename MODEL>
-inline MODEL MakeCameraModel(const Camera& camera) {
-	typedef typename MODEL::Scalar T;
-	ASSERT(ISZERO(camera.K(0,1)));
-	return MODEL{T(camera.K(0,0)), T(camera.K(1,1)), T(camera.K(0,2)), T(camera.K(1,2))};
-}
-
 // the sines and cosines of the longitude of every column and of the elevation of every row of an
 // equirectangular image of the given size, computed in double precision and stored in single
 // precision as (sin, cos) pairs of any two-float type (SINCOS): the rays and ray frames of its pixels
@@ -459,7 +448,7 @@ struct MVS_API DepthEstimatorBase {
 	// Image is never touched, so it is safe to call concurrently for the same Image and across scales);
 	// bmask gets the keep-mask (bit set = keep), or pMask the mask != label if given; returns false
 	// and leaves both untouched if there is no mask to load
-	static bool ImportIgnoreMask(const Image&, const cv::Size&, int nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
+	static bool ImportIgnoreMask(const Image&, const PlatformArr&, const cv::Size&, int nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
 	static void MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& coords, const BitMatrix& mask, int rawStride=nZigzagMinStride);
 
 	static const float scaleRanges[12];
@@ -780,7 +769,7 @@ inline size_t ComputeSafetyMemory(const Util::MemoryInfo& memInfo) {
 
 // the images are decoded as they are sampled and released right after, so they do
 // not have to be loaded by the caller
-MVS_API void EstimatePointColors(ImageArr& images, PointCloud& pointcloud);
+MVS_API void EstimatePointColors(ImageArr& images, const PlatformArr& platforms, PointCloud& pointcloud);
 MVS_API void EstimatePointSegmentation(const ImageArr& images, PointCloud& pointcloud, unsigned minViews=2);
 MVS_API unsigned ColorPointSegmentation(PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);
@@ -800,11 +789,11 @@ inline void EstimateNormalMap(const Spherical<float>& camera, const DepthMap& de
 	}
 }
 // the same for the depth-map of a camera of either model
-inline void EstimateNormalMap(const ModelCamera& camera, const DepthMap& depthMap, NormalMap& normalMap) {
-	if (camera.bSpherical)
-		EstimateNormalMap(MakeCameraModel<Spherical<float>>(camera.camera), depthMap, normalMap);
+inline void EstimateNormalMap(const Camera& camera, const DepthMap& depthMap, NormalMap& normalMap) {
+	if (camera.IsSpherical())
+		EstimateNormalMap(camera.Model<Spherical<float>>(), depthMap, normalMap);
 	else
-		EstimateNormalMap(camera.camera.K, depthMap, normalMap);
+		EstimateNormalMap(Matrix3x3f(camera.K), depthMap, normalMap);
 }
 
 // Standalone confidence estimators, deriving a confidence-map from the geometry of one

@@ -79,7 +79,7 @@ public:
 		// decode into a copy: the pixels are for display, the scene image keeps its resolution and camera
 		MVS::Image imageData(layer->scene.images[image.idx]);
 		ASSERT(imageData.IsValid());
-		if (imageData.image.empty() && !imageData.ReloadImage(nMaxResolution)) {
+		if (imageData.image.empty() && !imageData.ReloadImage(layer->scene.platforms, nMaxResolution)) {
 			image.CancelImageLoading();
 			return finish(false);
 		}
@@ -1699,7 +1699,7 @@ void Scene::PrecomputeTrackBasedNeighbors() {
 			if (views.FindFirst(refMVS) == MVS::PointCloud::ViewArr::NO_INDEX)
 				continue;
 			const MVS::PointCloud::Point& point = pointcloud.points[p];
-			const float refDepth = (float)refImage.PointDepth(Cast<REAL>(point));
+			const float refDepth = (float)refImage.camera.PointDepth(Cast<REAL>(point));
 			if (refDepth <= 0)
 				continue;
 			const Point3f V1 = refImage.camera.C - Cast<REAL>(point);
@@ -1711,7 +1711,7 @@ void Scene::PrecomputeTrackBasedNeighbors() {
 				++stat.points;
 				stat.sharedPoints.emplace_back(p);
 				const MVS::Image& otherImage = scene.images[view];
-				const float otherDepth = (float)otherImage.PointDepth(Cast<REAL>(point));
+				const float otherDepth = (float)otherImage.camera.PointDepth(Cast<REAL>(point));
 				if (otherDepth <= 0)
 					continue;
 				const Point3f V2(otherImage.camera.C - Cast<REAL>(point));
@@ -1739,8 +1739,8 @@ void Scene::PrecomputeTrackBasedNeighbors() {
 				for (const auto pointIdx : stat.sharedPoints) {
 					const MVS::PointCloud::Point& point = pointcloud.points[pointIdx];
 					Point2f ptA, ptB;
-					if (otherImage.GetModelCamera().ProjectPointInside(point, otherImage.GetSize(), ptB) &&
-						refImage.GetModelCamera().ProjectPointInside(point, refImage.GetSize(), ptA))
+					if (otherImage.camera.ProjectPointInside(point, otherImage.GetSize(), ptB) &&
+						refImage.camera.ProjectPointInside(point, refImage.GetSize(), ptA))
 						projs.emplace_back(ptA);
 				}
 				if (!projs.empty())
@@ -1986,7 +1986,7 @@ void Scene::OnCastRay(const Point2f& screenPos, const Ray3d& ray, int button, in
 								continue;
 							}
 							const MVS::Image& imageData = scene.images[idxImage];
-							const auto [x, depth] = imageData.GetModelCamera().ProjectPointP(Cast<REAL>(window.selectionPoints[0]));
+							const auto [x, depth] = imageData.camera.ProjectPointP(Cast<REAL>(window.selectionPoints[0]));
 							const float conf = scene.pointcloud.pointWeights.empty() ? 0.f : scene.pointcloud.pointWeights[newSelectionIdx][v];
 							strViews += String::FormatString("\n\t\t%s (%.2f %.2f pixel, %.2f depth, %.2f conf)", Util::getFileNameExt(imageData.name).c_str(), x.x, x.y, depth, conf);
 						}

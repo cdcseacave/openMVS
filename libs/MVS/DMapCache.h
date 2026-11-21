@@ -53,7 +53,7 @@ namespace MVS {
 // memory budget instead of requiring every image to stay resident.
 class MVS_API DMapCache {
 public:
-	explicit DMapCache(DepthDataArr& arrDepthData, unsigned loadFlags, size_t max_memory_bytes, ImageArr* pImages = NULL);
+	explicit DMapCache(DepthDataArr& arrDepthData, unsigned loadFlags, size_t max_memory_bytes, ImageArr* pImages = NULL, const PlatformArr* pPlatforms = NULL);
 	// reports how well the cache did
 	~DMapCache();
 
@@ -106,6 +106,7 @@ private:
 	// scene images whose pixels are cached along the depth-data, NULL if the
 	// caller keeps them resident itself
 	ImageArr* pImages;
+	const PlatformArr* pPlatforms; // the platforms of the images, to read their pixels
 
 	// maximum and used memory (in bytes)
 	size_t maxMemory, disabledMaxMemory;

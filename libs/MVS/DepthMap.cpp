@@ -183,8 +183,8 @@ void DepthData::GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>*
 	if (GetView().IsSpherical()) {
 		// the window of an equirectangular map wraps its columns
 		ASSERT(pPointMap == NULL);
-		const ModelCamera modelCamera(GetView().GetModelCamera());
-		points[0] = modelCamera.TransformPointI2C(Point2(ir.x,ir.y), depthMap(ir));
+		const Camera& camera(GetView().camera);
+		points[0] = camera.TransformPointI2C(Point2(ir.x,ir.y), depthMap(ir));
 		for (int j=ptCornerRel.y; j<nWindow; j+=nPointsStep) {
 			const int y = ptCorner.y+j;
 			if (y >= size.height)
@@ -195,7 +195,7 @@ void DepthData::GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>*
 					continue;
 				const Depth d = depthMap(y,x);
 				if (d > 0)
-					points.Insert(modelCamera.TransformPointI2C(Point2(x,y), d));
+					points.Insert(camera.TransformPointI2C(Point2(x,y), d));
 			}
 		}
 	} else
@@ -372,7 +372,7 @@ size_t MVS::DepthData::GetMemorySize() const
 // the pixels without a source in the image file
 // - pMask: optional output mask; if defined, the mask is returned in this image instead of the BitMatrix
 // returns false if there is nothing to mask
-bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const cv::Size& size, int nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
+bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const PlatformArr& platforms, const cv::Size& size, int nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
 {
 	ASSERT(image0.IsValid());
 	if (nIgnoreMaskLabel < 0 && !image0.IsUndistortedOnRead())
@@ -382,7 +382,7 @@ bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const cv::Size& s
 	// an image without a segmentation mask keeps the validity mask
 	Image8U mask;
 	if (nIgnoreMaskLabel >= 0) {
-		if (!image0.mask.empty() || image0.LoadMask(mask)) {
+		if (!image0.mask.empty() || image0.LoadMask(platforms, mask)) {
 			cv::resize(image0.mask.empty() ? mask : image0.mask, mask, size, 0, 0, cv::INTER_NEAREST);
 			mask = (mask != (uint8_t)nIgnoreMaskLabel);
 		} else {
@@ -391,7 +391,7 @@ bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const cv::Size& s
 	}
 	if (image0.IsUndistortedOnRead()) {
 		Image8U valid;
-		cv::resize(image0.GetUndistortMaps()->mask, valid, size, 0, 0, cv::INTER_NEAREST);
+		cv::resize(image0.GetUndistortMaps(platforms)->mask, valid, size, 0, 0, cv::INTER_NEAREST);
 		if (mask.empty())
 			mask = valid;
 		else
@@ -480,7 +480,7 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 	image0Sum(_image0Sum),
 	#endif
 	coords(_coords), size(_depthData0.images.First().image.size()),
-	camera0(MakeCameraModel<Model>(image0.camera)), camera0f(MakeCameraModel<Modelf>(image0.camera)),
+	camera0(image0.camera.Model<Model>()), camera0f(image0.camera.Model<Modelf>()),
 	dMin(_depthData0.dMin), dMax(_depthData0.dMax),
 	dMinSqr(SQRT(_depthData0.dMin)), dMaxSqr(SQRT(_depthData0.dMax)),
 	dir(nIter%2 ? RB2LT : LT2RB),
@@ -891,10 +891,10 @@ bool DepthEstimatorT<MODEL>::SampleModelPatch(const DepthData::ViewData& image1,
 		// the patch center must be in front of a pinhole target
 		if (q0.z() <= 0)
 			return false;
-		MulMat3(MakeCameraModel<Pinhole<float>>(image1.camera).PixelHomography(q0).data(), HF, M);
+		MulMat3(image1.camera.Model<Pinhole<float>>().PixelHomography(q0).data(), HF, M);
 		return SampleWarpedPatch<false>(image1.image, MakePatchWarp(M), sink);
 	}
-	const Spherical<float> trg(MakeCameraModel<Spherical<float>>(image1.camera));
+	const Spherical<float> trg(image1.camera.Model<Spherical<float>>());
 	if (SQUARE(q0.y()) > sinSqWarpMaxElevation*(SQUARE(q0.x()) + SQUARE(q0.y()) + SQUARE(q0.z())))
 		return SampleExactPatch(image1, trg, depth, normal, sink);
 	const float rho(FastSqrt(SQUARE(q0.x()) + SQUARE(q0.z())));
@@ -944,9 +944,9 @@ FORCEINLINE float DepthEstimatorT<MODEL>::ComputeGeometricConsistency(const Dept
 {
 	ASSERT(!image1.depthMap.empty());
 	if (image1.IsSpherical())
-		return GeometricConsistency(image1, MakeCameraModel<Spherical<float>>(image1.cameraDepthMap), depth);
+		return GeometricConsistency(image1, image1.cameraDepthMap.Model<Spherical<float>>(), depth);
 	if constexpr (bSphericalRef) {
-		return GeometricConsistency(image1, MakeCameraModel<Pinhole<float>>(image1.cameraDepthMap), depth);
+		return GeometricConsistency(image1, image1.cameraDepthMap.Model<Pinhole<float>>(), depth);
 	} else {
 		float consistency(4.f);
 		const Point3f X1(image1.Tl*Point3f(float(X0.x)*depth,float(X0.y)*depth,depth)+image1.Tm); // Kj * Rj * (Ri.t() * X + Ci - Cj)
@@ -1916,7 +1916,7 @@ unsigned MVS::EstimatePlaneThLockFirstPoint(const Point3fArr& points, Planef& pl
 // once, and holding them was the only reason this step needed them all decoded.
 // Points seen by no image, projecting outside it, or whose image cannot be decoded,
 // are left white.
-void MVS::EstimatePointColors(ImageArr& images, PointCloud& pointcloud)
+void MVS::EstimatePointColors(ImageArr& images, const PlatformArr& platforms, PointCloud& pointcloud)
 {
 	TD_TIMER_START();
 
@@ -1940,7 +1940,7 @@ void MVS::EstimatePointColors(ImageArr& images, PointCloud& pointcloud)
 			const Image& imageData = images[idxImage];
 			ASSERT(imageData.IsValid());
 			// compute the distance from the 3D point to the image
-			const REAL distance(imageData.PointDepth(point));
+			const REAL distance(imageData.camera.PointDepth(point));
 			ASSERT(distance > 0);
 			if (bestDistance > distance) {
 				bestDistance = distance;
@@ -2001,18 +2001,18 @@ void MVS::EstimatePointColors(ImageArr& images, PointCloud& pointcloud)
 			continue;
 		Image& imageData = images[idxImage];
 		const bool bReleaseImage(imageData.image.empty());
-		if (bReleaseImage && !imageData.ReloadImageAtPreparedResolution()) {
+		if (bReleaseImage && !imageData.ReloadImageAtPreparedResolution(platforms)) {
 			++numFailedImages;
 			continue;
 		}
-		const ModelCamera camera(imageData.GetModelCamera());
+		const Camera& camera(imageData.camera);
 		for (IIndex i=idxPointsStart; i<idxPointsEnd; ++i) {
 			const PointCloud::Index idxPoint(imagePoints[i]);
 			const auto [proj, depth] = camera.ProjectPointP(pointcloud.points[idxPoint]);
 			ImageRef x;
 			if (depth > 0 && imageData.image.isInsideWithBorder<float,1>(proj))
 				pointcloud.colors[idxPoint] = imageData.image.sample(proj);
-			else if (camera.bSpherical && camera.GetPixel(proj, imageData.image.size(), x))
+			else if (camera.IsSpherical() && camera.GetPixel(proj, imageData.image.size(), x))
 				pointcloud.colors[idxPoint] = imageData.image(x); // next to the seam or a pole
 		}
 		if (bReleaseImage)
@@ -2054,7 +2054,7 @@ void MVS::EstimatePointSegmentation(const ImageArr& images, PointCloud& pointclo
 			if (imageData.mask.empty())
 				continue;
 			// get image mask label
-			const ModelCamera camera(imageData.GetModelCamera());
+			const Camera& camera(imageData.camera);
 			ImageRef proj;
 			if (!camera.GetPixel(std::get<0>(camera.ProjectPointP(point)), imageData.mask.size(), proj))
 				continue;
@@ -2201,7 +2201,7 @@ void MVS::EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap&
 	const DepthMap& depthMap = depthData.depthMap;
 	confMap.create(depthMap.size());
 	confMap.memset(0);
-	const ModelCamera camera(depthData.GetView().GetModelCamera());
+	const Camera& camera(depthData.GetView().camera);
 	#ifdef DEPTHMAP_USE_OPENMP
 	#pragma omp parallel for
 	#endif
@@ -2248,7 +2248,7 @@ void MVS::EstimateConfidenceFromNormal(const DepthData& depthData, ConfidenceMap
 	const DepthMap& depthMap = depthData.depthMap;
 	confMap.create(normalMap.size());
 	confMap.memset(0);
-	const ModelCamera camera(depthData.GetView().GetModelCamera());
+	const Camera& camera(depthData.GetView().camera);
 	#ifdef DEPTHMAP_USE_OPENMP
 	#pragma omp parallel for
 	#endif
@@ -2447,7 +2447,7 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const DepthMap& depthMap, const NormalMap& normalMap)
 {
 	ASSERT(!depthMap.empty());
-	const ModelCamera P0(imageData.GetModelCamera());
+	const Camera& P0(imageData.camera);
 	// the 3D point of every valid depth, with its color and normal
 	const size_t nPoints((size_t)cv::countNonZero(depthMap));
 	std::vector<Point3f> points, normals;
@@ -2468,7 +2468,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 				continue;
 			points.emplace_back(P0.TransformPointI2W(Point2(i,j), depth));
 			if (!normalMap.empty())
-				normals.emplace_back(P0.camera.R.t() * Cast<REAL>(normalMap(j,i)));
+				normals.emplace_back(P0.R.t() * Cast<REAL>(normalMap(j,i)));
 			colors.emplace_back(imageData.image.empty() ? Pixel8U::WHITE :
 				imageData.image(FLOOR2INT(scaleImage.y*(j+0.5f)), FLOOR2INT(scaleImage.x*(i+0.5f))));
 		}

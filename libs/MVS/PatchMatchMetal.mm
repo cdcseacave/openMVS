@@ -295,7 +295,7 @@ bool PatchMatch::Impl::RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLB
 	return true;
 }
 
-void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confRequest)
+void PatchMatch::EstimateDepthMap(const PlatformArr& platforms, DepthData& depthData, ConfAdjustRequest* confRequest)
 {
 	if (!IsValid())
 		return;
@@ -331,7 +331,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confR
 	// the ignore mask of the reference (with the validity mask of an image undistorted on read), at the
 	// resolution of the estimate: applied to it at the end, and before the fused confidence recalibration
 	BitMatrix mask;
-	const bool bMasked(DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, depthData.images.front().image.size(), OPTDENSE::nIgnoreMaskLabel, mask));
+	const bool bMasked(DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, platforms, depthData.images.front().image.size(), OPTDENSE::nIgnoreMaskLabel, mask));
 
 	for (unsigned scaleNumber = totalScaleNumber + 1; scaleNumber-- > 0; ) {
 		// per-scale pool: drains this scale's textures/buffers/command buffer before
@@ -454,7 +454,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confR
 			ASSERT(W % 2 == 0);
 			bTrig = [dev newBufferWithLength:sizeof(simd_float2)*(W + Hh) options:MTLResourceStorageModeShared];
 			simd_float2* trig = (simd_float2*)bTrig.contents;
-			ComputeSphericalTrig(MakeCameraModel<Spherical<double>>(dd.images.front().camera), size, trig, trig + W);
+			ComputeSphericalTrig(dd.images.front().camera.Model<Spherical<double>>(), size, trig, trig + W);
 		}
 
 		// geometric-consistency: upload each neighbor's depth-map as a texture; a dummy

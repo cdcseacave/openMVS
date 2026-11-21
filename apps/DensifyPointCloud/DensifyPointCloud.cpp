@@ -578,7 +578,7 @@ int main(int argc, LPCTSTR* argv)
 	if (OPT::nEstimateSegmentation != 0 && !scene.pointcloud.IsEmpty() && !scene.images.empty() && !scene.images.front().maskName.empty()) {
 		// segment point-cloud using image segmentation masks
 		for (Image& image: scene.images)
-			if (image.mask.empty() && !image.LoadMask(image.mask))
+			if (image.mask.empty() && !image.LoadMask(scene.platforms, image.mask))
 				VERBOSE("error: cannot load mask image %s", image.GetMaskFileName().c_str());
 		EstimatePointSegmentation(scene.images, scene.pointcloud, ABS(OPT::nEstimateSegmentation));
 	}

@@ -2844,7 +2844,7 @@ void UI::ShowSelectionOverlay(const Window& window) {
 						const MVS::PointCloud::View idxImage = views[v];
 						if (idxImage < mvs_scene.images.size()) {
 							const MVS::Image& imageData = mvs_scene.images[idxImage];
-							const Point2 x(imageData.GetModelCamera().TransformPointW2I(Cast<REAL>(window.selectionPoints[0])));
+							const Point2 x(imageData.camera.TransformPointW2I(Cast<REAL>(window.selectionPoints[0])));
 							const float conf = mvs_scene.pointcloud.pointWeights.empty() ? 0.f :
 								mvs_scene.pointcloud.pointWeights[selectionIdx][v];
 

@@ -2180,7 +2180,7 @@ bool PatchWarpModelTest()
 	unsigned numWarps(0);
 	for (int i=0; i<2000; ++i) {
 		const Camera cameraRef(RandomCamera()), cameraTrg(RandomCamera());
-		const Pinhole<REAL> ref(MakeCameraModel<Pinhole<REAL>>(cameraRef)), trg(MakeCameraModel<Pinhole<REAL>>(cameraTrg));
+		const Pinhole<REAL> ref(cameraRef.Model<Pinhole<REAL>>()), trg(cameraTrg.Model<Pinhole<REAL>>());
 		const ImageRef x0(ROUND2INT(R(100, 1900)), ROUND2INT(R(100, 1400)));
 		// the estimator's reference ray is the camera's back-projection, bit for bit
 		const Eigen::Vector2d px0 = Point2(x0);
@@ -2225,7 +2225,7 @@ bool PatchWarpModelTest()
 		}
 		++numWarps;
 		// the generic depth geometry agrees with the pinhole closed forms
-		const Pinhole<float> camf(MakeCameraModel<Pinhole<float>>(cameraRef));
+		const Pinhole<float> camf(cameraRef.Model<Pinhole<float>>());
 		const PinholeGenericf camg{camf};
 		const Eigen::Vector2f gradient((float)R(-0.05, 0.05)*depth, (float)R(-0.05, 0.05)*depth);
 		const Eigen::Vector2i p(x0.x, x0.y);
@@ -2454,10 +2454,11 @@ bool GapInterpolationNormalsTest()
 	const auto Run = [&](CameraModelType model, int uFirst, int uLast) {
 		Scene scene;
 		Image& image = scene.images.emplace_back();
-		image.model = model;
+		image.camera.model = model;
 		DepthMapsData depthMaps(scene);
 		DepthData depthData;
 		depthData.images.emplace_back().pImageData = &image;
+		depthData.images.back().camera = image.camera;
 		depthData.depthMap.create(height, width);
 		depthData.depthMap.memset(0);
 		depthData.normalMap.create(height, width);
@@ -2486,18 +2487,18 @@ bool GapInterpolationNormalsTest()
 }
 /*----------------------------------------------------------------*/
 
-// ModelCamera::WrapPixel wraps the columns of a spherical camera, never its rows, and wraps nothing
+// Camera::WrapPixel wraps the columns of a spherical camera, never its rows, and wraps nothing
 // of a pinhole one
 bool WrapPixelTest()
 {
-	const Camera camera;
 	const cv::Size size(64, 32);
-	const ModelCamera spherical(camera, CameraModelType::SPHERICAL), pinhole(camera, CameraModelType::PINHOLE);
-	const auto Check = [&](const ModelCamera& model, ImageRef ir, bool bInside, int col) {
-		const bool bResult(model.WrapPixel(ir, size));
+	Camera spherical, pinhole;
+	spherical.model = CameraModelType::SPHERICAL;
+	const auto Check = [&](const Camera& camera, ImageRef ir, bool bInside, int col) {
+		const bool bResult(camera.WrapPixel(ir, size));
 		if (bResult != bInside || (bInside && ir.x != col)) {
 			VERBOSE("ERROR: WrapPixelTest: the %s camera maps the pixel to column %d, inside %d, expected column %d, inside %d",
-				model.bSpherical ? "spherical" : "pinhole", ir.x, (int)bResult, col, (int)bInside);
+				camera.IsSpherical() ? "spherical" : "pinhole", ir.x, (int)bResult, col, (int)bInside);
 			return false;
 		}
 		return true;
@@ -2513,6 +2514,77 @@ bool WrapPixelTest()
 }
 /*----------------------------------------------------------------*/
 
+// the transforms of a Camera follow its projection model: pixel and depth (z, or the range of a spherical
+// camera) of a world point agree with the CameraModels.h model, a pixel at its depth returns the point,
+// VisitModel hands the camera's own model, and the model survives the copies of the camera (Platform and
+// Image cameras, GetScaled)
+bool CameraModelTest()
+{
+	constexpr int width(64), height(32);
+	const RMatrix R(Point3(0.3, -0.2, 0.1));
+	const Point3 C(0.5, -1.0, 2.0);
+	const Point3 points[] = {Point3(1.0, 0.5, 6.0), Point3(-3.0, 1.5, 4.0), Point3(2.0, -2.0, -3.0), Point3(-0.5, 0.2, 9.0)};
+	// the platform cameras and the image cameras made from them
+	PlatformArr platforms;
+	Platform& platform = platforms.AddEmpty();
+	platform.cameras.emplace_back(Matrix3x3(1.2, 0, 0, 0, 1.2, 0, 0, 0, 1), RMatrix::IDENTITY, CMatrix::ZERO);
+	platform.cameras.emplace_back(ScaleK(KMatrix(width/(2*PI), 0, (width-1)*0.5, 0, height/PI, (height-1)*0.5, 0, 0, 1), REAL(1)/Camera::GetNormalizationScale(width, height)), RMatrix::IDENTITY, CMatrix::ZERO);
+	platform.cameras.back().model = CameraModelType::SPHERICAL;
+	platform.poses.emplace_back(Platform::Pose{R, C});
+	for (uint32_t idxCamera=0; idxCamera<2; ++idxCamera) {
+		Image image;
+		image.platformID = 0;
+		image.cameraID = idxCamera;
+		image.poseID = 0;
+		image.width = width;
+		image.height = height;
+		image.UpdateCamera(platforms);
+		const Camera& camera = image.camera;
+		const bool bSpherical(idxCamera == 1);
+		const char* const name(bSpherical ? "spherical" : "pinhole");
+		if (camera.IsSpherical() != bSpherical || image.IsSpherical() != bSpherical ||
+			camera.GetScaled(0.5).model != camera.model || image.GetCamera(platforms, cv::Size(width/2, height/2)).model != camera.model) {
+			VERBOSE("ERROR: CameraModelTest: the %s camera loses its model", name);
+			return false;
+		}
+		const bool bVisited(camera.VisitModel([&](const auto& model) {
+			return std::is_same<std::decay_t<decltype(model)>, Spherical<REAL>>::value == bSpherical;
+		}));
+		if (!bVisited) {
+			VERBOSE("ERROR: CameraModelTest: VisitModel hands the %s camera another model", name);
+			return false;
+		}
+		for (const Point3& X: points) {
+			const Point3 Xc(camera.TransformPointW2C(X));
+			// the pixel and depth of the model
+			Eigen::Vector2d xm;
+			REAL depthm;
+			camera.VisitModel([&](const auto& model) {
+				model.Project(Eigen::Vector3d(Xc), xm);
+				depthm = model.Depth(Eigen::Vector3d(Xc));
+			});
+			if (!bSpherical && depthm <= 0)
+				continue;
+			const auto [x, depth] = camera.ProjectPointP(X);
+			const auto [xK, depthK] = camera.ProjectPoint(X);
+			const Point3 x3(camera.TransformPointW2I3(X));
+			const REAL errPixel(MAXF(MAXF(norm(x - Point2(xm)), norm(xK - Point2(xm))), MAXF(norm(camera.TransformPointW2I(X) - Point2(xm)), norm(Point2(x3.x, x3.y) - Point2(xm)))));
+			const REAL errDepth(MAXF(MAXF(ABS(depth - depthm), ABS(depthK - depthm)), MAXF(ABS(x3.z - depthm), ABS(camera.PointDepth(X) - depthm))));
+			const REAL errBack(norm(camera.TransformPointI2W(Point2(xm), depthm) - X));
+			const REAL errRay(norm(normalized(camera.RayPoint(Point2(xm))) - normalized(X - C)));
+			if (!(errPixel < 1e-9) || !(errDepth < 1e-9) || !(errBack < 1e-9) || !(errRay < 1e-9) || !camera.IsInFront(X) ||
+				(bSpherical != (ABS(depthm - norm(X - C)) < 1e-9))) {
+				VERBOSE("ERROR: CameraModelTest: the %s camera projects (%g, %g, %g) off the model: pixel %g, depth %g, back-projection %g, ray %g",
+					name, X.x, X.y, X.z, errPixel, errDepth, errBack, errRay);
+				return false;
+			}
+		}
+	}
+	VERBOSE("CameraModelTest passed");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // the field of view of a full equirectangular image is 2pi x pi, a pinhole image keeps the planar angle
 bool ComputeFOVTest()
 {
@@ -2521,7 +2593,7 @@ bool ComputeFOVTest()
 	image.width = width;
 	image.height = height;
 	image.camera.K = KMatrix::IDENTITY;
-	image.model = CameraModelType::SPHERICAL;
+	image.camera.model = CameraModelType::SPHERICAL;
 	image.camera.K(0,0) = width/(2*PI);
 	image.camera.K(1,1) = height/PI;
 	if (!ISEQUAL(image.ComputeFOV(0), 2*PI, 1e-9) || !ISEQUAL(image.ComputeFOV(1), PI, 1e-9)) {
@@ -2529,7 +2601,7 @@ bool ComputeFOVTest()
 			image.ComputeFOV(0), image.ComputeFOV(1), 2*PI, PI);
 		return false;
 	}
-	image.model = CameraModelType::PINHOLE;
+	image.camera.model = CameraModelType::PINHOLE;
 	image.camera.K(0,0) = image.camera.K(1,1) = width;
 	if (!ISEQUAL(image.ComputeFOV(0), 2*atan(0.5), 1e-9) || !ISEQUAL(image.ComputeFOV(1), 2*atan(0.25), 1e-9)) {
 		VERBOSE("ERROR: ComputeFOVTest: the pinhole image spans %g x %g!", image.ComputeFOV(0), image.ComputeFOV(1));
@@ -2548,9 +2620,10 @@ bool ConfidenceSeamTest()
 	const Spherical<REAL> sphere(Spherical<REAL>::FromSize(width, height));
 	Scene scene;
 	Image& image = scene.images.emplace_back();
-	image.model = CameraModelType::SPHERICAL;
+	image.camera.model = CameraModelType::SPHERICAL;
 	DepthData depthData;
 	depthData.images.emplace_back().pImageData = &image;
+	depthData.images.back().camera = image.camera;
 	depthData.dMin = 1;
 	depthData.dMax = 10;
 	depthData.depthMap.create(height, width);
@@ -3833,10 +3906,10 @@ bool SelectNeighborViewsSphericalTest()
 		PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations.emplace_back();
 		for (PointCloud::View v=0; v<4; ++v) {
 			views.push_back(v);
-			observations.push_back(Cast<float>(scene.images[v].GetModelCamera().TransformPointW2I(Cast<REAL>(scene.pointcloud.points.back()))));
+			observations.push_back(Cast<float>(scene.images[v].camera.TransformPointW2I(Cast<REAL>(scene.pointcloud.points.back()))));
 		}
 	}
-	if (scene.images[0].GetModelCamera().TransformPointW2I(Cast<REAL>(scene.pointcloud.points[0])).x >= 0) {
+	if (scene.images[0].camera.TransformPointW2I(Cast<REAL>(scene.pointcloud.points[0])).x >= 0) {
 		VERBOSE("ERROR: SelectNeighborViewsSphericalTest: the points are not past the seam of the reference!");
 		return false;
 	}

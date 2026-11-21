@@ -202,7 +202,7 @@ MVS_API bool PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 // load, unless the image is undistorted on read (its pixels without a source are then masked);
 // a configured-but-missing mask file is not an error and is not reported here: every image
 // is checked once, up front, by apps/RefineMesh (the same entry that assigns image.maskName).
-MVS_API void PrepareRefineImageMask(const Image& imageData, const cv::Size& size, BitMatrix& keepMask);
+MVS_API void PrepareRefineImageMask(const Image& imageData, const PlatformArr& platforms, const cv::Size& size, BitMatrix& keepMask);
 
 // the per-vertex collapse-error bound (a squared distance, compared with the mean squared plane
 // distance of a collapse) for a reprojection tolerance of tolerancePx pixels:

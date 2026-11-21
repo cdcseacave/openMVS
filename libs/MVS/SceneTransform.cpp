@@ -126,7 +126,7 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 	Util::ensureFolder(folderName);
 	const auto IsBrown([this](const Image& image) {
 		return image.platformID != NO_ID && image.cameraID != NO_ID &&
-			platforms[image.platformID].cameras[image.cameraID].model == CameraModelType::BROWN;
+			image.GetPlatformCamera(platforms).model == CameraModelType::BROWN;
 	});
 	// per image, the map of its pixels at the file resolution onto the stored ones: x' = a*x + b
 	struct PixelMap { Point2f a, b; };
@@ -147,7 +147,7 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 			continue;
 		}
 		const cv::Size fileSize(image.image.size());
-		ASSERT(!bBrown || fileSize == platforms[image.platformID].cameras[image.cameraID].lens.size);
+		ASSERT(!bBrown || fileSize == image.GetPlatformCamera(platforms).lens.size);
 		image.width = (uint32_t)fileSize.width;
 		image.height = (uint32_t)fileSize.height;
 		if (image.IsValid())
@@ -183,15 +183,8 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 	}
 	FOREACH(idx, images) {
 		Image& image = images[idx];
-		if (!image.IsValid()) {
-			// an unposed image of a Brown camera: its lens follows the camera (UpdateCamera needs a pose)
-			if (IsBrown(image)) {
-				const Platform::Camera& camera = platforms[image.platformID].cameras[image.cameraID];
-				image.model = camera.model;
-				image.lens = camera.lens;
-			}
+		if (!image.IsValid())
 			continue;
-		}
 		image.UpdateCamera(platforms);
 		const KMatrix& fileK(fileKs[idx]), &K(image.camera.K);
 		ASSERT(ISZERO(fileK(0,1)) && ISZERO(K(0,1)));

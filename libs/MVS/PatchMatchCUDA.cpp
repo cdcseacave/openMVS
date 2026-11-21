@@ -252,7 +252,7 @@ void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitI
 	}
 }
 
-void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConfRequest)
+void PatchMatch::EstimateDepthMap(const PlatformArr& platforms, DepthData& depthData, ConfAdjustRequest* pConfRequest)
 {
 	TD_TIMER_STARTD();
 
@@ -297,7 +297,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	// the ignore mask of the reference (with the validity mask of an image undistorted on read), at the
 	// resolution of the estimate: applied to it at the end, and before the fused confidence recalibration
 	BitMatrix mask;
-	const bool bMasked(DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, depthData.images.front().image.size(), OPTDENSE::nIgnoreMaskLabel, mask));
+	const bool bMasked(DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, platforms, depthData.images.front().image.size(), OPTDENSE::nIgnoreMaskLabel, mask));
 	for (unsigned scaleNumber = totalScaleNumber+1; scaleNumber-- > 0; ) {
 		// initialize
 		const float scale = 1.f / POWI(2, scaleNumber);
@@ -448,7 +448,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		cList<float2, const float2&, 0> refTrig;
 		if (params.sphericalViews & 1u) {
 			refTrig.resize(size.width + size.height);
-			ComputeSphericalTrig(MakeCameraModel<Spherical<double>>(depthData.images.front().camera), size, refTrig.data(), refTrig.data() + size.width);
+			ComputeSphericalTrig(depthData.images.front().camera.Model<Spherical<double>>(), size, refTrig.data(), refTrig.data() + size.width);
 			CUDA_CHECK(cudaMallocAsync((void**)&params.refTrig, sizeof(float2) * refTrig.size(), cudaStream));
 			CUDA_CHECK(cudaMemcpyAsync((void*)params.refTrig, refTrig.data(), sizeof(float2) * refTrig.size(), cudaMemcpyHostToDevice, cudaStream));
 		}

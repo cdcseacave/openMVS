@@ -648,7 +648,7 @@ float Scene::ComputeDistanceCameras2Scene(float depthPercentile, bool bForceReco
 							continue;
 						const Point3f& point = pointcloud.points[idxPoint];
 						if (!pObb || pObb->Intersects(point))
-							depths.emplace_back(imageData.PointDepth(Cast<REAL>(point)));
+							depths.emplace_back(imageData.camera.PointDepth(Cast<REAL>(point)));
 						break;
 					}
 				}
@@ -660,7 +660,7 @@ float Scene::ComputeDistanceCameras2Scene(float depthPercentile, bool bForceReco
 						continue;
 					if (imageData.IsSpherical()) {
 						// a spherical image sees every direction
-						depths.emplace_back(imageData.PointDepth(Cast<REAL>(point)));
+						depths.emplace_back(imageData.camera.PointDepth(Cast<REAL>(point)));
 						continue;
 					}
 					const auto [proj, depth] = imageData.camera.ProjectPointP(point);

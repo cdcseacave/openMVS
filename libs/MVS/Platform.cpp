@@ -53,7 +53,7 @@ void Platform::Camera::SetBrownLens(const KMatrix& fileK, const BrownDistortion<
 }
 /*----------------------------------------------------------------*/
 
-// return the normalized absolute camera pose
+// return the normalized absolute camera pose, of the projection model of the camera
 CameraIntern Platform::GetCamera(uint32_t cameraID, uint32_t poseID) const
 {
 	ASSERT(cameraID < cameras.size() && poseID < poses.size());
@@ -64,6 +64,7 @@ CameraIntern Platform::GetCamera(uint32_t cameraID, uint32_t poseID) const
 	cam.K = camera.K;
 	cam.R = camera.R*pose.R;
 	cam.C = pose.R.t()*camera.C+pose.C;
+	cam.model = camera.model;
 	return cam;
 } // GetCamera
 /*----------------------------------------------------------------*/

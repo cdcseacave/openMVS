@@ -205,7 +205,7 @@ bool Scene::LoadInterface(const String& fileName)
 			imageData.scale = 1;
 		} else {
 			// read image header for resolution
-			if (!imageData.ReloadImage(0, false))
+			if (!imageData.ReloadImage(platforms, 0, false))
 				return false;
 		}
 		imageData.UpdateCamera(platforms);
@@ -244,7 +244,7 @@ bool Scene::LoadInterface(const String& fileName)
 		ObservationMapArr observationMaps;
 		if (obj.HasObservations()) {
 			pointcloud.pointObservations.resize(obj.vertices.size());
-			observationMaps = ObservationMap::MakeMaps(images);
+			observationMaps = ObservationMap::MakeMaps(images, platforms);
 		}
 		FOREACH(i, pointcloud.points) {
 			const Interface::Vertex& vertex = obj.vertices[i];
@@ -392,7 +392,7 @@ bool Scene::SaveInterface(const String& fileName, int version) const
 	}
 	if (!pointcloud.pointObservations.empty()) {
 		ASSERT(pointcloud.pointObservations.size() == pointcloud.points.size());
-		const ObservationMapArr observationMaps(ObservationMap::MakeMaps(images));
+		const ObservationMapArr observationMaps(ObservationMap::MakeMaps(images, platforms));
 		FOREACH(i, pointcloud.points) {
 			const PointCloud::ViewArr& views = pointcloud.pointViews[i];
 			const PointCloud::ObservationArr& observations = pointcloud.pointObservations[i];
@@ -492,13 +492,14 @@ bool Scene::LoadDMAP(const String& fileName)
 	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap,
 			HeaderDepthDataRaw::CONTENT_MASK, NULL, &bSpherical))
 		return false;
+	if (bSpherical)
+		camera.model = CameraModelType::SPHERICAL; // K is the angular camera matrix, the depth the range
 
 	// create image
 	Platform& platform = platforms.AddEmpty();
 	platform.name = _T("platform0");
 	platform.cameras.emplace_back(camera.GetScaledK(REAL(1)/CameraIntern::GetNormalizationScale((uint32_t)imageSize.width,(uint32_t)imageSize.height)), RMatrix::IDENTITY, CMatrix::ZERO);
-	if (bSpherical)
-		platform.cameras.back().model = CameraModelType::SPHERICAL; // K is the angular camera matrix, the depth the range
+	platform.cameras.back().model = camera.model;
 	platform.poses.emplace_back(Platform::Pose{camera.R, camera.C});
 	Image& image = images.AddEmpty();
 	image.name = MAKE_PATH_FULL(Util::getFullPath(Util::getFilePath(fileName)), imageFileName);
@@ -516,14 +517,14 @@ bool Scene::LoadDMAP(const String& fileName)
 	// load image pixels
 	const Image8U3 imageDepth(DepthMap2Image(depthMap));
 	Image8U3 imageColor;
-	if (image.ReloadImageAtPreparedResolution())
+	if (image.ReloadImageAtPreparedResolution(platforms))
 		cv::resize(image.image, imageColor, depthMap.size());
 	else
 		imageColor = imageDepth;
 
 	// create point-cloud
 	camera.K = camera.GetScaledK(imageSize, depthMap.size());
-	const ModelCamera modelCamera(camera, image.model);
+	ASSERT(camera.model == image.camera.model);
 	pointcloud.points.reserve(depthMap.area());
 	pointcloud.pointViews.reserve(depthMap.area());
 	pointcloud.colors.reserve(depthMap.area());
@@ -536,7 +537,7 @@ bool Scene::LoadDMAP(const String& fileName)
 			const Depth depth = depthMap(r,c);
 			if (depth <= 0)
 				continue;
-			pointcloud.points.emplace_back(modelCamera.TransformPointI2W(Point2(c,r), depth));
+			pointcloud.points.emplace_back(camera.TransformPointI2W(Point2(c,r), depth));
 			pointcloud.pointViews.emplace_back(PointCloud::ViewArr{0});
 			pointcloud.colors.emplace_back(imageColor(r,c));
 			if (!normalMap.empty())
@@ -851,7 +852,7 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 		String rasterName(imageData.name);
 		if (imageData.IsUndistortedOnRead()) {
 			Image8U3 pixels;
-			if (imageData.ReadPixels(pixels) == NULL) {
+			if (imageData.ReadPixels(platforms, pixels) == NULL) {
 				++nSkipped;
 				continue;
 			}
