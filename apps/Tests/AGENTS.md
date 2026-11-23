@@ -189,8 +189,8 @@ Every block states its contract with `ASSERT`; a call outside it is a bug in the
 
 | Test | Covers |
 |------|--------|
-| `SeamGraphSelectionTest` | the selection of the seam graph over planted block graphs (false chords, rivals, one-camera sides) |
-| `RingMergeTest` | a ring of six blocks placed whole on its seams, honest and bent, taken to the truth by the final adjustment |
+| `SeamGraphSelectionTest` | the selection of the seam graph over planted block graphs (false chords, rivals, one-camera sides, seams far from the blocks' origins) |
+| `RingMergeTest` | a ring of six blocks placed whole on its seams, honest, bent and with a camera of a block far from its place, taken to the truth by the final adjustment |
 | `MergeTrackJoinTest` | the cross-block track join: seam matches first, the join guard, the 255 cap |
 | `PooledSeamReadingTest` | a block pair read from light cross pairs together, and the bar on their total |
 | `MergeRoundsTest` | the merge in rounds: kept whole, regrouping, release, `MergeInRounds`, the anchor |

@@ -127,20 +127,17 @@ struct SFM_API SeamCandidate
 	// carries) times the share of the verified pairs' inlier weight it reproduces (how far it agrees)
 	float weight{0.f};
 	PairAgreement pairs;                   // the verified pairs across the seam, read against T
-	// what the averaged poses of its component make of T: rotation (degrees), scale ratio >= 1 and
-	// translation (a fraction of the footprint the two blocks share); an infinite rotation when the
-	// averaging did not place both its blocks in one component
-	float residualRotation{0.f}, residualScale{1.f}, residualTranslation{0.f};
-};
-
-// The camera footprint of a block in its own frame: the diagonal of the box its cameras span, the
-// unit the translations of its seams are read in, and its cameras' centroid, the point they are read
-// at -- a block's frame has an arbitrary origin, and a discrepancy read there would charge a
-// rotation by the distance to it
-struct SFM_API BlockFootprint
-{
-	REAL extent{0};
+	// the seam's own cameras, the ones supporting T on either side, in block A's frame (block B's where T
+	// puts them): their centroid, the point T's translation is averaged and judged at -- a block's frame has
+	// an arbitrary origin, and a discrepancy read there would charge a rotation by the distance to it -- and
+	// their spread (the distance between the two farthest apart), the unit it is read in. Nothing of a block
+	// away from the seam enters, so a stray camera elsewhere in it does not move either
 	Point3 centre{Point3::ZERO};
+	REAL extent{0};
+	// what the averaged poses of its component make of T: rotation (degrees), scale ratio >= 1 and
+	// translation (how far they move the seam's centre, a fraction of the seam's spread); an infinite
+	// rotation when the averaging did not place both its blocks in one component
+	float residualRotation{0.f}, residualScale{1.f}, residualTranslation{0.f};
 };
 
 // Where one block sits in a model frame, and why it does not sit anywhere
@@ -194,13 +191,14 @@ struct SFM_API GlobalAlignmentConfig
 	unsigned minPairInliers{30};
 	float maxPairRotationResidual{5.f};     // degrees
 	// The graph bars: a reading stays in the block graph while the averaged poses of its component
-	// sit within these of it. The right
-	// readings of the two measured block sets reach 2.8 deg / 1.093 / 0.131 and 3.3 deg / 1.156 /
-	// 0.205 at their 99th percentile, and the copies of a repeated structure sit past 0.27 of the
-	// footprint
+	// sit within these of it. The right readings of the two measured block sets reach 2.8 deg / 1.093
+	// and 3.3 deg / 1.156 at their 99th percentile; in translation the right readings of nine captures
+	// reach 0.08 of their seam's spread at the 95th percentile and 0.24 at the 99th. The copies of a
+	// repeated structure were measured past 0.27 of the smaller block's camera extent, which a seam's
+	// spread equals at the median (0.5 to 1.6 of it from the 10th to the 90th percentile)
 	float maxGraphRotationResidual{5.f};    // degrees
 	float maxGraphScaleResidual{1.20f};
-	float maxGraphTranslationResidual{0.20f}; // fraction of the pair's shared camera-bbox diagonal
+	float maxGraphTranslationResidual{0.20f}; // fraction of the spread of the reading's seam cameras
 	// constant: the loose bar, in times maxReprojError, the correspondences of the merged model's
 	// block pairs join their tracks at and the merged scene is first filtered at: a model never closes
 	// its cycles exactly, and a block bent within the graph bars is off by about this at its far end
@@ -310,7 +308,7 @@ public:
 	 * Every component of the kept readings is averaged; every reading is judged against the poses
 	 * of its component and kept within the graph bars; repeated, re-entry allowed, until the kept
 	 * set settles (kRobustRounds at most).
-	 * @param footprints per block, its camera footprint in its own frame; its size is the number of blocks
+	 * @param numBlocks the number of blocks the readings index
 	 * @param candidates in/out: every reading, the residuals the last averaging leaves it written in
 	 * @param poses out: per block, state ADMITTED, its pose and model: the component of the readings
 	 * left when the averaging placed it there, otherwise a model of its own at the identity, with
@@ -318,7 +316,7 @@ public:
 	 * @param edgeSeams out: indices into candidates, the readings left
 	 */
 	void SelectSeamGraph(
-		const std::vector<BlockFootprint>& footprints,
+		uint32_t numBlocks,
 		std::vector<SeamCandidate>& candidates,
 		std::vector<BlockPose>& poses,
 		std::vector<uint32_t>& edgeSeams) const;
@@ -331,14 +329,15 @@ private:
 	 * @param edges indices into candidates of the readings of ONE connected component; the blocks
 	 * they touch are the nodes, and a reading weighs its candidate's weight. The rotations by
 	 * GlobalRotationEstimator (its maximum spanning tree, L1, its own reweighting), run again over
-	 * whatever a run leaves in another frame; the log-scales and the translations, between the
-	 * blocks' camera centroids (BlockFootprint), so they do not depend on where the arbitrary origin
-	 * of a block's frame lies, every reading reweighted by the inverse of its error as the
+	 * whatever a run leaves in another frame; the log-scales and the translations, each reading
+	 * asking that its two blocks put the centre of its seam (SeamCandidate::centre) at one place, so
+	 * they do not depend on where the arbitrary origin of a block's frame lies nor on any camera away
+	 * from the seam, every reading reweighted by the inverse of its error as the
 	 * estimators' row scale (their normal equations weigh its square, which settles on one reading
 	 * rather than the L1 median). A reading past the rotation bar takes no part in the scales, and one
 	 * past the scale bar none in the translations
+	 * @param numBlocks the number of blocks the readings index
 	 * @param fixedBlock the gauge: the frame every pose comes out in, when the readings reach it
-	 * @param footprints per block, its camera footprint; its size is the number of blocks
 	 * @param poses out: one entry per block; every block the rotation, scale and translation
 	 * averaging reaches from the gauge gets its local -> gauge frame transform and model 0, the
 	 * rest keep model NO_ID and state UNPLACED (all of them when the scale and translation solves
@@ -347,7 +346,7 @@ private:
 	void AverageBlockPoses(
 		const std::vector<SeamCandidate>& candidates,
 		const std::vector<uint32_t>& edges,
-		const std::vector<BlockFootprint>& footprints,
+		uint32_t numBlocks,
 		uint32_t fixedBlock,
 		std::vector<BlockPose>& poses) const;
 
@@ -363,13 +362,14 @@ private:
 	/**
 	 * @brief The score of T on the given observations: the inliers at the bar and, per side
 	 * (sideOf(image) -> 0 or 1), the cameras holding minCameraInliers inlier correspondences
+	 * @param supporters out: those cameras, both sides (global IDs)
 	 */
 	void ScoreSeam(
 		const std::vector<SeamObservation>& observations,
 		const std::vector<SeamCorrespondence>& correspondences,
 		const Transform& T,
 		const std::function<int(IIndex)>& sideOf,
-		SeamScore& score) const;
+		SeamScore& score, IIndexArr& supporters) const;
 
 	/**
 	 * @brief What the verified pairs between blocks a and b say of the reading T (A -> B): each

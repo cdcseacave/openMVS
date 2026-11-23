@@ -76,12 +76,13 @@ namespace SFM {
 
 // A block graph for the selection alone: blocks at random true frames, and hypotheses made from the exact
 // relative similarity of their two blocks, turned or shifted in block A's frame by what is planted in them.
-// A clean graph has blocks of unit scale (so a shift reads the same share of the footprint from either end);
+// A clean graph has blocks of unit scale (so a shift reads the same share of the seam's spread from either end);
 // a noisy one keeps the random scales and gives every hypothesis what a reconstruction's seam is off by:
 // a turn about a random axis (the planted angle plus up to 0.3 deg) and up to 1% of scale
 struct PlantedSeamGraph
 {
-	// the camera footprint of every block, the unit a planted shift is a share of
+	// the spread of every reading's seam cameras, the unit a planted shift is a share of; the seam's centre is
+	// the origin of block A's frame, the point the planted turn leaves in place
 	static constexpr REAL kExtent = 20;
 	// how far a block may sit from where the truth puts it against the block it is read from
 	static constexpr REAL kPlacedRotation = 1, kPlacedShift = 0.02;
@@ -89,7 +90,6 @@ struct PlantedSeamGraph
 	std::mt19937 rng;
 	std::uniform_real_distribution<REAL> noiseDist{-1, 1};
 	std::vector<SEACAVE::Transform> G;
-	std::vector<BlockFootprint> footprints;
 	std::vector<SeamCandidate> candidates;
 	std::vector<BlockPose> poses;
 	std::vector<uint32_t> edgeSeams;
@@ -100,18 +100,19 @@ struct PlantedSeamGraph
 			if (!noisy)
 				T.scale = 1;
 		}
-		BlockFootprint footprint;
-		footprint.extent = kExtent;
-		footprints.assign(numBlocks, footprint);
 	}
 	// a reading of (a, b) held by `cameras` cameras on either side, turned by `rotationDeg` about the
-	// vertical of block A's frame and shifted along its x axis by `shift` of the footprint (a noisy
-	// graph turns about a random axis and shifts nothing); returns its index
-	size_t Add(uint32_t a, uint32_t b, unsigned cameras, REAL rotationDeg = 0, REAL shift = 0) {
-		ASSERT(a < b && b < G.size() && (!noisy || shift == 0));
+	// vertical of block A's frame through the seam's centre and shifted along its x axis by `shift` of the
+	// seam's spread (a noisy graph turns about a random axis and shifts nothing); the seam's centre is the
+	// origin of block A's frame, or the given point of the true frame; returns its index
+	size_t Add(uint32_t a, uint32_t b, unsigned cameras, REAL rotationDeg = 0, REAL shift = 0, const Point3* seamCentre = NULL) {
+		ASSERT(a < b && b < G.size() && (!noisy || (shift == 0 && seamCentre == NULL)));
 		SeamCandidate c;
 		c.sceneA = a;
 		c.sceneB = b;
+		c.extent = kExtent;
+		if (seamCentre != NULL)
+			c.centre = G[a].Invert() * (*seamCentre);
 		if (noisy) {
 			c.T = G[b].Invert() * G[a];
 			Point3 axis(noiseDist(rng), noiseDist(rng), noiseDist(rng));
@@ -123,7 +124,7 @@ struct PlantedSeamGraph
 		} else {
 			SEACAVE::Transform planted;
 			planted.R.SetRotationAxisAngle(Point3(0, 0, D2R(rotationDeg)));
-			planted.t = Point3(shift * kExtent, 0, 0);
+			planted.t = c.centre - planted.R * c.centre + Point3(shift * kExtent, 0, 0);
 			c.T = G[b].Invert() * G[a] * planted;
 		}
 		c.score.support[0] = c.score.support[1] = cameras;
@@ -145,7 +146,7 @@ struct PlantedSeamGraph
 				entered.push_back(candidates[i]);
 				indexOf.push_back(i);
 			}
-		alignment.SelectSeamGraph(footprints, entered, poses, edgeSeams);
+		alignment.SelectSeamGraph((uint32_t)G.size(), entered, poses, edgeSeams);
 		FOREACH(k, entered)
 			candidates[indexOf[k]] = entered[k];
 		for (uint32_t& e : edgeSeams)
@@ -181,7 +182,7 @@ struct PlantedSeamGraph
 //    covered pair and two pairs joined to nothing else: every true reading stays, the wrong ones are cut, the lone pairs
 //    stand and each component is placed in its own frame;
 // 2. block 3 tied to a triangle by two readings of (2, 3) within the graph bars of each other, 20 cameras on the weaker
-//    side of the true one and 2 on one 3 degrees and 0.1 of the footprint off: a reading weighs its cameras times its
+//    side of the true one and 2 on one 3 degrees and 0.1 of the seam's spread off: a reading weighs its cameras times its
 //    pairs' share, so the averaging puts block 3 within a quarter of the offset from the truth (weighed by the share
 //    alone the two weigh alike and block 3 lands halfway);
 // 3. a chord wrong by 30 degrees and heavier than any true seam, across two cycles of true seams (two seams and five):
@@ -194,12 +195,15 @@ struct PlantedSeamGraph
 //    a model of its own, held for it the bridge stands;
 // 6. the true reading of a pair no cycle tests, its weaker side held by one camera and then by two: it enters the block
 //    graph only with minSeamWeight cameras on its weaker side;
-// 7. the true reading of (2, 3) and a lighter copy shifted by 60% of the footprint, past the 0.20 bar of either: a
+// 7. the true reading of (2, 3) and a lighter copy shifted by 60% of the seam's spread, past the 0.20 bar of either: a
 //    least-squares solve puts block 3 between the two, the inverse-error reweighting places it on the true one and cuts
 //    the copy;
-// 8. four readings along one line at 0, 0.10, 0.25 and 0.50 of the footprint weighing 1, 2, 1, 2 cameras: the first
+// 8. four readings along one line at 0, 0.10, 0.25 and 0.50 of the seam's spread weighing 1, 2, 1, 2 cameras: the first
 //    averaging settles on 0.25 and cuts the two 0.25 away from it, and the next settles on 0.10 where the one at 0 is
-//    within the bar again and is kept.
+//    within the bar again and is kept;
+// 9. a triangle whose seams lie 50 spreads from every block's origin, each reading turned by 3 degrees about its own
+//    seam's centre: a reading is averaged and judged where it was measured, so the three stay on, each within 0.05 of
+//    its spread of the solution (read at a frame's origin, the degree the averaging leaves of each turn is a spread there).
 bool SeamGraphSelectionTest()
 {
 	TestScope scope("SeamGraphSelectionTest");
@@ -391,9 +395,25 @@ bool SeamGraphSelectionTest()
 			"in the first round, is within the bar of the second)", graph.IsOn(readings[0]) ? "on" : "off", graph.IsOn(readings[1]) ? "on" : "off",
 			graph.IsOn(readings[2]) ? "on" : "off", graph.IsOn(readings[3]) ? "on" : "off");
 	}
+	// 9. readings turned about their own seams, far from the frames' origins
+	{
+		constexpr REAL TURN_DEG = 3, FAR = 50 * PlantedSeamGraph::kExtent, MAX_RESIDUAL = 0.05;
+		PlantedSeamGraph graph(3, 9311);
+		const std::pair<uint32_t, uint32_t> seams[] = {{0, 1}, {1, 2}, {0, 2}};
+		const Point3 centres[] = {Point3(FAR, 10, 0), Point3(FAR - 10, -5, 5), Point3(FAR + 5, 0, -10)};
+		for (int i = 0; i < 3; ++i)
+			graph.Add(seams[i].first, seams[i].second, TRIANGLE_CAMERAS, TURN_DEG, 0, &centres[i]);
+		graph.Select();
+		for (size_t i = 0; i < 3; ++i) {
+			const SeamCandidate& c = graph.candidates[i];
+			TEST_CHECK(graph.IsOn(i) && c.residualTranslation <= MAX_RESIDUAL, "far seams: the reading (%u, %u), turned by %.0f deg about "
+				"its seam %.0f spreads from the origin, is %s with %.2f deg and %.3f of its spread from the solution (on, within %.2f expected)",
+				c.sceneA, c.sceneB, TURN_DEG, FAR / PlantedSeamGraph::kExtent, graph.IsOn(i) ? "on" : "off", c.residualRotation, c.residualTranslation, MAX_RESIDUAL);
+		}
+	}
 	return scope.Pass("the selection keeps the true readings of a 16-block graph and cuts the false chord and the rival, weighs readings "
 		"by cameras, cuts a heavy wrong chord across two cycles, tells a turned direction, a symmetric copy and a one-camera side, "
-		"and judges a cut reading again in the next round");
+		"judges a cut reading again in the next round, and reads every reading at its own seam");
 }
 /*----------------------------------------------------------------*/
 
@@ -735,7 +755,7 @@ static std::vector<REAL> RingBlockExtents(const std::vector<Scene>& subScenes)
 }
 
 // How far one A -> B similarity sits from another: the rotation between them in degrees, and the
-// translation of their discrepancy as a fraction of block A's camera footprint
+// translation of their discrepancy as a fraction of the extent of block A's cameras
 static std::pair<REAL, REAL> SeamOffset(const SEACAVE::Transform& T, const SEACAVE::Transform& truth, REAL extentA)
 {
 	const SEACAVE::Transform E(truth.Invert() * T);
@@ -808,10 +828,12 @@ static SEACAVE::Transform WallCopy(REAL angle, REAL period)
 
 // The readings of a block pair that came from one direction, NULL when it gave none
 static const SeamCandidate* ReadingOf(const std::vector<SeamCandidate>& readings, SeamCandidate::Source source);
+// An image of a block left with observations on `keep` tracks only
+static void ThinImage(Scene& block, IIndex image, unsigned keep);
 /*----------------------------------------------------------------*/
 
 // A whole ring, block by block: every block arrives in its own frame and the merge has to take all
-// of them into one model, on the evidence of the seams alone. Two arms of six blocks:
+// of them into one model, on the evidence of the seams alone. Three arms of six blocks:
 // 1. the honest ring: the block poses the averaging leaves, then the model the final adjustment makes of them (every
 //    seam is biased by a few hundredths of a degree the same way, which the averaging spreads evenly round the ring and
 //    the adjustment takes out); the readings lie on the ring's pairs and the merged model rests on every one of them;
@@ -819,7 +841,11 @@ static const SeamCandidate* ReadingOf(const std::vector<SeamCandidate>& readings
 //    about three degrees and three percent from where it started; the averaging of the whole ring spreads that over its
 //    cycle, every reading within the bars of the solution, and the final adjustment closes the ring on the truth. The
 //    bars are held an order of magnitude wider than what the merge leaves, because what they have to catch is a cycle
-//    left open: a ring carried the long way round and never closed lands at the discrepancy of the whole chain.
+//    left open: a ring carried the long way round and never closed lands at the discrepancy of the whole chain;
+// 3. the honest ring with one camera of a block a billion units from its place and on no track, as a block's adjustment
+//    can leave an image that lost its points: the merge reads every seam at its own cameras, so the six blocks are
+//    placed as without it and every other camera lands on the truth (read at a block's camera centroid, in units of
+//    its camera box, the stray camera moves both and the blocks miss their place).
 bool RingMergeTest()
 {
 	TestScope scope("RingMergeTest");
@@ -855,7 +881,27 @@ bool RingMergeTest()
 		if (!CheckRingMerge(scope, "bent ring, adjusted", rep, ring.scene, ring.truth, NUM_BLOCKS, 0.3, 0.005))
 			return false;
 	}
-	return scope.Pass("a ring of six blocks is placed whole on its seams and the final adjustment takes it to the truth, drifting or not");
+	{
+		constexpr uint32_t STRAY_BLOCK = 2;
+		constexpr IIndex STRAY_LOCAL = 4;
+		RingFixture ring({NUM_BLOCKS, 10});
+		ring.Split();
+		const IIndex stray = ring.split.localToGlobal[STRAY_BLOCK][STRAY_LOCAL];
+		ThinImage(ring.split.blocks[STRAY_BLOCK], STRAY_LOCAL, 0);
+		ring.split.blocks[STRAY_BLOCK].images[STRAY_LOCAL].C = Point3(1e9, 1e9, 1e9);
+		const MergeReport rep = ring.Merge();
+		IIndexArr others;
+		FOREACH(g, ring.scene.images)
+			if ((IIndex)g != stray)
+				others.push_back((IIndex)g);
+		const PoseError e = PoseErrors(ring.scene, ring.truth, others);
+		VERBOSE("  stray camera: %u blocks placed, the other cameras %.4f deg and %.4f%% from the truth", rep.numPlaced, e.rotationMedian, e.positionMedian * 100);
+		TEST_CHECK(rep.numPlaced == NUM_BLOCKS && rep.unplacedImages.empty() && e.rotationMedian <= kRingMergeRotation && e.positionMedian <= kRingMergePosition,
+			"stray camera: %u/%u blocks placed, %u images unplaced, the other cameras %.4f deg and %.3f%% off the truth (%.1f deg and %.2f%% allowed)",
+			rep.numPlaced, NUM_BLOCKS, (unsigned)rep.unplacedImages.size(), e.rotationMedian, e.positionMedian * 100, kRingMergeRotation, kRingMergePosition * 100);
+	}
+	return scope.Pass("a ring of six blocks is placed whole on its seams and the final adjustment takes it to the truth, drifting or not, "
+		"and a camera a billion units from its place in one block moves no block");
 }
 /*----------------------------------------------------------------*/
 
@@ -1038,7 +1084,7 @@ static bool SeamInliersCase(const TestScope& scope)
 	const std::vector<BlockPairCorrespondences> blockPairs(CollectBlockPairCorrespondences(ring));
 	const GlobalAlignmentConfig alignCfg;
 	const MergeReport rep = ring.Merge();
-	if (!CheckRingMerge(scope, "seam inliers", rep, ring.scene, ring.truth, 4, 0.1, 0.001))
+	if (!CheckRingMerge(scope, "seam inliers", rep, ring.scene, ring.truth, 4, kRingMergeRotation, kRingMergePosition))
 		return false;
 	TEST_CHECK(!rep.modelSeams.empty(), "seam inliers: the merged model rests on no seam");
 
@@ -1735,7 +1781,7 @@ bool RingClosingSeamTest()
 			VERBOSE("  rival: pair (%u, %u) hypothesis %u: weight %.0f, %.3f deg and %.2f%% off the truth", PAIR_A, PAIR_B, (unsigned)i,
 				c.weight, rotation, translation * 100);
 			// the truth within the graph bars, measured on a thinned share of its evidence; the copy a period away, past the
-			// footprint of the block
+			// extent of the block
 			if (rotation < alignCfg.maxGraphRotationResidual && translation < alignCfg.maxGraphTranslationResidual)
 				right = (uint32_t)i;
 			else if (translation > 1 && (copy == NO_ID || c.weight > rep.candidates[copy].weight))

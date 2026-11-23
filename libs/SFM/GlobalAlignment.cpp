@@ -68,30 +68,14 @@ void GlobalAlignment::BuildGlobalToLocalMap(const std::vector<IIndexArr>& localT
 	}
 }
 
-// The diagonal of the box a set of camera centres spans
-static REAL CentresExtent(const std::vector<Point3>& centres)
+// The spread of a set of camera centres: the distance between the two farthest apart
+static REAL CentresSpread(const std::vector<Point3>& centres)
 {
-	AABB3 bbox(true);
-	for (const Point3& C : centres)
-		bbox.InsertFull(C);
-	return bbox.IsEmpty() ? REAL(0) : (REAL)bbox.GetSize().norm();
-}
-
-// The camera footprint of a block in its own frame: the unit the translation residuals of its seams
-// are measured in, and the point they are measured at
-static BlockFootprint FootprintOf(const Scene& block)
-{
-	std::vector<Point3> centres;
-	BlockFootprint footprint;
-	for (const Image& img : block.images)
-		if (img.IsValid()) {
-			centres.emplace_back(img.C);
-			footprint.centre += img.C;
-		}
-	footprint.extent = CentresExtent(centres);
-	if (!centres.empty())
-		footprint.centre /= (REAL)centres.size();
-	return footprint;
+	REAL spread = 0;
+	FOREACH(i, centres)
+		for (size_t j = i + 1; j < centres.size(); ++j)
+			spread = MAXF(spread, norm(centres[i] - centres[j]));
+	return spread;
 }
 
 namespace {
@@ -99,13 +83,10 @@ namespace {
 // The bars of the merge that are not configurable, each with the rule it belongs to.
 // (kRobustRounds, the rounds of the cut every averaging of the block graph is judged by, is
 // RobustAveraging.h's.)
-// The translation unit of a pair is the smaller block's extent, never under this share of the
-// larger's: a block of two cameras a millimetre apart has no footprint of its own to be judged by.
-constexpr float kMinExtentShare = 0.2f;
 // The reweighting of the scales and the translations of the block graph, every reading's weight
 // times the inverse of its error as the estimators' row scale (their normal equations weigh its
 // square, which settles on one reading rather than the L1 median): its rounds, and the error a
-// reading is never weighed as below -- in log-scale, and in the footprint the two blocks share
+// reading is never weighed as below -- in log-scale, and in the spread of the reading's seam cameras
 constexpr unsigned kReweightRounds = 40;
 constexpr REAL kReweightScaleFloor = REAL(1e-4);
 constexpr REAL kReweightTranslationFloor = REAL(1e-3);
@@ -561,13 +542,9 @@ bool RigObservesScale(
 			centres.push_back(camera.second);
 	if (centres.size() < 2)
 		return false;
-	REAL spread = 0;
-	FOREACH(i, centres)
-		for (size_t j = i + 1; j < centres.size(); ++j)
-			spread = MAXF(spread, norm(centres[i] - centres[j]));
 	std::nth_element(depths.begin(), depths.begin() + depths.size() / 2, depths.end());
 	const REAL depth = depths[depths.size() / 2];
-	return depth > 0 && spread / depth >= config.minRigSpreadRatio;
+	return depth > 0 && CentresSpread(centres) / depth >= config.minRigSpreadRatio;
 }
 
 // One reading of a block pair: the similarity (A -> B) an estimate found, how it was measured, the
@@ -704,34 +681,23 @@ Transform BuildGlobalTransform(const Point3d& rotation, REAL scale, const Point3
 struct SeamResidual {
 	REAL scale;       // ratio, >= 1
 	REAL rotation;    // degrees
-	REAL translation; // fraction of the two frames' shared camera footprint (see PairExtent)
+	REAL translation; // fraction of the spread of the reading's seam cameras
 };
 
-// The one unit a translation between two frames is read in, wherever two camera footprints meet:
-// the smaller of the two, since that is the block that can least afford the error, floored at a
-// share of the larger so that a frame with no extent of its own is still judged by something.
-REAL PairExtent(const REAL first, const REAL second)
+// Sim(3) cycle residual of one reading: T maps A-local to B-local and each block pose maps its local
+// frame to the model frame, so poseB*T and poseA both map A-local to the model and their discrepancy
+// E = poseA^-1 * poseB * T is what the reading is off by (identity when perfectly consistent). It is
+// read in A's local frame, its translation where the reading was measured: how far E moves the
+// centroid of the seam's cameras, against their spread (SeamCandidate::centre, extent). A camera
+// elsewhere in either block has no part in it, and neither has the origin of a block's frame.
+SeamResidual ComputeSeamResidual(const SeamCandidate& c, const Transform& poseA, const Transform& poseB)
 {
-	return MAXF(MINF(first, second), (REAL)kMinExtentShare * MAXF(first, second));
-}
-
-// Sim(3) cycle residual of one reading: T maps A-local to B-local and G_i maps each local frame to
-// the model frame, so G_B*T and G_A both map A-local to the model and their discrepancy
-// E = G_A^-1 * G_B * T is what the reading is off by (identity when perfectly consistent). It is
-// read in A's local frame, its translation where it moves A's camera centroid, against the
-// footprint the two blocks share there, so the verdict does not depend on which end happens to
-// have the lower block index.
-SeamResidual ComputeSeamResidual(
-	const uint32_t a, const uint32_t b, const Transform& T, const std::vector<Transform>& transforms,
-	const std::vector<BlockFootprint>& footprints)
-{
-	const REAL extent = PairExtent(footprints[a].extent * transforms[a].scale, footprints[b].extent * transforms[b].scale) / transforms[a].scale;
-	const Point3& centre = footprints[a].centre;
-	const Transform E = transforms[a].Invert() * (transforms[b] * T);
+	ASSERT(c.extent > 0);
+	const Transform E = poseA.Invert() * (poseB * c.T);
 	SeamResidual res;
 	res.scale = MAXF(E.scale, REAL(1) / E.scale);
 	res.rotation = R2D(ACOS(ComputeAngle(Matrix3x3(E.R))));
-	res.translation = extent > 0 ? norm(E * centre - centre) / extent : REAL(0);
+	res.translation = norm(E * c.centre - c.centre) / c.extent;
 	return res;
 }
 
@@ -818,11 +784,10 @@ auto InverseErrorFactor(const REAL minError)
 void GlobalAlignment::AverageBlockPoses(
 	const std::vector<SeamCandidate>& candidates,
 	const std::vector<uint32_t>& edges,
-	const std::vector<BlockFootprint>& footprints,
+	const uint32_t numBlocks,
 	const uint32_t fixedBlock,
 	std::vector<BlockPose>& poses) const
 {
-	const uint32_t numBlocks = (uint32_t)footprints.size();
 	poses.assign(numBlocks, BlockPose());
 	if (edges.empty())
 		return;
@@ -909,20 +874,21 @@ void GlobalAlignment::AverageBlockPoses(
 			return;
 		}
 
-		// translations: the readings under both bars, each placing one block's cameras' centroid in
-		// the other's frame, so what is averaged does not depend on where a block's frame has its origin
+		// translations: the readings under both bars, each asking that its two blocks put the centre of its
+		// seam at one place: poseA * centre = poseB * (T * centre). That is the point the reading was measured
+		// at, so what its rotation and scale are off by moves nothing there, and it does not depend on where a
+		// block's frame has its origin
 		std::vector<TranslationPair> translationPairs;
+		std::vector<REAL> extents; // per translation pair, the spread of its seam's cameras in the frame the averaging solves in
 		FOREACH(i, scalePairs) {
 			if (scaleResiduals[i] > maxLogScaleResidual)
 				continue;
 			const SeamCandidate& c = candidates[edges[scaleEdges[i]]];
+			ASSERT(c.extent > 0);
 			const uint32_t a = nodeOfBlock[c.sceneA], b = nodeOfBlock[c.sceneB];
-			// the reading maps A's frame to B's, so B's centroid sits at T^-1 of it in A's frame; A's
-			// own rotation and scale carry the offset between the two centroids into the frame the
-			// averaging solves in
-			const Point3 centreBinA = c.T.Invert() * footprints[c.sceneB].centre;
 			translationPairs.emplace_back(a, b,
-				scales[a] * (RMatrix(rotations[a]).t() * (centreBinA - footprints[c.sceneA].centre)), c.weight);
+				scales[a] * (RMatrix(rotations[a]).t() * c.centre) - scales[b] * (RMatrix(rotations[b]).t() * (c.T * c.centre)), c.weight);
+			extents.push_back(c.extent * scales[a]);
 			metricSets.Union(a, b);
 		}
 		if (!translationPairs.empty()) {
@@ -932,12 +898,9 @@ void GlobalAlignment::AverageBlockPoses(
 			if (!RobustAverageWith(translationPairs, kReweightRounds,
 				[&](const std::vector<TranslationPair>& active, std::vector<Point3>& t) { return translationEstimator.EstimateTranslations(active, n, metricGauge, t); },
 				[&](size_t i, const std::vector<Point3>& t) {
+					// against the spread of the seam's cameras, as everything that judges a reading's translation reads it
 					const TranslationPair& p = translationPairs[i];
-					// the footprint the two blocks share, as everything that judges a reading's
-					// translation reads it
-					const REAL extent = PairExtent(footprints[blockOfNode[p.idxA]].extent * scales[p.idxA],
-						footprints[blockOfNode[p.idxB]].extent * scales[p.idxB]);
-					return extent > 0 ? norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation) / extent : REAL(0);
+					return norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation) / extents[i];
 				},
 				InverseErrorFactor(kReweightTranslationFloor), translations, translationResiduals))
 			{
@@ -956,10 +919,7 @@ void GlobalAlignment::AverageBlockPoses(
 		if (frameOfNode[node] != poseFrame || metricGauge == NO_ID || metricSets.Find(node) != metricSets.Find(metricGauge))
 			continue;
 		const uint32_t block = blockOfNode[node];
-		// the averaging solved where the block's centroid lands; its frame's origin follows
-		const RMatrix R(RMatrix(rotations[node]).t());
-		poses[block].T = BuildGlobalTransform(rotations[node], scales[node],
-			translations[node] - (R * footprints[block].centre) * scales[node]);
+		poses[block].T = BuildGlobalTransform(rotations[node], scales[node], translations[node]);
 		poses[block].model = 0;
 	}
 }
@@ -1067,10 +1027,11 @@ void GlobalAlignment::ScoreSeam(
 	const std::vector<SeamCorrespondence>& correspondences,
 	const Transform& T,
 	const std::function<int(IIndex)>& sideOf,
-	SeamScore& score) const
+	SeamScore& score, IIndexArr& supporters) const
 {
 	ASSERT(observations.size() == correspondences.size());
 	score = SeamScore();
+	supporters.clear();
 	const Transform TInv(T.Invert());
 	// every image the seam touches, in both its roles: the camera whose feature carries the point
 	// witnesses the seam as much as the camera that observed it. A match collected in both directions
@@ -1095,6 +1056,7 @@ void GlobalAlignment::ScoreSeam(
 			const int side = sideOf(image);
 			ASSERT(side == 0 || side == 1);
 			++score.support[side];
+			supporters.push_back(image);
 		}
 }
 /*----------------------------------------------------------------*/
@@ -1188,7 +1150,8 @@ void GlobalAlignment::EstimateSeamPair(
 	const auto sideOf = [this, a](IIndex image) { return globalToLocal.at(image).first == a ? 0 : 1; };
 	for (const SeamReading& reading : readings) {
 		SeamCandidate c;
-		ScoreSeam(observations, correspondences, reading.T, sideOf, c.score);
+		IIndexArr supporters;
+		ScoreSeam(observations, correspondences, reading.T, sideOf, c.score, supporters);
 		c.pairs = MeasureSeamPairs(subScenes, a, b, reading.T);
 		// a reading enters the block graph only with minSeamWeight supporting cameras on its weaker
 		// side, an observed scale and its verified pairs not against it; one refused leaves its block
@@ -1205,19 +1168,31 @@ void GlobalAlignment::EstimateSeamPair(
 		c.T = reading.T;
 		c.source = reading.source;
 		c.weight = ReadingWeight(c.score, c.pairs);
+		// the seam's own cameras, block B's where the reading puts them in block A's frame: where and in what
+		// unit the translation the averaged poses leave of the reading is read
+		const Transform BToA(reading.T.Invert());
+		std::vector<Point3> centres;
+		for (const IIndex image : supporters) {
+			const std::pair<uint32_t, IIndex>& local = globalToLocal.at(image);
+			const Point3& C = subScenes[local.first].images[local.second].C;
+			centres.emplace_back(local.first == a ? C : BToA * C);
+			c.centre += centres.back();
+		}
+		c.centre /= (REAL)centres.size();
+		c.extent = CentresSpread(centres);
+		ASSERT(c.extent > 0); // a camera on each side at least, and no two cameras stand at one place
 		candidates.emplace_back(std::move(c));
 	}
 }
 /*----------------------------------------------------------------*/
 
 void GlobalAlignment::SelectSeamGraph(
-	const std::vector<BlockFootprint>& footprints,
+	const uint32_t numBlocks,
 	std::vector<SeamCandidate>& candidates,
 	std::vector<BlockPose>& poses,
 	std::vector<uint32_t>& edgeSeams) const
 {
 	TD_TIMER_STARTD();
-	const uint32_t numBlocks = (uint32_t)footprints.size();
 	// the view-graph filter's pattern over the block graph: every reading is a measurement of its
 	// block pair; every component of the readings kept is averaged; every reading is judged against
 	// the poses of its component and kept within the bars; repeated until the kept set settles; the
@@ -1245,7 +1220,7 @@ void GlobalAlignment::SelectSeamGraph(
 			const uint32_t gauge = (uint32_t)(std::max_element(blockWeights.begin(), blockWeights.end()) - blockWeights.begin());
 			ASSERT(blockWeights[gauge] > 0.f);
 			std::vector<BlockPose> componentPoses;
-			AverageBlockPoses(candidates, readings, footprints, gauge, componentPoses);
+			AverageBlockPoses(candidates, readings, numBlocks, gauge, componentPoses);
 			FOREACH(blk, componentPoses)
 				if (componentPoses[blk].model != NO_ID) {
 					poses[blk].T = componentPoses[blk].T;
@@ -1265,10 +1240,7 @@ void GlobalAlignment::SelectSeamGraph(
 			c.residualRotation = FLT_MAX;
 			return false;
 		}
-		std::vector<Transform> transforms(numBlocks);
-		transforms[c.sceneA] = pa.T;
-		transforms[c.sceneB] = pb.T;
-		const SeamResidual r(ComputeSeamResidual(c.sceneA, c.sceneB, c.T, transforms, footprints));
+		const SeamResidual r(ComputeSeamResidual(c, pa.T, pb.T));
 		c.residualRotation = (float)r.rotation;
 		c.residualScale = (float)r.scale;
 		c.residualTranslation = (float)r.translation;
@@ -1348,11 +1320,6 @@ bool GlobalAlignment::MergeScenes(
 		subScenes[i].ExportPLY(String::FormatString("subscene_%u.ply", i));
 	#endif
 
-	// the unit every translation the merge judges is read in, and where
-	std::vector<BlockFootprint> footprints(numBlocks);
-	FOREACH(b, subScenes)
-		footprints[b] = FootprintOf(subScenes[b]);
-
 	// the readings of every block pair the cross pairs join
 	std::vector<SeamCandidate> candidates;
 	EstimateSeamCandidates(subScenes, localToGlobals, candidates);
@@ -1373,7 +1340,7 @@ bool GlobalAlignment::MergeScenes(
 	// the one decision over the block graph
 	std::vector<BlockPose> poses;
 	std::vector<uint32_t> edgeSeams;
-	SelectSeamGraph(footprints, candidates, poses, edgeSeams);
+	SelectSeamGraph(numBlocks, candidates, poses, edgeSeams);
 
 	// the model the scene is merged at: the one holding the anchor block, else the one carrying the most images
 	std::map<uint32_t, unsigned> imagesOfModel, blocksOfModel;
