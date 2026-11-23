@@ -11,15 +11,17 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include <optional>
 #include "Camera.h"
-#include "../Math/Camera/CameraUndistort.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
 
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+namespace SEACAVE {
+struct UndistortMaps; // Math/Camera/CameraUndistort.h
+} // namespace SEACAVE
 
 namespace SFM {
 

@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Scene.h"
+#include "../Math/Camera/CameraUndistort.h"
 
 
 using namespace MVS;

@@ -38,6 +38,7 @@
 #include "DepthMap.h"
 #include "Mesh.h"
 #include "../Common/AutoEstimator.h"
+#include "../Math/Camera/CameraUndistort.h"
 // CGAL: depth-map initialization
 #include <CGAL/Simple_cartesian.h>
 #include <CGAL/Delaunay_triangulation_2.h>

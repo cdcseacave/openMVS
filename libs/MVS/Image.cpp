@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Image.h"
+#include "../Math/Camera/CameraUndistort.h"
 
 using namespace MVS;
 
@@ -508,5 +509,47 @@ bool Image::Depth2Disparity(const Matrix4x4& Q, const Point2f& u, float d, float
 	const REAL z((Q(2,0)*u.x + Q(2,1)*u.y + Q(2,2))*d + Q(2,3));
 	disparity = -(float)(z/w);
 	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+ObservationMap::ObservationMap(const Image& imageData, const PlatformArr& platforms)
+	:
+	bUndistort(imageData.IsUndistortedOnRead())
+{
+	if (!bUndistort)
+		return;
+	const CameraLens& lens = imageData.GetLens(platforms);
+	const KMatrix undistortedK(UndistortedK(lens.K, lens.distortion, lens.size));
+	ASSERT(ISZERO(lens.K(0,1)) && ISZERO(undistortedK(0,1)));
+	file = Pinhole<REAL>{lens.K(0,0), lens.K(1,1), lens.K(0,2), lens.K(1,2)};
+	undistorted = Pinhole<REAL>{undistortedK(0,0), undistortedK(1,1), undistortedK(0,2), undistortedK(1,2)};
+	distortion = lens.distortion;
+}
+
+Point2f ObservationMap::FileToCamera(const Point2f& x) const
+{
+	if (!bUndistort)
+		return x;
+	const Eigen::Vector2d u(undistorted.NormalizedToPixel(distortion.Undistort(file.PixelToNormalized(Point2(x)))));
+	return Point2f(Point2(u));
+}
+
+Point2f ObservationMap::CameraToFile(const Point2f& x) const
+{
+	if (!bUndistort)
+		return x;
+	const Eigen::Vector2d d(file.NormalizedToPixel(distortion.Distort(undistorted.PixelToNormalized(Point2(x)))));
+	return Point2f(Point2(d));
+}
+
+// one map per image
+std::vector<ObservationMap> ObservationMap::MakeMaps(const ImageArr& images, const PlatformArr& platforms)
+{
+	std::vector<ObservationMap> maps;
+	maps.reserve(images.size());
+	for (const Image& imageData: images)
+		maps.emplace_back(imageData, platforms);
+	return maps;
 }
 /*----------------------------------------------------------------*/

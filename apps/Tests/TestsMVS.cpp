@@ -32,6 +32,7 @@
 #include "../../libs/MVS.h"
 #include "../../libs/MVS/SceneRefineCommon.h"
 #include "../../libs/MVS/DMapCache.h"
+#include "../../libs/Math/Camera/CameraUndistort.h"
 #include "Tests.h"
 #include "TestsMVS.h"
 #include <halfmesh/RectPacking.h>
@@ -4175,6 +4176,15 @@ bool InterfaceV8Test()
 		}
 		if (!EqualInterfaces(obj, back, bObservations != 0, 1e-12, 1e-3f, "native round trip"))
 			return false;
+		// the native archive recomputes the K of a Brown camera from its lens, the same K
+		FOREACH(p, scene.platforms) {
+			const Platform::Camera& camera = scene.platforms[p].cameras[0];
+			const Platform::Camera& cameraNative = sceneNative.platforms[p].cameras[0];
+			if (cameraNative.model != camera.model || !EqualMat(cameraNative.K, camera.K, 0)) {
+				VERBOSE("ERROR: InterfaceV8Test: native camera %u of model %u has another K", (unsigned)p, (unsigned)camera.model);
+				return false;
+			}
+		}
 		#endif
 	}
 

@@ -36,13 +36,16 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Platform.h"
-#include "../Math/Camera/CameraUndistort.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
 
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+namespace SEACAVE {
+struct CameraUndistortMaps; // Math/Camera/CameraUndistort.h
+} // namespace SEACAVE
 
 namespace MVS {
 
@@ -186,38 +189,13 @@ typedef CLISTDEF2IDX(Image,IIndex) ImageArr;
 
 // maps the feature observations of an image between its file and the image as the camera sees it,
 // both at the image file resolution: the identity unless the image is undistorted on read
-class ObservationMap {
+class MVS_API ObservationMap {
 public:
-	ObservationMap(const Image& imageData, const PlatformArr& platforms) : bUndistort(imageData.IsUndistortedOnRead()) {
-		if (!bUndistort)
-			return;
-		const CameraLens& lens = imageData.GetLens(platforms);
-		const KMatrix undistortedK(UndistortedK(lens.K, lens.distortion, lens.size));
-		ASSERT(ISZERO(lens.K(0,1)) && ISZERO(undistortedK(0,1)));
-		file = Pinhole<REAL>{lens.K(0,0), lens.K(1,1), lens.K(0,2), lens.K(1,2)};
-		undistorted = Pinhole<REAL>{undistortedK(0,0), undistortedK(1,1), undistortedK(0,2), undistortedK(1,2)};
-		distortion = lens.distortion;
-	}
-	Point2f FileToCamera(const Point2f& x) const {
-		if (!bUndistort)
-			return x;
-		const Eigen::Vector2d u(undistorted.NormalizedToPixel(distortion.Undistort(file.PixelToNormalized(Point2(x)))));
-		return Point2f(Point2(u));
-	}
-	Point2f CameraToFile(const Point2f& x) const {
-		if (!bUndistort)
-			return x;
-		const Eigen::Vector2d d(file.NormalizedToPixel(distortion.Distort(undistorted.PixelToNormalized(Point2(x)))));
-		return Point2f(Point2(d));
-	}
+	ObservationMap(const Image& imageData, const PlatformArr& platforms);
+	Point2f FileToCamera(const Point2f& x) const;
+	Point2f CameraToFile(const Point2f& x) const;
 	// one map per image
-	static std::vector<ObservationMap> MakeMaps(const ImageArr& images, const PlatformArr& platforms) {
-		std::vector<ObservationMap> maps;
-		maps.reserve(images.size());
-		for (const Image& imageData: images)
-			maps.emplace_back(imageData, platforms);
-		return maps;
-	}
+	static std::vector<ObservationMap> MakeMaps(const ImageArr& images, const PlatformArr& platforms);
 private:
 	bool bUndistort;
 	Pinhole<REAL> file{}, undistorted{}; // cameras of the image file and of the undistorted image

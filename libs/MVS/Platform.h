@@ -76,21 +76,41 @@ public:
 
 		#ifdef _USE_BOOST
 		// implement BOOST serialization
+		// LENS is CameraLens when loading and const CameraLens when saving
+		template <class Archive, class LENS>
+		static void serializeLens(Archive& ar, LENS& lens) {
+			ar & lens.K;
+			ar & lens.distortion.k1 & lens.distortion.k2 & lens.distortion.p1 & lens.distortion.p2;
+			ar & lens.distortion.k3 & lens.distortion.k4 & lens.distortion.k5 & lens.distortion.k6;
+			ar & lens.size.width & lens.size.height;
+		}
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int /*version*/) {
+		void save(Archive& ar, const unsigned int /*version*/) const {
 			ar & K;
 			ar & R;
 			ar & C;
-			uint8_t modelID(static_cast<uint8_t>(model));
+			const uint8_t modelID(static_cast<uint8_t>(model));
+			ar & modelID;
+			if (model == CameraModelType::BROWN)
+				serializeLens(ar, lens);
+		}
+		// K of a BROWN camera is derived from its lens: the stored one is read only to keep the
+		// format and is recomputed by SetBrownLens, so it always matches the undistortion maps
+		template <class Archive>
+		void load(Archive& ar, const unsigned int /*version*/) {
+			ar & K;
+			ar & R;
+			ar & C;
+			uint8_t modelID;
 			ar & modelID;
 			model = static_cast<CameraModelType>(modelID);
 			if (model == CameraModelType::BROWN) {
-				ar & lens.K;
-				ar & lens.distortion.k1 & lens.distortion.k2 & lens.distortion.p1 & lens.distortion.p2;
-				ar & lens.distortion.k3 & lens.distortion.k4 & lens.distortion.k5 & lens.distortion.k6;
-				ar & lens.size.width & lens.size.height;
+				CameraLens fileLens;
+				serializeLens(ar, fileLens);
+				SetBrownLens(fileLens.K, fileLens.distortion, fileLens.size);
 			}
 		}
+		BOOST_SERIALIZATION_SPLIT_MEMBER()
 		#endif
 	};
 	typedef CLISTDEFIDX(Camera,uint32_t) CameraArr;

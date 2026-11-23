@@ -31,6 +31,7 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
+#include "../../libs/Math/Camera/CameraUndistort.h"
 #include <boost/program_options.hpp>
 #include "endian.h"
 

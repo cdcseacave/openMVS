@@ -9,6 +9,7 @@
 #include "Scene.h"
 #include "Image.h"
 #include "../Math/GeodeticTransforms.h"
+#include "../Math/Camera/CameraUndistort.h"
 #include "Track.h"
 #include "Triangulation.h"
 #include "SceneCluster.h"

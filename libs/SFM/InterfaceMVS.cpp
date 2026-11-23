@@ -15,8 +15,6 @@
 #define _USE_OPENCV
 #endif
 #include "../IO/Interface.h"
-#include <filesystem>
-#include <map>
 
 #ifdef _USE_OPENMP
 #define INTERFACEMVS_USE_OPENMP
