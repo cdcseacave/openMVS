@@ -298,7 +298,9 @@ IF(APPLE)
 		SET(CMAKE_OBJCXX_STANDARD 17)
 		SET(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 		SET(_USE_METAL TRUE)
-		LIST(APPEND OpenMVS_EXTRA_LIBS ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+		# linked by name: a framework linked by its full path adds the SDK frameworks folder as a user
+		# framework path (-F), which turns the warnings of the SDK headers on
+		LIST(APPEND OpenMVS_EXTRA_LIBS "-framework Metal" "-framework Foundation")
 		MESSAGE(STATUS "Enabling Metal compute backend on macOS")
 	ELSE()
 		MESSAGE(STATUS "Metal/Foundation frameworks not found; Metal backend disabled")

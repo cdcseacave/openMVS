@@ -280,7 +280,7 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 #ifdef _HEADLESS_DEBUG
 #include <cstdio>
 #define PRINT_ASSERT_MSG(exp, ...) do { std::fprintf(stderr, "[ASSERT] %s:%d: %s\n", __FILE__, __LINE__, #exp); std::fflush(stderr); } while(0)
-#define _ASSERT_BREAK()
+#define _ASSERT_BREAK() ((void)0) // a statement: `if (!(exp)) _ASSERT_BREAK();` is no empty body
 #else
 #define PRINT_ASSERT_MSG(exp, ...)
 #define _ASSERT_BREAK() DEBUG_BREAK()

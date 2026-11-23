@@ -161,7 +161,8 @@ own state and call the models. The depth-map algorithms built on the models are 
   copy it into every camera they make, so an image camera, a scaled copy of it (`Camera::GetScaled`) and a
   depth-map view camera all know their model. `Camera::Model<MODEL>()` builds `Pinhole`/`Spherical` from
   `K` (asserting it is the camera's model) and `Camera::VisitModel<T>(f)` calls `f` with the one the camera
-  has, so a loop templated on the model picks it once per camera. The pixel/world transforms of `Camera`
+  has, so a loop templated on the model picks it once per camera (the CPU mesh-refinement warp and
+  photometric gradient, `MeshRefinement.md`). The pixel/world transforms of `Camera`
   follow the model (`SphericalPatchMatch.md`); the pinhole-only ones (the z=1 plane, `P`, the view plane,
   stereo rectification, the OpenGL projection) assert a pinhole camera. The lens is not copied into the
   images: the readers of the image files (`Image::ReadPixels`, `LoadMask`, `GetUndistortMaps`,

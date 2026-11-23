@@ -175,10 +175,13 @@ public:
 		DepthMap& depthMap, FaceMap& faceMap, BaryMap& baryMap);
 	// keepA/keepB are the per-pixel keep-masks of image A/B (bit set = keep, empty = keep
 	// everything): a masked-out pixel of A never seeds a warp sample, and a projection landing on a
-	// masked-out pixel of B is rejected like an occluded one (see IsDepthSimilar)
+	// masked-out pixel of B is rejected like an occluded one (see IsDepthSimilar);
+	// modelA/modelB are the projection models of the cameras (Camera::VisitModel), the depths of
+	// the depth-maps the depths of these models
+	template <typename MODELA, typename MODELB>
 	static void ImageMeshWarp(
-		const DepthMap& depthMapA, const Camera& cameraA,
-		const DepthMap& depthMapB, const Camera& cameraB,
+		const DepthMap& depthMapA, const Camera& cameraA, const MODELA& modelA,
+		const DepthMap& depthMapB, const Camera& cameraB, const MODELB& modelB,
 		const Image32F& imageB, Image32F& imageA, BitMatrix& mask,
 		const BitMatrix& keepA, const BitMatrix& keepB);
 	// the two sums one pair-direction contributes to the reliability-weighted score S:
@@ -229,10 +232,13 @@ public:
 	// the precomputed stencil map viewB.imageGrad -- true in the energy mode (bEnergyMode) and
 	// whenever OPTREFINE::nImageGradient == 3 asks for it on the stepper path too. The stencil is
 	// a smoothed estimate: on texture approaching the sampling limit it under-states the slope of
-	// the interpolant the warp used, which belongs in neither this energy's gradient nor mode 3's
+	// the interpolant the warp used, which belongs in neither this energy's gradient nor mode 3's;
+	// modelA is the projection model of camera A (Camera::VisitModel), the projection Jacobian into
+	// camera B the pinhole one of its P matrix
+	template <typename MODELA>
 	static void ComputePhotometricGradient(
 		const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
-		const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
+		const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA, const MODELA& modelA,
 		const Camera& cameraB, const View& viewB,
 		const PairMaps& maps, const PairGrads& grads, Real RegularizationScale, bool bExactDerivative);
 	static void ComputeSmoothnessGradient1(
@@ -813,13 +819,16 @@ void MeshRefine::ProjectMesh(
 // project image from view B to view A through the mesh;
 // the projected image is stored in imageA
 // (imageAB is assumed to be initialize to the right size)
+template <typename MODELA, typename MODELB>
 void MeshRefine::ImageMeshWarp(
-	const DepthMap& depthMapA, const Camera& cameraA,
-	const DepthMap& depthMapB, const Camera& cameraB,
+	const DepthMap& depthMapA, const Camera& cameraA, const MODELA& modelA,
+	const DepthMap& depthMapB, const Camera& cameraB, const MODELB& modelB,
 	const Image32F& imageB, Image32F& imageA, BitMatrix& mask,
 	const BitMatrix& keepA, const BitMatrix& keepB)
 {
 	ASSERT(!imageA.empty());
+	ASSERT((cameraA.IsSpherical() == std::is_same<MODELA, Spherical<typename MODELA::Scalar>>::value));
+	ASSERT((cameraB.IsSpherical() == std::is_same<MODELB, Spherical<typename MODELB::Scalar>>::value));
 	typedef Sampler::Linear<float> Sampler;
 	const Sampler sampler;
 	mask.create(imageA.size());
@@ -832,16 +841,20 @@ void MeshRefine::ImageMeshWarp(
 			const Depth& depthA = depthMapA(j,i);
 			if (depthA <= 0)
 				continue;
-			const Point3 X(cameraA.TransformPointI2W(Point3(i,j,depthA)));
-			const Point3f ptC(cameraB.TransformPointW2C(X));
+			const Point3 X(cameraA.TransformPointC2W(Point3(modelA.Ray(Point2(i,j))*REAL(depthA))));
+			const Eigen::Vector3d XB(cameraB.TransformPointW2C(X));
 			// a point behind camera B is not seen by it: the mirrored projection can still land
 			// inside the image and IsDepthSimilar's "depth*1.0002 >= z" is trivially true for a
 			// non-positive z, so the producer has to reject it here (same test as CUDA's
 			// kernelImageMeshWarp) -- this is what makes every consumer's positive-depth contract hold
-			if (ptC.z <= 0)
+			const Depth depthB((Depth)MODELB::Depth(XB));
+			if (depthB <= 0)
 				continue;
-			const Point2f pt(cameraB.TransformPointC2I(ptC));
-			if (!IsDepthSimilar(depthMapB, pt, ptC.z, keepB))
+			Eigen::Vector2d xB;
+			[[maybe_unused]] const bool bProjected(modelB.Project(XB, xB));
+			ASSERT(bProjected);
+			const Point2f pt = Point2f(Point2(xB));
+			if (!IsDepthSimilar(depthMapB, pt, depthB, keepB))
 				continue;
 			imageA(j,i) = imageB.sample<Sampler,Sampler::Type>(sampler, pt);
 			mask.set(j,i);
@@ -1028,12 +1041,15 @@ void MeshRefine::CentralGradient(const Image32F& image, const Point2f& pt, Real&
 }
 
 // compute the photometric gradient for all vertices seen by an image pair
+template <typename MODELA>
 void MeshRefine::ComputePhotometricGradient(
 	const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
-	const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
+	const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA, const MODELA& modelA,
 	const Camera& cameraB, const View& viewB,
 	const PairMaps& maps, const PairGrads& grads, Real RegularizationScale, bool bExactDerivative)
 {
+	ASSERT((cameraA.IsSpherical() == std::is_same<MODELA, Spherical<typename MODELA::Scalar>>::value));
+	ASSERT(!cameraB.IsSpherical()); // the projection Jacobian is the one of the P matrix
 	const BitMatrix& mask(maps.mask);
 	ASSERT(faces.GetSize() == normals.GetSize() && !faces.IsEmpty());
 	ASSERT(depthMapA.size() == mask.size() && faceMapA.size() == mask.size() && baryMapA.size() == mask.size() && maps.dzncc.size() == mask.size() && !mask.empty());
@@ -1064,7 +1080,7 @@ void MeshRefine::ComputePhotometricGradient(
 		g.idxFace = faceMapA(r,c);
 		ASSERT(g.idxFace != NO_ID);
 		g.N = normals[g.idxFace];
-		g.rayA = cameraA.RayPoint(Point2(c,r));
+		g.rayA = cameraA.R.t()*Point3(modelA.Ray(Point2(c,r)));
 		g.dA = normalized(g.rayA);
 		g.Nd = g.N.dot(g.dA);
 		if (g.Nd > -0.1)
@@ -1081,7 +1097,6 @@ void MeshRefine::ComputePhotometricGradient(
 		const Point3 X(g.rayA*REAL(g.depth)+cameraA.C);
 		// project point in second image and
 		// projection Jacobian matrix in the second image of the 3D point on the surface
-		ASSERT(!cameraB.IsSpherical());
 		[[maybe_unused]] const float depthB(ProjectVertex(cameraB.P.val, X.ptr(), xB.ptr(), xJac.val));
 		ASSERT(depthB > 0);
 		// compute gradient in image B
@@ -1302,7 +1317,12 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	imageAB.create(imageA.size());
 	// invalid pixels stay 0: ComputeWindowStats masks them out of every window sum
 	imageAB.memset(0);
-	ImageMeshWarp(depthMapA, cameraA, depthMapB, cameraB, imageB, imageAB, mask, viewA.keepMask, viewB.keepMask);
+	// the models are chosen once per pair, not per pixel
+	cameraA.VisitModel([&](const auto& modelA) {
+		cameraB.VisitModel([&](const auto& modelB) {
+			ImageMeshWarp(depthMapA, cameraA, modelA, depthMapB, cameraB, modelB, imageB, imageAB, mask, viewA.keepMask, viewB.keepMask);
+		});
+	});
 	// compute the masked window statistics, the rejection gates and the ZNCC derivative
 	// (this also prunes the mask, which every consumer below therefore reads after the call)
 	DEC_Image(Real, imageDZNCC);
@@ -1327,7 +1347,9 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	const PairGrads grads{_photoGrad, _photoGradPixels, _footprint};
 	// bEnergyMode always wants the bilinear derivative (the energy's own consistency requirement);
 	// OPTREFINE::nImageGradient == 3 asks for the same source on the stepper path too
-	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, maps, grads, RegularizationScale*energyWeight, bEnergyMode || OPTREFINE::nImageGradient == 3);
+	cameraA.VisitModel([&](const auto& modelA) {
+		ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, modelA, cameraB, viewB, maps, grads, RegularizationScale*energyWeight, bEnergyMode || OPTREFINE::nImageGradient == 3);
+	});
 	DST_Image(imageDZNCC);
 	DST_BitMatrix(mask);
 	Lock l(cs);
