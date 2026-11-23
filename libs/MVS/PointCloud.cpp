@@ -62,6 +62,7 @@ PointCloud& MVS::PointCloud::Swap(PointCloud& rhs)
 	points.Swap(rhs.points);
 	pointViews.Swap(rhs.pointViews);
 	pointWeights.Swap(rhs.pointWeights);
+	pointObservations.Swap(rhs.pointObservations);
 	normals.Swap(rhs.normals);
 	colors.Swap(rhs.colors);
 	labels.Swap(rhs.labels);
@@ -74,6 +75,7 @@ void PointCloud::Release()
 	points.Release();
 	pointViews.Release();
 	pointWeights.Release();
+	pointObservations.Release();
 	normals.Release();
 	colors.Release();
 	labels.Release();
@@ -89,6 +91,9 @@ void PointCloud::RemovePoint(IDX idx)
 	ASSERT(pointWeights.empty() || pointWeights.size() == points.size());
 	if (!pointWeights.empty())
 		pointWeights.RemoveAt(idx);
+	ASSERT(pointObservations.empty() || pointObservations.size() == points.size());
+	if (!pointObservations.empty())
+		pointObservations.RemoveAt(idx);
 	ASSERT(normals.empty() || normals.size() == points.size());
 	if (!normals.empty())
 		normals.RemoveAt(idx);
@@ -295,7 +300,7 @@ Planef PointCloud::EstimateGroundPlane(const ImageArr& images, float planeThresh
 		for (const Image& imageData: images) {
 			if (!imageData.IsValid())
 				continue;
-			cosView.push_back(plane.m_vN.dot((const Point3f::EVecMap&)Cast<float>(imageData.camera.Direction())));
+			cosView.push_back(plane.m_vN.dot(static_cast<Point3f::EVec>(Cast<float>(imageData.camera.Direction()))));
 		}
 		if (cosView.GetMedian() > 0)
 			plane.Negate();
@@ -634,8 +639,8 @@ bool PointCloud::LoadGLTF(const String& fileName, bool bBinary)
 			// carries neither a node transform nor a scene graph
 			if (!instance.world.isIdentity()) {
 				for (size_t i = firstPoint; i < points.size(); ++i) {
-					const Eigen::Vector4d p(instance.world * Eigen::Vector4d(points[i].x, points[i].y, points[i].z, 1.0));
-					points[i] = Point((Point::Type)p.x(), (Point::Type)p.y(), (Point::Type)p.z());
+					const Eigen::Vector4d p(instance.world * static_cast<Point3::EVec>(Point3(points[i])).homogeneous());
+					points[i] = Point(Point3(p.head<3>()));
 				}
 				// normals transform by the inverse-transpose of the linear part, not
 				// by the linear part itself: glTF allows a node to carry non-uniform
@@ -647,10 +652,10 @@ bool PointCloud::LoadGLTF(const String& fileName, bool bBinary)
 				const Eigen::Matrix3d normalMatrix(ISZERO(linear.determinant())
 					? linear : Eigen::Matrix3d(linear.inverse().transpose()));
 				for (size_t i = firstNormal; i < normals.size(); ++i) {
-					const Eigen::Vector3d n(normalMatrix * Eigen::Vector3d(normals[i].x, normals[i].y, normals[i].z));
+					const Eigen::Vector3d n(normalMatrix * static_cast<Point3::EVec>(Point3(normals[i])));
 					const double norm(n.norm());
 					if (norm > 0)
-						normals[i] = Normal((Normal::Type)(n.x()/norm), (Normal::Type)(n.y()/norm), (Normal::Type)(n.z()/norm));
+						normals[i] = Normal(Point3(n/norm));
 				}
 			}
 		}
@@ -1119,7 +1124,7 @@ bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, f
 		if (pointWeights.empty()) {
 			confidence = (float)pointViews[i].size();
 			for (IIndex idxView: pointViews[i]) {
-				const float footprint((float)images[idxView].camera.GetFootprintWorld(X));
+				const float footprint((float)images[idxView].camera.GetFootprintWorld(images[idxView].camera.PointDepth(X)));
 				ASSERT(footprint > 0);
 				if (scale > footprint)
 					scale = footprint;
@@ -1129,7 +1134,7 @@ bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, f
 			float scaleWeightBest = FLT_MAX;
 			FOREACH(j, pointViews[i]) {
 				const IIndex idxView = pointViews[i][j];
-				const float footprint((float)images[idxView].camera.GetFootprintWorld(X));
+				const float footprint((float)images[idxView].camera.GetFootprintWorld(images[idxView].camera.PointDepth(X)));
 				ASSERT(footprint > 0);
 				const float conf(pointWeights[i][j]);
 				const float scaleWeight(footprint/conf);

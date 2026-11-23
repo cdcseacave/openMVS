@@ -48,7 +48,7 @@
 #include "../../libs/SFM/LensFit.h"
 #include "../../libs/SFM/RoMa2Matcher.h"
 #include "../../libs/SFM/FlexGlueMatcher.h"
-#include "../../libs/SFM/SphereCubeMap.h"
+#include "../../libs/Math/Camera/CameraUndistort.h"
 #include "../../libs/SFM/InterfaceMVS.h"
 #include "../../libs/MVS.h"
 #include <nlohmann/json.hpp>
@@ -376,7 +376,8 @@ bool ReconstructSphericalSyntheticTest()
 	// convention, reasoned from first principles (forward +Z at the centre column, camera-right +X on the right half, Y down
 	// as for the pinhole camera) and not from Project; expectU/expectV: -1 strictly left/above the centre, +1 right/below, 0 at it
 	const Camera& sphCam = *sceneGT.cameras[0];
-	const REAL uCenter = REAL(size.width) / 2, vCenter = REAL(size.height) / 2;
+	// pixel centers at integer coordinates: the image center is ((W-1)/2, (H-1)/2)
+	const REAL uCenter = REAL(size.width - 1) / 2, vCenter = REAL(size.height - 1) / 2;
 	struct ConventionCase { Point3 dirCam; const char* name; int expectU; int expectV; };
 	for (const ConventionCase& c : {
 		ConventionCase{Point3( 0,  0, 1), "forward +Z", 0, 0}, ConventionCase{Point3( 1,  0, 1), "right +X", +1, 0},
@@ -390,11 +391,13 @@ bool ReconstructSphericalSyntheticTest()
 		TEST_CHECK(Side(px.x, uCenter, c.expectU) && Side(px.y, vCenter, c.expectV), "equirect convention mismatch for %s -> pixel (%.1f, %.1f): the "
 			"left-right (X) mirror fingerprint", c.name, px.x, px.y);
 	}
-	// the exact numeric lock: pure camera-right (+X, z = 0) at u = 3/4 of the width, camera-left (-X) at 1/4
+	// the exact numeric lock: pure camera-right (+X, z = 0) at u = 3/4 of the width, camera-left (-X) at 1/4, both in the
+	// pixel-center convention (-0.5)
 	const auto [pxR, validR] = sphCam.Project(Point3(1, 0, 0));
 	const auto [pxL, validL] = sphCam.Project(Point3(-1, 0, 0));
-	TEST_CHECK(validR && validL && ABS(pxR.x - REAL(0.75) * size.width) <= 1 && ABS(pxL.x - REAL(0.25) * size.width) <= 1,
-		"azimuth mapping is mirrored (+X u=%.1f expected %.1f, -X u=%.1f expected %.1f)", pxR.x, REAL(0.75) * size.width, pxL.x, REAL(0.25) * size.width);
+	const REAL expectR = REAL(0.75) * size.width - REAL(0.5), expectL = REAL(0.25) * size.width - REAL(0.5);
+	TEST_CHECK(validR && validL && ABS(pxR.x - expectR) <= 1e-9 && ABS(pxL.x - expectL) <= 1e-9,
+		"azimuth mapping is mirrored (+X u=%.1f expected %.1f, -X u=%.1f expected %.1f)", pxR.x, expectR, pxL.x, expectL);
 
 	// (B) the O(3) Kabsch reflection test on the reconstructed rig + points against the truth: the optimal reflection-allowed
 	// alignment from SVD(H) has sign(det R) == sign(det H), so det(H) > 0 proves the reconstruction matches under a PROPER
@@ -1109,7 +1112,9 @@ bool TriangulationTest()
 			for (Image& img : scene.images) {
 				img.keypoints.clear();
 				const auto [proj, valid] = img.ProjectPoint(X);
-				TEST_CHECK(valid && Image8U::isInside(proj, img.GetSize()), "the point does not project inside view %u", img.ID);
+				// pixel centers at integer coordinates: a panorama spans [-0.5, W-0.5] x [-0.5, H-0.5]
+				TEST_CHECK(valid && proj.x >= -0.5 && proj.x <= img.GetSize().width - 0.5 && proj.y >= -0.5 && proj.y <= img.GetSize().height - 0.5,
+					"the point does not project inside view %u", img.ID);
 				cv::Point2f pt = Cast<float>(proj);
 				if (noisy) {
 					pt.x += noiseDist(rng);

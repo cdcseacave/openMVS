@@ -104,7 +104,7 @@ protected:
 
 	std::mt19937 randomGenerator;
 	std::unique_ptr<ceres::Problem> problem;
-	void* solverOptionsPtr; // ceres::Solver::Options*
+	void* solverOptionsPtr = NULL; // ceres::Solver::Options*
 
 	// Loss functions for reweighted terms
 	std::shared_ptr<ceres::LossFunction> lossFunction;

@@ -45,11 +45,11 @@ public:
 	inline String(LPCTSTR sz, size_t count) : Base(sz, count) {}
 	inline String(LPCTSTR sz, size_t offset, size_t count) : Base(sz, offset, count) {}
 	inline String(Base&& rhs) : Base(std::forward<Base>(rhs)) {}
-	inline String(String&& rhs) : Base(std::forward<Base>(rhs)) {}
+	inline String(String&& rhs) noexcept : Base(std::forward<Base>(rhs)) {}
 	inline String(const String& rhs) : Base(rhs) {}
 
 	inline String& operator=(Base&& rhs) { Base::operator=(std::forward<Base>(rhs)); return *this; }
-	inline String& operator=(String&& rhs) { Base::operator=(std::forward<Base>(rhs)); return *this; }
+	inline String& operator=(String&& rhs) noexcept { Base::operator=(std::forward<Base>(rhs)); return *this; }
 	inline String& operator=(TCHAR rhs) { Base::operator=(rhs); return *this; }
 	inline String& operator=(LPCTSTR rhs) { Base::operator=(rhs); return *this; }
 	inline String& operator=(const String& rhs) { Base::operator=(rhs); return *this; }

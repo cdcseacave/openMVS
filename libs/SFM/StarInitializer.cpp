@@ -371,8 +371,8 @@ bool StarInitializer::Initialize(
 
 	// 2. Register connected views from relative poses
 	struct ConnectedView {
-		IIndex viewID; // ID of the connected target view
-		unsigned numEvidence; // the inliers of the pair that fix a distance (see ComputeStarEvidence)
+		IIndex viewID = NO_ID; // ID of the connected target view
+		unsigned numEvidence = 0; // the inliers of the pair that fix a distance (see ComputeStarEvidence)
 		Pose3D relPose; // relative pose to reference
 		bool nearDuplicate; // the pair is a near-duplicate (PairsWeightingConfig::IsNearDuplicate): never the floor's yardstick
 		bool noDirection; // the pair fixes no baseline direction (FixesNoBaselineDirection): no arm, once the floor and the cap have chosen

@@ -663,9 +663,6 @@ libs/SFM/
 ├── GlobalPositioning.h/cpp             # Translation refinement
 ├── SimilarityTransform.h/cpp           # 7-DOF transform + GPS / prior-pose alignment
 │
-│ # Spherical images
-├── SphereCubeMap.h/cpp                 # Equirectangular to tangent cube-map faces
-│
 │ # Video support
 ├── KeyframeExtractor.h/cpp             # Keyframe selection from video
 │
@@ -673,6 +670,9 @@ libs/SFM/
 ├── PoseIO.h/cpp                        # CSV/frames.json pose I/O + convention detection
 └── InterfaceMVS.h/cpp                  # MVS format export
 ```
+
+The camera models the SfM cameras wrap (`Pinhole`, `BrownDistortion`, `Spherical`) and the `SphereCubeMap` namespace
+(equirectangular to tangent cube-map faces) live in `libs/Math/Camera/` (`CameraModels.h`, `CameraUndistort.h/cpp`).
 
 ## Conventions
 

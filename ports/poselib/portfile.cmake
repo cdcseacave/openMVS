@@ -16,6 +16,9 @@ vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
         -DMARCH_NATIVE=OFF
+        # a package build must not fail on new compiler warnings (GCC 15 reports a false
+        # -Warray-bounds in Eigen's vectorized QR inside p2p2pl.cc)
+        -DWERROR=OFF
         -DWITH_BENCHMARK=OFF
         -DBUILD_TESTS=OFF
         -DPYTHON_PACKAGE=OFF

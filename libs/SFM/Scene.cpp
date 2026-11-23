@@ -9,6 +9,7 @@
 #include "Scene.h"
 #include "Image.h"
 #include "../Math/GeodeticTransforms.h"
+#include "../Math/Camera/CameraUndistort.h"
 #include "Track.h"
 #include "Triangulation.h"
 #include "SceneCluster.h"
@@ -1527,27 +1528,18 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 	if (extension.empty())
 		extension = ".jxl";
 
-	struct UndistortData {
-		cv::Mat map1;
-		cv::Mat map2;
-		KMatrix newK;
-	};
-	std::unordered_map<const Camera*, UndistortData> undistortMaps;
+	std::unordered_map<const Camera*, UndistortMaps> undistortMaps;
 	undistortMaps.reserve(cameras.size());
 	for (CameraPtr const camPtr : cameras) {
 		if (!camPtr->IsValid() || !camPtr->HasDistortion())
 			continue;
-		const cv::Size imgSize(camPtr->GetSize());
 		switch (camPtr->GetType()) {
 		case CameraType::PINHOLE: {
 			const PinholeCamera* pc = static_cast<const PinholeCamera*>(camPtr);
-			const cv::Mat distCoeffs = pc->GetDistortionCoeffs();
-			UndistortData data;
-			data.newK = cv::getOptimalNewCameraMatrix(pc->GetK(), distCoeffs, imgSize, alpha);
-			cv::initUndistortRectifyMap(pc->GetK(), distCoeffs, cv::noArray(), data.newK, imgSize, CV_16SC2, data.map1, data.map2);
+			UndistortMaps& maps = undistortMaps[pc];
+			maps.Init(pc->GetK(), pc->GetDistortion(), camPtr->GetSize(), alpha);
 			if (undistortedIntrinsics)
-				undistortedIntrinsics->emplace(pc, data.newK);
-			undistortMaps.emplace(pc, std::move(data));
+				undistortedIntrinsics->emplace(pc, maps.K);
 			break;
 		}
 		default:
@@ -1564,39 +1556,44 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 
 	if (outImagePaths)
 		outImagePaths->assign(images.size(), String());
+	int failures = 0;
 	#ifdef SCENE_USE_OPENMP
-	#pragma omp parallel for schedule(dynamic)
+	#pragma omp parallel for schedule(dynamic) reduction(+:failures)
 	#endif
 	for (int_t _i = 0; _i < (int_t)images.size(); ++_i) {
 		const IIndex i = static_cast<IIndex>(_i);
 		const Image& img = images[i];
-		if (!img.IsValid())
+		// only the images of the distorted pinhole cameras are undistorted, posed or not, as they all
+		// share the undistorted camera of the export
+		const auto itMaps = undistortMaps.find(img.pCamera);
+		if (itMaps == undistortMaps.end())
 			continue;
-		bool loadedHere = false;
-		if (!img.HasPixels()) {
-			const_cast<Image&>(img).LoadPixels();
-			loadedHere = true;
+		cv::Mat source = img.pixels;
+		if (source.empty()) {
+			if (!LoadImage(img.fileName, source, PF_R8G8B8)) {
+				if (img.IsValid()) {
+					VERBOSE("error: cannot read image '%s' for undistortion", img.fileName.c_str());
+					++failures;
+				}
+				continue;
+			}
+			img.ToWorkingOrientation(source);
 		}
-		if (!img.HasPixels())
-			continue;
 		cv::Mat undistorted;
-		const UndistortData& data = undistortMaps.at(img.pCamera);
-		// Undistort image
-		cv::remap(img.pixels, undistorted, data.map1, data.map2, cv::INTER_CUBIC, cv::BORDER_CONSTANT, cv::Scalar::all(0));
-		if (loadedHere)
-			const_cast<Image&>(img).ReleasePixels();
+		itMaps->second.Remap(source, undistorted, cv::INTER_CUBIC);
 		// Restore original orientation if the working copy was rotated to landscape
 		undistorted = img.ToOriginalOrientation(undistorted);
 		const String stem = Util::getFileName(img.fileName);
-		const String outPath = outputDir + stem + extension;
+		const String outPath = outputDir + String::FormatString("%u_", i) + stem + extension;
 		if (!SaveImage(undistorted, outPath)) {
 			VERBOSE("error: saving undistorted image '%s' to '%s' failed", img.fileName.c_str(), outPath.c_str());
+			++failures;
 			continue;
 		}
 		if (outImagePaths)
 			(*outImagePaths)[i] = outPath;
 	}
-	return true;
+	return failures == 0;
 }
 
 // Export tracks and optionally image positions to PLY format

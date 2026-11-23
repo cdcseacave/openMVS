@@ -471,6 +471,9 @@ int GlobalUtil::CreateWindowEZ(LiteWindow*& window)
 #if defined(SIFTGPU_EGL)
 		// Prefer headless EGL window if available
 		window = new LiteWindowEGL();
+#elif defined(__APPLE__)
+		// Offscreen CGL context: works without a window server session and off the main thread
+		window = new LiteWindowCGL();
 #else
 		// Default to GLFW window
 		window = new LiteWindowGLFW();

@@ -274,7 +274,7 @@ unsigned SFM::EstimateSimilarityTransformWithRotations(
 	}
 	transform.scale = num / den;
 	const Eigen::Vector3d t(meanDst - transform.scale * (R * meanSrc));
-	transform.t = Point3(t.x(), t.y(), t.z());
+	transform.t = Point3(t);
 	// the rotation came from the rotations alone, so validate it against the centers:
 	// the aligned centers must land within the threshold of their counterparts
 	DoubleArr residuals(srcCenters.size());

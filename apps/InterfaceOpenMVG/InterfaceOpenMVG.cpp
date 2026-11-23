@@ -499,6 +499,11 @@ int main(int argc, LPCTSTR* argv)
 				return EXIT_FAILURE;
 			}
 			const MVS::Platform::Camera& camera = platform.cameras[0];
+			if (camera.model != CameraModelType::PINHOLE) {
+				// the exported images are the image files, which only a pinhole camera describes
+				LOG("error: only pinhole cameras can be exported");
+				return EXIT_FAILURE;
+			}
 			openMVS::MVS_IO::Camera cameraBAF;
 			cameraBAF.K = camera.K;
 			sceneBAF.cameras.push_back(cameraBAF);
@@ -712,7 +717,7 @@ int main(int argc, LPCTSTR* argv)
 
 		// read images meta-data
 		FOREACHPTR(pImage, scene.images) {
-			if (!pImage->ReloadImage(0, false))
+			if (!pImage->ReloadImage(scene.platforms, 0, false))
 				LOG("error: can not read image %s", pImage->name.c_str());
 		}
 		if (OPT::bNormalizeIntrinsics) {

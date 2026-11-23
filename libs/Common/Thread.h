@@ -76,6 +76,8 @@ public:
 	}
 	void stop() {
 		if (threadHandle) {
+			// a thread still running when its object goes away is ended: it would run on a destroyed object
+			#pragma warning(suppress: 6258)
 			TerminateThread(threadHandle, -1);
 			CloseHandle(threadHandle);
 			threadHandle = NULL;
@@ -275,10 +277,10 @@ public:
 	inline ThreadPool(size_type nThreads, Thread::FncStart pfnStarter, void* pData=NULL) : _threads(nThreads>0?nThreads:Thread::hardwareConcurrency()) { start(pfnStarter, pData); }
 	inline ~ThreadPool() { join(); }
 
-	inline ThreadPool(ThreadPool&& rhs) : _threads(std::forward<Threads>(rhs._threads)) {
+	inline ThreadPool(ThreadPool&& rhs) noexcept : _threads(std::forward<Threads>(rhs._threads)) {
 	}
 
-	inline ThreadPool& operator=(ThreadPool&& rhs) {
+	inline ThreadPool& operator=(ThreadPool&& rhs) noexcept {
 		_threads.Swap(rhs._threads);
 		return *this;
 	}

@@ -14,7 +14,7 @@ ground truth, did not densify at `--resolution-level 0` on a 32 GB machine, §7)
 
 | product | command | mean F1 |
 |---|---|---|
-| **point cloud** | `DensifyPointCloud --resolution-level 0 --number-views 24` | **0.7145** |
+| **point cloud** | `DensifyPointCloud --resolution-level 0 --number-views 24` | **0.7142** |
 | **mesh** | the same densify, then `ReconstructMesh` at defaults | **0.6607** |
 
 - **Densify:** `--number-views 24` is the only flag to add; every other fusion and confidence
@@ -106,15 +106,15 @@ DensifyPointCloud --resolution-level 0 --number-views 24
 
 | scene | tau | P | R | **F1** | vs the same flag at the previous defaults |
 |---|---|---|---|---|---|
-| Truck | 5 mm | 0.7167 | 0.8151 | **0.7627** | +0.0207 |
-| Ignatius | 3 mm | 0.8430 | 0.9585 | **0.8970** | +0.0147 |
-| Barn | 10 mm | 0.6452 | 0.8565 | **0.7359** | +0.0281 |
-| Caterpillar | 5 mm | 0.5624 | 0.8398 | **0.6737** | +0.0372 |
-| Meetingroom | 10 mm | 0.6307 | 0.4897 | **0.5513** | +0.0195 |
-| Church | 25 mm | 0.7096 | 0.6284 | **0.6665** | +0.0083 |
-| **mean** | | | | **0.7145** | **+0.0214** |
+| Truck | 5 mm | 0.7161 | 0.8143 | **0.7621** | +0.0201 |
+| Ignatius | 3 mm | 0.8424 | 0.9583 | **0.8966** | +0.0143 |
+| Barn | 10 mm | 0.6448 | 0.8562 | **0.7356** | +0.0278 |
+| Caterpillar | 5 mm | 0.5616 | 0.8390 | **0.6728** | +0.0363 |
+| Meetingroom | 10 mm | 0.6320 | 0.4897 | **0.5518** | +0.0200 |
+| Church | 25 mm | 0.7093 | 0.6288 | **0.6666** | +0.0084 |
+| **mean** | | | | **0.7142** | **+0.0211** |
 
-Full densify per scene (mean 17.3 min); re-fusing one set of depth-maps per scene at these defaults
+Full densify per scene (mean 13.9 min, 32 GB machine, P-cores pinned); re-fusing one set of depth-maps per scene at these defaults
 gives 0.7148, within the 0.003 repeat spread.
 
 The gain over the previous defaults is fusion's contradiction guard, the angle-weighted confidence
@@ -185,7 +185,7 @@ Six-scene mean F1 at `--resolution-level 0` (all rows but the first at the previ
 
 | config | cloud | mesh | mesh + refine |
 |---|---|---|---|
-| **`--number-views 24`, shipped defaults** | **0.7145** | **0.6607** | - |
+| **`--number-views 24`, shipped defaults** | **0.7142** | **0.6607** | - |
 | `default_r0` | 0.6708 | 0.6327 | 0.6483 |
 | `--number-views 24` | 0.6931 | 0.6542 | 0.6612 |
 | `--number-views 16` | 0.6892 | 0.6481 | 0.6527 |
@@ -196,7 +196,7 @@ margin over `x_max` is a clear +0.0097; in mesh (+0.0033) and refine (+0.0023) t
 within the 0.003 repeat spread, and `c_v24` wins on simplicity - `x_max` also disables ROI
 estimation, cropping and tower mode, which have consequences beyond F1.
 
-**Point-cloud mode wins outright** (0.7145 vs 0.6607 for the mesh at the shipped defaults; 0.6931 vs
+**Point-cloud mode wins outright** (0.7142 vs 0.6607 for the mesh at the shipped defaults; 0.6931 vs
 0.6612 with refinement at the previous ones), and is by far the cheapest: it skips both the mesh and
 the refinement stage. Build a mesh only where a surface is required rather than a point set.
 

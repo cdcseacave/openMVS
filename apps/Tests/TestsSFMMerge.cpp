@@ -48,7 +48,7 @@
 #include "../../libs/SFM/LensFit.h"
 #include "../../libs/SFM/RoMa2Matcher.h"
 #include "../../libs/SFM/FlexGlueMatcher.h"
-#include "../../libs/SFM/SphereCubeMap.h"
+#include "../../libs/Math/Camera/CameraUndistort.h"
 #include "../../libs/SFM/InterfaceMVS.h"
 #include "../../libs/MVS.h"
 #include <nlohmann/json.hpp>

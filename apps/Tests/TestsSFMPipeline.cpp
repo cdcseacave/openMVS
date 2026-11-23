@@ -48,7 +48,7 @@
 #include "../../libs/SFM/LensFit.h"
 #include "../../libs/SFM/RoMa2Matcher.h"
 #include "../../libs/SFM/FlexGlueMatcher.h"
-#include "../../libs/SFM/SphereCubeMap.h"
+#include "../../libs/Math/Camera/CameraUndistort.h"
 #include "../../libs/SFM/InterfaceMVS.h"
 #include "../../libs/MVS.h"
 #include <nlohmann/json.hpp>
@@ -293,9 +293,9 @@ static void AddSphereTrack(Scene& scene, const Point3& X)
 }
 } // namespace
 
-// The cube-map bridge of SFM::ExportMVS: every spherical source image is expanded into 6 (or 4) pinhole cube-map faces,
-// emitted as a rig platform in MVS::Interface format, with a file tree MVS::Scene::Load reads back without any pinhole
-// regression. Sections:
+// The cube-map bridge of SFM::ExportMVS (ExportMVSConfig::Spherical::CUBEMAP): every spherical source image is expanded
+// into 6 (or 4) pinhole cube-map faces, emitted as a rig platform in MVS::Interface format, with a file tree
+// MVS::Scene::Load reads back without any pinhole regression. Sections:
 // 1. the rendering contract: an equirectangular image gives 6 pinhole faces whose center pixel holds each face's color;
 // 2. one export of two panoramas (MakeSphereScene, 256x128, plus a track at the zenith and one at the nadir) read back
 //    three ways: the interface (one rig platform of 6 face cameras at the face intrinsics and rotations, one pose per
@@ -304,7 +304,9 @@ static void AddSphereTrack(Scene& scene, const Point3& X)
 // 3. a pinhole and a spherical image in one export: two platforms, the rig's 6 faces plus the pinhole image;
 // 4. the same two panoramas exported with 4 faces (sphericalNumFaces, the legacy drop of the top and bottom faces): 4
 //    face cameras, 8 images, and the zenith and nadir tracks, which no face sees, are not exported while the 6-face
-//    export holds them.
+//    export holds them;
+// 5. a posed panorama and an unposed one of the same file name: 12 faces under different names, one rig pose; and
+//    SFM::ImportMVS of that rig with normalized camera intrinsics and a vertex observed at subpixel positions.
 bool CubeMapExportTest()
 {
 	TestScope scope("CubeMapExportTest");
@@ -341,6 +343,7 @@ bool CubeMapExportTest()
 	Util::ensureFolder(facesDir);
 	const String mvsPath = tmpDir(_T("scene.mvs"));
 	ExportMVSConfig cfg;
+	cfg.sphericalExport = ExportMVSConfig::Spherical::CUBEMAP;
 	cfg.undistortImageDir = facesDir;
 	cfg.undistortAlpha = 0.f;
 	cfg.onlyInlierTracks = true;
@@ -386,12 +389,13 @@ bool CubeMapExportTest()
 	}
 	TEST_CHECK(numPoles == 2, "%u of the zenith and nadir vertices exported with 6 faces, expected 2", numPoles);
 
-	// the face files: every face of every source written next to the faces folder, at the face size, its center the face's color
-	// (the source is only 256x128, so its patches are ~12 pixels wide: a generous tolerance)
+	// the face files: every face of every source written in the faces folder under the name the interface holds (relative
+	// to the scene file), at the face size, its center the face's color (the source is only 256x128, so its patches are
+	// ~12 pixels wide: a generous tolerance)
 	for (unsigned srcIdx = 0; srcIdx < 2; ++srcIdx) {
-		const String stem = Util::getFileName(scene.images[srcIdx].fileName);
 		for (unsigned k = 0; k < 6; ++k) {
-			const String faceFileName = facesDir + stem + String::FormatString(_T("_face%u"), k) + _T(".jxl");
+			const String faceFileName = tmpDir(iface.images[6 * srcIdx + k].name);
+			TEST_CHECK(Util::getFullPath(Util::getFilePath(faceFileName)) == Util::getFullPath(facesDir), "face file '%s' is not in the faces folder", faceFileName.c_str());
 			TEST_CHECK(std::filesystem::exists(faceFileName.c_str()), "face file '%s' not written", faceFileName.c_str());
 			Image8U3 face;
 			TEST_CHECK(face.Load(faceFileName), "cannot load face file '%s'", faceFileName.c_str());
@@ -437,6 +441,7 @@ bool CubeMapExportTest()
 		TEST_CHECK(!mixed.tracks.empty(), "no point projects into both images of the mixed scene");
 		const String mixedPath = tmpDir(_T("mixed.mvs"));
 		ExportMVSConfig mixedCfg;
+		mixedCfg.sphericalExport = ExportMVSConfig::Spherical::CUBEMAP;
 		mixedCfg.includeColors = false;
 		mixedCfg.sphericalFaceSize = faceSize;
 		TEST_CHECK(ExportMVS(mixedPath, mixed, mixedCfg), "ExportMVS of the mixed scene returned false");
@@ -479,8 +484,133 @@ bool CubeMapExportTest()
 		TEST_CHECK(numPoles4 == 0 && iface4.vertices.size() < iface.vertices.size(), "the 4-face export holds %u zenith/nadir vertices (0 expected) and %zu vertices (fewer than the 6-face %zu expected)",
 			numPoles4, iface4.vertices.size(), iface.vertices.size());
 	}
+
+	// 5. a posed panorama and an unposed one of the same file name in another folder: both get their six faces, under
+	// different names, the unposed one's without a pose; and the import of a rig whose cameras hold normalized intrinsics,
+	// with a vertex observed at subpixel positions: the faces come back at their size and pixel intrinsics, the
+	// observations as keypoints at the stored positions
+	{
+		Scene pair;
+		pair.cameras.emplace_back(new SphericalCamera(cv::Size(256, 128)));
+		Pose3D pose;
+		pose.C = Point3(0, 0, 0);
+		pose.R = Matrix3x3::IDENTITY;
+		pair.images.emplace_back(0, scene.images[0].fileName, pose, 0, pair.cameras[0]);
+		Image& unposed = pair.images.emplace_back(1, tmpDir(_T("other/")) + Util::getFileNameExt(scene.images[0].fileName), pose, 0, pair.cameras[0]);
+		unposed.InvalidatePose();
+		unposed.pixels = equirect.clone(); // its file does not exist
+		pair.status.nCalibratedImages = 1;
+		const String facesDir5 = tmpDir.Path() + _T("/faces5/");
+		Util::ensureFolder(facesDir5);
+		const String mvsPath5 = tmpDir(_T("scene5.mvs"));
+		ExportMVSConfig cfg5 = cfg;
+		cfg5.undistortImageDir = facesDir5;
+		TEST_CHECK(SFM::ExportMVS(mvsPath5, pair, cfg5), "ExportMVS of the posed and the unposed panorama returned false");
+		MVS::Interface iface5;
+		TEST_CHECK(MVS::ARCHIVE::SerializeLoad(iface5, mvsPath5.c_str()), "SerializeLoad of the posed and unposed export returned false");
+		TEST_CHECK(iface5.platforms.size() == 1 && iface5.platforms[0].poses.size() == 1 && iface5.images.size() == 12,
+			"the posed and unposed export holds %zu platforms, %zu poses, %zu images; expected 1, 1, 12", iface5.platforms.size(),
+			iface5.platforms.empty() ? size_t(0) : iface5.platforms[0].poses.size(), iface5.images.size());
+		for (unsigned k = 0; k < 6; ++k) {
+			TEST_CHECK(iface5.images[k].IsValid() && !iface5.images[k+6].IsValid(), "face %u: the posed image's face must hold a pose, the unposed one's none", k);
+			TEST_CHECK(iface5.images[k].name != iface5.images[k+6].name, "face %u of the two panoramas of one file name share the name '%s'", k, iface5.images[k].name.c_str());
+			TEST_CHECK(std::filesystem::exists(tmpDir(iface5.images[k].name).c_str()) && std::filesystem::exists(tmpDir(iface5.images[k+6].name).c_str()),
+				"face %u of the posed or of the unposed panorama not written", k);
+		}
+		auto& platform5 = iface5.platforms.front();
+		const KMatrix faceK(platform5.cameras.front().K);
+		for (unsigned k = 0; k < platform5.cameras.size(); ++k) {
+			const auto& cam = platform5.cameras[k];
+			platform5.SetFullK(k, cam.K, cam.width, cam.height, true);
+		}
+		iface5.flags |= MVS::Interface::HAS_OBSERVATIONS;
+		iface5.vertices.clear();
+		auto& vertex = iface5.vertices.emplace_back();
+		vertex.X = MVS::Interface::Pos3f(0, 0, 1);
+		for (unsigned k = 0; k < 2; ++k) {
+			auto& view = vertex.views.emplace_back();
+			view.imageID = k;
+			view.x = MVS::Interface::Pos2f(12.25f + k, 34.5f);
+		}
+		Scene imported;
+		TEST_CHECK(MVS::ARCHIVE::SerializeSave(iface5, mvsPath5) && ImportMVS(mvsPath5, imported), "the rig with normalized cameras and observations was not imported");
+		TEST_CHECK(imported.tracks.size() == 1, "%u tracks imported, 1 expected", (unsigned)imported.tracks.size());
+		for (const Observation& obs : imported.tracks.front()) {
+			const Image& img = imported.images[obs.imageID];
+			TEST_CHECK(img.GetSize() == cv::Size(faceSize, faceSize) && cv::norm(img.GetK() - faceK) <= 1e-9, "imported face %u has size %dx%d or other intrinsics than the exported face",
+				obs.imageID, img.GetSize().width, img.GetSize().height);
+			TEST_CHECK(obs.featureID < img.keypoints.size() && img.keypoints[obs.featureID].pt == cv::Point2f(12.25f + obs.imageID, 34.5f),
+				"the observation of imported face %u is not the keypoint at its stored position", obs.imageID);
+		}
+	}
 	return scope.Pass("6 faces rendered at their colors, one export read back as interface, face files and MVS scene, a mixed pinhole and spherical export, "
-		"and the 4-face export without the zenith and nadir tracks (%zu vertices of %zu)", iface.vertices.size(), scene.tracks.size());
+		"the 4-face export without the zenith and nadir tracks (%zu vertices of %zu), and a posed with an unposed panorama exported and a rig with observations imported",
+		iface.vertices.size(), scene.tracks.size());
+}
+/*----------------------------------------------------------------*/
+
+// SFM::UndistortDepthMaps on three depth-maps of one Brown camera, at full, half and a third of the image resolution,
+// the third of a portrait file the import rotated: each lands at its own resolution in the frame of the undistorted
+// camera of its file (UndistortedK of the file-orientation K and distortion), keeps its depth, its image path and
+// the recalibrated-confidence flag; a depth-map that cannot be read fails the call.
+bool UndistortDepthMapsTest()
+{
+	TestScope scope("UndistortDepthMapsTest");
+	const ScopedTempDir dir(_T("UndistortDepthMapsTest"));
+	TEST_CHECK(dir.IsValid(), "no temporary folder");
+	Scene scene;
+	const cv::Size size(96, 64);
+	auto* cam = new PinholeCamera(size, 75, 72, 44, 35);
+	cam->SetDistortion(-0.18, 0.04, 0.01, -0.025, 0);
+	scene.cameras.emplace_back(cam);
+	const Pose3D pose(RMatrix::IDENTITY, CMatrix::ZERO);
+	CLISTDEF2(String) paths;
+	for (unsigned i = 0; i < 3; ++i) {
+		Image& img = scene.images.emplace_back(i, dir("photo.png"), pose, 0, cam);
+		img.View::metadata.rotated = i == 2;
+		const cv::Size fileSize(img.GetOriginalSize());
+		const cv::Size depthSize(fileSize.width/(i+1), fileSize.height/(i+1));
+		MVS::DepthDataRaw data;
+		data.header.imageWidth = fileSize.width;
+		data.header.imageHeight = fileSize.height;
+		data.header.dMin = 1;
+		data.header.dMax = 3;
+		data.header.type = MVS::HeaderDepthDataRaw::CONF_ADJUSTED;
+		data.imageFileName = "../images/photo.png";
+		data.IDs.push_back(i);
+		data.K = cam->GetK();
+		img.RevertRotation(&data.K);
+		data.R = pose.R;
+		data.C = pose.C;
+		cv::Mat depth(depthSize, CV_32FC1, cv::Scalar(2)), normal(depthSize, CV_32FC3, cv::Scalar(0,0,-1));
+		cv::Mat confidence(depthSize, CV_32FC1, cv::Scalar(0.75));
+		paths.emplace_back(dir(String::FormatString("%u.dmap", i)));
+		TEST_CHECK(MVS::ExportDepthDataRaw(paths.back(), data, depth, normal, confidence, cv::Mat()), "cannot write depth-map %u", i);
+	}
+	TEST_CHECK(UndistortDepthMaps(scene, paths), "UndistortDepthMaps returned false");
+	FOREACH(i, paths) {
+		const Image& img = scene.images[i];
+		const cv::Size sizeOnDisk(img.GetOriginalSize());
+		const cv::Size expected(sizeOnDisk.width/((int)i+1), sizeOnDisk.height/((int)i+1));
+		MVS::DepthDataRaw data;
+		cv::Mat depth, normal, confidence, views;
+		KMatrix K(cam->GetK());
+		img.RevertRotation(&K);
+		auto distortion = cam->GetDistortion();
+		if (img.IsRotated())
+			std::tie(distortion.p1, distortion.p2) = std::make_pair(-distortion.p2, distortion.p1);
+		TEST_CHECK(MVS::ImportDepthDataRaw(paths[i], data, depth, normal, confidence, views), "cannot read depth-map %u back", (unsigned)i);
+		TEST_CHECK(depth.size() == expected && normal.size() == expected && confidence.size() == expected, "depth-map %u changed its resolution", (unsigned)i);
+		TEST_CHECK(depth.at<float>(expected.height/2, expected.width/2) == 2.f, "depth-map %u holds depth %g at its center, 2 expected",
+			(unsigned)i, depth.at<float>(expected.height/2, expected.width/2));
+		TEST_CHECK(cv::norm(data.K, UndistortedK(K, distortion, sizeOnDisk), cv::NORM_INF) <= 1e-10, "depth-map %u is not in the frame of its undistorted camera", (unsigned)i);
+		TEST_CHECK(data.imageFileName == "../images/photo.png" && (data.header.type & MVS::HeaderDepthDataRaw::CONF_ADJUSTED),
+			"depth-map %u lost its image path or its recalibrated-confidence flag", (unsigned)i);
+	}
+	paths.assign(scene.images.size(), String());
+	paths[0] = dir("missing.dmap");
+	TEST_CHECK(!UndistortDepthMaps(scene, paths), "a missing depth-map did not fail the call");
+	return scope.Pass("3 depth-maps of a Brown camera undistorted at their own resolution, one of a rotated file");
 }
 /*----------------------------------------------------------------*/
 

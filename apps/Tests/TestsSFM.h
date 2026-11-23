@@ -518,6 +518,9 @@ bool SceneAlignmentTest();
 // mixed pinhole and spherical export and the 4-face export that drops the zenith and nadir tracks
 bool CubeMapExportTest();
 
+// SFM::UndistortDepthMaps: depth-maps of a Brown camera undistorted at their own resolution, one of a rotated file
+bool UndistortDepthMapsTest();
+
 // The pipeline on the bundled images, each stage from the state the one before left: the refusals before any work
 // (SKIP without matches, a GPS weight with panoramas), the match-images-only run writing --export-pairs-csv right
 // after the matching (from the images and from the saved .sfm), --match-mode -1 (SKIP) from the saved matches,

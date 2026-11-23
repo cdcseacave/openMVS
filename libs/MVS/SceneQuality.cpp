@@ -73,7 +73,7 @@ Scene::ReconstructionQuality Scene::ComputeReconstructionQuality(unsigned nMaxRe
 		if (!image.IsValid())
 			continue;
 		// load original image pixels
-		if (!image.ReloadImage(nMaxResolution)) {
+		if (!image.ReloadImage(platforms, nMaxResolution)) {
 			DEBUG_EXTRA("warning: could not load image %u: %s", idxImage, image.name.c_str());
 			continue;
 		}

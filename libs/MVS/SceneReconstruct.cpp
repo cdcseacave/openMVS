@@ -323,6 +323,7 @@ void fetchCellFacets(const delaunay_t& Tr, const std::vector<facet_t>& hullFacet
 	// find all facets on the convex-hull in camera's view
 	// create the 4 frustum planes
 	ASSERT(facets.empty());
+	ASSERT(!imageData.camera.IsSpherical());
 	const TFrustum<REAL,4> frustum(imageData.camera.P, imageData.width, imageData.height, 0, 1);
 	// loop over all cells
 	// the orientation test runs in the working space, which is the whole point of the rescale,
@@ -737,6 +738,8 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 {
 	using namespace DELAUNAY;
 	ASSERT(pointcloud.IsValid());
+	if (!CheckPinholeOnly(_T("the mesh reconstruction")))
+		return false;
 	mesh.Release();
 	const float distInsert(params.distInsert);
 	const bool bUseFreeSpaceSupport(params.bUseFreeSpaceSupport);
@@ -1405,7 +1408,7 @@ unsigned Scene::RemoveUnseenMeshFaces(unsigned nMinViews, unsigned nResolutionLe
 {
 	ASSERT(nMinViews > 0);
 	ASSERT(!mesh.vertices.IsEmpty() && !mesh.faces.IsEmpty());
-	ASSERT(!images.IsEmpty() && !platforms.IsEmpty());
+	ASSERT(!images.IsEmpty() && !platforms.IsEmpty() && !HasSphericalImages());
 	TD_TIMER_START();
 	// relative depth tolerance of the centroid visibility probe
 	constexpr float kUnseenDepthTol = 0.01f;

@@ -1369,7 +1369,7 @@ inline typename TRMatrixBase<TYPE>::Vec TRMatrixBase<TYPE>::GetRotationAxisAngle
 	}
 	#else
 	Eigen::AngleAxis<TYPE> aa;
-	aa.fromRotationMatrix(Base::EMatMap((TYPE*)this));
+	aa.fromRotationMatrix(static_cast<typename Base::CEMatMap>(*this));
 	angle_axis[0] = aa.angle() * aa.axis()[0];
 	angle_axis[1] = aa.angle() * aa.axis()[1];
 	angle_axis[2] = aa.angle() * aa.axis()[2];

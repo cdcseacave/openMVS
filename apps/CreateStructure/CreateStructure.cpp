@@ -100,6 +100,7 @@ bool bUseGlobalSolver;
 bool bExtractColors;
 float undistortAlpha;
 String strUndistortExt;
+String strSphericalExport;
 float thAlignGPS;
 double gpsPositionWeight;
 double gpsPositionWeightZ;
@@ -262,7 +263,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (written right after matching, before reconstruction) (optional)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("undistort-alpha", boost::program_options::value<float>(&OPT::undistortAlpha)->default_value(ExportMVSConfig().undistortAlpha), "alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)")
-		("undistort-extension", boost::program_options::value<std::string>(&OPT::strUndistortExt)->default_value(ExportMVSConfig().extension), "file extension/format for the exported undistorted images (e.g. .jpg, .png, .jxl)")
+		("undistort-extension", boost::program_options::value<std::string>(&OPT::strUndistortExt), "file extension/format of undistorted images written by the MVS export (e.g. .jpg, .png, .jxl); empty (default) exports the distorted cameras with the original images, undistorted when the MVS scene loads them")
+		("spherical-export", boost::program_options::value<std::string>(&OPT::strSphericalExport)->default_value("native"), "MVS export of the spherical cameras: native (equirectangular cameras) or cubemap (rendered pinhole faces)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -644,10 +646,17 @@ int main(int argc, LPCTSTR* argv)
 	// Export MVS scene
 	if (!OPT::strOutputFileNameMVS.empty()) {
 		SFM::ExportMVSConfig cfg;
-		cfg.undistortImageDir = MAKE_PATH("undistorted");
-		cfg.undistortAlpha    = OPT::undistortAlpha;
-		if (!OPT::strUndistortExt.empty())
-			cfg.extension = OPT::strUndistortExt;
+		if (!OPT::strUndistortExt.empty()) {
+			// write undistorted image files instead of the Brown cameras of the original ones
+			cfg.undistortImageDir = MAKE_PATH("undistorted");
+			cfg.undistortAlpha    = OPT::undistortAlpha;
+			cfg.extension         = OPT::strUndistortExt;
+		}
+		if (OPT::strSphericalExport != "native" && OPT::strSphericalExport != "cubemap") {
+			VERBOSE("error: invalid spherical-export '%s' (native or cubemap)", OPT::strSphericalExport.c_str());
+			return EXIT_FAILURE;
+		}
+		cfg.sphericalExport = OPT::strSphericalExport == "cubemap" ? SFM::ExportMVSConfig::Spherical::CUBEMAP : SFM::ExportMVSConfig::Spherical::NATIVE;
 		if (!ExportMVS(MAKE_PATH_SAFE(OPT::strOutputFileNameMVS), scene, cfg)) {
 			VERBOSE("error: failed to export MVS file to %s", OPT::strOutputFileNameMVS.c_str());
 			return EXIT_FAILURE;

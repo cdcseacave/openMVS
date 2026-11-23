@@ -14,11 +14,13 @@ ExtractKeyframes -i input.mp4 -o scene_keyframes.sfm -d keyframes
 Notable options:
 
 - `--overlap-threshold` (default `0.85`) — minimum feature-overlap kept between two consecutive keyframes.
-- `--detector-type` (`SIFT` | `AKAZE` | `ORB` | `SIFTGPU`, default `SIFTGPU`, or `SIFT` in a build without SiftGPU) — feature detector used for the overlap estimation.
+- `--detector-type` (`SIFT` | `AKAZE` | `ORB` | `SIFTGPU`, default `SIFTGPU` when OpenMVS is built with SiftGPU, `SIFT` otherwise) — feature detector used for the overlap estimation.
 - `--focal-length` (default `0`, auto-calibrate) — known focal length in pixels; the module will auto-calibrate from the fundamental matrices when left at `0`.
 - `--camera-type` (`0` pinhole, `1` spherical, default `0`) — set to `1` for equirectangular 360° video.
 - `--cubemap-faces` (`4`, `6`, `8`, `12` or `20`, default `6`) — number of tangent-pinhole faces used internally for feature extraction on spherical frames.
 - `--blur-size` (default `0`, disabled) — Gaussian kernel applied to the optical-flow image to reject motion-blurred frames.
+- `--image-format` (`jxl` | `jpg` | `png`, default `jxl`) — file type of the keyframe images written to the output directory.
+- `--export-timestamps-csv <file>` — also write a `filename,time` CSV with each keyframe's image file name and its time in the video in seconds (the video backend's frame time stamp, which also follows variable frame rate video), for tools that cannot read the `.sfm` project.
 - `--refine-calibration` (`0` disabled, `1` two-view, `2` three-view, `3` view-graph; default `3`) — level of intrinsic refinement performed during matching.
 
 Running the native SfM step (see next section) on the resulting `.sfm` produces the sparse reconstruction shown below — the keyframe camera frustums and the triangulated sparse cloud are visualized together:
@@ -41,13 +43,15 @@ From either the keyframes produced above or any folder / semicolon-separated lis
 CreateStructure -s images_folder -o scene.sfm --export-mvs scene.mvs --extract-colors 1
 ```
 
+The exported project references the original images: distorted cameras are written with their Brown distortion and undistorted by the MVS modules when they load the images. `--undistort-extension .png` (or `.jpg`, `.jxl`) writes undistorted copies into an `undistorted` folder instead, with `--undistort-alpha` choosing how much of the image they keep.
+
 ![native sparse reconstruction](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_sparse.jpg)
 
 When the input is a `.sfm` produced by `ExtractKeyframes` or `CreateStructure` with feature extraction and matching only, point `--source` at that file directly: `CreateStructure` loads the saved features and pair matches and skips re-detection.
 
 Notable options:
 
-- `--detector-type` (default `SIFTGPU`) — feature detector; same choices as above.
+- `--detector-type` (default `SIFTGPU` when built with SiftGPU, `SIFT` otherwise) — feature detector; same choices as above.
 - `--match-mode` (`-1` skip: no matching, only for a saved `.sfm` that already holds matches; `0` exhaustive, `1` vocabulary, `2` sequential, `3` known-poses; default `1`) — pairwise-matching strategy.
 - `--match-sequence-overlap` (default `3`) — sequence overlap when using sequential matching.
 - `--vocab-max-pairs` (default `50`) — target pairs per image for vocabulary-tree and known-poses matching (with `--match-verification-feedback`, the default, part of this budget is re-invested in pairs suggested by the verified matches).
@@ -60,6 +64,8 @@ Notable options:
 - `--import-openmvg-dir` / `--export-openmvg-dir` — interoperate with OpenMVG feature files.
 - `--focal-length` (default `0`, disabled) and `--default-focal-ratio` (default `1.2`, used as `ratio * max(width,height)` when the focal length is unknown) — intrinsic overrides.
 - `--extract-colors` (default `false`) — attach image colors to the reconstructed sparse points.
+- `--undistort-extension` (default empty) — with `--export-mvs`, write undistorted copies of the images in this format (`.jpg`, `.png`, `.jxl`) into an `undistorted` folder; left empty, the `.mvs` holds the distorted Brown cameras with the original images, undistorted when the MVS modules load them. `--undistort-alpha` (default `0.6`) sets how much of the image the undistorted copies keep.
+- `--spherical-export` (`native` | `cubemap`, default `native`) — how the `.mvs` export writes spherical cameras: as native equirectangular cameras, or as rendered pinhole cube-map faces (needed by the mesh modules).
 
 </details>
 
@@ -105,7 +111,7 @@ A complete reconstruction starting from a 360° video file:
 
 ```
 ExtractKeyframes -i pano.mp4 -o scene_keyframes.sfm -d frames --camera-type 1
-CreateStructure -s scene_keyframes.sfm -o scene.sfm --export-mvs scene.mvs --extract-colors 1
+CreateStructure -s scene_keyframes.sfm -o scene.sfm --export-mvs scene.mvs --extract-colors 1 --spherical-export cubemap
 DensifyPointCloud scene.mvs
 ReconstructMesh scene_dense.mvs -p scene_dense.ply
 TextureMesh scene_dense.mvs -m scene_dense_mesh.ply
@@ -114,7 +120,7 @@ TextureMesh scene_dense.mvs -m scene_dense_mesh.ply
 ![spherical untextured mesh](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_spherical_dense_mesh.jpg)
 ![spherical reconstruction result](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_spherical_dense.jpg)
 
-Equirectangular images and video are supported end-to-end: the SfM stage processes them natively, and the downstream MVS modules receive an automatic six-face cube-map projection — no manual flat-panorama unwrapping is needed.
+Equirectangular images and video are processed natively by the SfM stage. The `.mvs` export writes them as native spherical cameras, whose depth-maps `DensifyPointCloud` estimates and fuses natively (CPU, CUDA or Metal; the mesh modules do not support them). `CreateStructure --spherical-export cubemap`, used in the example above because it continues to a textured mesh, writes instead each panorama as an automatic six-face cube-map of pinhole views, which the downstream MVS modules consume as they are — no manual flat-panorama unwrapping is needed.
 
 </details>
 
@@ -209,7 +215,7 @@ The directory made with the -d switch will store the undistorted images.
 <details>
 <summary><strong>Convert SfM scene from any other format</strong></summary>
 
-`OpenMVS` can process any scene, calibrated by any Structure-from-Motion solver, as long as it receives as input the camera poses, the sparse point-cloud and the corresponding undistorted images. All that needs to be done is to store this information in the `MVS` file format as described in [Interface.h](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/Interface.h) header file. This file is stand-alone, and can be copied as it is in the SfM solver code and use it directly to export the data in `MVS` format.
+`OpenMVS` can process any scene, calibrated by any Structure-from-Motion solver, as long as it receives as input the camera poses, the sparse point-cloud and the corresponding undistorted images. All that needs to be done is to store this information in the `MVS` file format as described in [Interface.h](https://github.com/cdcseacave/openMVS/blob/master/libs/IO/Interface.h) header file. This file is stand-alone, and can be copied as it is in the SfM solver code and use it directly to export the data in `MVS` format.
 
 A typical sparse point-cloud and camera poses obtained by the previous steps will look like this:
 
@@ -263,7 +269,7 @@ DensifyPointCloud scene.mvs --fusion-mode -2
 <details>
 <summary><strong>Dense Point-Cloud Reconstruction using available depth-maps (optional)</strong></summary>
 
-The densification module can skip depth-maps estimation if these are known for certain images. In order to use pre-computed depth-maps, all you need to do is to store them in `depthXXXX.dmap` files, where `XXXX` is the ID of the image, using the very simple/portable format explained in [Interface.h](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/Interface.h#L631). Once depth-maps exported as `DMAP` files, simply run `DensifyPointCloud` as usual, and it will only estimate missing depth-maps, and continue by fusing them in a dense point-cloud.
+The densification module can skip depth-maps estimation if these are known for certain images. In order to use pre-computed depth-maps, all you need to do is to store them in `depthXXXX.dmap` files, where `XXXX` is the ID of the image, using the very simple/portable format explained in [Interface.h](https://github.com/cdcseacave/openMVS/blob/master/libs/IO/Interface.h#L631). Once depth-maps exported as `DMAP` files, simply run `DensifyPointCloud` as usual, and it will only estimate missing depth-maps, and continue by fusing them in a dense point-cloud.
 
 </details>
 

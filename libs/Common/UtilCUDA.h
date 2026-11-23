@@ -52,7 +52,7 @@ struct Device {
 	int ID;
 	int major, minor;
 
-	inline Device() : ID(-1) {}
+	inline Device() : ID(-1), major(0), minor(0) {}
 };
 typedef CLISTDEF0(Device) Devices;
 extern GENERAL_API Devices devices;
@@ -89,11 +89,11 @@ protected:
 	size_t nSize;
 
 public:
-	inline MemDevice() : pData(0) {}
+	inline MemDevice() : pData(0), nSize(0) {}
 	inline ~MemDevice() { Release(); }
 
-	MemDevice(MemDevice&& rhs) : pData(rhs.pData) { rhs.pData = 0; }
-	MemDevice& operator=(MemDevice& rhs) { pData = rhs.pData; rhs.pData = 0; return *this; }
+	MemDevice(MemDevice&& rhs) noexcept : pData(rhs.pData), nSize(rhs.nSize) { rhs.pData = 0; }
+	MemDevice& operator=(MemDevice& rhs) { if (this != &rhs) { Release(); pData = rhs.pData; nSize = rhs.nSize; rhs.pData = 0; } return *this; }
 
 	inline bool IsValid() const { return (pData != 0); }
 	void Release();

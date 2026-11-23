@@ -30,18 +30,9 @@ ELSE()
 	MESSAGE(WARNING "Ceres Solver not found - bundle adjustment disabled")
 ENDIF()
 
-# Optional SiftGPU support via vcpkg manifest feature
-# _USE_SIFTGPU reaches ConfigLocal.h through this cache entry, so the library, the applications and the tests agree on FeatureType::DEFAULT
-set(_USE_SIFTGPU FALSE CACHE INTERNAL "SiftGPU is built in")
-if(OpenMVS_USE_SIFTGPU)
-	find_exported_dependency(siftgpu CONFIG QUIET)
-	if(siftgpu_FOUND)
-		set(_USE_SIFTGPU TRUE CACHE INTERNAL "SiftGPU is built in")
-		LIST(APPEND SFM_EXTRA_LIBS siftgpu::siftgpu)
-		message(STATUS "SiftGPU found and linked")
-	else()
-		message(STATUS "Can't find SiftGPU. Continuing without it.")
-	endif()
+# Optional SiftGPU support (detected in the root CMakeLists.txt)
+if(_USE_SIFTGPU)
+	LIST(APPEND SFM_EXTRA_LIBS siftgpu::siftgpu)
 endif()
 
 # Optional ONNX Runtime support (in-process ROMA2); detected in the top-level CMakeLists, define in ConfigLocal.h
