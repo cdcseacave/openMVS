@@ -255,7 +255,7 @@ template<typename T1, typename T2>
 union TAliasCast {
 	T1 f;
 	T2 i;
-	inline TAliasCast() {}
+	NO_INIT_MEMBERS inline TAliasCast() {}
 	inline TAliasCast(T1 v) : f(v) {}
 	inline TAliasCast(T2 v) : i(v) {}
 	inline TAliasCast& operator =(T1 v) { f = v; return *this; }
@@ -664,7 +664,7 @@ struct ALIGN(16) sse_vec4f {
 			float w;
 		};
 	};
-	inline sse_vec4f() {}
+	NO_INIT_MEMBERS inline sse_vec4f() {}
 	inline sse_vec4f(const float* p) : x(p[0]), y(p[1]), z(p[2]), w(p[3]) {}
 	inline sse_vec4f(float f0, float f1, float f2, float f3) : x(f0), y(f1), z(f2), w(f3) {}
 	inline operator const float*() const {return v;}
@@ -679,7 +679,7 @@ struct ALIGN(16) sse_vec2d {
 			double y;
 		};
 	};
-	inline sse_vec2d() {}
+	NO_INIT_MEMBERS inline sse_vec2d() {}
 	inline sse_vec2d(const double* p) : x(p[0]), y(p[1]) {}
 	inline sse_vec2d(const double& f0, const double& f1) : x(f0), y(f1) {}
 	inline operator const double*() const {return v;}
@@ -690,7 +690,7 @@ struct sse_f_t {
 	typedef __m128 sse_t;
 	typedef const sse_t& arg_sse_t;
 	typedef float real_t;
-	inline sse_f_t() {}
+	NO_INIT_MEMBERS inline sse_f_t() {}
 	inline sse_f_t(const sse_t& p) : v(p)        {}
 	inline sse_f_t(real_t p) : v(load1(p))       {}
 	inline sse_f_t(const real_t* p) : v(load(p)) {}
@@ -762,7 +762,7 @@ class sse_d_t {
 public:
 	typedef __m128d sse_t;
 	typedef double real_t;
-	inline sse_d_t() {}
+	NO_INIT_MEMBERS inline sse_d_t() {}
 	inline sse_d_t(const sse_t& p) : v(p)        {}
 	inline sse_d_t(const real_t& p) : v(load1(p)){}
 	inline sse_d_t(const real_t* p) : v(load(p)) {}

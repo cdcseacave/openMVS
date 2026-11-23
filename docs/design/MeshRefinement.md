@@ -120,7 +120,10 @@ then `Scene::FilterNeighborViews` at fixed thresholds (min shared area 0.1, scal
 angle range [2.5°, 45°]), capped at `--max-views` (default 8).
 
 For every ordered pair `(A,B)`, `MeshRefine::ThProcessPair` (CPU) / the CUDA per-direction kernels do,
-per pixel of A:
+per pixel of A. On the CPU the warp and the gradient are templated on the projection models of the
+two cameras, chosen once per pair (`Camera::VisitModel`): a pixel of A back-projects along its model's
+ray at its depth and projects through B's model; the projection Jacobian into B is the pinhole one of
+its `P` (the rasterizer and this Jacobian keep the refinement pinhole-only, asserted):
 
 1. **Warp.** `ImageMeshWarp` projects A's depth into B; a pixel masked out of A never seeds a
    sample. A sample is kept only if the visibility test accepts (§2.6) and B's own keep-mask accepts

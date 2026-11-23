@@ -133,8 +133,8 @@ class GENERAL_API File : public IOStream {
 public:
 	typedef struct FILEINFO_TYPE {
 		String path;
-		FILESIZE size;
-		DWORD attrib;
+		FILESIZE size = 0;
+		DWORD attrib = 0;
 	} FILEINFO;
 	typedef cList<FILEINFO> FileInfoArr;
 
@@ -169,7 +169,7 @@ public:
 		File::close();
 	}
 
-	inline File(File&& rhs) : h(rhs.h) {
+	inline File(File&& rhs) noexcept : h(rhs.h) {
 		#ifndef _RELEASE
 		breakRead = rhs.breakRead;
 		breakWrite = rhs.breakWrite;
@@ -177,13 +177,13 @@ public:
 		rhs.h = FILE_INVALID_HANDLE;
 	}
 
-	inline File& operator=(File&& rhs) {
-		h = rhs.h;
+	inline File& operator=(File&& rhs) noexcept {
+		// rhs takes the handle this held, closed when rhs is destroyed
+		std::swap(h, rhs.h);
 		#ifndef _RELEASE
 		breakRead = rhs.breakRead;
 		breakWrite = rhs.breakWrite;
 		#endif
-		rhs.h = FILE_INVALID_HANDLE;
 		return *this;
 	}
 

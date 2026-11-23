@@ -423,13 +423,13 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 	const float invzMin(1.f/dMax), invzMax(1.f/dMin);
 	// neighbor views: x_k ~ A*x + invz*b maps the reference pixel x at inverse depth invz into view k
 	struct NeighborView {
-		const Image* image;
+		const Image* image = NULL;
 		cv::Matx33d R; cv::Vec3d t; // pose relative to the reference camera
 		ImageGray grayFull, gray; // full resolution and current level intensities
 		Point3f A[3], b; // A stored by columns, at the current level
 		TexelPositions<rowTexels> offsets; // A*(j,i,0) for each matched texel
 		TexelPositions<windowSizeX> offsetsDense; // A*(j,i,0) for each texel of the window
-		float width1, height1; // largest valid sampling position
+		float width1 = 0, height1 = 0; // largest valid sampling position
 		void SetLevel(const cv::Matx33d& invKref, const cv::Matx33d& K) {
 			const cv::Matx33d _A(K * R * invKref);
 			const cv::Vec3d _b(K * t);
@@ -632,6 +632,10 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 	// halving delta, as long as the costs are convex around t and the move does not raise its cost
 	RefineDisparityMap(disparityMap);
 	ASSERT(step == step0);
+	// the per-view warps of a pixel (~19 KB at maxViews) stay on the stack: no allocation per pixel
+	#ifdef _MSC_VER
+	#pragma warning(suppress: 6262)
+	#endif
 	auto refineIndex = [&](int r, int c, float t) -> float {
 		const ImageRef u(c+halfWindowSizeX,r+halfWindowSizeY);
 		WeightedPatch w;
@@ -934,8 +938,8 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 	const ImageGray::Type Igray(0.5f);
 	#endif
 	struct LineData {
-		AccumCost* L;
-		Range R;
+		AccumCost* L = NULL;
+		Range R = {0, 0};
 		~LineData() { delete[] L; }
 		AccumCost operator[] (int i) const { return L[i]; }
 		AccumCost& operator[] (int i) { return L[i]; }
@@ -1165,7 +1169,7 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 	struct AccumLines {
 		const Disparity maxNumDisp;
 		LineData* linesBuffer;
-		LineData* lines[numDirs][2];
+		LineData* lines[numDirs][2] = {};
 		AccumLines(Disparity _maxNumDisp) : maxNumDisp(_maxNumDisp), linesBuffer(NULL) {}
 		~AccumLines() { delete[] linesBuffer; }
 		void Init(int w) {

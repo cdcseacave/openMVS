@@ -83,6 +83,7 @@ bool MatchGeometricSphericalTest();
 // file tree that MVS::Scene::Load reads back without any pinhole
 // regression.
 bool CubeMapFaceRenderTest();
+bool UndistortDepthMapsTest();
 bool CubeMapBridgeGeometryTest();
 bool CubeMapBridgeEndToEndTest();
 bool CubeMapBridgeMVSLoadTest();

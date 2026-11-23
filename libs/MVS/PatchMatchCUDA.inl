@@ -47,13 +47,20 @@
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+// the nvcc translation unit sees no MVS headers: PlatformArr is declared as in Platform.h, which the
+// host translation unit (PatchMatchCUDA.cpp) checks, as it sees both declarations
+namespace SEACAVE {
+template <typename TYPE, typename ARG_TYPE, int useConstruct, int grow, typename IDX_TYPE> class cList;
+} // namespace SEACAVE
+
 namespace MVS {
 
+class Platform;
+typedef SEACAVE::cList<Platform, const Platform&, 1, 16, uint32_t> PlatformArr;
 struct DepthData;
+struct ConfAdjustRequest; // ConfidenceGPU.h (fused confidence recalibration)
 
 namespace CUDA {
-
-struct ConfAdjustRequest; // ConfidenceCUDA.h (fused confidence recalibration)
 
 class PatchMatch {
 public:
@@ -66,6 +73,10 @@ public:
 		bool bGeomConsistency = false;
 		bool bLowResProcessed = false;
 		float fThresholdKeepCost = 0;
+		uint64_t sphericalViews = 0; // bit i set: view i (0 the reference) is equirectangular; up to MAX_VIEWS+1 views
+		float fSinSqWarpMaxElevation = 0; // squared sine of the target elevation above which the exact warp replaces the tangent-plane one
+		const float2* refTrig = NULL; // equirectangular reference: (sin,cos) of each column's longitude, then of each row's elevation
+		float fCosMinViewAngle = 0; // the view gate of the kernels with a spherical view: cos(OPTDENSE::fMinAngle)
 	};
 
 public:
@@ -78,7 +89,7 @@ public:
 	// pConfRequest (optional): on the last geometric-consistency iteration, run the fused GPU
 	// confidence recalibration right after the estimation kernels, reusing the device-resident
 	// reference buffers (see ConfidenceCUDA.h ConfAdjustRequest); its done flag reports back
-	void EstimateDepthMap(DepthData&, ConfAdjustRequest* pConfRequest = NULL);
+	void EstimateDepthMap(const PlatformArr&, DepthData&, ConfAdjustRequest* pConfRequest = NULL);
 
 	float4 GetPlaneHypothesis(const int index);
 	float GetCost(const int index);
@@ -86,9 +97,10 @@ public:
 private:
 	void ReleaseCUDA();
 	void AllocatePatchMatchCUDA(const cv::Mat1f& image);
-	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap);
+	// an equirectangular view's textures take normalized coordinates, wrapping the columns
+	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap, bool bSpherical);
 	void RunCUDA(float* ptrCostMap=NULL, uint32_t* ptrViewsMap=NULL);
-	void UploadCameras(); // upload host cameras into __constant__ g_cameras
+	void UploadCameras(); // upload host cameras into __constant__ g_cameras (and g_views if a view is spherical)
 	void UploadParams();  // upload host params into __constant__ g_params
 	// For images large enough that the per-call driver-staging stall dominates
 	// (default threshold ~1.5 MP), copy a pageable cv::Mat1f into a per-instance

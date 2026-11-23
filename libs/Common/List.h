@@ -167,7 +167,7 @@ public:
 		_ArrayCopyConstruct(_vector, rList._vector, _size);
 	}
 	// move constructor: creates a move-copy of the given list
-	cList(cList&& rList) :
+	cList(cList&& rList) noexcept :
 	    _size(rList._size), _vectorSize(rList._vectorSize), _vector(rList._vector)
 	{
 		rList._Init();
@@ -193,7 +193,7 @@ public:
 	}
 
 	// move the content from the given list
-	inline cList&	operator=(cList&& rList)
+	inline cList&	operator=(cList&& rList) noexcept
 	{
 		return CopyOfRemove(rList);
 	}
@@ -1377,7 +1377,7 @@ protected:
 	{
 		if (useConstruct) {
 			while (n--)
-				dst[n] = std::move(src[n]);
+				dst[n] = src[n];
 		} else {
 			if (n == 0) return;
 			memcpy((void*)dst, (const void*)src, n*sizeof(TYPE));

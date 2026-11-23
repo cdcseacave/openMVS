@@ -11,10 +11,12 @@ layout (std140) uniform ViewProjection {
     vec3 cameraPos;
 };
 
+uniform mat4 model; // identity for the image quads (world positions), the image pose and size for the panorama sphere
+
 out vec2 TexCoord;
 
 void main() {
-    gl_Position = viewProjection * vec4(position, 1.0);
+    gl_Position = viewProjection * model * vec4(position, 1.0);
     TexCoord = texCoord;
 }
 )glsl"

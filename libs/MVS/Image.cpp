@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Image.h"
+#include "../Math/Camera/CameraUndistort.h"
 
 using namespace MVS;
 
@@ -54,8 +55,17 @@ REAL Image::GetSizeScale(unsigned nMaxResolution) const
 // the image size must be already initialized
 cv::Size Image::GetSize(unsigned nMaxResolution) const
 {
-	return Image8U::computeResize(GetSize(), GetSizeScale(nMaxResolution));
+	return ComputeResize(GetSize(), GetSizeScale(nMaxResolution), IsSpherical());
 } // GetSize
+
+cv::Size Image::ComputeResize(const cv::Size& size, REAL scale, bool bSpherical)
+{
+	if (!bSpherical)
+		return Image8U::computeResize(size, scale);
+	ASSERT(size.width >= size.height && scale > 0);
+	const int width(2*MAXF(ROUND2INT((REAL)size.width*scale/2), 1));
+	return Image8U::computeResize(size, (REAL)width/size.width);
+} // ComputeResize
 /*----------------------------------------------------------------*/
 
 
@@ -95,20 +105,53 @@ bool Image::ReadImage(IMAGEPTR pImage, Image8U3& image)
 	}
 	return true;
 } // ReadImage
+
+IMAGEPTR Image::ReadPixels(const PlatformArr& platforms, Image8U3& pixels) const
+{
+	IMAGEPTR pImage(ReadImage(name, pixels));
+	if (pImage == NULL || !IsUndistortedOnRead())
+		return pImage;
+	const CameraLens& lens = GetLens(platforms);
+	if (pixels.size() != lens.size) {
+		LOG("error: image '%s' is %dx%d, its camera %dx%d", name.c_str(), pixels.width(), pixels.height(), lens.size.width, lens.size.height);
+		pImage.Release();
+		return pImage;
+	}
+	Image8U3 distorted;
+	cv::swap(distorted, pixels);
+	GetUndistortMaps(platforms)->Remap(distorted, pixels, cv::INTER_LINEAR);
+	return pImage;
+} // ReadPixels
+
+bool Image::LoadMask(const PlatformArr& platforms, Image8U& mask) const
+{
+	if (!mask.Load(GetMaskFileName()))
+		return false;
+	if (!IsUndistortedOnRead())
+		return true;
+	const CameraLens& lens = GetLens(platforms);
+	// the mask may be stored at another resolution than the image file
+	if (mask.size() != lens.size)
+		cv::resize(mask, mask, lens.size, 0, 0, cv::INTER_NEAREST);
+	Image8U distorted;
+	cv::swap(distorted, mask);
+	GetUndistortMaps(platforms)->Remap(distorted, mask, cv::INTER_NEAREST);
+	return true;
+} // LoadMask
+
+std::shared_ptr<const CameraUndistortMaps> Image::GetUndistortMaps(const PlatformArr& platforms) const
+{
+	const CameraLens& lens = GetLens(platforms);
+	return GetCameraUndistortMaps(lens.K, lens.distortion, lens.size);
+} // GetUndistortMaps
 /*----------------------------------------------------------------*/
 
 
-bool Image::LoadImage(const String& fileName, unsigned nMaxResolution)
+bool Image::LoadImage(const PlatformArr& platforms, const String& fileName, unsigned nMaxResolution)
 {
 	name = fileName;
-	// open image file
-	IMAGEPTR pImage(OpenImage(fileName));
-	if (pImage == NULL) {
-		LOG("error: failed opening input image '%s'", name.c_str());
-		return false;
-	}
-	// create and fill image data
-	if (!ReadImage(pImage, image)) {
+	// read the image file
+	if (ReadPixels(platforms, image) == NULL) {
 		LOG("error: failed loading image '%s'", name.c_str());
 		return false;
 	}
@@ -118,9 +161,9 @@ bool Image::LoadImage(const String& fileName, unsigned nMaxResolution)
 } // LoadImage
 
 // open the stored image file name and read again the image data
-bool Image::ReloadImage(unsigned nMaxResolution, bool bLoadPixels)
+bool Image::ReloadImage(const PlatformArr& platforms, unsigned nMaxResolution, bool bLoadPixels)
 {
-	IMAGEPTR pImage(bLoadPixels ? ReadImage(name, image) : ReadImageHeader(name));
+	IMAGEPTR pImage(bLoadPixels ? ReadPixels(platforms, image) : ReadImageHeader(name));
 	if (pImage == NULL) {
 		LOG("error: failed reloading image '%s'", name.c_str());
 		return false;
@@ -152,7 +195,7 @@ float Image::ResizeImage(unsigned nMaxResolution)
 		height = image.height();
 	}
 	const REAL scale(GetSizeScale(nMaxResolution));
-	const cv::Size scaledSize(Image8U::computeResize(GetSize(), scale));
+	const cv::Size scaledSize(ComputeResize(GetSize(), scale, IsSpherical()));
 	width = (uint32_t)scaledSize.width;
 	height = (uint32_t)scaledSize.height;
 	if (!image.empty())
@@ -190,7 +233,7 @@ unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize, u
 Image Image::GetImage(const PlatformArr& platforms, double scale, bool bUseImage) const
 {
 	Image scaledImage(*this);
-	const cv::Size scaledSize(Image8U::computeResize(GetSize(), scale));
+	const cv::Size scaledSize(ComputeResize(GetSize(), scale, IsSpherical()));
 	scaledImage.width = (unsigned)scaledSize.width;
 	scaledImage.height = (unsigned)scaledSize.height;
 	scaledImage.camera = GetCamera(platforms, scaledImage.GetSize());
@@ -239,6 +282,11 @@ void Image::UpdateCamera(const PlatformArr& platforms)
 // computes camera's field of view for the given direction
 REAL Image::ComputeFOV(int dir) const
 {
+	if (IsSpherical()) {
+		// the angle the image spans: its size over the angular K (2pi x pi for a full panorama)
+		ASSERT(dir == 0 || dir == 1);
+		return dir == 0 ? REAL(width)/camera.K(0,0) : REAL(height)/camera.K(1,1);
+	}
 	switch (dir) {
 	case 0: // width
 		return 2*ATAN(REAL(width)/(camera.K(0,0)*2));
@@ -461,5 +509,47 @@ bool Image::Depth2Disparity(const Matrix4x4& Q, const Point2f& u, float d, float
 	const REAL z((Q(2,0)*u.x + Q(2,1)*u.y + Q(2,2))*d + Q(2,3));
 	disparity = -(float)(z/w);
 	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+ObservationMap::ObservationMap(const Image& imageData, const PlatformArr& platforms)
+	:
+	bUndistort(imageData.IsUndistortedOnRead())
+{
+	if (!bUndistort)
+		return;
+	const CameraLens& lens = imageData.GetLens(platforms);
+	const KMatrix undistortedK(UndistortedK(lens.K, lens.distortion, lens.size));
+	ASSERT(ISZERO(lens.K(0,1)) && ISZERO(undistortedK(0,1)));
+	file = Pinhole<REAL>{lens.K(0,0), lens.K(1,1), lens.K(0,2), lens.K(1,2)};
+	undistorted = Pinhole<REAL>{undistortedK(0,0), undistortedK(1,1), undistortedK(0,2), undistortedK(1,2)};
+	distortion = lens.distortion;
+}
+
+Point2f ObservationMap::FileToCamera(const Point2f& x) const
+{
+	if (!bUndistort)
+		return x;
+	const Eigen::Vector2d u(undistorted.NormalizedToPixel(distortion.Undistort(file.PixelToNormalized(Point2(x)))));
+	return Point2f(Point2(u));
+}
+
+Point2f ObservationMap::CameraToFile(const Point2f& x) const
+{
+	if (!bUndistort)
+		return x;
+	const Eigen::Vector2d d(file.NormalizedToPixel(distortion.Distort(undistorted.PixelToNormalized(Point2(x)))));
+	return Point2f(Point2(d));
+}
+
+// one map per image
+std::vector<ObservationMap> ObservationMap::MakeMaps(const ImageArr& images, const PlatformArr& platforms)
+{
+	std::vector<ObservationMap> maps;
+	maps.reserve(images.size());
+	for (const Image& imageData: images)
+		maps.emplace_back(imageData, platforms);
+	return maps;
 }
 /*----------------------------------------------------------------*/

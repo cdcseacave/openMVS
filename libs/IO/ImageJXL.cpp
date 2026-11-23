@@ -18,7 +18,7 @@ namespace SEACAVE {
 
 struct JxlState {
 	std::vector<uint8_t> compressed;
-	JxlBasicInfo info;
+	JxlBasicInfo info = {};
 	bool got_info = false;
 	JxlDecoder* decoder = nullptr; // Hold decoder for incremental reading
 
@@ -225,7 +225,7 @@ bool CImageJXL::WriteData(void* pData, PIXELFORMAT dataFormat, Size nStride, Siz
 	if (!enc)
 		return false;
 	JxlEncoderFrameSettings* frame_settings = JxlEncoderFrameSettingsCreate(enc, NULL);
-	JxlBasicInfo info;
+	JxlBasicInfo info = {};
 	JxlEncoderInitBasicInfo(&info);
 	info.xsize = m_width;
 	info.ysize = m_height;

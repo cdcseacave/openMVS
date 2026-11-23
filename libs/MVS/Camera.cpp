@@ -71,15 +71,22 @@ Camera& Camera::operator= (const CameraIntern& camera)
 	K = camera.K;
 	R = camera.R;
 	C = camera.C;
+	model = camera.model;
 	return *this;
 }
 Camera Camera::GetScaled(REAL s) const
 {
-	return Camera(GetScaledK(s), R, C);
+	Camera camera(*this);
+	camera.K = GetScaledK(s);
+	camera.ComposeP();
+	return camera;
 }
 Camera Camera::GetScaled(const cv::Size& size, const cv::Size& newSize) const
 {
-	return Camera(GetScaledK(size, newSize), R, C);
+	Camera camera(*this);
+	camera.K = GetScaledK(size, newSize);
+	camera.ComposeP();
+	return camera;
 }
 /*----------------------------------------------------------------*/
 
@@ -137,12 +144,15 @@ void Camera::Transform(const Matrix3x3& _R, const Point3& _t, const REAL& _s)
 
 REAL Camera::PointDepth(const Point3& X) const
 {
+	if (IsSpherical())
+		return Distance(X);
 	return P(2,0)*X.x + P(2,1)*X.y + P(2,2)*X.z + P(2,3);
 } // PointDepth
 /*----------------------------------------------------------------*/
 
 bool Camera::IsInFront(const Point3& X) const
 {
+	// a spherical camera sees every direction
 	return (PointDepth(X)>0);
 } // IsInFront
 /*----------------------------------------------------------------*/
@@ -254,6 +264,7 @@ void SetCameraMatricesROI(const AABB2f& roi1h, const AABB2f& roi2h, cv::Size& si
 // note: this function assumes that the two cameras are already undistorted
 REAL Camera::StereoRectify(const cv::Size& size1, const Camera& camera1, const cv::Size& size2, const Camera& camera2, Matrix3x3& R1, Matrix3x3& R2, Matrix3x3& K1, Matrix3x3& K2)
 {
+	ASSERT(!camera1.IsSpherical() && !camera2.IsSpherical());
 	// compute relative pose
 	RMatrix poseR;
 	CMatrix poseC;
@@ -328,6 +339,7 @@ REAL Camera::StereoRectify(const cv::Size& size1, const Camera& camera1, const c
 // see: "A compact algorithm for rectification of stereo pairs", A. Fusiello, E. Trucco, and A. Verri, 2000
 REAL Camera::StereoRectifyFusiello(const cv::Size& size1, const Camera& camera1, const cv::Size& size2, const Camera& camera2, Matrix3x3& R1, Matrix3x3& R2, Matrix3x3& K1, Matrix3x3& K2)
 {
+	ASSERT(!camera1.IsSpherical() && !camera2.IsSpherical());
 	// compute relative pose
 	RMatrix poseR;
 	CMatrix poseC;

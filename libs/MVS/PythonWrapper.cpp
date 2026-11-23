@@ -137,6 +137,53 @@ public:
 		if (IsBounded())
 			CropToROI(static_cast<const OBB3f&>(obb), minNumPoints);
 	}
+
+	// Per-image metadata - returns a Python list of dicts, one per image in the order
+	// of the scene images (the index the neighbors refer to). camera_model is the model
+	// of the platform camera (None for an image without one); a BROWN image file is
+	// undistorted when read, so the intrinsics describe the undistorted pinhole camera
+	// every consumer sees, not the file. The intrinsics (pixels, at width x height) and
+	// the camera center are given for the calibrated images only (is_valid), None otherwise.
+	boost::python::list pyGetImageRecords() const {
+		using boost::python::object;
+		boost::python::list out;
+		FOREACH(idxImage, images) {
+			const MVS::Image& imageData = images[idxImage];
+			boost::python::dict r;
+			r["index"] = static_cast<uint32_t>(idxImage);
+			r["id"] = imageData.ID;
+			r["platform_id"] = imageData.platformID;
+			r["camera_id"] = imageData.cameraID;
+			r["pose_id"] = imageData.poseID;
+			r["file_name"] = static_cast<std::string>(imageData.name);
+			r["mask_name"] = static_cast<std::string>(imageData.maskName);
+			r["width"] = imageData.width;
+			r["height"] = imageData.height;
+			r["scale"] = imageData.scale;
+			r["avg_depth"] = imageData.avgDepth;
+			r["is_valid"] = imageData.IsValid();
+			const bool bHasCamera(imageData.platformID != NO_ID && imageData.cameraID != NO_ID);
+			r["camera_model"] = bHasCamera ? object(imageData.GetPlatformCamera(platforms).model) : object();
+			if (imageData.IsValid()) {
+				const MVS::Camera& camera = imageData.camera;
+				ASSERT(camera.model == imageData.GetPlatformCamera(platforms).model);
+				r["fx"] = camera.K(0,0);
+				r["fy"] = camera.K(1,1);
+				r["cx"] = camera.K(0,2);
+				r["cy"] = camera.K(1,2);
+				r["center"] = boost::python::make_tuple(camera.C.x, camera.C.y, camera.C.z);
+			} else {
+				for (const char* key: {"fx", "fy", "cx", "cy", "center"})
+					r[key] = object();
+			}
+			boost::python::list neighbors;
+			for (const MVS::ViewScore& neighbor: imageData.neighbors)
+				neighbors.append(neighbor.ID);
+			r["neighbors"] = neighbors;
+			out.append(r);
+		}
+		return out;
+	}
 };
 
 void SetWorkingFolder(const std::string& folder) {
@@ -147,6 +194,12 @@ void SetWorkingFolder(const std::string& folder) {
 
 BOOST_PYTHON_MODULE(pyOpenMVS) {
 	using namespace boost::python;
+
+	// the projection model of a camera (Scene.get_image_records()["camera_model"])
+	enum_<CameraModelType>("CameraModel")
+		.value("PINHOLE", CameraModelType::PINHOLE)
+		.value("BROWN", CameraModelType::BROWN)
+		.value("SPHERICAL", CameraModelType::SPHERICAL);
 
 	class_<MVS::Scene::ReconstructMeshParams>("ReconstructMeshParams")
 		.def_readwrite("dist_insert", &MVS::Scene::ReconstructMeshParams::distInsert)
@@ -183,7 +236,8 @@ BOOST_PYTHON_MODULE(pyOpenMVS) {
 		.def("estimate_normals", &Scene::pyEstimatePointCloudNormals, (arg("refine")=true))
 		.def("estimate_sparse_surface", &Scene::pyEstimateSparseSurface,
 				(arg("k_neighbors")=16, arg("size_scale")=0.9f, arg("normal_angle_max_deg")=0.f))
-		.def("crop_to_roi", &Scene::pyCropToROI, (arg("min_num_points")=3));
+		.def("crop_to_roi", &Scene::pyCropToROI, (arg("min_num_points")=3))
+		.def("get_image_records", &Scene::pyGetImageRecords);
 
 	def("set_working_folder", &SetWorkingFolder);
 

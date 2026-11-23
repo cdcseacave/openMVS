@@ -91,28 +91,38 @@ if sys.platform == "win32":
 
 from .pyOpenMVS import *  # noqa: F401, F403, E402
 from .pyOpenMVS import (  # noqa: E402
+    CameraModel,
     ExportMVSConfig,
     FeatureExtractionConfig,
+    FramesConvention,
     ImportConfig,
     MatchConfig,
+    PoseImportMode,
     ROMA2Config,
     ReconstructionConfig,
+    ReconstructMeshParams,
     Scene,
     SfMScene,
+    SphericalExport,
     ViewGraphCalibratorConfig,
     export_sfm_to_mvs,
     set_working_folder,
 )
 
 __all__ = [
+    "CameraModel",
     "ExportMVSConfig",
     "FeatureExtractionConfig",
+    "FramesConvention",
     "ImportConfig",
     "MatchConfig",
+    "PoseImportMode",
     "ROMA2Config",
     "ReconstructionConfig",
+    "ReconstructMeshParams",
     "Scene",
     "SfMScene",
+    "SphericalExport",
     "ViewGraphCalibratorConfig",
     "export_sfm_to_mvs",
     "set_working_folder",

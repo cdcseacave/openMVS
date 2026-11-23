@@ -49,6 +49,8 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strOutputDirectory;
+String strExportTimestampsFileName;
+String strImageFormat;
 String strDetectorType;
 float fOverlapThreshold;
 float fFocalLength;
@@ -112,6 +114,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input video file path")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output scene file path")
 		("output-directory,d", boost::program_options::value<std::string>(&OPT::strOutputDirectory)->default_value("keyframes"), "output directory for keyframe images")
+		("image-format", boost::program_options::value<std::string>(&OPT::strImageFormat)->default_value("jxl"), "keyframe image file format, as its extension: jxl, jpg or png")
+		("export-timestamps-csv", boost::program_options::value<std::string>(&OPT::strExportTimestampsFileName), "CSV file to export each keyframe's image file name and video time in seconds (optional)")
 		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value(FeatureTypeToString(FeatureType::DEFAULT)), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
 		("overlap-threshold", boost::program_options::value(&OPT::fOverlapThreshold)->default_value(0.85f), "minimum overlap threshold between consecutive keyframes (0.0-1.0)")
 		("focal-length,f", boost::program_options::value(&OPT::fFocalLength)->default_value(0.f), "known focal length in pixels (<=0 for auto-calibration from fundamental matrices)")
@@ -172,6 +176,16 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	else
 		Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidFolderPath(OPT::strOutputDirectory);
+	Util::ensureValidPath(OPT::strExportTimestampsFileName);
+
+	// validate keyframe image format
+	OPT::strImageFormat = OPT::strImageFormat.ToLower();
+	if (OPT::strImageFormat == _T("jpeg"))
+		OPT::strImageFormat = _T("jpg");
+	if (OPT::strImageFormat != _T("jxl") && OPT::strImageFormat != _T("jpg") && OPT::strImageFormat != _T("png")) {
+		VERBOSE("error: invalid image format '%s' (must be jxl, jpg or png)", OPT::strImageFormat.c_str());
+		return false;
+	}
 
 	// validate detector type
 	if (FeatureTypeFromString(OPT::strDetectorType) == FeatureType::NONE) {
@@ -224,6 +238,7 @@ int main(int argc, LPCTSTR* argv)
 	config.cubemapFaces = OPT::nCubemapFaces;
 	config.blurSize = OPT::nBlurSize;
 	config.outputDirectory = MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputDirectory);
+	config.imageFormat = OPT::strImageFormat;
 	config.focalLength = OPT::fFocalLength;
 	config.ppOffsetX = OPT::fPPOffsetX;
 	config.ppOffsetY = OPT::fPPOffsetY;
@@ -236,6 +251,7 @@ int main(int argc, LPCTSTR* argv)
 	VERBOSE("Keyframe Extraction Configuration:");
 	VERBOSE("  Input video: %s", OPT::strInputFileName.c_str());
 	VERBOSE("  Output directory: %s", config.outputDirectory.c_str());
+	VERBOSE("  Image format: %s", config.imageFormat.c_str());
 	VERBOSE("  Output scene: %s", OPT::strOutputFileName.c_str());
 	VERBOSE("  Detector type: %s", OPT::strDetectorType.c_str());
 	VERBOSE("  Overlap threshold: %.2f", config.overlapThreshold);
@@ -299,6 +315,19 @@ int main(int argc, LPCTSTR* argv)
 	if (!scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType)) {
 		VERBOSE("error: failed to save scene");
 		return EXIT_FAILURE;
+	}
+
+	// Export each keyframe's video time
+	if (!OPT::strExportTimestampsFileName.empty()) {
+		std::ofstream csv(MAKE_PATH_SAFE(OPT::strExportTimestampsFileName));
+		csv << "filename,time\n";
+		for (const Image& image : scene.images)
+			csv << Util::getFileNameExt(image.fileName) << ',' << String::FormatString("%.6f", image.timestamp) << '\n';
+		csv.flush();
+		if (!csv) {
+			VERBOSE("error: failed to export keyframe timestamps to '%s'", OPT::strExportTimestampsFileName.c_str());
+			return EXIT_FAILURE;
+		}
 	}
 	VERBOSE("Keyframe extraction completed successfully in %s", TD_TIMER_GET_FMT().c_str());
 	return EXIT_SUCCESS;

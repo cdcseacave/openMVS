@@ -116,7 +116,8 @@ struct CachedFrame {
 	cv::Mat gray;  // grayscale
 	std::vector<Point2f> trackedPoints;
 	std::vector<uchar> status;
-	uint32_t frameIdx = 0;
+	uint32_t frameIdx = 0; // index of the frame in decoding order (0-based)
+	double timestamp = 0; // presentation time of the frame in the video (seconds)
 	float overlapRatio = 1.f;
 	float overlapArea = 1.f;
 	float sharpness = 0.f;
@@ -493,6 +494,7 @@ static void RunThreeViewStarCalibration(
 // Main keyframe extraction function
 bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Scene& scene)
 {
+	ASSERT(config.imageFormat == "jxl" || config.imageFormat == "jpg" || config.imageFormat == "png");
 	// Clear the scene
 	scene.Release();
 
@@ -612,6 +614,7 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 	float overlapRatio = 1.f;
 	float overlapArea = 1.f;
 	unsigned frameIdx = 0;
+	bool bExtractionFailed = false;
 	DoubleArr focalEstimates; // focal length estimates derived from fundamental matrices
 	DoubleArr k1Estimates; // radial distortion k1 estimates
 	DoubleArr k2Estimates; // radial distortion k2 estimates
@@ -629,6 +632,10 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 		cf.trackedPoints = currPoints;
 		cf.status = status;
 		cf.frameIdx = frameIdx;
+		// the backend's time stamp of the frame just read: unlike frameIdx/fps, it does not drift
+		// on variable frame rate video (the container's fps is only an average or a nominal rate);
+		// exact with FFmpeg and AVFoundation, within a fraction of a frame with Media Foundation
+		cf.timestamp = video.get(cv::CAP_PROP_POS_MSEC) * 1e-3;
 		cf.overlapRatio = overlapRatio;
 		cf.overlapArea = overlapArea;
 		cf.sharpness = EstimateImageSharpness(currGray);
@@ -700,15 +707,14 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 		if (isKeyframe) {
 			// Choose the sharpest frame from the cache (prefer recent sharp frames)
 			CachedFrame& chosen = SelectBestFrame();
-			const double timestamp = chosen.frameIdx / fps;
 			const IIndex keyframeID = scene.images.size();
-			DEBUG("Selecting keyframe %d at frame %d (time %.3fs)", keyframeID, chosen.frameIdx, timestamp);
+			DEBUG("Selecting keyframe %d at frame %d (time %.3fs)", keyframeID, chosen.frameIdx, chosen.timestamp);
 
 			// Create new image (protected) using chosen cached frame
 			sceneCs.Enter();
 			Image& image = scene.images.emplace_back();
 			image.ID = keyframeID;
-			image.timestamp = timestamp;
+			image.timestamp = chosen.timestamp;
 			image.pixels = std::move(chosen.frame);
 
 			// Set view
@@ -716,42 +722,52 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 			image.pCamera = pCamera;
 
 			// Generate filename
-			image.fileName = config.outputDirectory + String::FormatString("keyframe_%05d.jxl", keyframeID);
+			image.fileName = config.outputDirectory + String::FormatString("keyframe_%05d.", keyframeID) + config.imageFormat;
 			sceneCs.Leave();
 
 			// Extract features (need keypoints)
 			if (!extractor.ExtractImage(image, detector)) {
-				VERBOSE("warning: failed to extract features from keyframe %d", keyframeID);
+				VERBOSE("error: failed to extract features from keyframe %u", keyframeID);
+				bExtractionFailed = true;
+				break;
 			}
+			if (image.keypoints.empty()) {
+				// a frame without features (e.g. a black frame) can not be matched, so it is useless:
+				// drop it and select the next keyframe among the following frames
+				DEBUG("Skipping frame %u (time %.3fs): no features", chosen.frameIdx, chosen.timestamp);
+				sceneCs.Enter();
+				scene.images.RemoveLast();
+				sceneCs.Leave();
+			} else {
+				// Enqueue a single post-processing event (save + matching);
+				// if the matches have to be displayed for debugging,
+				// the post processing must be done in the main thread to allow OpenCV GUI calls.
+				#ifndef SFM_DEBUG_MATCHING
+				workerQueue.AddEvent(new
+				#endif
+					KeyframePostProcessEvent(keyframeID-1, keyframeID,
+						scene, pairsMatcher, *pCamera, config.focalLength > 0,
+						keyframePoints, chosen.trackedPoints, chosen.status, chosen.overlapRatio, chosen.overlapArea,
+						sceneCs, focalEstimates, k1Estimates, k2Estimates, config.refineCalibration == KeyframeConfig::TWO_VIEW)
+				#ifdef SFM_DEBUG_MATCHING
+					.Run();
+				#else
+				);
+				#endif
 
-			// Enqueue a single post-processing event (save + matching);
-			// if the matches have to be displayed for debugging,
-			// the post processing must be done in the main thread to allow OpenCV GUI calls.
-			#ifndef SFM_DEBUG_MATCHING
-			workerQueue.AddEvent(new
-			#endif
-				KeyframePostProcessEvent(keyframeID-1, keyframeID,
-					scene, pairsMatcher, *pCamera, config.focalLength > 0,
-					keyframePoints, chosen.trackedPoints, chosen.status, chosen.overlapRatio, chosen.overlapArea,
-					sceneCs, focalEstimates, k1Estimates, k2Estimates, config.refineCalibration == KeyframeConfig::TWO_VIEW)
-			#ifdef SFM_DEBUG_MATCHING
-				.Run();
-			#else
-			);
-			#endif
+				// Convert keypoints to points for tracking
+				// keyframePoints: fixed reference positions (constant until next keyframe)
+				keyframePoints.clear();
+				for (const auto& kp : image.keypoints)
+					keyframePoints.push_back(kp.pt);
 
-			// Convert keypoints to points for tracking
-			// keyframePoints: fixed reference positions (constant until next keyframe)
-			keyframePoints.clear();
-			for (const auto& kp : image.keypoints)
-				keyframePoints.push_back(kp.pt);
+				// Initialize tracked positions to keyframe positions
+				// (will be updated incrementally as we track across frames)
+				currPoints = keyframePoints;
 
-			// Initialize tracked positions to keyframe positions
-			// (will be updated incrementally as we track across frames)
-			currPoints = keyframePoints;
-
-			// Update keyframe gray to the chosen frame's gray
-			keyframeGray = std::move(chosen.gray);
+				// Update keyframe gray to the chosen frame's gray
+				keyframeGray = std::move(chosen.gray);
+			}
 
 			// Clear cache so we start accumulating frames for the next keyframe
 			frameCache.clear();
@@ -767,6 +783,8 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 	worker.join();
 	GET_LOGCONSOLE().Play();
 	progress.close();
+	if (bExtractionFailed)
+		return false;
 
 	// Finalize scene status
 	scene.status.nFeaturesType = config.detectorType;

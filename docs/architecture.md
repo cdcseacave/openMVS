@@ -407,7 +407,7 @@ OpenMVS has optional GPU acceleration at six points in the pipeline. All are dis
 | GlobalPositioning GPU | `libs/SFM/GlobalPositioning.cpp` | Joint camera + point position optimization for scenes ≥ 50 images (GLOMAP-style GPU solver) |
 | SiftGPU | External library | SIFT feature extraction on GPU via CUDA or OpenGL backend |
 | Common CUDA utils | `libs/Common/UtilCUDA.cpp` | Device management, memory transfer, capability detection |
-| MVS Camera CUDA | `libs/MVS/CUDA/Camera.h` | GPU-side camera projection for depth estimation kernels |
+| MVS Camera CUDA | `libs/MVS/CUDA/Camera.h` | GPU-side camera views of the depth estimation, confidence and mesh refinement kernels: intrinsics read through the `CameraModels.h` models, pose, image size |
 
 CUDA requirements:
 - Minimum compute capability: 5.0 (Maxwell)

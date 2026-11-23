@@ -237,6 +237,16 @@ void Camera::SetCameraFromPose(const MVS::Image& imageData) {
 }
 
 void Camera::SetCameraFromSceneData(const MVS::Image& imageData) {
+	if (imageData.IsSpherical()) {
+		// a panorama has no field of view to match: the view keeps its own and looks along the image
+		// axis from the image center, the target close enough for the navigation to turn the view in
+		// place, inside the panorama
+		const Eigen::Vector3d eye(imageData.camera.C);
+		const Eigen::Vector3d forward(imageData.camera.Direction());
+		const Eigen::Vector3d up(imageData.camera.UpDirection());
+		SetLookAt(eye, eye + forward * MAXF(double(sceneSize.norm()) * 1e-4, 1e-6), up);
+		return;
+	}
 	// Pose (position + orientation) from the image's extrinsic
 	SetCameraFromPose(imageData);
 

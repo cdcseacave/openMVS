@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "Maths.h"
+#include "../../Math/Camera/CameraModels.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -50,53 +51,9 @@ namespace MVS {
 
 namespace CUDA {
 
-// Linear camera model
-struct LinearCameraModel {
-	Point2 f; // focal length
-	Point2 p; // principal point
-
-	__host__ __device__ LinearCameraModel() {}
-	__host__ __device__ LinearCameraModel(float fx, float fy, float cx, float cy) :
-		f(fx, fy), p(cx, cy) {}
-	__host__ __device__ LinearCameraModel(const Matrix3& K) :
-		f(K(0,0), K(1,1)), p(K(0,2), K(1,2)) { ASSERT(K(0,1) == 0); }
-
-	__host__ __device__ inline Matrix3 K() const {
-		Matrix3 M; M <<
-			f.x(), 0, p.x(),
-			0, f.y(), p.y(),
-			0, 0, 1;
-		return M;
-	}
-
-	// transform a point in image space to camera space
-	__host__ __device__ inline Point2 NormalizePoint(const Point2& x) const {
-		return Point2(
-			(x.x() - p.x()) / f.x(),
-			(x.y() - p.y()) / f.y());
-	}
-
-	// project a point in camera space to image space
-	__host__ __device__ inline Point2 TransformPointC2I(const Point3& X) const {
-		return Point2(
-			f.x() * X.x() / X.z() + p.x(),
-			f.y() * X.y() / X.z() + p.y());
-	}
-
-	// back-project a point in image space to camera space
-	__host__ __device__ inline Point3 TransformPointI2C(const Point2& x, const float depth = 1.f) const {
-		return Point3(
-			depth * (x.x() - p.x()) / f.x(),
-			depth * (x.y() - p.y()) / f.y(),
-			depth);
-	}
-
-	// compute camera ray direction for the given pixel
-	__host__ __device__ inline Point3 ViewDirection(const Point2i& x) const {
-		return TransformPointI2C(x.cast<float>()).normalized();
-	}
-};
-/*----------------------------------------------------------------*/
+// the CameraModels.h models of the kernels
+typedef SEACAVE::Pinhole<float> PinholeModel;
+typedef SEACAVE::Spherical<float> SphericalModel;
 
 // Camera pose
 struct Pose {
@@ -119,26 +76,27 @@ struct Pose {
 };
 /*----------------------------------------------------------------*/
 
-// Camera view
+// Camera view: the intrinsics in the fields of the CameraModels.h models (a pinhole K in pixels, or
+// the angular K of an equirectangular camera: pixels per radian and the pixel of longitude and
+// elevation 0), the pose and the image size; the camera model is not stored, the code reading a view
+// knows it (a kernel's MODEL, PatchMatch::Params::sphericalViews) and builds it with Model<MODEL>()
 struct Camera {
-	LinearCameraModel model;
+	float fx, fy, cx, cy;
 	Pose pose;
 	Point2i size;
 
 	__host__ __device__ Camera() {}
-	__host__ __device__ Camera(const LinearCameraModel& model, const Pose& pose, int width=0, int height=0) :
-		model(model), pose(pose), size(width, height) {}
-	__host__ __device__ Camera(const Matrix3& K, const Matrix3& R, const Point3& C, int width=0, int height=0) :
-		model(K), pose(R, C), size(width, height) {}
-
-	// project a 3D point in world space to image space
-	__host__ __device__ inline Point2 TransformPointW2I(const Point3& X) const {
-		return model.TransformPointC2I(pose.TransformPointW2C(X));
+	__host__ __device__ Camera(const Matrix3& K, const Matrix3& R, const Point3& C, int width, int height) :
+		fx(K(0,0)), fy(K(1,1)), cx(K(0,2)), cy(K(1,2)), pose(R, C), size(width, height)
+	{
+		ASSERT(K(0,1) == 0 && K(1,0) == 0 && K(2,0) == 0 && K(2,1) == 0 && K(2,2) == 1);
+		ASSERT(fx > 0 && fy > 0 && width > 0 && height > 0);
 	}
 
-	// back-project a point in image space to 3D point in world space
-	__host__ __device__ inline Point3 TransformPointI2W(const Point2& x, const float depth = 1.f) const {
-		return pose.TransformPointC2W(model.TransformPointI2C(x, depth));
+	// the camera model of the view: PinholeModel or SphericalModel
+	template <typename MODEL>
+	__host__ __device__ inline MODEL Model() const {
+		return MODEL{fx, fy, cx, cy};
 	}
 };
 /*----------------------------------------------------------------*/

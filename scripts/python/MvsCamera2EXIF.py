@@ -27,7 +27,7 @@ usage: MvsCamera2EXIF.py [-h] [--input INPUT] [--images-path IMAGES_PATH] [--dry
 '''
 
 from argparse import ArgumentParser
-from MvsUtils import loadMVSInterface
+from MvsUtils import loadMVSInterface, CAMERA_MODEL_SPHERICAL
 import os
 
 try:
@@ -181,7 +181,12 @@ def process_mvs_scene(mvs_path, images_path, dry_run=False):
     
     camera = platform['cameras'][camera_id]
     
-    # Extract camera parameters
+    # a spherical camera has no focal length (K is angular): nothing to write
+    if camera.get('model') == CAMERA_MODEL_SPHERICAL:
+      print(f"Warning: skipping spherical camera {camera_id} of platform {platform_id}: {image_name}")
+      continue
+
+    # Extract camera parameters (for a BROWN camera K is the pinhole K of the image file, as needed here)
     K = camera['K']  # Intrinsic matrix
     fx = K[0][0]
     fy = K[1][1]

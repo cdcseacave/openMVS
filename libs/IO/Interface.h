@@ -4,6 +4,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include <algorithm>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -17,7 +18,7 @@
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define MVSI_PROJECT_ID "MVSI" // identifies the project stream
-#define MVSI_PROJECT_VER ((uint32_t)7) // identifies the version of a project stream
+#define MVSI_PROJECT_VER ((uint32_t)8) // identifies the version of a project stream
 
 // set a default namespace name if none given
 #ifndef _INTERFACE_NAMESPACE
@@ -118,6 +119,20 @@ public:
 
 public:
 	Type x, y, z;
+};
+
+// simple cv::Point_
+template<typename Type>
+class Point_
+{
+public:
+	typedef Type value_type;
+
+	inline Point_() {}
+	inline Point_(Type _x, Type _y) : x(_x), y(_y) {}
+
+public:
+	Type x, y;
 };
 
 // simple cv::Matx
@@ -251,19 +266,23 @@ constexpr uint32_t NO_ID {std::numeric_limits<uint32_t>::max()};
 namespace ARCHIVE {
 
 // Basic serialization types
+// the flags are the optional content the stream carries (Interface::flags),
+// set by the serialized object for the members it serializes after them
 struct ArchiveSave {
 	std::ostream& stream;
 	uint32_t version;
+	uint32_t flags;
 	ArchiveSave(std::ostream& _stream, uint32_t _version)
-		: stream(_stream), version(_version) {}
+		: stream(_stream), version(_version), flags(0) {}
 	template<typename _Tp>
 	ArchiveSave& operator & (const _Tp& obj);
 };
 struct ArchiveLoad {
 	std::istream& stream;
 	uint32_t version;
+	uint32_t flags;
 	ArchiveLoad(std::istream& _stream, uint32_t _version)
-		: stream(_stream), version(_version) {}
+		: stream(_stream), version(_version), flags(0) {}
 	template<typename _Tp>
 	ArchiveLoad& operator & (_Tp& obj);
 };
@@ -350,6 +369,8 @@ bool SerializeLoad(_Tp& obj, const std::string& fileName, uint32_t* pVersion=NUL
 	// serialize in the current state
 	ARCHIVE::ArchiveLoad serializer(stream, version);
 	serializer & obj;
+	if (!stream)
+		return false;
 	if (pVersion)
 		*pVersion = version;
 	return true;
@@ -369,6 +390,7 @@ inline bool Load<TYPE>(ArchiveLoad& a, TYPE& v) { \
 }
 
 // Serialization support for basic types
+ARCHIVE_DEFINE_TYPE(uint8_t)
 ARCHIVE_DEFINE_TYPE(uint32_t)
 ARCHIVE_DEFINE_TYPE(uint64_t)
 ARCHIVE_DEFINE_TYPE(float)
@@ -383,6 +405,18 @@ inline bool Save(ArchiveSave& a, const cv::Matx<_Tp,m,n>& _m) {
 template<typename _Tp, int m, int n>
 inline bool Load(ArchiveLoad& a, cv::Matx<_Tp,m,n>& _m) {
 	a.stream.read((char*)_m.val, sizeof(_Tp)*m*n);
+	return true;
+}
+
+// Serialization support for cv::Point_
+template<typename _Tp>
+inline bool Save(ArchiveSave& a, const cv::Point_<_Tp>& pt) {
+	a.stream.write((const char*)&pt.x, sizeof(_Tp)*2);
+	return true;
+}
+template<typename _Tp>
+inline bool Load(ArchiveLoad& a, cv::Point_<_Tp>& pt) {
+	a.stream.read((char*)&pt.x, sizeof(_Tp)*2);
 	return true;
 }
 
@@ -411,11 +445,14 @@ template<>
 inline bool Load<std::string>(ArchiveLoad& a, std::string& s) {
 	uint64_t size;
 	Load(a, size);
-	if (size > 0) {
-		s.resize(size);
-		a.stream.read(&s[0], sizeof(char)*size);
+	if (!a.stream || size > s.max_size()) {
+		a.stream.setstate(std::ios::failbit);
+		return false;
 	}
-	return true;
+	s.resize((size_t)size);
+	if (size)
+		a.stream.read(&s[0], (std::streamsize)size);
+	return bool(a.stream);
 }
 
 // Serialization support for std::vector
@@ -423,20 +460,25 @@ template<typename _Tp>
 inline bool Save(ArchiveSave& a, const std::vector<_Tp>& v) {
 	const uint64_t size(v.size());
 	Save(a, size);
-	for (uint64_t i=0; i<size; ++i)
-		Save(a, v[i]);
+	for (const auto& value: v)
+		Save(a, value);
 	return true;
 }
 template<typename _Tp>
 inline bool Load(ArchiveLoad& a, std::vector<_Tp>& v) {
 	uint64_t size;
 	Load(a, size);
-	if (size > 0) {
-		v.resize(size);
-		for (uint64_t i=0; i<size; ++i)
-			Load(a, v[i]);
+	if (!a.stream || size > v.max_size()) {
+		a.stream.setstate(std::ios::failbit);
+		return false;
 	}
-	return true;
+	v.resize((size_t)size);
+	for (auto& value: v) {
+		Load(a, value);
+		if (!a.stream)
+			return false;
+	}
+	return bool(a.stream);
 }
 
 } // namespace ARCHIVE
@@ -448,6 +490,7 @@ inline bool Load(ArchiveLoad& a, std::vector<_Tp>& v) {
 //  - row-major order is used for storing the matrices
 struct Interface
 {
+	typedef cv::Point_<float> Pos2f;
 	typedef cv::Point3_<float> Pos3f;
 	typedef cv::Point3_<double> Pos3d;
 	typedef cv::Matx<double,3,3> Mat33d;
@@ -459,19 +502,36 @@ struct Interface
 	struct Platform {
 		// structure describing a camera mounted on a platform
 		struct Camera {
+			// projection model of the images, same ids as SEACAVE::CameraModelType (Math/Camera/CameraModels.h):
+			//  - PINHOLE: K is the pinhole camera matrix, depth = z
+			//  - BROWN: pinhole K plus the Brown-Conrady lens distortion in params, OpenCV order and meaning:
+			//    k1,k2,p1,p2,k3 (5 values) or k1,k2,p1,p2,k3,k4,k5,k6 (8 values, rational radial model)
+			//  - SPHERICAL: equirectangular 360x180 degrees panorama; K is the angular camera matrix
+			//    fx=W/(2*pi), fy=H/pi, cx=(W-1)/2, cy=(H-1)/2 (pixels per radian, longitude/elevation 0),
+			//    so it normalizes and scales as a pinhole K; no params
+			enum Model : uint8_t {
+				PINHOLE = 0,
+				BROWN = 1,
+				SPHERICAL = 2,
+			};
+
 			std::string name; // camera's name
 			std::string bandName; // camera's band name, ex: RGB, BLUE, GREEN, RED, NIR, THERMAL, etc (optional)
 			uint32_t width, height; // image resolution in pixels for all images sharing this camera (optional)
 			Mat33d K; // camera's intrinsics matrix (normalized if image resolution not specified), where integer coordinates is by convention the pixel center
 			Mat33d R; // camera's rotation matrix relative to the platform
 			Pos3d C; // camera's translation vector relative to the platform
+			uint8_t model; // projection model (Model), PINHOLE unless the producer sets another one
+			std::vector<double> params; // model parameters: the BROWN distortion coefficients, empty for the others
 
-			Camera() : width(0), height(0) {}
+			Camera() : width(0), height(0), model(PINHOLE) {}
 			bool HasResolution() const { return width > 0 && height > 0; }
 			bool IsNormalized() const { return !HasResolution(); }
 			static uint32_t GetNormalizationScale(uint32_t width, uint32_t height) { return std::max(width, height); }
 			uint32_t GetNormalizationScale() const { return GetNormalizationScale(width, height); }
 
+			// the two helpers below apply the pinhole K only: they ignore the BROWN distortion
+			// and are meaningless for a SPHERICAL camera
 			// project point: camera to image (homogeneous) coordinates
 			inline Pos3d operator * (const Pos3d& X) const {
 				return Pos3d(
@@ -500,6 +560,11 @@ struct Interface
 				ar & K;
 				ar & R;
 				ar & C;
+				if (version > 7) {
+					ar & model;
+					if (model == BROWN)
+						ar & params;
+				}
 			}
 		};
 		typedef std::vector<Camera> CameraArr;
@@ -551,11 +616,11 @@ struct Interface
 		}
 		static Mat33d ScaleK(const Mat33d& _K, double scale) {
 			Mat33d K(_K);
-			const bool bNormalized(K(0,2) < 3 && K(1,2) < 3);
+			// Keep pixel centers at integer coordinates in both directions, including normalization.
 			K(0,0) *= scale;
 			K(1,1) *= scale;
-			K(0,2) = bNormalized ? K(0,2)*scale : (K(0,2)+0.5)*scale-0.5;
-			K(1,2) = bNormalized ? K(1,2)*scale : (K(1,2)+0.5)*scale-0.5;
+			K(0,2) = (K(0,2)+0.5)*scale-0.5;
+			K(1,2) = (K(1,2)+0.5)*scale-0.5;
 			K(0,1) *= scale;
 			return K;
 		}
@@ -664,13 +729,17 @@ struct Interface
 	struct Vertex {
 		// structure describing one view for a given 3D feature
 		struct View {
-			uint32_t imageID; // image ID corresponding to this view
-			float confidence; // view's confidence (0 - not available)
+			uint32_t imageID = 0; // image ID corresponding to this view
+			float confidence = 0; // view's confidence (0 - not available)
+			Pos2f x; // observation (optional, stored only if the Interface has HAS_OBSERVATIONS): the feature position
+				// in the image file as it is on disk (distorted for a BROWN camera), pixel-center convention
 
 			template<class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
 				ar & imageID;
 				ar & confidence;
+				if (ar.flags & HAS_OBSERVATIONS)
+					ar & x;
 			}
 		};
 		typedef std::vector<View> ViewArr;
@@ -691,8 +760,8 @@ struct Interface
 	struct Line {
 		// structure describing one view for a given 3D feature
 		struct View {
-			uint32_t imageID; // image ID corresponding to this view
-			float confidence; // view's confidence (0 - not available)
+			uint32_t imageID = 0; // image ID corresponding to this view
+			float confidence = 0; // view's confidence (0 - not available)
 
 			template<class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
@@ -759,6 +828,11 @@ struct Interface
 	};
 	/*----------------------------------------------------------------*/
 
+	// optional content stored in the stream
+	enum Flags : uint8_t {
+		HAS_OBSERVATIONS = (1<<0), // every Vertex::View carries its observation x
+	};
+
 	PlatformArr platforms; // array of platforms
 	ImageArr images; // array of images
 	VertexArr vertices; // array of reconstructed 3D points
@@ -769,8 +843,11 @@ struct Interface
 	ColorArr linesColor; // array of reconstructed 3D lines' color (optional)
 	Mat44d transform; // transformation used to convert from absolute to relative coordinate system (optional)
 	OBB obb; // minimum oriented bounding box containing the scene (optional)
+	uint8_t flags; // optional content (Flags), set by the producer; loading expects a default-constructed Interface
 
-	Interface() : transform(Mat44d::eye()) {}
+	Interface() : transform(Mat44d::eye()), flags(0) {}
+
+	bool HasObservations() const { return (flags & HAS_OBSERVATIONS) != 0; }
 
 	const Mat33d& GetK(uint32_t imageID) const {
 		const Image& image = images[imageID];
@@ -818,6 +895,11 @@ struct Interface
 	void serialize(Archive& ar, const unsigned int version) {
 		ar & platforms;
 		ar & images;
+		if (version > 7) {
+			// the optional content of the members below
+			ar & flags;
+			ar.flags = flags;
+		}
 		ar & vertices;
 		ar & verticesNormal;
 		ar & verticesColor;
@@ -874,6 +956,8 @@ struct HeaderDepthDataRaw {
 		// content bits from the maps it is handed and carries these through from the caller's header
 		CONF_ADJUSTED = (1<<4), // the stored confMap is the recalibrated (fusion-survival)
 			// confidence, already adjusted once -- a second adjust pass must not re-run on it
+		SPHERICAL = (1<<5), // the maps belong to an equirectangular view: the depth is the range along
+			// the pixel ray, K holds the angular fx=fy=width/(2*pi) and the center (Platform::Camera::SPHERICAL)
 	};
 	uint16_t name; // file type
 	uint8_t type; // content type
@@ -886,8 +970,9 @@ struct HeaderDepthDataRaw {
 	// number of view IDs followed by view ID and neighbor view IDs: uint32_t nIDs; uint32_t* IDs
 	// camera, rotation and position matrices (row-major) at image resolution: double K[3][3], R[3][3], C[3]
 	// depth, normal, confidence maps: half depthMap[height][width], int16_t normalMap[height][width][2], uint8_t confMap[height][width]
-	inline HeaderDepthDataRaw() : name(0), type(0), depthExp(0), confScale(1.f) {}
-	static uint16_t HeaderDepthDataRawName() { return *reinterpret_cast<const uint16_t*>("D2"); }
+	inline HeaderDepthDataRaw() : name(0), type(0), depthExp(0), imageWidth(0), imageHeight(0), depthWidth(0), depthHeight(0), dMin(0), dMax(0), confScale(1.f) {}
+	// the characters "D2" as they are stored (little-endian)
+	static constexpr uint16_t HeaderDepthDataRawName() { return uint16_t('D' | ('2' << 8)); }
 };
 /*----------------------------------------------------------------*/
 
@@ -1168,7 +1253,8 @@ inline void UnpackNormals(const int16_t* packed, int rows, int cols, cv::Mat& no
 inline bool ExportDepthDataRaw(std::ostream& stream, const DepthDataRaw& data,
 	const cv::Mat& depthMap, const cv::Mat& normalMap, const cv::Mat& confMap, const cv::Mat& viewsMap)
 {
-	if (depthMap.empty() || depthMap.type() != CV_32FC1 || data.IDs.empty() || data.IDs.size() >= 256)
+	if (depthMap.empty() || depthMap.type() != CV_32FC1 || data.IDs.empty() || data.IDs.size() >= 256 ||
+		data.imageFileName.size() > std::numeric_limits<uint16_t>::max())
 		return false;
 	if ((!normalMap.empty() && (normalMap.type() != CV_32FC3 || normalMap.rows != depthMap.rows || normalMap.cols != depthMap.cols)) ||
 		(!confMap.empty() && (confMap.type() != CV_32FC1 || confMap.rows != depthMap.rows || confMap.cols != depthMap.cols)) ||

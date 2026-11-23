@@ -518,6 +518,10 @@ if 4 in CONF.steps:    # GeometricFilter
         STEPS.replace_opt(4, FOLDER_DELIM+"matches.f.bin", FOLDER_DELIM+"matches.e.bin")
         STEPS[4].opt.extend(["-g", "e"])
 
+if 24 in CONF.steps and any(s in CONF.steps for s in (19, 20, 21)):    # CreateStructure, then the mesh
+    # the mesh steps project through pinhole cameras only: 360 cameras go to MVS as rendered cube faces
+    STEPS[24].opt.extend(["--spherical-export", "cubemap"])
+
 if 21 in CONF.steps:    # TextureMesh
     # the refined mesh when this run refines, the unrefined one when it only (re)builds the mesh,
     # else (neither) the refined one if it exists
