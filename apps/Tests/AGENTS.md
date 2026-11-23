@@ -7,7 +7,7 @@ Unit and integration tests for the SFM and MVS libraries. No test framework libr
 ```
 main(argv)
   argv[1] == 0 or missing → UnitTests()      — data structures, math, codecs, mesh and image units
-  argv[1] == 1            → the SFM table    — 87 entries, file by file in pipeline order
+  argv[1] == 1            → the SFM table    — 88 entries, file by file in pipeline order
   argv[1] >= 2            → the MVS tests    — PipelineTest and the mesh/neighbor/cache tests after it
 ```
 
@@ -194,6 +194,7 @@ Every block states its contract with `ASSERT`; a call outside it is a bug in the
 | `MergeTrackJoinTest` | the cross-block track join: seam matches first, the join guard, the 255 cap |
 | `PooledSeamReadingTest` | a block pair read from light cross pairs together, and the bar on their total |
 | `MergeRoundsTest` | the merge in rounds: kept whole, regrouping, release, `MergeInRounds`, the anchor |
+| `MergeWeakImagesTest` | the weak-image filter before the merge: a weak image leaves its block, a block of weak images alone goes to the pool, no block left |
 | `UnobservableScaleTest` | blocks of two cameras a millimetre apart are placed at the ring's scale |
 | `PairAgreementMergeTest` | verified pairs across a seam decide by inlier weight |
 | `RingClosingSeamTest` | the closing of a ring on a biased, thin or copied seam, a planted chord, a single bridge |

@@ -44,7 +44,8 @@ namespace SFM {
  * between blocks through the pool: every block hands back the images it could not register, and each
  * pool image is offered to the block its links (verified pairs with a relative pose) to registered
  * images weigh most on, where that block's ordinary resection tries it. Release and Insert are the two moves; both renumber the
- * block through one remap and keep every invariant above. After it, MergeInRounds runs the merge.
+ * block through one remap and keep every invariant above. After it, MergeInRounds runs the merge; from
+ * there a block can hold images without a pose, the ones the weak-image filter removed before a round.
  */
 class SFM_API SceneBlocks
 {
@@ -115,8 +116,11 @@ public:
 	 * AdjustMergedScene, the model merged the one carrying the most images in round 1 and the one holding block 0
 	 * (the merged model, RegroupAfterMerge) after it; between rounds the whole-scene resection of the images in no
 	 * block on the merged model (the pool step); the blocks not placed are kept whole until a round enters no image
-	 * and places no block, and the round after it releases them to the final pass's resection
-	 * @return the number of rounds run
+	 * and places no block, and the round after it releases them to the final pass's resection. Before every round
+	 * but the releasing one, the weak-image filter runs on the blocks not merged yet (FilterWeakImages): every
+	 * block in round 1, every block but the merged model after it
+	 * @return the number of rounds run (0 when the filter left no block a posed image: nothing is merged and
+	 * every image is in the pool)
 	 */
 	unsigned MergeInRounds(const ResectionConfig& resectionCfg, const ReconstructionConfig& config);
 
@@ -143,6 +147,17 @@ private:
 	// Every image of a block back to the pool, its pairs returned in global IDs: the block's model is
 	// discarded (a block whose initialization failed), leaving the block empty
 	ImagePairArr DetachAll(IIndex block);
+
+	// The weak-image filter (FilterWeaklyConnectedImages, at its defaults) on every block from `first` on, the
+	// blocks in parallel, right before a merge round reads their poses: a safety check for images a block
+	// registered on weak evidence. An image it removes loses its pose and stays in its block, so the round
+	// reads the block without it and it is tried again on the merged model once its block is merged in; a
+	// block left without a posed image hands every image to the pool and is removed. Returns the images removed.
+	unsigned FilterWeakImages(IIndex first);
+
+	// The blocks holding no image removed and the others renumbered in order, blockOf following; returns
+	// each block's new index, NO_ID for a removed one
+	IIndexArr RemoveEmptyBlocks();
 
 	// the block's images without a pose, in global IDs (sorted)
 	IIndexArr UnregisteredImages(IIndex block) const;

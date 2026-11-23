@@ -1325,6 +1325,72 @@ bool MergeRoundsTest()
 		"the loop ends in 3 rounds with one half posed; a seam on pool cameras alone is refused; the anchor's model is merged");
 }
 /*----------------------------------------------------------------*/
+
+// An image of a block left with observations on `keep` tracks only, fewer than the cells the weak-image filter asks
+// an image's points to cover (FilterWeaklyConnectedImages); the other observations keep their order, the inliers first
+static void ThinImage(Scene& block, IIndex image, unsigned keep)
+{
+	unsigned numSeen = 0;
+	for (Track& track : block.tracks)
+		FOREACH(i, track.observations)
+			if (track.observations[i].imageID == image) {
+				if (numSeen++ >= keep) {
+					if (i < track.numInliers)
+						--track.numInliers;
+					track.observations.RemoveAtMove(i);
+				}
+				break;
+			}
+}
+
+// The weak-image filter before the merge (SceneBlocks::MergeInRounds, FilterWeakImages), on an uncut ring of four blocks
+// some of whose images are left with points in WEAK_TRACKS cells of the 15 the filter asks for (ThinImage):
+// 1. one such image in a block: the block is placed without it, the image ends in the global scene with its features and
+//    no pose, every other image is posed;
+// 2. every image of one block: the block is left without a posed image, hands its images to the pool and is removed, and
+//    the three other blocks, still a chain, are merged in the one round;
+// 3. every image of every block: no block is left and the merge ends before its first round, every image handed to the pool.
+bool MergeWeakImagesTest()
+{
+	TestScope scope("MergeWeakImagesTest");
+	constexpr unsigned NUM_BLOCKS = 4, CAMS = 10, WEAK_TRACKS = 5;
+	constexpr uint32_t WEAK_BLOCK = 2;
+	constexpr IIndex WEAK_LOCAL = 3;
+	const ReconstructionConfig config;
+	ResectionConfig resectionCfg = config.resectionCfg;
+	resectionCfg.DeriveBAConfigs(config.baConfig);
+	for (const unsigned part : {1u, 2u, 3u}) {
+		RingFixture ring({NUM_BLOCKS, CAMS});
+		ring.Split();
+		// the weak images, by global ID
+		std::set<IIndex> weak;
+		FOREACH(b, ring.split.blocks)
+			FOREACH(l, ring.split.blocks[b].images)
+				if (part == 3 || (b == WEAK_BLOCK && (part == 2 || l == WEAK_LOCAL))) {
+					ThinImage(ring.split.blocks[b], (IIndex)l, WEAK_TRACKS);
+					weak.insert(ring.split.localToGlobal[b][l]);
+				}
+		const unsigned numRounds = ring.split.MergeInRounds(resectionCfg, config);
+		unsigned numWeakReleased = 0, numOthersPosed = 0;
+		FOREACH(g, ring.scene.images) {
+			const Image& img = ring.scene.images[g];
+			if (weak.count((IIndex)g))
+				numWeakReleased += img.HasFeatures() && !img.HasPose() ? 1u : 0u;
+			else
+				numOthersPosed += img.HasPose() ? 1u : 0u;
+		}
+		const unsigned numOthers = NUM_BLOCKS * CAMS - (unsigned)weak.size();
+		const unsigned numRoundsExpected = part == 3 ? 0u : 1u;
+		TEST_CHECK(numRounds == numRoundsExpected && numWeakReleased == weak.size() && numOthersPosed == numOthers &&
+			(part == 3 || ring.scene.status.nCalibratedImages == numOthers),
+			"part %u: %u rounds (%u expected), %u of the %u weak images in the global scene with their features and no pose, "
+			"%u of the %u other images posed, %u calibrated", part, numRounds, numRoundsExpected, numWeakReleased, (unsigned)weak.size(),
+			numOthersPosed, numOthers, ring.scene.status.nCalibratedImages);
+	}
+	return scope.Pass("a weak image leaves its block before the merge and the block is placed without it; a block of weak images "
+		"alone is handed to the pool and the others are merged; with no block left every image is handed to the pool");
+}
+/*----------------------------------------------------------------*/
 // A block of two cameras a millimetre apart, and two of them side by side on the ring: a rig that thin sees no parallax,
 // so its scale can only come from the other direction of its seams. It must still be placed, and at the right size.
 // Of two such blocks side by side neither direction of the seam between them sees any parallax, so its readings observe

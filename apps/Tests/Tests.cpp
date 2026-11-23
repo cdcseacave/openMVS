@@ -374,6 +374,7 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(MergeTrackJoinTest),
 				SFM_TEST(PooledSeamReadingTest),
 				SFM_TEST(MergeRoundsTest),
+				SFM_TEST(MergeWeakImagesTest),
 				SFM_TEST(UnobservableScaleTest),
 				SFM_TEST(PairAgreementMergeTest),
 				SFM_TEST(RingClosingSeamTest),

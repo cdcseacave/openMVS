@@ -10,12 +10,13 @@ Four phases, orchestrated by `Scene::ReconstructHierarchical()`:
 Phase 1: SceneCluster::Partition() + SceneBlocks::Extract()  → clusters become blocks, the rest is the pool
 Phase 2: threadPool.detach_loop(blocks)                       → parallel incremental SFM
 Phase 3: SceneBlocks::ResectPool()                            → unregistered images to the pool, registered into the block they connect to best
-Phase 4: GlobalAlignment::MergeScenes(), in rounds            → read every block pair, average the block graph, merge; the
-                                                                blocks left out kept whole and read again against the merged
-                                                                model after a pool step, released at the fixed point
+Phase 4: GlobalAlignment::MergeScenes(), in rounds            → the weak-image filter on the blocks not merged yet; read every
+                                                                block pair, average the block graph, merge; the blocks left
+                                                                out kept whole and read again against the merged model after
+                                                                a pool step, released at the fixed point
 ```
 
-In plain words: the images are split into groups (blocks), each block is reconstructed on its own, every image a block could not register (and every image no block took) is put in one common pool and tried by the block it is best connected to, and then the blocks are placed against each other and merged; a block that could not be placed is kept whole and tried again against the merged model, until nothing changes, and only then are its images handed to the resection one by one.
+In plain words: the images are split into groups (blocks), each block is reconstructed on its own, every image a block could not register (and every image no block took) is put in one common pool and tried by the block it is best connected to, and then the blocks are placed against each other and merged, each block first losing the images it holds on weak evidence; a block that could not be placed is kept whole and tried again against the merged model, until nothing changes, and only then are its images handed to the resection one by one.
 
 ## 2. Algorithm as implemented
 
@@ -131,13 +132,17 @@ The blocks of the merged model are transformed by their poses, a camera shared a
 
 #### The merge in rounds
 
-`SceneBlocks::MergeInRounds`, called by `Scene::ReconstructHierarchical`, runs the merge as one iterative stage. Each round calls `MergeScenes` and `AdjustMergedScene` and recounts the calibrated images. The model merged is the one carrying the most images in round 1, and from round 2 on the one holding block 0, the merged model read again (`MergeScenes`' `anchorBlock`): the merged model is the body that grows, and a heavier model of blocks left out never takes its place. While blocks are left out:
+`SceneBlocks::MergeInRounds`, called by `Scene::ReconstructHierarchical`, runs the merge as one iterative stage. Each round calls `MergeScenes` and `AdjustMergedScene` and recounts the calibrated images. The model merged is the one carrying the most images in round 1, and from round 2 on the one holding block 0, the merged model read again (`MergeScenes`' `anchorBlock`): the merged model is the body that grows, and a heavier model of blocks left out never takes its place.
+
+**The weak-image filter before a round** (`SceneBlocks::FilterWeakImages`): every round but the releasing one first runs `FilterWeaklyConnectedImages` (at its defaults, `IncrementalReconstruction.md`) on the blocks not merged yet, in parallel: every block in round 1, every block but the merged model after it (a block kept whole is checked again in the next round). It is a safety check for images a block registered on weak evidence — points on too little of the frame, seen from almost one place, or tied to the block by fewer than two neighbours — and not a test of the pose: on six captures it removed 46 block images before the first merge, 10 of them wrong, 17 right and 19 without a reference pose, while the blocks held 120 wrong images. An image it removes loses its pose and stays in its block, so the round reads the block's poses and tracks without it; once the block is merged in, the image is in the global scene with its features and no pose, a candidate of the pool step and of the final pass's resection like an image of the pool. A block left without a posed image hands every image to the pool and is removed (`RemoveEmptyBlocks`); with no block left nothing is merged and every image is left to the final pass's resection. The merged model is not filtered here: filtered too, it lost a few images each round that the pool step registered again, and gained nothing.
+
+While blocks are left out:
 
 1. **Pool step**: the whole-scene resection (`Resection::RegisterImages(false)`, the final pass's own function, filtering the tracks only when it registered an image) on the merged model; its candidates are the images in no block (the kept blocks' images hold no features in the global scene). The images it registers (posed after the step, not before it) are collected over the rounds into one set, which the next rounds' merges read: they are no supporting cameras of a reading.
 2. **Regroup** (`SceneBlocks::RegroupAfterMerge`): block 0 becomes the merged model — every posed image of the global scene, extracted as a cluster is, its features, pairs and the scene's tracks moved in — followed by the blocks the round left out, as they are.
 3. **Fixed point**: when the pool step entered no image and the last round placed no block (the second round always reads the blocks left once), the next round is the last: it reads them once more and releases whatever it does not place, merged without poses, to the final pass's resection.
 
-`Scene::ReconstructHierarchical` returns, and the reconstruction's shared tail — track filtering, re-triangulation, the final bundle adjustment at the bar, and the resection of every unregistered image (an unplaced block's images and the pool's among them) against the adjusted model (which always runs and closes with its full adjustment) — runs as for any other reconstruction.
+`Scene::ReconstructHierarchical` returns, and the reconstruction's shared tail — track filtering, re-triangulation, the final bundle adjustment at the bar, and the resection of every unregistered image (an unplaced block's images, the pool's and the ones the filter removed before a round among them) against the adjusted model (which always runs and closes with its full adjustment) — runs as for any other reconstruction.
 
 ## 3. Parameters and defaults
 

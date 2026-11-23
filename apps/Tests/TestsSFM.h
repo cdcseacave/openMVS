@@ -472,6 +472,10 @@ bool PooledSeamReadingTest();
 // alone refused; from round 2 on the merged model is the one holding block 0, whatever the other models weigh
 bool MergeRoundsTest();
 
+// The weak-image filter before the merge: a weak image leaves its block and the block is placed without it; a block
+// left without a posed image hands its images to the pool and is removed; with no block left the merge ends
+bool MergeWeakImagesTest();
+
 // A block of two cameras a millimetre apart, and two side by side, are placed at the ring's scale
 bool UnobservableScaleTest();
 

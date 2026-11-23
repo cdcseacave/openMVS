@@ -192,7 +192,8 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 	// no block, the final pass's own function) runs on the merged model and the next round reads the blocks left
 	// against it. At the fixed point -- the pool step entered no image and the last round placed no block (the
 	// second round always reads the blocks left once) -- one more round releases them, merged without their
-	// poses, their images left to the final pass's resection
+	// poses, their images left to the final pass's resection. Every round that reads blocks for their poses
+	// first runs the weak-image filter on the ones not merged yet (FilterWeakImages)
 	MergeReport report;
 	bool release = false;
 	unsigned round = 1;
@@ -200,6 +201,14 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 	// the next merges (GlobalAlignment::ScoreSeam)
 	std::unordered_set<IIndex> poolImages;
 	for (; ; ++round) {
+		if (!release) {
+			FilterWeakImages(round == 1 ? 0u : 1u);
+			if (blocks.empty()) {
+				ASSERT(round == 1); // from round 2 on block 0, the merged model, is not filtered
+				VERBOSE("warning: the weak-image filter left no block a posed image; every image is left to the resection");
+				return 0;
+			}
+		}
 		GlobalAlignment globalAlign(scene, config.globalAlignmentCfg, poolImages);
 		globalAlign.MergeScenes(blocks, localToGlobal, report, release, round == 1 ? NO_ID : 0u);
 		ASSERT(round == 1 || report.poses[0].state == BlockPose::ADMITTED);
@@ -236,6 +245,57 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 			round + 1, numEntered, (unsigned)blocks.size() - 1u, release ? " and released (nothing changed)" : "");
 	}
 	return round;
+}
+/*----------------------------------------------------------------*/
+
+unsigned SceneBlocks::FilterWeakImages(IIndex first)
+{
+	TD_TIMER_STARTD();
+	ASSERT(IsSplit() && first <= blocks.size());
+	// the blocks in parallel, the pairs of the ones left without a posed image appended in block order
+	std::vector<unsigned> numRemoved(blocks.size(), 0); // written by the blocks in parallel
+	std::vector<ImagePairArr> released(blocks.size());
+	scene.threadPool.detach_loop(first, (IIndex)blocks.size(), [&](IIndex b) {
+		numRemoved[b] = (unsigned)FilterWeaklyConnectedImages(blocks[b]).all.size();
+		if (UnregisteredImages(b).size() == blocks[b].images.size())
+			released[b] = DetachAll(b);
+	});
+	scene.threadPool.wait();
+	unsigned numImages = 0, numBlocks = 0;
+	FOREACH(b, blocks) {
+		numImages += numRemoved[b];
+		numBlocks += numRemoved[b] > 0 ? 1u : 0u;
+		for (ImagePair& pair : released[b])
+			scene.pairs.emplace_back(std::move(pair));
+	}
+	const IIndexArr newIndex(RemoveEmptyBlocks());
+	VERBOSE("Weak-image filter before the merge: %u images removed from %u of %u blocks, %u blocks left without a posed image handed to the pool (%s)",
+		numImages, numBlocks, (unsigned)newIndex.size() - first, (unsigned)std::count(newIndex.begin(), newIndex.end(), NO_ID), TD_TIMER_GET_FMT().c_str());
+	return numImages;
+}
+
+IIndexArr SceneBlocks::RemoveEmptyBlocks()
+{
+	IIndexArr newIndex(blocks.size());
+	IIndex numKept = 0;
+	FOREACH(b, blocks) {
+		if (blocks[b].images.empty()) {
+			newIndex[b] = NO_ID;
+			continue;
+		}
+		newIndex[b] = numKept;
+		if (numKept != b) {
+			blocks[numKept] = std::move(blocks[b]);
+			localToGlobal[numKept] = std::move(localToGlobal[b]);
+		}
+		++numKept;
+	}
+	blocks.erase(blocks.begin() + numKept, blocks.end());
+	localToGlobal.erase(localToGlobal.begin() + numKept, localToGlobal.end());
+	for (IIndex& b : blockOf)
+		if (b != NO_ID)
+			b = newIndex[b];
+	return newIndex;
 }
 /*----------------------------------------------------------------*/
 
@@ -700,29 +760,16 @@ void SceneBlocks::ResectPool(const ResectionConfig& resectionCfg, const Reconstr
 	}
 
 	// the blocks left empty (their initialization failed) are removed, the others renumbered in order
-	IIndexArr newIndex(blocks.size());
+	const IIndexArr newIndex(RemoveEmptyBlocks());
 	String renumbered;
-	IIndex numKept = 0;
-	FOREACH(b, blocks) {
-		if (blocks[b].images.empty()) {
+	unsigned numDropped = 0;
+	FOREACH(b, newIndex) {
+		if (newIndex[b] == NO_ID) {
 			ASSERT(failed[b]);
-			newIndex[b] = NO_ID;
-			continue;
-		}
-		newIndex[b] = numKept;
-		if (numKept != b) {
-			blocks[numKept] = std::move(blocks[b]);
-			localToGlobal[numKept] = std::move(localToGlobal[b]);
-			renumbered += String::FormatString(" %u->%u", b, numKept);
-		}
-		++numKept;
+			++numDropped;
+		} else if (newIndex[b] != b)
+			renumbered += String::FormatString(" %u->%u", b, newIndex[b]);
 	}
-	const unsigned numDropped = (unsigned)blocks.size() - numKept;
-	blocks.erase(blocks.begin() + numKept, blocks.end());
-	localToGlobal.erase(localToGlobal.begin() + numKept, localToGlobal.end());
-	for (IIndex& b : blockOf)
-		if (b != NO_ID)
-			b = newIndex[b];
 
 	String perMove;
 	for (const auto& [move, n] : moves)
