@@ -194,7 +194,7 @@ Every block states its contract with `ASSERT`; a call outside it is a bug in the
 | `MergeTrackJoinTest` | the cross-block track join: seam matches first, the join guard, the 255 cap |
 | `PooledSeamReadingTest` | a block pair read from light cross pairs together, and the bar on their total |
 | `MergeRoundsTest` | the merge in rounds: kept whole, regrouping, release, `MergeInRounds`, the anchor |
-| `MergeWeakImagesTest` | the weak-image filter before the merge: a weak image leaves its block, a block of weak images alone goes to the pool, no block left |
+| `MergeWeakImagesTest` | the weak-image filter before the merge: a weak image leaves its block, a block of weak images alone goes to the pool, no block left, a weak image of the merged model loses its pose in the scene and, registered again by the pool step, does not hold the rounds open |
 | `UnobservableScaleTest` | blocks of two cameras a millimetre apart are placed at the ring's scale |
 | `PairAgreementMergeTest` | verified pairs across a seam decide by inlier weight |
 | `RingClosingSeamTest` | the closing of a ring on a biased, thin or copied seam, a planted chord, a single bridge |

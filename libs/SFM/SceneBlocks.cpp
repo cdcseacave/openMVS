@@ -193,30 +193,35 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 	// against it. At the fixed point -- the pool step entered no image and the last round placed no block (the
 	// second round always reads the blocks left once) -- one more round releases them, merged without their
 	// poses, their images left to the final pass's resection. Every round that reads blocks for their poses
-	// first runs the weak-image filter on the ones not merged yet (FilterWeakImages)
+	// first runs the weak-image filter on all of them, the merged model among them (FilterWeakImages)
 	MergeReport report;
 	bool release = false;
 	unsigned round = 1;
 	// the images the pool steps registered on the merged model, over the rounds: they support no reading of
 	// the next merges (GlobalAlignment::ScoreSeam)
 	std::unordered_set<IIndex> poolImages;
+	// the images the filter took from the merged model, over the rounds: one the pool step registers again is no
+	// image entered, or every image the two trade would hold the rounds open
+	std::unordered_set<IIndex> filteredImages;
 	for (; ; ++round) {
 		if (!release) {
-			FilterWeakImages(round == 1 ? 0u : 1u);
+			for (const IIndex g : FilterWeakImages())
+				filteredImages.insert(g);
 			if (blocks.empty()) {
-				ASSERT(round == 1); // from round 2 on block 0, the merged model, is not filtered
 				VERBOSE("warning: the weak-image filter left no block a posed image; every image is left to the resection");
-				return 0;
+				scene.RecomputeCalibratedImages();
+				return round - 1;
 			}
 		}
+		const bool model = hasModel; // the regrouping below makes block 0 the model of the next round
 		GlobalAlignment globalAlign(scene, config.globalAlignmentCfg, poolImages);
-		globalAlign.MergeScenes(blocks, localToGlobal, report, release, round == 1 ? NO_ID : 0u);
-		ASSERT(round == 1 || report.poses[0].state == BlockPose::ADMITTED);
+		globalAlign.MergeScenes(blocks, localToGlobal, report, release, model ? 0u : NO_ID);
+		ASSERT(!model || report.poses[0].state == BlockPose::ADMITTED);
 		VERBOSE("Hierarchical merge round %u: %u/%u blocks placed, %u images placed, %u images of unplaced blocks %s",
 			round, report.numPlaced, report.numBlocks, report.numImagesPlaced, report.numImagesUnplaced,
 			release ? "released to the resection" : "kept whole");
 		AdjustMergedScene(scene, config);
-		const uint32_t numModelImages = scene.RecomputeCalibratedImages();
+		[[maybe_unused]] const uint32_t numModelImages = scene.RecomputeCalibratedImages();
 		if (release || report.numImagesUnplaced == 0)
 			break;
 		// the pool step on the merged model: the images in no block (the kept blocks' images hold no features in
@@ -229,13 +234,15 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 			if (resection.RegisterImages(false))
 				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, resectionCfg.denseReprojErrorFactor);
 		}
+		unsigned numEntered = 0;
 		FOREACH(g, scene.images)
-			if (!posedBefore[g] && scene.images[g].HasPose())
+			if (!posedBefore[g] && scene.images[g].HasPose()) {
 				poolImages.insert((IIndex)g);
-		const uint32_t numAfterPool = scene.RecomputeCalibratedImages();
-		ASSERT(numAfterPool >= numModelImages);
-		const uint32_t numEntered = numAfterPool - numModelImages;
-		const unsigned numBlocksPlaced = round == 1 ? 1u : report.numPlaced - 1u; // block 0, the merged model, is placed from round 2 on
+				numEntered += filteredImages.count((IIndex)g) ? 0u : 1u;
+			}
+		[[maybe_unused]] const uint32_t numAfterPool = scene.RecomputeCalibratedImages();
+		ASSERT(numAfterPool >= numModelImages + numEntered);
+		const unsigned numBlocksPlaced = model ? report.numPlaced - 1u : 1u; // block 0, when the merged model, is always placed
 		release = numEntered == 0 && numBlocksPlaced == 0;
 		std::vector<bool> placed(report.poses.size());
 		FOREACH(b, report.poses)
@@ -248,30 +255,40 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 }
 /*----------------------------------------------------------------*/
 
-unsigned SceneBlocks::FilterWeakImages(IIndex first)
+IIndexArr SceneBlocks::FilterWeakImages()
 {
 	TD_TIMER_STARTD();
-	ASSERT(IsSplit() && first <= blocks.size());
+	ASSERT(IsSplit() && !blocks.empty());
 	// the blocks in parallel, the pairs of the ones left without a posed image appended in block order
-	std::vector<unsigned> numRemoved(blocks.size(), 0); // written by the blocks in parallel
+	std::vector<IIndexArr> removed(blocks.size()); // global IDs, written by the blocks in parallel
 	std::vector<ImagePairArr> released(blocks.size());
-	scene.threadPool.detach_loop(first, (IIndex)blocks.size(), [&](IIndex b) {
-		numRemoved[b] = (unsigned)FilterWeaklyConnectedImages(blocks[b]).all.size();
+	scene.threadPool.detach_loop(IIndex(0), (IIndex)blocks.size(), [&](IIndex b) {
+		for (const IIndex l : FilterWeaklyConnectedImages(blocks[b]).all)
+			removed[b].push_back(localToGlobal[b][l]);
 		if (UnregisteredImages(b).size() == blocks[b].images.size())
 			released[b] = DetachAll(b);
 	});
 	scene.threadPool.wait();
 	unsigned numImages = 0, numBlocks = 0;
 	FOREACH(b, blocks) {
-		numImages += numRemoved[b];
-		numBlocks += numRemoved[b] > 0 ? 1u : 0u;
+		numImages += (unsigned)removed[b].size();
+		numBlocks += removed[b].empty() ? 0u : 1u;
 		for (ImagePair& pair : released[b])
 			scene.pairs.emplace_back(std::move(pair));
 	}
+	// the merged model's images hold its poses in the global scene too
+	IIndexArr removedFromModel;
+	if (hasModel) {
+		removedFromModel.swap(removed[0]);
+		for (const IIndex g : removedFromModel) {
+			ASSERT(scene.images[g].HasPose());
+			scene.images[g].InvalidatePose();
+		}
+	}
 	const IIndexArr newIndex(RemoveEmptyBlocks());
-	VERBOSE("Weak-image filter before the merge: %u images removed from %u of %u blocks, %u blocks left without a posed image handed to the pool (%s)",
-		numImages, numBlocks, (unsigned)newIndex.size() - first, (unsigned)std::count(newIndex.begin(), newIndex.end(), NO_ID), TD_TIMER_GET_FMT().c_str());
-	return numImages;
+	VERBOSE("Weak-image filter before the merge: %u images removed from %u of %u blocks (%u from the merged model), %u blocks left without a posed image handed to the pool (%s)",
+		numImages, numBlocks, (unsigned)newIndex.size(), (unsigned)removedFromModel.size(), (unsigned)std::count(newIndex.begin(), newIndex.end(), NO_ID), TD_TIMER_GET_FMT().c_str());
+	return removedFromModel;
 }
 
 IIndexArr SceneBlocks::RemoveEmptyBlocks()
@@ -295,6 +312,7 @@ IIndexArr SceneBlocks::RemoveEmptyBlocks()
 	for (IIndex& b : blockOf)
 		if (b != NO_ID)
 			b = newIndex[b];
+	hasModel = hasModel && newIndex[0] != NO_ID;
 	return newIndex;
 }
 /*----------------------------------------------------------------*/
@@ -326,6 +344,7 @@ void SceneBlocks::RegroupAfterMerge(const std::vector<bool>& placed)
 	}
 	blocks.emplace_back(ExtractBlock(model, globalToLocal, scene.nMaxThreads));
 	blocks.back().RecomputeCalibratedImages();
+	hasModel = true;
 	// the merged model's tracks now live in block 0; a pool image's observations join them again at the
 	// next merge through its pairs (connecting pairs), as at the first
 	scene.tracks.Release();

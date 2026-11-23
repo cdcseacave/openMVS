@@ -1349,7 +1349,15 @@ static void ThinImage(Scene& block, IIndex image, unsigned keep)
 //    no pose, every other image is posed;
 // 2. every image of one block: the block is left without a posed image, hands its images to the pool and is removed, and
 //    the three other blocks, still a chain, are merged in the one round;
-// 3. every image of every block: no block is left and the merge ends before its first round, every image handed to the pool.
+// 3. every image of every block: no block is left and the merge ends before its first round, every image handed to the pool;
+// 4. an image of the merged model: on the ring cut in two halves that share no match, one round run by hand merges one half
+//    and the regrouping makes it block 0; with an image of it thinned then, the merge's own rounds take it from the model:
+//    it ends in the global scene with its features and without the pose the earlier round left its shell there, the rest of
+//    the model stays posed, and the other half is released in the second round;
+// 5. such an image registered again: on the ring with block 3 cut off, the round run by hand merges blocks 0 and 1 (block 2's
+//    cameras held for pool images, which support no reading). The merge's first round takes the weak image from the model and
+//    places block 2, its second gives the image tracks from its pairs and the pool step registers it, which is no image
+//    entered: with no block placed either the third round releases block 3 (counted as entered, the image costs a round more).
 bool MergeWeakImagesTest()
 {
 	TestScope scope("MergeWeakImagesTest");
@@ -1387,8 +1395,59 @@ bool MergeWeakImagesTest()
 			"%u of the %u other images posed, %u calibrated", part, numRounds, numRoundsExpected, numWeakReleased, (unsigned)weak.size(),
 			numOthersPosed, numOthers, ring.scene.status.nCalibratedImages);
 	}
+	{
+		RingFixture ring({NUM_BLOCKS, CAMS});
+		ThinSeam(ring.scene, ring.blocks, 1, 2, 0, CAMS);
+		ThinSeam(ring.scene, ring.blocks, 3, 0, 0, CAMS);
+		ring.Split();
+		const MergeReport rep = ring.Merge(false);
+		std::vector<bool> placed(rep.poses.size());
+		FOREACH(b, rep.poses)
+			placed[b] = rep.poses[b].state == BlockPose::ADMITTED;
+		ring.split.RegroupAfterMerge(placed);
+		const IIndexArr model(ring.split.localToGlobal[0]);
+		const IIndex weakImage = model[WEAK_LOCAL];
+		ThinImage(ring.split.blocks[0], WEAK_LOCAL, WEAK_TRACKS);
+		const unsigned numRounds = ring.split.MergeInRounds(resectionCfg, config);
+		unsigned numModelPosed = 0;
+		for (const IIndex g : model)
+			numModelPosed += ring.scene.images[g].HasPose() ? 1u : 0u;
+		const Image& weak = ring.scene.images[weakImage];
+		TEST_CHECK(numRounds == 2 && model.size() == 2 * CAMS && weak.HasFeatures() && !weak.HasPose() && numModelPosed == model.size() - 1 &&
+			ring.scene.status.nCalibratedImages == model.size() - 1,
+			"part 4: %u rounds (2 expected), a model of %u images (%u expected), its weak image with features %d and pose %d (1 and 0 "
+			"expected), %u of its images posed and %u calibrated (%u expected)", numRounds, (unsigned)model.size(), 2 * CAMS,
+			(int)weak.HasFeatures(), (int)weak.HasPose(), numModelPosed, ring.scene.status.nCalibratedImages, (unsigned)model.size() - 1);
+	}
+	{
+		RingFixture ring({NUM_BLOCKS, CAMS});
+		ThinSeam(ring.scene, ring.blocks, 2, 3, 0, CAMS);
+		ThinSeam(ring.scene, ring.blocks, 3, 0, 0, CAMS);
+		ring.Split();
+		const MergeReport rep = ring.Merge(false, 0u, std::unordered_set<IIndex>(ring.blocks[2].begin(), ring.blocks[2].end()));
+		std::vector<bool> placed(rep.poses.size());
+		FOREACH(b, rep.poses)
+			placed[b] = rep.poses[b].state == BlockPose::ADMITTED;
+		ring.split.RegroupAfterMerge(placed);
+		const unsigned numModel = (unsigned)ring.split.localToGlobal[0].size();
+		const IIndex weakImage = ring.split.localToGlobal[0][WEAK_LOCAL];
+		ThinImage(ring.split.blocks[0], WEAK_LOCAL, WEAK_TRACKS);
+		const unsigned numRounds = ring.split.MergeInRounds(resectionCfg, config);
+		// the tracks the image is an inlier of: the five it was left unless the merge built its tracks again from its pairs,
+		// which it does only for an image in no block
+		unsigned numWeakTracks = 0;
+		for (const Track& track : ring.scene.tracks)
+			for (uint8_t i = 0; i < track.numInliers; ++i)
+				numWeakTracks += track.observations[i].imageID == weakImage ? 1u : 0u;
+		TEST_CHECK(numModel == 2 * CAMS && numRounds == 3 && ring.scene.images[weakImage].HasPose() && numWeakTracks > WEAK_TRACKS &&
+			ring.scene.status.nCalibratedImages == 3 * CAMS,
+			"part 5: a model of %u images by hand (%u expected), %u rounds (3 expected), the weak image with pose %d (1 expected) on "
+			"%u tracks (more than %u expected), %u calibrated images (%u expected)", numModel, 2 * CAMS, numRounds,
+			(int)ring.scene.images[weakImage].HasPose(), numWeakTracks, WEAK_TRACKS, ring.scene.status.nCalibratedImages, 3 * CAMS);
+	}
 	return scope.Pass("a weak image leaves its block before the merge and the block is placed without it; a block of weak images "
-		"alone is handed to the pool and the others are merged; with no block left every image is handed to the pool");
+		"alone is handed to the pool and the others are merged; with no block left every image is handed to the pool; a weak "
+		"image of the merged model loses its pose there and in the global scene; registered again by the pool step it does not hold the rounds open");
 }
 /*----------------------------------------------------------------*/
 // A block of two cameras a millimetre apart, and two of them side by side on the ring: a rig that thin sees no parallax,

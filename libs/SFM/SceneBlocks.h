@@ -117,10 +117,11 @@ public:
 	 * (the merged model, RegroupAfterMerge) after it; between rounds the whole-scene resection of the images in no
 	 * block on the merged model (the pool step); the blocks not placed are kept whole until a round enters no image
 	 * and places no block, and the round after it releases them to the final pass's resection. Before every round
-	 * but the releasing one, the weak-image filter runs on the blocks not merged yet (FilterWeakImages): every
-	 * block in round 1, every block but the merged model after it
-	 * @return the number of rounds run (0 when the filter left no block a posed image: nothing is merged and
-	 * every image is in the pool)
+	 * but the releasing one, the weak-image filter runs on every block, the merged model among them
+	 * (FilterWeakImages); an image it takes from the merged model that the pool step registers again does not
+	 * count as an image entered
+	 * @return the number of rounds that merged (one less than the rounds started when the filter left no
+	 * block a posed image: every image is then in the pool, without a pose)
 	 */
 	unsigned MergeInRounds(const ResectionConfig& resectionCfg, const ReconstructionConfig& config);
 
@@ -148,15 +149,17 @@ private:
 	// discarded (a block whose initialization failed), leaving the block empty
 	ImagePairArr DetachAll(IIndex block);
 
-	// The weak-image filter (FilterWeaklyConnectedImages, at its defaults) on every block from `first` on, the
-	// blocks in parallel, right before a merge round reads their poses: a safety check for images a block
-	// registered on weak evidence. An image it removes loses its pose and stays in its block, so the round
-	// reads the block without it and it is tried again on the merged model once its block is merged in; a
-	// block left without a posed image hands every image to the pool and is removed. Returns the images removed.
-	unsigned FilterWeakImages(IIndex first);
+	// The weak-image filter (FilterWeaklyConnectedImages, at its defaults) on every block, in parallel, right
+	// before a merge round reads their poses: a safety check for images registered on weak evidence. An image
+	// it removes loses its pose and stays in its block, so the round reads the block without it and it is
+	// tried again on the merged model once its block is merged in; a block left without a posed image hands
+	// every image to the pool and is removed.
+	// An image of the merged model (hasModel) holds its pose in the global scene too and loses it there as well.
+	// Returns the images removed from the merged model (global IDs; none without one).
+	IIndexArr FilterWeakImages();
 
-	// The blocks holding no image removed and the others renumbered in order, blockOf following; returns
-	// each block's new index, NO_ID for a removed one
+	// The blocks holding no image removed and the others renumbered in order, blockOf and hasModel following;
+	// returns each block's new index, NO_ID for a removed one
 	IIndexArr RemoveEmptyBlocks();
 
 	// the block's images without a pose, in global IDs (sorted)
@@ -167,6 +170,7 @@ private:
 
 private:
 	Scene& scene; // the global scene: every image's shell, the pool's features, the pairs no block holds
+	bool hasModel{false}; // block 0 is the merged model of a merge round (RegroupAfterMerge), its images posed in the global scene too
 };
 /*----------------------------------------------------------------*/
 

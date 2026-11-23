@@ -304,8 +304,8 @@ since the grown model may hold what they lacked. The filter runs a second time o
 registers something.
 
 In a scene split into blocks the same filter, at the same defaults, also runs on every block right before
-the merge reads it (`SceneBlocks::FilterWeakImages`, `HierarchicalSFM.md`): there every image it removes
-waits without a pose for the merged model.
+each round of the merge reads it, the model merged so far among them (`SceneBlocks::FilterWeakImages`,
+`HierarchicalSFM.md`): there every image it removes waits without a pose for the merged model.
 Two tier verdicts drop an image outright:
 spatial distribution (triangulated points occupy too little of the image, `minObservationArea` 0.15)
 and geometric degeneracy (median triangulation angle too small, `minTriangulationAngle` 1.5 degrees).

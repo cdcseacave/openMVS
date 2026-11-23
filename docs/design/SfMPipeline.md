@@ -86,7 +86,7 @@ bundle adjustment; track filter). The seed views of stage 7 are handed to each b
 is not split (no clustering, or at most `--max-views-per-cluster` images), the only block becomes the scene and stages 8c
 and 8d do not run. Otherwise the pool resection runs, then the merge.
 
-**Merge.** `MergeInRounds` first runs the weak-image filter of stage 10 on every block not merged yet (an image it removes
+**Merge.** `MergeInRounds` first runs the weak-image filter of stage 10 on every block, the model merged so far among them (an image it removes
 loses its pose and is tried again on the merged model), then places the blocks in one frame by a robust averaging over the block graph (readings from
 generalized-camera pose estimation of one block's cameras against the other's tracks, or from 3D-3D similarity with
 `--cluster-alignment 0`; a reading enters only with two supporting cameras on its weaker side (an image the pool step registered on the merged model is none), an observed scale and
