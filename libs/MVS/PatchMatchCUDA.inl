@@ -127,6 +127,7 @@ public:
 	Point4* cudaDepthNormalEstimates;
 	float* cudaLowDepths;
 	float* cudaDepthNormalCosts;
+	Point4* cudaSmoothPlanes; // the smoothed plane of every pixel (normal, depth along the pixel ray), rebuilt by RunCUDA before every pass
 	curandState* cudaRandStates;
 	uint32_t* cudaSelectedViews;
 	// per-instance stream: scopes kernel launches and syncs to this PatchMatch

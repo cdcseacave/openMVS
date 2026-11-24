@@ -83,6 +83,13 @@ namespace MVS {
  *   3. Current depth + surface normal (estimated from 4-connected neighbors)
  * - Adopt any candidate that improves the cost
  *
+ * **Smoothness coupling** (phases 3 and 4)
+ * - Every aggregated cost, the stored one included, is scaled by SmoothnessFactor:
+ *   up to 20 % lower the closer the hypothesis lies, in depth and normal, to the
+ *   pixel's smoothed plane, which the SmoothPlanes kernel fits to the 3x3
+ *   neighborhood (gray-similarity x confidence weights) before every pass
+ *   (docs/design/PatchMatchSmoothness.md)
+ *
  * @see InitializePixelScore() for initial setup before iterations
  * @see ScorePlane() for the photometric matching cost computation
  * @see ProcessPixel() reads selectedViews from 4-connected neighbors processed in the
