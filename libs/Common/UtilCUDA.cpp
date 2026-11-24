@@ -48,6 +48,29 @@ void abortCudaCall(cudaError_t error, const char* call, const char* file, int li
 /*----------------------------------------------------------------*/
 
 
+#ifdef _USE_HIP
+// the architectures the HIP code is compiled for, see CMAKE_HIP_ARCHITECTURES:
+// comma-separated target IDs, ex. "gfx1100,gfx1201" or "gfx90a:xnack-"
+static constexpr const char* hipArchs(_HIP_ARCHS);
+
+// the processor of a target ID: the gfx name without the target features (ex. ":sramecc+:xnack-")
+static String _archProcessor(const String& targetID)
+{
+	return targetID.substr(0, targetID.find(':'));
+}
+
+// the HIP code runs on a device only if it holds code for its processor
+static bool _isArchSupported(const String& processor)
+{
+	ASSERT(!processor.empty());
+	CLISTDEF2(String) archs;
+	Util::strSplit(String(hipArchs), _T(','), archs);
+	for (const String& arch: archs)
+		if (_archProcessor(arch) == processor)
+			return true;
+	return false;
+}
+#else
 // the compute capabilities (major*10+minor) the CUDA code is compiled for,
 // see CMAKE_CUDA_ARCHITECTURES: native code (SASS), architecture-specific
 // native code and the lowest PTX (0 if none)
@@ -87,6 +110,7 @@ static String _formatComputeCapabilities()
 	archs.pop_back();
 	return archs;
 }
+#endif
 
 // fill the Device struct if the device can run the CUDA code
 static bool _initDevice(int devID, Device& device)
@@ -102,12 +126,22 @@ static bool _initDevice(int devID, Device& device)
 		VERBOSE("CUDA device %d (%s) is running in compute mode prohibited", devID, props.name);
 		return false;
 	}
+	#ifdef _USE_HIP
+	const String processor(_archProcessor(props.gcnArchName));
+	if (!_isArchSupported(processor)) {
+		VERBOSE("HIP device %d (%s) has architecture %s, but this build contains HIP code only for %s; "
+			"rebuild with -DCMAKE_HIP_ARCHITECTURES=%s to use it",
+			devID, props.name, props.gcnArchName, hipArchs, processor.c_str());
+		return false;
+	}
+	#else
 	if (!_isComputeCapabilitySupported(props.major, props.minor)) {
 		VERBOSE("CUDA device %d (%s) has compute capability %d.%d, but this build contains CUDA code only for %s; "
 			"rebuild with -DCMAKE_CUDA_ARCHITECTURES=%d%d (or all-major) to use it",
 			devID, props.name, props.major, props.minor, _formatComputeCapabilities().c_str(), props.major, props.minor);
 		return false;
 	}
+	#endif
 	device.ID = devID;
 	device.major = props.major;
 	device.minor = props.minor;
