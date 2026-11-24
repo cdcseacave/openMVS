@@ -117,9 +117,11 @@ inline hipError_t cudaDestroyTextureObject(hipTextureObject_t tex) { return hipD
 inline hipError_t cudaCreateSurfaceObject(hipSurfaceObject_t* surf, const hipResourceDesc* resDesc) { return hipCreateSurfaceObject(surf, resDesc); }
 inline hipError_t cudaDestroySurfaceObject(hipSurfaceObject_t surf) { return hipDestroySurfaceObject(surf); }
 
-// driver API types
+// driver API types; a device address is an integer as in CUDA (the code offsets it in bytes),
+// where HIP's hipDeviceptr_t is a void*: the forwarders below convert it
 using CUresult = hipError_t;
-using CUdeviceptr = hipDeviceptr_t;
+using CUdeviceptr = unsigned long long;
+static_assert(sizeof(CUdeviceptr) == sizeof(hipDeviceptr_t), "a device address must fit CUdeviceptr");
 using CUarray = hipArray_t;
 using CUarray_format = hipArray_Format;
 using CUDA_ARRAY3D_DESCRIPTOR = HIP_ARRAY3D_DESCRIPTOR;
@@ -148,16 +150,16 @@ constexpr unsigned CUDA_ARRAY3D_SURFACE_LDST = hipArraySurfaceLoadStore;
 inline hipError_t cuGetErrorName(hipError_t error, const char** name) { return hipDrvGetErrorName(error, name); }
 inline hipError_t cuGetErrorString(hipError_t error, const char** str) { return hipDrvGetErrorString(error, str); }
 inline hipError_t cuCtxSynchronize() { return hipDeviceSynchronize(); }
-inline hipError_t cuMemAlloc(hipDeviceptr_t* ptr, size_t size) { return hipMalloc(ptr, size); }
-inline hipError_t cuMemFree(hipDeviceptr_t ptr) { return hipFree(ptr); }
+inline hipError_t cuMemAlloc(CUdeviceptr* ptr, size_t size) { void* p; const hipError_t ret(hipMalloc(&p, size)); *ptr = (CUdeviceptr)p; return ret; }
+inline hipError_t cuMemFree(CUdeviceptr ptr) { return hipFree((void*)ptr); }
 inline hipError_t cuMemAllocHost(void** ptr, size_t size) { return hipHostMalloc(ptr, size, hipHostMallocDefault); }
 inline hipError_t cuMemFreeHost(void* ptr) { return hipHostFree(ptr); }
-inline hipError_t cuMemcpyHtoD(hipDeviceptr_t dst, const void* src, size_t size) { return hipMemcpyHtoD(dst, src, size); }
-inline hipError_t cuMemcpyDtoH(void* dst, hipDeviceptr_t src, size_t size) { return hipMemcpyDtoH(dst, src, size); }
+inline hipError_t cuMemcpyHtoD(CUdeviceptr dst, const void* src, size_t size) { return hipMemcpyHtoD((hipDeviceptr_t)dst, src, size); }
+inline hipError_t cuMemcpyDtoH(void* dst, CUdeviceptr src, size_t size) { return hipMemcpyDtoH(dst, (hipDeviceptr_t)src, size); }
 inline hipError_t cuMemcpy2D(const hip_Memcpy2D* copy) { return hipMemcpyParam2D(copy); }
-inline hipError_t cuMemsetD16(hipDeviceptr_t dst, unsigned short value, size_t count) { return hipMemsetD16(dst, value, count); }
-inline hipError_t cuMemsetD32(hipDeviceptr_t dst, unsigned value, size_t count) { return hipMemsetD32(dst, (int)value, count); }
-inline hipError_t cuMemsetD32Async(hipDeviceptr_t dst, unsigned value, size_t count, hipStream_t stream) { return hipMemsetD32Async(dst, (int)value, count, stream); }
+inline hipError_t cuMemsetD16(CUdeviceptr dst, unsigned short value, size_t count) { return hipMemsetD16((hipDeviceptr_t)dst, value, count); }
+inline hipError_t cuMemsetD32(CUdeviceptr dst, unsigned value, size_t count) { return hipMemsetD32((hipDeviceptr_t)dst, (int)value, count); }
+inline hipError_t cuMemsetD32Async(CUdeviceptr dst, unsigned value, size_t count, hipStream_t stream) { return hipMemsetD32Async((hipDeviceptr_t)dst, (int)value, count, stream); }
 inline hipError_t cuArray3DCreate(hipArray_t* array, const HIP_ARRAY3D_DESCRIPTOR* desc) { return hipArray3DCreate(array, desc); }
 inline hipError_t cuArrayDestroy(hipArray_t array) { return hipArrayDestroy(array); }
 
