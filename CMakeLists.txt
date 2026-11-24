@@ -33,6 +33,7 @@ OPTION(OpenMVS_USE_BREAKPAD "Enable BreakPad library" ON)
 OPTION(OpenMVS_USE_PYTHON "Enable Python library bindings" ON)
 OPTION(OpenMVS_USE_CERES "Enable CERES optimization library" OFF)
 OPTION(OpenMVS_USE_CUDA "Enable CUDA library" ON)
+OPTION(OpenMVS_USE_HIP "Enable HIP library (AMD GPUs through ROCm): the CUDA code compiled by hipcc, replaces CUDA" OFF)
 OPTION(OpenMVS_USE_SIFTGPU "Enable SIFTGPU library" ON)
 OPTION(OpenMVS_USE_FAST_FLOAT2INT "Use an optimized code to convert real numbers to int" OFF)
 OPTION(OpenMVS_USE_FAST_INVSQRT "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)" OFF)
@@ -47,6 +48,11 @@ OPTION(OpenMVS_DETERMINISTIC_RANDOM "Seed every random-number generator fixed, s
 IF(APPLE)
 	SET(OpenMVS_USE_CUDA OFF)
 	MESSAGE(STATUS "Disabling CUDA on MacOS")
+ENDIF()
+
+# HIP builds the same GPU code as CUDA, without the CUDA toolkit
+IF(OpenMVS_USE_HIP)
+	SET(OpenMVS_USE_CUDA OFF)
 ENDIF()
 
 # Load automatically VCPKG toolchain if available
@@ -287,6 +293,28 @@ if(OpenMVS_USE_CUDA)
 	else()
 		MESSAGE(STATUS "Can't find CUDA. Continuing without it.")
 	endif()
+endif()
+
+# HIP backend for AMD GPUs: the .cu kernels and the host code driving them are the CUDA ones,
+# compiled by hipcc; Common/UtilCUDARuntime.h maps the CUDA names to HIP, so _USE_CUDA ("GPU code
+# compiled in") is set as well
+if(OpenMVS_USE_HIP)
+	# the targeted architectures, ex. -DCMAKE_HIP_ARCHITECTURES="gfx1100;gfx1201"; if not set,
+	# CMake picks the GPUs of the build machine (rocm_agent_enumerator), else the compiler default;
+	# the ROCm packages are found through CMAKE_PREFIX_PATH, ex. -DCMAKE_PREFIX_PATH=/opt/rocm
+	ENABLE_LANGUAGE(HIP)
+	SET(CMAKE_HIP_STANDARD 17)
+	SET(CMAKE_HIP_STANDARD_REQUIRED ON)
+	find_exported_dependency(hip CONFIG REQUIRED)
+	find_exported_dependency(hiprand CONFIG REQUIRED)
+	# hip::host only: hip::device carries "-x hip --offload-arch" as compile options of every
+	# language, which would turn the host .cpp files into HIP sources
+	LIST(APPEND OpenMVS_EXTRA_LIBS hip::host hip::hiprand)
+	# the architectures the HIP code is compiled for, see initDevices()
+	STRING(REPLACE ";" "," _HIP_ARCHS "${CMAKE_HIP_ARCHITECTURES}")
+	SET(_USE_HIP TRUE)
+	SET(_USE_CUDA TRUE)
+	MESSAGE(STATUS "Found HIP: ${hip_VERSION} with GPU arch: ${_HIP_ARCHS}")
 endif()
 
 # Metal compute backend on Apple (replaces CUDA, which is disabled on macOS above)
