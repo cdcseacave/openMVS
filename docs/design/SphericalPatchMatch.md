@@ -141,7 +141,7 @@ reject a file whose flag disagrees with the view's model.
 
 ### CUDA estimator
 
-- The kernels (`InitializeScore`, `BlackPixelProcess`, `RedPixelProcess`) are templates on `<GEOM, MODEL>`:
+- The estimation kernels (`InitializeScore`, `BlackPixelProcess`, `RedPixelProcess`) are templates on `<GEOM, MODEL>`:
   `MODEL_PINHOLE` (every view pinhole), `MODEL_PINHOLE_REF` (pinhole reference, spherical views),
   `MODEL_SPHERICAL_REF`. `RunCUDA` picks it from `Params::sphericalViews`. Every MODEL runs the same code;
   the spherical branches and the view gate are compiled out of `MODEL_PINHOLE`.
@@ -179,6 +179,9 @@ reject a file whose flag disagrees with the view's model.
   consistency.
 - The confidence recalibration kernels (`ConfidenceCUDA.cu`) are templates on the reference model
   (`PinholeModel`, or `SphericalModel` with its trig table).
+- `SmoothPlanes`, which builds the smoothed planes of the smoothness coupling before every pass
+  (`PatchMatchSmoothness.md`), reads only the reference: it is a template on `MODEL_PINHOLE` (also for the
+  `MODEL_PINHOLE_REF` passes) or `MODEL_SPHERICAL_REF`, whose 3x3 neighbourhood wraps across the seam.
 
 ### Metal estimator
 
@@ -193,8 +196,9 @@ reject a file whose flag disagrees with the view's model.
 - Buffer 0 holds each view's `Camera` {fx, fy, cx, cy, size} (`AsPinhole`/`AsSpherical` build the models);
   buffer 8 the per-view `ModelView` {R, t, C, texScale}; buffer 9 the reference trig table (W+H (sin, cos)
   pairs, a dummy for a pinhole reference). A second sampler (`coord::normalized`, repeat on columns, clamp
-  on rows) reads the textures of an equirectangular view.
-- Kernel logic as in CUDA, including the view gate.
+  on rows) reads the textures of an equirectangular view. Buffer 10 holds the smoothed planes, written by
+  `SmoothPlanes` (pipelines for `MODEL_PINHOLE` and `MODEL_SPHERICAL_REF`) before every black and red pass.
+- Kernel logic as in CUDA, including the view gate and the smoothness coupling.
 - Differences from CUDA: the relative view poses are composed in double precision (CUDA composes them in
   single precision from the reference-centered cameras); random numbers come from PCG, bilateral weights
   from `exp`.
