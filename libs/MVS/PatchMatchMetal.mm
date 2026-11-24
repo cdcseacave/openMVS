@@ -89,6 +89,8 @@ struct PatchMatch::Impl {
 	id<MTLLibrary> library = nil;
 	// the kernels specialized on the function constants [GEOM][MODEL]
 	id<MTLComputePipelineState> psInit[2][NUM_MODELS] = {}, psBlack[2][NUM_MODELS] = {}, psRed[2][NUM_MODELS] = {};
+	// the smoothed planes specialized on the reference model [equirectangular reference]
+	id<MTLComputePipelineState> psSmooth[2] = {};
 	id<MTLComputePipelineState> psFilter = nil;
 	id<MTLComputePipelineState> psConfPrior = nil, psConfSweep = nil; // the confidence recalibration
 	id<MTLTexture> dummyDepth = nil;   // 1x1 zero, stands in for neighbors without a depth-map
@@ -138,6 +140,15 @@ PatchMatch::PatchMatch()
 				impl->psRed[geom][model]   = MakePipe(impl->device, impl->library, @"RedPixelProcess", fc);
 				valid = valid && impl->psInit[geom][model] && impl->psBlack[geom][model] && impl->psRed[geom][model];
 			}
+		}
+		for (int sphericalRef = 0; sphericalRef < 2; ++sphericalRef) {
+			MTLFunctionConstantValues* fc = [MTLFunctionConstantValues new];
+			const bool bGeom = false;
+			const int model = sphericalRef ? MODEL_SPHERICAL_REF : MODEL_PINHOLE;
+			[fc setConstantValue:&bGeom type:MTLDataTypeBool atIndex:0];
+			[fc setConstantValue:&model type:MTLDataTypeInt atIndex:1];
+			impl->psSmooth[sphericalRef] = MakePipe(impl->device, impl->library, @"SmoothPlanes", fc);
+			valid = valid && impl->psSmooth[sphericalRef];
 		}
 		impl->psFilter = MakePipe(impl->device, impl->library, @"FilterPlanes", nil);
 		impl->psConfPrior = MakePipe(impl->device, impl->library, @"ConfidencePrior", nil);
@@ -416,6 +427,7 @@ void PatchMatch::EstimateDepthMap(const PlatformArr& platforms, DepthData& depth
 		id<MTLBuffer> bCosts  = [dev newBufferWithLength:sizeof(float)*area options:MTLResourceStorageModeShared];
 		id<MTLBuffer> bRng    = [dev newBufferWithLength:sizeof(uint32_t)*area options:MTLResourceStorageModeShared];
 		id<MTLBuffer> bSel    = [dev newBufferWithLength:sizeof(uint32_t)*area options:MTLResourceStorageModeShared];
+		id<MTLBuffer> bSmooth = [dev newBufferWithLength:sizeof(simd_float4)*area options:MTLResourceStorageModePrivate]; // written by SmoothPlanes before every pass
 		memset(bRng.contents, 0, sizeof(uint32_t)*area);
 		memset(bSel.contents, 0, sizeof(uint32_t)*area);
 
@@ -493,11 +505,13 @@ void PatchMatch::EstimateDepthMap(const PlatformArr& platforms, DepthData& depth
 			[enc setBuffer:bPrm offset:0 atIndex:6];
 			[enc setBuffer:bViews offset:0 atIndex:8];
 			[enc setBuffer:bTrig offset:0 atIndex:9];
+			[enc setBuffer:bSmooth offset:0 atIndex:10];
 		};
 		const MTLSize tg = MTLSizeMake(32, 8, 1);
 		id<MTLComputePipelineState> psI = impl->psInit[geom][model];
 		id<MTLComputePipelineState> psB = impl->psBlack[geom][model];
 		id<MTLComputePipelineState> psR = impl->psRed[geom][model];
+		id<MTLComputePipelineState> psS = impl->psSmooth[model == MODEL_SPHERICAL_REF ? 1 : 0];
 
 		// one command buffer per scale: each pass gets its own encoder so Metal's
 		// automatic hazard tracking serializes the read-after-write dependencies on
@@ -513,9 +527,16 @@ void PatchMatch::EstimateDepthMap(const PlatformArr& platforms, DepthData& depth
 			[enc dispatchThreads:MTLSizeMake(W, Hh, 1) threadsPerThreadgroup:tg];
 			[enc endEncoding];
 		}
-		// checkerboard iterations
+		// checkerboard iterations, the smoothed planes of the current estimates rebuilt before every pass
 		for (int iter = 0; iter < params.nEstimationIters; ++iter) {
 			for (int pass = 0; pass < 2; ++pass) {
+				{
+					id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+					[enc setComputePipelineState:psS];
+					bindCommon(enc);
+					[enc dispatchThreads:MTLSizeMake(W, Hh, 1) threadsPerThreadgroup:tg];
+					[enc endEncoding];
+				}
 				id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
 				[enc setComputePipelineState:(pass==0 ? psB : psR)];
 				bindCommon(enc);
