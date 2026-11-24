@@ -57,6 +57,9 @@
 // NVidia Cuda Runtime API
 #cmakedefine _USE_CUDA
 
+// AMD HIP runtime (ROCm): the CUDA code compiled by hipcc, see Common/UtilCUDARuntime.h
+#cmakedefine _USE_HIP
+
 // Apple Metal compute backend
 #cmakedefine _USE_METAL
 

@@ -22,7 +22,7 @@
  *                   ZNCC cost buffer (RunConfidenceFusedCUDA); nothing reference-sized is uploaded.
  * On any CUDA error the launchers free everything and return false so the caller falls back.
  */
-#include <cuda_runtime.h>
+#include "Common/UtilCUDARuntime.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
