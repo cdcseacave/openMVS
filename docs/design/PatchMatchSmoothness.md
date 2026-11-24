@@ -98,29 +98,42 @@ jointly validated operating point, not user options.
 
 ## 5. Validation
 
-Smoothness coupling against the kernel without it, CUDA (RTX 4070). ETH3D: 8 high-res training scenes at
-resolution level 1 (3024x2016), F at 2 cm unless noted, `bench/eth3d/ab_eth3d.py`. Tanks and Temples Barn
-at r1. Holo360D Outdoor_004: 40 panoramas at 1440 px. Normal noise: median angle between the normals of
-adjacent pixels. Confidence: the recalibrated confidence scored against local ground truth.
+Smoothness coupling against the kernel without it, CUDA (RTX 4070), each measured from its own release
+binary. ETH3D: 8 high-res training scenes at resolution level 1 (3024x2016), `bench/eth3d/ab_eth3d.py`
+(F/P/R at 2 and 5 cm after the camera Sim3 alignment; the ICP-refined alignment moves F by at most 0.004
+and leaves every difference within 0.0005). Normal noise: the angle between the normals of adjacent pixels
+of the depth-maps, p50/p90.
+
+| ETH3D scene | F@2cm without / with (dF) | P / R @2cm with | F@5cm without / with (dF) | P / R @5cm with | normal p50/p90 without / with |
+|---|---|---|---|---|---|
+| pipes | 0.7323 / 0.7452 (+0.0129) | 0.885 / 0.644 | 0.8022 / 0.8061 (+0.0039) | 0.931 / 0.711 | 14.6/77.4 / 3.6/39.9 deg |
+| office | 0.5681 / 0.5873 (+0.0192) | 0.927 / 0.430 | 0.6985 / 0.7154 (+0.0169) | 0.973 / 0.566 | 25.4/93.6 / 3.5/43.4 deg |
+| terrace | 0.8620 / 0.8646 (+0.0026) | 0.956 / 0.789 | 0.8829 / 0.8823 (-0.0006) | 0.978 / 0.804 | 8.7/66.4 / 2.8/22.4 deg |
+| courtyard | 0.8816 / 0.8852 (+0.0036) | 0.913 / 0.859 | 0.9345 / 0.9363 (+0.0018) | 0.959 / 0.915 | 11.1/60.0 / 3.0/24.6 deg |
+| delivery_area | 0.8532 / 0.8551 (+0.0019) | 0.916 / 0.802 | 0.8971 / 0.8993 (+0.0022) | 0.957 / 0.849 | 8.9/61.4 / 2.4/15.9 deg |
+| kicker | 0.6733 / 0.7176 (+0.0443) | 0.937 / 0.581 | 0.7808 / 0.8143 (+0.0335) | 0.970 / 0.702 | 13.5/78.4 / 3.0/26.0 deg |
+| relief | 0.7872 / 0.7883 (+0.0011) | 0.974 / 0.662 | 0.8032 / 0.8038 (+0.0006) | 0.989 / 0.677 | 6.8/41.2 / 2.4/11.4 deg |
+| electro | 0.8901 / 0.9048 (+0.0147) | 0.969 / 0.849 | 0.9312 / 0.9366 (+0.0054) | 0.986 / 0.892 | 10.3/79.3 / 2.5/32.4 deg |
+| mean dF | +0.0125 | | +0.0080 | | |
+
+Tanks and Temples Barn at r1 (official evaluator, both arms scored in one process). Holo360D Outdoor_004:
+40 panoramas at 1440 px, the fused cloud against the GT range maps (`Tests evalcloud`). Confidence: the
+recalibrated confidence scored against local ground truth.
 
 | measure | without | with |
 |---|---:|---:|
-| ETH3D pipes / office / terrace / courtyard, dF@2cm | | +0.0127 / +0.0192 / +0.0026 / +0.0037 |
-| ETH3D delivery_area / kicker / relief / electro, dF@2cm | | +0.0019 / +0.0440 / +0.0012 / +0.0148 |
-| ETH3D mean dF@2cm / dF@5cm | | +0.0125 / +0.0080 |
-| T&T Barn F | 0.6559 | 0.6562 |
-| Holo360D fused F@5% | 0.647 | 0.699 |
-| Holo360D median relative error, pixels both estimate | 0.0354 | 0.0327 |
-| adjacent-normal angle p50 (ETH3D scenes) | 7-25 deg | 2.4-3.6 deg |
+| T&T Barn F / P / R | 0.6559 / 0.601 / 0.722 | 0.6560 / 0.560 / 0.793 |
+| Holo360D fused F@2% / F@5% | 0.452 / 0.647 | 0.511 / 0.699 |
+| Holo360D median relative error, pixels both estimate | 0.0385 | 0.0355 |
 | confidence ROC-AUC, all / ETH3D / BlendedMVS | 0.892 / 0.889 / 0.918 | 0.900 / 0.898 / 0.917 |
 | inlier share kept at 1 % contamination | 37.6 % | 36.7 % |
 | contamination at 90 % completeness | 8.9 % | 6.6 % |
-| GPU time of the black + red passes incl. `SmoothPlanes`, photometric + geometric, pipes / office | 3.12 / 5.69 s | 3.26 / 5.81 s (+4.4 % / +2.2 %) |
-| the same per MP and iteration, photometric passes, pipes / office | 4.77 / 4.97 ms | 5.02 / 5.13 ms (+5.3 % / +3.2 %) |
-| the same, geometric passes, pipes / office | 5.75 / 6.39 ms | 5.90 / 6.39 ms (+2.5 % / +0.0 %) |
+| GPU time of the black + red passes incl. `SmoothPlanes`, photometric + geometric, pipes / office | 3.14 / 5.68 s | 3.24 / 5.79 s (+3.1 % / +2.0 %) |
+| the same per MP and iteration, photometric passes, pipes / office | 4.82 / 4.96 ms | 4.99 / 5.11 ms (+3.5 % / +3.0 %) |
+| the same, geometric passes, pipes / office | 5.77 / 6.39 ms | 5.89 / 6.39 ms (+2.1 % / -0.1 %) |
 
 GPU times: CUDA events around the launches (a local timing build of both kernels), mean of 3 interleaved
-runs per scene.
+runs per scene; the run-to-run spread of the photometric total is 1-4 %.
 
 ## 6. Rejected alternatives
 
@@ -132,6 +145,9 @@ runs per scene.
 - The stored cost photometric with the coupling to the smoothed plane: Barn -0.0064, office -0.0065.
 - Fusion NCC keep threshold 1.2 alone: +0.0049, but it disables the recalibration gate.
 - `SmoothPlanes` over the pixels of the next pass only (half the grid): no measurable kernel time gain.
+- The distance in the algebraically identical form `(ns.Ray)*(1 - depthS/depth)`, precomputed per pixel:
+  measured, no gain (the kernels stay at the 128-register cap, the pinhole ones with the same stack;
+  photometric passes +2.8 % on pipes, +0.0 % on office).
 
 ## 7. Open items
 
@@ -139,5 +155,4 @@ runs per scene.
   `SyntheticMixedGPUTest` and an ETH3D A/B against CUDA to do on the Mac).
 - HIP: the backend port takes the CUDA kernel as it is now, coupling included.
 - The constants were tuned on ETH3D at level 1; full-resolution and aerial scenes are untested.
-- The photometric passes cost up to 5 % more; the cost is in `ProcessPixel` (not in `SmoothPlanes`), a
-  cheaper form of the distance (`(ns.Ray)*(1 - depthS/depth)`, fewer live registers) is untested.
+- The photometric passes cost up to 3.5 % more; the cost is in `ProcessPixel` (not in `SmoothPlanes`).
