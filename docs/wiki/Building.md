@@ -55,6 +55,8 @@ cmake --install .
 
 A CUDA build compiles the GPU code only for the GPU of the build machine by default (`CMAKE_CUDA_ARCHITECTURES=native`). Binaries meant to run on other machines must list the targeted architectures, ex. `cmake .. -DCMAKE_CUDA_ARCHITECTURES=all-major` (native code for every GPU generation supported by the CUDA toolkit, plus PTX for newer ones). At runtime, a GPU the build contains no code for is reported in the log and skipped, and the CPU is used instead.
 
+AMD GPUs (Linux, ROCm 7 or newer) run the same GPU code compiled with HIP: `cmake .. -DOpenMVS_USE_HIP=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES="gfx1100;gfx1201"`. `OpenMVS_USE_HIP` replaces `OpenMVS_USE_CUDA` (no CUDA toolkit is needed or asked from vcpkg). ROCm has to provide the HIP SDK and hipRAND (ex. the `rocm-hip-sdk` package, or the user-space `rocm[libraries,devel]` Python wheels, whose root `rocm-sdk path --root` prints, with `-DCMAKE_HIP_COMPILER=<root>/lib/llvm/bin/clang++`). `CMAKE_HIP_ARCHITECTURES` lists the gfx targets to run on (`rocminfo | grep gfx` shows the local ones, ex. gfx1201 for a Radeon RX 9070); left unset, CMake takes the GPUs of the build machine. At runtime a GPU whose architecture is not in the list is reported and the CPU is used instead; the mesh refinement needs a GPU running 32-lane wavefronts (Radeon, RDNA) and refines on the CPU on the others (Instinct, GCN).
+
 -------------------
 Library usage
 -------------------

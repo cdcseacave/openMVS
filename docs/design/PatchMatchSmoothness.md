@@ -10,9 +10,9 @@ the per-pixel decision: a hypothesis that agrees with a smoothed plane of the pi
 costs up to 20 % less. It is the kernels' behaviour, with no option to turn it off.
 
 Scope: every CUDA and Metal estimation pass (photometric and geometric, every pyramid level, every camera
-model). Out of scope: the CPU estimator (`DepthEstimatorT`, `libs/MVS/DepthMap.cpp`), which keeps its own
-term (`DENSE_SMOOTHNESS_PLANE`, `fRandomSmoothBonus`: a bonus per agreeing already-estimated neighbour), and
-the HIP backend.
+model), and so every HIP pass, which runs the CUDA kernel (`docs/design/HIPBackend.md`). Out of scope: the
+CPU estimator (`DepthEstimatorT`, `libs/MVS/DepthMap.cpp`), which keeps its own term
+(`DENSE_SMOOTHNESS_PLANE`, `fRandomSmoothBonus`: a bonus per agreeing already-estimated neighbour).
 
 ## 2. Algorithm as implemented
 
@@ -153,6 +153,6 @@ runs per scene; the run-to-run spread of the photometric total is 1-4 %.
 
 - Metal: mirrored, not yet compiled nor run on Apple hardware (`MetalModelMathTest`, `SyntheticSphericalGPUTest`,
   `SyntheticMixedGPUTest` and an ETH3D A/B against CUDA to do on the Mac).
-- HIP: the backend port takes the CUDA kernel as it is now, coupling included.
+- HIP: compiled with the coupling (the CUDA kernel), not yet run on AMD hardware.
 - The constants were tuned on ETH3D at level 1; full-resolution and aerial scenes are untested.
 - The photometric passes cost up to 3.5 % more; the cost is in `ProcessPixel` (not in `SmoothPlanes`).
