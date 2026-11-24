@@ -1,8 +1,8 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO cdcseacave/PoseLib
-    REF 368cae51777bfe669a47412bb29f8830e6dc2a2e
-    SHA512 7dd6961f0a288e8b337556116fd322bec07a4efefc6b735ad92a274cd109eddd811ff70e9a9ea28db1fe5df32eb893015d3daa10cd3453a103a6205ff1dcaab5
+    REF 2845f80b908360b4ebb9dddba94be80e5499d374
+    SHA512 697666404d21dd8c92dc22beed0eff12e70382cc67d37c2ab61a924074d3ed5b83e5e86bb7038ea1c1ed60ab24d6c5bfe8a00ea87b8088f3c815e3f099caa7fe
     HEAD_REF feature/generalized-absolute-pose-scale
 )
 
