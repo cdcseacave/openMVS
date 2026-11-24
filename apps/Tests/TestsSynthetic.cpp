@@ -1176,7 +1176,7 @@ bool MVS::SyntheticSphericalGPUTest(bool forceCPU)
 	// the CPU bounds of SyntheticSphericalTest; the seam band is held to its antipodal band as there
 	struct Bounds { double completeness, absRel, within1, within5, normalDeg, poleCompleteness[2], poleWithin5; };
 	#ifdef _USE_CUDA
-	const Bounds bounds{0.94, 0.002, 0.90, 0.975, 4.5, {0.8, 0.8}, 0.97};
+	const Bounds bounds{0.94, 0.002, 0.90, 0.975, 3.5, {0.8, 0.8}, 0.97};
 	#else
 	const Bounds bounds{0.93, 0.0025, 0.88, 0.97, 5.5, {0.8, 0.75}, 0.95};
 	#endif
