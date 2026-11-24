@@ -42,6 +42,15 @@ namespace CUDA {
 
 // D E V I C E   H E L P E R S ////////////////////////////////////////
 
+// the lanes of a whole warp, the mask of the *_sync warp intrinsics: 32 bits on CUDA, a 64-bit
+// mask on HIP (ROCm rejects a narrower one); the kernels run on 32-lane warps only, also on AMD
+// devices (MeshRefineCUDA::InitKernels)
+#ifdef _USE_HIP
+constexpr unsigned long long FULL_WARP_MASK = 0xffffffffull;
+#else
+constexpr unsigned FULL_WARP_MASK = 0xffffffffu;
+#endif
+
 // read a pixel of a 32F surface (the images are float like the CPU's Image32F: half floats lose
 // too much in low-variance ZNCC windows and at grazing pixels)
 __device__ inline float readSurfFloat(cudaSurfaceObject_t surf, int x, int y) {
@@ -201,7 +210,7 @@ __global__ void kernelProjectMesh(
 	if (RESOLVE && ownerBits) {
 		// one word per warp of 32 consecutive faces, stored by lane 0: the buffer holds
 		// (numFaces+31)/32 words per view, so the warps past the last face store nothing
-		const unsigned ballot = __ballot_sync(0xffffffffu, owner);
+		const unsigned ballot = (unsigned)__ballot_sync(FULL_WARP_MASK, owner);
 		if ((tid & 31) == 0 && tid < (int)numFaces)
 			ownerBits[tid >> 5] = ballot;
 	}
@@ -275,7 +284,7 @@ __device__ inline uint32_t blockScanExclusive(uint32_t v, uint32_t& total, uint3
 	uint32_t incl = v;
 	#pragma unroll
 	for (int d = 1; d < 32; d <<= 1) {
-		const uint32_t t = __shfl_up_sync(0xffffffffu, incl, d);
+		const uint32_t t = __shfl_up_sync(FULL_WARP_MASK, incl, d);
 		if (lane >= d) incl += t;
 	}
 	if (lane == 31) warpSums[warp] = incl;
@@ -284,7 +293,7 @@ __device__ inline uint32_t blockScanExclusive(uint32_t v, uint32_t& total, uint3
 		uint32_t s = lane < numWarps ? warpSums[lane] : 0u;
 		#pragma unroll
 		for (int d = 1; d < 32; d <<= 1) {
-			const uint32_t t = __shfl_up_sync(0xffffffffu, s, d);
+			const uint32_t t = __shfl_up_sync(FULL_WARP_MASK, s, d);
 			if (lane >= d) s += t;
 		}
 		if (lane < numWarps) warpSums[lane] = s;
