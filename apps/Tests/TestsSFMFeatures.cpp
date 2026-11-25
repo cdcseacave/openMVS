@@ -449,6 +449,76 @@ bool RetrievalTest()
 // to an existing candidate list, never duplicating a pair already present, and adds nothing at overlap 0; the SEQUENTIAL
 // mode matches exactly the (i, i+1) and (i, i+2) pairs; and the pre-match threshold keeps a pair with enough shared descriptors
 // and drops the weak ones
+bool SequenceNeighboursTest()
+{
+	TestScope scope("SequenceNeighboursTest");
+	using Breaks = std::vector<bool>;
+	const auto BreaksOf = [](std::initializer_list<const char*> names, unsigned maxGap) {
+		std::vector<String> fileNames;
+		for (const char* name : names)
+			fileNames.emplace_back(name);
+		return ComputeNameBreaks(fileNames, maxGap);
+	};
+
+	// 1. a 4x gap is no break, a 40x gap, a falling number and a prefix change are
+	const std::initializer_list<const char*> sequence = {"c1_0002.jpg", "c1_0004.jpg", "c1_0006.jpg", "c1_0014.jpg",
+		"c1_0094.jpg", "c1_0096.jpg", "c1_0090.jpg", "c2_0092.jpg", "c2_0094.jpg"};
+	TEST_CHECK(BreaksOf(sequence, 10) == (Breaks{0,0,0,1,0,1,1,0}), "the breaks of the interrupted sequence are wrong");
+
+	// a gap is measured in the usual step of the numbering: frames numbered by hundreds have no break, a frame
+	// 20 steps on does
+	TEST_CHECK(BreaksOf({"f_0100.jpg", "f_0200.jpg", "f_0300.jpg", "f_2300.jpg"}, 10) == (Breaks{0,0,1}),
+		"the gap is not read against the median rise");
+
+	// 2. names without a break, or without a number
+	TEST_CHECK(BreaksOf({"000002.png", "000004.png", "000008.png"}, 10) == (Breaks{0,0}), "pure numeric stems: a break");
+	TEST_CHECK(BreaksOf({"left.jpg", "right.jpg"}, 10) == (Breaks{0}), "stems without a number: a break");
+	TEST_CHECK(BreaksOf({"c_0001.jpg", "photo_12345678901234567890.jpg", "c_0002.jpg"}, 10) == (Breaks{0,0}),
+		"a 20-digit stem makes a break with a neighbour");
+	TEST_CHECK(BreaksOf({"only.jpg"}, 10).empty(), "one name: breaks");
+	TEST_CHECK(BreaksOf({}, 10).empty(), "no name: breaks");
+
+	// 3. the directory is part of the name
+	TEST_CHECK(BreaksOf({"a/0001.jpg", "a/0002.jpg", "b/0003.jpg"}, 10) == (Breaks{0,1}), "no break at the change of directory");
+
+	// 4. the neighbours: at most 3 apart, none across a break
+	{
+		const SequenceNeighbours neighbours({0,0,0,1,0,0}, 3);
+		TEST_CHECK(neighbours.Overlap() == 3 && neighbours.Breaks().size() == 6, "the overlap or the breaks are not kept");
+		TEST_CHECK(neighbours.AreNeighbours(0, 3) && neighbours.AreNeighbours(1, 3) && neighbours.AreNeighbours(4, 6),
+			"neighbours not found");
+		TEST_CHECK(!neighbours.AreNeighbours(0, 4), "positions 4 apart are neighbours");
+		TEST_CHECK(!neighbours.AreNeighbours(3, 4) && !neighbours.AreNeighbours(2, 5), "neighbours across a break");
+		TEST_CHECK(!neighbours.AreNeighbours(2, 2), "an image is its own neighbour");
+		for (IIndex a = 0; a < 8; ++a)
+			for (IIndex b = 0; b < 8; ++b)
+				TEST_CHECK(neighbours.AreNeighbours(a, b) == neighbours.AreNeighbours(b, a),
+					"AreNeighbours(%u, %u) is not symmetric", a, b);
+		const SequenceNeighbours none({0,0,0}, 0);
+		for (IIndex a = 0; a < 4; ++a)
+			for (IIndex b = 0; b < 4; ++b)
+				TEST_CHECK(!none.AreNeighbours(a, b), "overlap 0: (%u, %u) are neighbours", a, b);
+	}
+
+	// 5. built from a scene: the breaks of its file names
+	{
+		Scene scene;
+		const char* names[] = {"c1_0002.jpg", "c1_0004.jpg", "c1_0094.jpg", "c1_0096.jpg", "c2_0001.jpg"};
+		std::vector<String> fileNames;
+		for (IIndex i = 0; i < 5; ++i) {
+			scene.images.emplace_back(i, names[i]);
+			fileNames.emplace_back(names[i]);
+		}
+		const SequenceNeighbours neighbours(scene, 2, 10);
+		TEST_CHECK(neighbours.Breaks() == ComputeNameBreaks(fileNames, 10), "the scene's breaks differ from those of its file names");
+		TEST_CHECK(neighbours.Breaks() == (Breaks{0,1,0,1}), "the scene's breaks are wrong");
+		TEST_CHECK(neighbours.AreNeighbours(0, 1) && !neighbours.AreNeighbours(1, 2) && !neighbours.AreNeighbours(3, 4),
+			"the scene's neighbours are wrong");
+	}
+
+	return scope.Pass("name breaks and neighbours: gap, number, prefix and directory rules");
+}
+
 bool PairSelectionTest()
 {
 	TestScope scope("PairSelectionTest");

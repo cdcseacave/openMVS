@@ -91,6 +91,19 @@ neighbours in import order (`k = 1..overlap`, no wrap-around), skipping pairs al
 added before the snapshot the feedback round attempts against, so the feedback round never re-proposes them. It does not
 apply to the other modes.
 
+### Sequence neighbours
+
+`--image-sequence` declares that the images, in import order, are frames of a sequence that may be interrupted
+(several takes, a capture stopped and resumed). Two images are neighbours (`SequenceNeighbours::AreNeighbours`) when
+they are at most `--match-sequence-overlap` positions apart and no name break lies between them. A name is the
+directory and the stem of the file name (the extension is ignored); its number is the trailing decimal digits of the
+stem (none, or more than 18 digits: no number) and its prefix is the rest. `ComputeNameBreaks` puts a break between two
+adjacent names that both have a number when the prefixes differ (another directory included), or the number does not
+rise, or it rises by more than `--sequence-max-gap` times the median rise over the adjacent same-prefix rising pairs
+of the input (with no such pair there is no gap rule). A name without a number makes no break with either neighbour.
+The definition is shared by everything that reads the capture as a sequence; this stage adds only the definition and
+the options.
+
 ## Budget and verification feedback
 
 `--vocab-max-pairs` (`maxPairsPerImage`, default 50) is the target number of pairs per image for VOCABULARY, RETRIEVAL
@@ -138,6 +151,9 @@ image, matches descriptors, and verifies:
 |---|---|---|
 | `--match-mode` | 1 (3 when poses were imported and the option is not given) | the mode |
 | `--match-sequence-overlap` | 3 | images ahead matched by SEQUENTIAL; sequential prior of VOCABULARY and RETRIEVAL; 0 = no prior |
+| `--image-sequence` | off | the images in import order are frames of a possibly interrupted sequence (see Sequence neighbours) |
+| `--sequence-max-gap` | 10 | with `--image-sequence`: a frame number rising by more than this many median rises is a break; refused without `--image-sequence` |
+| `--sequence-min-covisibility` | 0.75 | with `--image-sequence`: a neighbour pair carrying a covisibility below this is no chain link; in [0,1], refused without `--image-sequence` |
 | `--vocab-max-pairs` | 50 | target pairs per image (VOCABULARY, RETRIEVAL, KNOWN_POSES) |
 | `--match-verification-feedback` | true | two-round matching, active when `--vocab-max-pairs >= 10` |
 | `maxDescriptorsPerImage` | 1000 SIFT/SIFTGPU, 2000 AKAZE/ORB | descriptors per image the vocabulary tree uses |

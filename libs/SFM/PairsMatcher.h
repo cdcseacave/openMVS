@@ -70,6 +70,9 @@ struct SFM_API MatchConfig
 	unsigned maxPairsPerImage = 50;     // Target pairs per image (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	bool verificationFeedback = true;   // Two-round matching: hold back part of the pair budget and re-invest it in pairs suggested by the geometrically verified matches (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	unsigned matchSequenceOverlap = 3;  // Consecutive images each image is matched with: the whole candidate set of SEQUENTIAL mode, and a prior added to the VOCABULARY/RETRIEVAL candidates (0 = no prior)
+	bool imageSequence = false;            // --image-sequence: the images, in scene order, are frames of a (possibly interrupted) sequence; the neighbours are at most matchSequenceOverlap positions apart with no name break between (SequenceNeighbours)
+	unsigned sequenceMaxGap = 10;          // --sequence-max-gap: a frame number rising by more than this many median increases is a break
+	float sequenceMinCovisibility = 0.75f; // --sequence-min-covisibility: a neighbour pair carrying a covisibility below this is no chain link
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
 	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled; above 0 the geometric verification refuses, see GeometricFilter)
 	float matchDistance;                // Absolute distance test threshold (set by DefaultsForFeatureType: 100 - AKAZE 486bit, 64 - ORB 256bit, FLT_MAX - SIFT)

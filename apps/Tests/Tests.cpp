@@ -310,6 +310,7 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(BuildTracksConflictTest),
 				SFM_TEST(RetrievalTest),
 				SFM_TEST(PairSelectionTest),
+				SFM_TEST(SequenceNeighboursTest),
 				SFM_TEST(MatchOutcomeSignalsTest),
 				SFM_TEST(SphericalBottomBandTest),
 				SFM_TEST(DetectorConfigTest),

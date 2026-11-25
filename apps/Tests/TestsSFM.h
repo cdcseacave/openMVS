@@ -94,6 +94,10 @@ bool RetrievalTest();
 // (PairsMatcher::AddSequentialPairs), the SEQUENTIAL match mode, and the pre-match threshold
 bool PairSelectionTest();
 
+// The name breaks of an image sequence (directory, name prefix, falling or jumping frame numbers, names without a
+// number) and the neighbours they leave (SequenceNeighbours)
+bool SequenceNeighboursTest();
+
 // Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty, and
 // PairsMatcher::Match()'s fatal-round signal is not "this round stored nothing"
 bool MatchOutcomeSignalsTest();
