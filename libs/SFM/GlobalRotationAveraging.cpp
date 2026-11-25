@@ -627,7 +627,8 @@ namespace {
 // the centres per component by GlobalTranslationEstimator reweighted towards the sum of norms (convex,
 // so no start decides); both are SolveScaleComponents, which the chain of a sequence shares. A pair of
 // a component is judged by its own solve, any other pair with a pose and a measurable baseline by the
-// largest solve that places both its images. Marks the removed pairs in `removed`; returns their number. Appends every solve to `solves`, the largest first.
+// largest solve that places both its images. Marks the removed pairs in `removed`; returns their number.
+// Appends every solve to `solves`, the largest first.
 constexpr unsigned minScaleComponent = 10;  // pairs a component of the pair-scale graph needs to be solved
 constexpr unsigned numL1Rounds = 40;        // reweighting rounds of the centres
 constexpr REAL l1Floor = REAL(1e-3);        // the L1 weight's error floor, in median pair lengths
@@ -1131,6 +1132,8 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 			(pair.covisibility.has_value() && *pair.covisibility < minCovisibility))
 			continue;
 		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
+		if (norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
+			continue; // no baseline direction, as in the translation stage
 		links.push_back((IIndex)idxPair);
 	}
 	if (links.empty()) {
@@ -1156,9 +1159,15 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 			if (!owns)
 				return; // every image it places belongs to a larger segment: no segment of its own
 			++numOwning;
-			for (const uint32_t idxPair : solve.pairs)
+			// a link keeps its scale only when this component owns both its images: its scale is then in the frame
+			// of its images' segment; a link touching a larger segment's image is in no single segment's frame
+			for (const uint32_t idxPair : solve.pairs) {
+				const ImagePair& pair = scene.pairs[idxPair];
+				if (componentOf[pair.ID1] != idxComponent || componentOf[pair.ID2] != idxComponent)
+					continue;
 				chain.linkScale[idxPair] = solve.scales[idxPair];
-			chain.numLinks += (unsigned)solve.pairs.size();
+				++chain.numLinks;
+			}
 		}, numComponents, numEquations);
 
 	// the segments numbered in the order of their first image, so they follow the sequence
@@ -1195,7 +1204,7 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 		std::nth_element(steps.begin(), steps.begin() + steps.size() / 2, steps.end());
 		chain.localStep[segment] = steps[steps.size() / 2];
 	}
-	VERBOSE("Sequence chain: %u segments placing %u images by %u of %u links (%u scale components, %u equations) (%s)",
+	VERBOSE("Sequence chain: %u segment(s) placing %u images by %u of %u links (%u scale components, %u equations) (%s)",
 		chain.numSegments, (unsigned)std::count_if(chain.segmentOf.begin(), chain.segmentOf.end(), [](uint32_t s) { return s != NO_ID; }),
 		chain.numLinks, (unsigned)links.size(), numComponents, numEquations, TD_TIMER_GET_FMT().c_str());
 	return chain;

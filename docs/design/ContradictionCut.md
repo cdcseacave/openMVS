@@ -98,19 +98,23 @@ With `--image-sequence` (`PairSelection.md`) the images are frames of a possibly
 sequence, and the neighbour pairs alone (at most the sequence overlap apart, no name break between,
 `SequenceNeighbours`) place the camera centres along it: `SolveSequenceChain` runs the scale and
 centres solve of steps 3 and 4 on the chain links, weighted by composite weight alone. A link is a
-scene pair with a relative pose whose images are neighbours, both rotated, not removed, with a mean
-ray angle of at least `kNearDuplicateRayAngle` (a frame standing still has no baseline direction),
+scene pair with a relative pose whose images are neighbours, both rotated, not removed, with a world
+baseline of some length (as the stage's judged pairs), a mean ray angle of at least `kNearDuplicateRayAngle` (a frame standing still has no baseline direction),
 and whose covisibility, when its matcher gave one, is at least `--sequence-min-covisibility` (0.75;
 0 disables the test): a neighbour pair that does not show the same place is no link, so it splits
 the chain as a name break does.
 
 Each solved component of the links' pair-scale graph (at least 10 links) is a segment; a smaller
-one places nothing. An image two components place belongs to the larger, and the segments are
-numbered in the order of their first image. The chain gives per image its segment and its centre in
+one places nothing. An image two components place belongs to the larger, a component whose every
+image a larger one holds is no segment, and the segments are numbered in the order of their first
+image. The chain gives per image its segment and its centre in
 the segment's frame (the orientation of the rotations, a scale of its own) and the path length
 along the segment through its placed images in order, per segment the median step between adjacent
-placed images, and per pair the solved scale of a link (0 for every other pair): a link's offset in
-its segment's frame is its world baseline times that scale. Nothing reads the chain yet.
+placed images, and per pair the solved scale of a link: a link's offset in its segment's frame is its
+world baseline times that scale. A link keeps its scale only when the component that solved it owns
+both its images, so a positive scale means both images lie in one segment and the scale is in that
+segment's frame; a neighbour pair joining two segments, or solved by a component other than its
+images' segment, has 0, as every pair that is no link. Nothing reads the chain yet.
 
 On a walk of 40 cameras 1 unit apart with exact relative poses (`SequenceChainTest`) the chain is
 one segment whose centres, after a scale and translation fit, are within 1e-7 of the truth; a name

@@ -220,18 +220,20 @@ struct SFM_API SequenceChain {
 	std::vector<REAL> localStep;     // per segment: the median distance between adjacent placed images (0 for a segment of one image)
 	// per scene pair: a chain link's solved scale, the multiplier of its relative pose's baseline as the translation
 	// stage uses a pair's scale, so the link's offset in the segment's frame is its world baseline
-	// (RMatrix(rotations[ID1]).t() * relativePose->C, at the pose's own length) times this scale; 0 for every pair
-	// that is not a link of a solved segment
+	// (RMatrix(rotations[ID1]).t() * relativePose->C, at the pose's own length) times this scale; 0 for every other
+	// pair. A positive scale means both images of the pair lie in one segment and the scale is in that segment's
+	// frame: a neighbour pair joining two segments, or solved by a component other than its images' segment, has 0
 	std::vector<REAL> linkScale;
 	unsigned numSegments{0}, numLinks{0};
 };
 // The chain of a sequence: the scale + centres solve of the translation stage on the chain links alone. A link is a
 // scene pair with a relative pose whose images are neighbours, both rotated (rotations != Point3::INF), not `removed`,
-// with meanRayAngle >= kNearDuplicateRayAngle, and whose covisibility, when it carries one, is >= minCovisibility
-// (0 disables that test). Weights: the composite weight. One segment per solved component of the links' pair-scale
-// graph (components under minScaleComponent links: unplaced); an image two components place belongs to the larger
-// one (a component whose every image a larger one holds is no segment). The segments are numbered in the order of
-// their first image, so they follow the sequence.
+// with a world baseline of some length, meanRayAngle >= kNearDuplicateRayAngle, and whose covisibility, when it
+// carries one, is >= minCovisibility (0 disables that test). Weights: the composite weight. One segment per solved
+// component of the links' pair-scale graph (components under minScaleComponent links: unplaced); an image two
+// components place belongs to the larger one (a component whose every image a larger one holds is no segment);
+// numLinks counts the links of positive scale. The segments are numbered in the order of their first image, so they
+// follow the sequence.
 SFM_API SequenceChain SolveSequenceChain(const Scene& scene, const std::vector<Point3>& rotations,
 	const SequenceNeighbours& neighbours, float minCovisibility, const std::vector<bool>* removed = nullptr);
 

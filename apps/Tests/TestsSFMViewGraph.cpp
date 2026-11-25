@@ -1008,8 +1008,9 @@ bool ContradictionCutTest()
 // across it a link; (3) the covisibility bar: the pairs across 19|20 carrying 0.3 make two segments at the bar 0.75 and
 // one at the bar 0, carrying 0.9 or nothing one; (4) a frame that stands still (image 20 at image 19's centre, their
 // pair under the near-duplicate ray angle with a meaningless baseline) is no link, and the pairs 2 and 3 apart keep the
-// one segment; (5) every pair under the near-duplicate ray angle places nothing; (6) a removed pair, an unrotated image,
-// overlap 0 and an empty scene.
+// one segment; (5) every pair under the near-duplicate ray angle places nothing; (6) a removed pair, a zero baseline, an
+// unrotated image, overlap 0 and an empty scene; (7) two components sharing an image: it belongs to the larger, and
+// the links of the smaller that touch it keep no scale.
 bool SequenceChainTest()
 {
 	TestScope scope("SequenceChainTest");
@@ -1109,7 +1110,7 @@ bool SequenceChainTest()
 		buildWalk(scene, trueCentres);
 		const std::vector<Point3> rotations = rotationsOf(scene);
 		const SequenceChain chain = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f);
-		TEST_CHECK(chain.numSegments == 1 && numPlaced(chain) == numImages, "the walk: %u segments placing %u images, expected one of %u", chain.numSegments, numPlaced(chain), numImages);
+		TEST_CHECK(chain.numSegments == 1 && numPlaced(chain) == numImages, "the walk: %u segment(s) placing %u images, expected one of %u", chain.numSegments, numPlaced(chain), numImages);
 		TEST_CHECK(chain.segmentOf.size() == numImages && chain.centres.size() == numImages && chain.pathLength.size() == numImages &&
 			chain.localStep.size() == 1 && chain.linkScale.size() == scene.pairs.size(), "the walk: the vectors are not sized by image, segment and pair");
 		REAL scale;
@@ -1155,39 +1156,51 @@ bool SequenceChainTest()
 			return chain.localStep.size() == 2 && chain.pathLength[20] == 0;
 		};
 		const SequenceChain broken = SolveSequenceChain(scene, rotations, breakAt(19), 0.75f);
-		TEST_CHECK(twoSegments(broken), "the break at 19|20: %u segments placing %u images, expected 0-19 and 20-39 with no link across", broken.numSegments, numPlaced(broken));
+		TEST_CHECK(twoSegments(broken), "the break at 19|20: %u segment(s) placing %u images, expected 0-19 and 20-39 with no link across", broken.numSegments, numPlaced(broken));
 		TEST_CHECK(broken.numLinks == 2 * (19 + 18 + 17), "the break at 19|20: %u links", broken.numLinks);
 		for (ImagePair& pair : scene.pairs)
 			if (acrossMiddle(pair))
 				pair.covisibility = 0.3f;
 		const SequenceChain low = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f);
-		TEST_CHECK(twoSegments(low), "covisibility 0.3 across 19|20 at the bar 0.75: %u segments placing %u images, expected 0-19 and 20-39", low.numSegments, numPlaced(low));
+		TEST_CHECK(twoSegments(low), "covisibility 0.3 across 19|20 at the bar 0.75: %u segment(s) placing %u images, expected 0-19 and 20-39", low.numSegments, numPlaced(low));
 		const SequenceChain unbarred = SolveSequenceChain(scene, rotations, noBreaks(), 0.f);
-		TEST_CHECK(unbarred.numSegments == 1 && numPlaced(unbarred) == numImages, "covisibility 0.3 across 19|20 at the bar 0: %u segments", unbarred.numSegments);
+		TEST_CHECK(unbarred.numSegments == 1 && numPlaced(unbarred) == numImages, "covisibility 0.3 across 19|20 at the bar 0: %u segment(s)", unbarred.numSegments);
 		for (ImagePair& pair : scene.pairs)
 			if (acrossMiddle(pair))
 				pair.covisibility = 0.9f;
 		const SequenceChain high = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f);
-		TEST_CHECK(high.numSegments == 1 && numPlaced(high) == numImages, "covisibility 0.9 across 19|20 at the bar 0.75: %u segments", high.numSegments);
+		TEST_CHECK(high.numSegments == 1 && numPlaced(high) == numImages, "covisibility 0.9 across 19|20 at the bar 0.75: %u segment(s)", high.numSegments);
 		for (ImagePair& pair : scene.pairs)
 			pair.covisibility.reset();
 		const SequenceChain none = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f);
-		TEST_CHECK(none.numSegments == 1 && numPlaced(none) == numImages, "no covisibility at the bar 0.75: %u segments", none.numSegments);
+		TEST_CHECK(none.numSegments == 1 && numPlaced(none) == numImages, "no covisibility at the bar 0.75: %u segment(s)", none.numSegments);
+		// a neighbour pair whose baseline has no length is no link
+		FOREACH(idxPair, scene.pairs) {
+			ImagePair& pair = scene.pairs[idxPair];
+			if (pair.ID1 != 10 || pair.ID2 != 11)
+				continue;
+			const CMatrix C = pair.relativePose->C;
+			pair.relativePose->C = CMatrix::ZERO;
+			const SequenceChain flat = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f);
+			pair.relativePose->C = C;
+			TEST_CHECK(flat.numSegments == 1 && numPlaced(flat) == numImages && flat.linkScale[idxPair] == 0 && flat.numLinks == 114 - 1,
+				"a zero baseline on (10,11): %u segment(s) placing %u images with %u links, its scale %g", flat.numSegments, numPlaced(flat), flat.numLinks, flat.linkScale[idxPair]);
+		}
 		std::vector<bool> removed(scene.pairs.size(), false);
 		FOREACH(idxPair, scene.pairs)
 			removed[idxPair] = acrossMiddle(scene.pairs[idxPair]);
 		const SequenceChain cut = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f, &removed);
-		TEST_CHECK(twoSegments(cut), "the pairs across 19|20 removed: %u segments placing %u images, expected 0-19 and 20-39", cut.numSegments, numPlaced(cut));
+		TEST_CHECK(twoSegments(cut), "the pairs across 19|20 removed: %u segment(s) placing %u images, expected 0-19 and 20-39", cut.numSegments, numPlaced(cut));
 		// an unrotated image: its pairs are no links, it is not placed, the rest is one segment
 		std::vector<Point3> unrotated(rotations);
 		unrotated[numImages - 1] = Point3::INF;
 		const SequenceChain partial = SolveSequenceChain(scene, unrotated, noBreaks(), 0.75f);
 		TEST_CHECK(partial.numSegments == 1 && numPlaced(partial) == numImages - 1 && partial.segmentOf[numImages - 1] == NO_ID &&
-			partial.numLinks == 114 - 3, "an unrotated last image: %u segments placing %u images with %u links", partial.numSegments, numPlaced(partial), partial.numLinks);
+			partial.numLinks == 114 - 3, "an unrotated last image: %u segment(s) placing %u images with %u links", partial.numSegments, numPlaced(partial), partial.numLinks);
 		// overlap 0: no neighbours, no link
 		const SequenceChain alone = SolveSequenceChain(scene, rotations, SequenceNeighbours(std::vector<bool>(numImages - 1, false), 0), 0.75f);
 		TEST_CHECK(alone.numSegments == 0 && numPlaced(alone) == 0 && alone.numLinks == 0 && alone.segmentOf.size() == numImages &&
-			alone.linkScale.size() == scene.pairs.size(), "overlap 0: %u segments", alone.numSegments);
+			alone.linkScale.size() == scene.pairs.size(), "overlap 0: %u segment(s)", alone.numSegments);
 	}
 
 	// (4) a frame that stands still
@@ -1198,7 +1211,7 @@ bool SequenceChainTest()
 		const IIndex standStill = 20;
 		buildWalk(scene, trueCentres, standStill);
 		const SequenceChain chain = SolveSequenceChain(scene, rotationsOf(scene), noBreaks(), 0.75f);
-		TEST_CHECK(chain.numSegments == 1 && numPlaced(chain) == numImages && chain.numLinks == 114 - 1, "the frame standing still: %u segments placing %u images with %u links, expected one of %u with 113",
+		TEST_CHECK(chain.numSegments == 1 && numPlaced(chain) == numImages && chain.numLinks == 114 - 1, "the frame standing still: %u segment(s) placing %u images with %u links, expected one of %u with 113",
 			chain.numSegments, numPlaced(chain), chain.numLinks, numImages);
 		FOREACH(idxPair, scene.pairs) {
 			const ImagePair& pair = scene.pairs[idxPair];
@@ -1219,17 +1232,56 @@ bool SequenceChainTest()
 			pair.meanRayAngle = D2R(kNearDuplicateRayAngle * 0.75f);
 		const SequenceChain chain = SolveSequenceChain(scene, rotationsOf(scene), noBreaks(), 0.75f);
 		TEST_CHECK(chain.numSegments == 0 && numPlaced(chain) == 0 && chain.numLinks == 0 && chain.localStep.empty() &&
-			std::all_of(chain.linkScale.begin(), chain.linkScale.end(), [](REAL s) { return s == 0; }), "every pair under the near-duplicate angle: %u segments placing %u images", chain.numSegments, numPlaced(chain));
+			std::all_of(chain.linkScale.begin(), chain.linkScale.end(), [](REAL s) { return s == 0; }), "every pair under the near-duplicate angle: %u segment(s) placing %u images", chain.numSegments, numPlaced(chain));
+	}
+
+	// (7) two components sharing an image: the pairs across image 15 carry a low covisibility, and at image 15 the pairs
+	// ending at it keep only the matches on the left half of its image, the pairs starting at it the right half, so no
+	// scale equation joins the two sides; the larger component (images 15-39) owns image 15, and the links of the smaller
+	// one ending at 15 keep no scale (it is in the frame of neither segment)
+	{
+		Scene scene;
+		std::vector<Point3> trueCentres;
+		buildWalk(scene, trueCentres);
+		const IIndex shared = 15;
+		const Image& sharedImage = scene.images[shared];
+		for (ImagePair& pair : scene.pairs) {
+			if (pair.ID1 < shared && pair.ID2 > shared)
+				pair.covisibility = 0.3f;
+			if (pair.ID1 != shared && pair.ID2 != shared)
+				continue;
+			const bool left = pair.ID2 == shared;
+			pair.matches.erase(std::remove_if(pair.matches.begin(), pair.matches.end(), [&](const DMatch& match) {
+				return (sharedImage.keypoints[left ? match.trainIdx : match.queryIdx].pt.x < 320.f) != left;
+			}), pair.matches.end());
+		}
+		const SequenceChain chain = SolveSequenceChain(scene, rotationsOf(scene), noBreaks(), 0.75f);
+		bool segmentsRight = chain.numSegments == 2 && numPlaced(chain) == numImages;
+		for (IIndex i = 0; segmentsRight && i < numImages; ++i)
+			segmentsRight = chain.segmentOf[i] == (i < shared ? 0u : 1u);
+		TEST_CHECK(segmentsRight, "two components sharing image %u: %u segment(s) placing %u images, expected 0-%u and %u-39", shared, chain.numSegments, numPlaced(chain), shared - 1, shared);
+		unsigned numPositive = 0;
+		FOREACH(idxPair, scene.pairs) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			if (chain.linkScale[idxPair] > 0) {
+				++numPositive;
+				TEST_CHECK(chain.segmentOf[pair.ID1] == chain.segmentOf[pair.ID2], "two components sharing an image: the link (%u,%u) of scale %g joins the segments %u and %u",
+					pair.ID1, pair.ID2, chain.linkScale[idxPair], chain.segmentOf[pair.ID1], chain.segmentOf[pair.ID2]);
+			}
+			if (pair.ID2 == shared && pair.ID1 < shared)
+				TEST_CHECK(chain.linkScale[idxPair] == 0, "two components sharing an image: the link (%u,%u) of the smaller component keeps the scale %g", pair.ID1, pair.ID2, chain.linkScale[idxPair]);
+		}
+		TEST_CHECK(chain.numLinks == numPositive && numPositive == (14 + 13 + 12) + (24 + 23 + 22), "two components sharing an image: %u links, %u of positive scale, expected 108", chain.numLinks, numPositive);
 	}
 
 	// (6) an empty scene
 	{
 		Scene scene;
 		const SequenceChain chain = SolveSequenceChain(scene, {}, SequenceNeighbours(std::vector<bool>(), overlap), 0.75f);
-		TEST_CHECK(chain.numSegments == 0 && chain.segmentOf.empty() && chain.linkScale.empty(), "the empty scene: %u segments", chain.numSegments);
+		TEST_CHECK(chain.numSegments == 0 && chain.segmentOf.empty() && chain.linkScale.empty(), "the empty scene: %u segment(s)", chain.numSegments);
 	}
 	return scope.Pass("the walk of %u images: one segment, drift %.4g after the fit (%.3g%% of the walk), fitted step %.4g, step error %.3g%%, "
-		"link length error %.3g%%; standing still: drift %.4g; the break, the covisibility bar, the near-duplicates, the edge cases",
+		"link length error %.3g%%; standing still: drift %.4g; the break, the covisibility bar, the near-duplicates, the edge cases, the shared image",
 		numImages, drift, REAL(100) * drift / walkLength, fittedStep, REAL(100) * maxStepError, REAL(100) * maxLinkError, stillDrift);
 }
 
