@@ -145,6 +145,7 @@ static bool _initDevice(int devID, Device& device)
 	device.ID = devID;
 	device.major = props.major;
 	device.minor = props.minor;
+	device.warpSize = props.warpSize;
 	return true;
 }
 

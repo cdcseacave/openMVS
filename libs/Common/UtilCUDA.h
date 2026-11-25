@@ -43,8 +43,9 @@ namespace CUDA {
 struct Device {
 	int ID;
 	int major, minor;
+	int warpSize; // threads per warp (AMD: 32 or 64 per wavefront)
 
-	inline Device() : ID(-1), major(0), minor(0) {}
+	inline Device() : ID(-1), major(0), minor(0), warpSize(0) {}
 };
 typedef CLISTDEF0(Device) Devices;
 extern GENERAL_API Devices devices;

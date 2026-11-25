@@ -298,7 +298,7 @@ private:
 		#else
 		args.push_back("-v"); args.push_back("0");
 		#endif
-		#ifdef _USE_CUDA
+		#ifdef SIFTGPU_CUDA
 		if (extractor.GetConfig().useCUDA && gpuIndices[0] < 0)
 			gpuIndices[0] = 0;
 		#endif
@@ -339,7 +339,7 @@ private:
 		const int maxNumFeaturesPerImageGPU = gpu.GetMaxNumFeatures();
 		if (maxNumFeaturesPerImageGPU < maxNumFeaturesPerImage) {
 			constexpr LPCTSTR warningMessage = "warning: SiftGPU only supports a maximum of %d features per image"
-				#ifdef _USE_CUDA
+				#ifdef SIFTGPU_CUDA
 				", consider using CUDA to avoid this limitation"
 				#endif
 				"; the max number of features will be capped from %d to %d";

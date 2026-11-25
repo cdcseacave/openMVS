@@ -295,9 +295,8 @@ bool MeshRefineCUDA::InitKernels()
 	#ifdef _USE_HIP
 	// the kernels store a warp's ballot in one 32-bit word (kernelProjectMesh) and scan in 32-lane
 	// warps (blockScanExclusive): AMD devices running 64-lane wavefronts cannot run them
-	int warpSize(0);
-	if (cudaDeviceGetAttribute(&warpSize, cudaDevAttrWarpSize, SEACAVE::CUDA::devices[0].ID) != cudaSuccess || warpSize != 32) {
-		VERBOSE("HIP device %d: mesh refinement needs 32-lane wavefronts (wave32), the device runs %d", SEACAVE::CUDA::devices[0].ID, warpSize);
+	if (SEACAVE::CUDA::devices[0].warpSize != 32) {
+		VERBOSE("HIP device %d: mesh refinement needs 32-lane wavefronts (wave32), the device runs %d", SEACAVE::CUDA::devices[0].ID, SEACAVE::CUDA::devices[0].warpSize);
 		return false;
 	}
 	#endif

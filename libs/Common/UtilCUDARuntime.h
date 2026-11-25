@@ -67,7 +67,6 @@ constexpr hipComputeMode cudaComputeModeProhibited = hipComputeModeProhibited;
 constexpr hipDeviceAttribute_t cudaDevAttrComputeMode = hipDeviceAttributeComputeMode;
 constexpr hipDeviceAttribute_t cudaDevAttrClockRate = hipDeviceAttributeClockRate;
 constexpr hipDeviceAttribute_t cudaDevAttrMultiProcessorCount = hipDeviceAttributeMultiprocessorCount;
-constexpr hipDeviceAttribute_t cudaDevAttrWarpSize = hipDeviceAttributeWarpSize;
 constexpr hipMemcpyKind cudaMemcpyHostToDevice = hipMemcpyHostToDevice;
 constexpr hipMemcpyKind cudaMemcpyDeviceToHost = hipMemcpyDeviceToHost;
 constexpr hipStreamCaptureMode cudaStreamCaptureModeThreadLocal = hipStreamCaptureModeThreadLocal;
@@ -150,7 +149,7 @@ constexpr unsigned CUDA_ARRAY3D_SURFACE_LDST = hipArraySurfaceLoadStore;
 inline hipError_t cuGetErrorName(hipError_t error, const char** name) { return hipDrvGetErrorName(error, name); }
 inline hipError_t cuGetErrorString(hipError_t error, const char** str) { return hipDrvGetErrorString(error, str); }
 inline hipError_t cuCtxSynchronize() { return hipDeviceSynchronize(); }
-inline hipError_t cuMemAlloc(CUdeviceptr* ptr, size_t size) { void* p; const hipError_t ret(hipMalloc(&p, size)); *ptr = (CUdeviceptr)p; return ret; }
+inline hipError_t cuMemAlloc(CUdeviceptr* ptr, size_t size) { void* p(NULL); const hipError_t ret(hipMalloc(&p, size)); if (ret == hipSuccess) *ptr = (CUdeviceptr)p; return ret; }
 inline hipError_t cuMemFree(CUdeviceptr ptr) { return hipFree((void*)ptr); }
 inline hipError_t cuMemAllocHost(void** ptr, size_t size) { return hipHostMalloc(ptr, size, hipHostMallocDefault); }
 inline hipError_t cuMemFreeHost(void* ptr) { return hipHostFree(ptr); }

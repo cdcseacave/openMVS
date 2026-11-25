@@ -1638,7 +1638,7 @@ bool PairsMatcher::MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progr
 	unsigned newPairs = 0, updatedPairs = 0;
 	size_t numMatches = 0,  numInliers = 0, numFilteredInliers = 0;
 
-	#if defined(_USE_SIFTGPU) && defined(_USE_CUDA)
+	#if defined(_USE_SIFTGPU) && defined(SIFTGPU_CUDA)
 	// SiftGPU branch (only if using CUDA, even if SiftGPU can use GLSL for matching, is slower than modern CPU)
 	if (scene.status.nFeaturesType == FeatureType::SIFTGPU) {
 		SiftGPUMatchCoordinator coordinator(*this);

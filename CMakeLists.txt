@@ -303,6 +303,16 @@ if(OpenMVS_USE_HIP)
 	# CMake picks the GPUs of the build machine (rocm_agent_enumerator), else the compiler default;
 	# the ROCm packages are found through CMAKE_PREFIX_PATH, ex. -DCMAKE_PREFIX_PATH=/opt/rocm
 	ENABLE_LANGUAGE(HIP)
+	# initDevices() runs the HIP code only on the processors listed here, so each entry must be a
+	# gfx target ID (CMake knows no "native"/"all" for HIP)
+	if(NOT CMAKE_HIP_ARCHITECTURES)
+		MESSAGE(FATAL_ERROR "No HIP architecture: set -DCMAKE_HIP_ARCHITECTURES to the gfx targets, ex. gfx1201 (rocminfo | grep gfx lists the local GPUs)")
+	endif()
+	foreach(HIP_ARCH ${CMAKE_HIP_ARCHITECTURES})
+		if(NOT HIP_ARCH MATCHES "^gfx[0-9][0-9a-f]*(:[a-z]+[+-])*$")
+			MESSAGE(FATAL_ERROR "Unsupported HIP architecture '${HIP_ARCH}' in CMAKE_HIP_ARCHITECTURES='${CMAKE_HIP_ARCHITECTURES}': expected gfx target IDs, ex. gfx1201 or gfx90a:xnack-")
+		endif()
+	endforeach()
 	SET(CMAKE_HIP_STANDARD 17)
 	SET(CMAKE_HIP_STANDARD_REQUIRED ON)
 	find_exported_dependency(hip CONFIG REQUIRED)
