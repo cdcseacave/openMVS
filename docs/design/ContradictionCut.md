@@ -5,8 +5,10 @@ pair whose relative rotation is not the one a robust global averaging of the pai
 baseline direction is not the one the camera centres those pairs place give. It exists because
 repeated structure and look-alike views fabricate pairs that pass two-view verification yet cannot
 be placed consistently with the rest of the graph. A repair step brings back a removed pair whose
-own matches support a corrected relative pose. `FilterPairsByContradiction`,
-`RepairContradictedPairs` (`GlobalRotationAveraging.h/cpp`).
+own matches support a corrected relative pose. With `--image-sequence` the chain of the verified
+neighbour pairs is trusted: a pair that contradicts it is vetoed, and none of its links is removed.
+`FilterPairsByContradiction`, `RepairContradictedPairs`, `VetoPairsByChain`
+(`GlobalRotationAveraging.h/cpp`).
 
 It runs in `Scene::Reconstruct` right after the triplet scores (`TripletScores.md`), on the pairs
 that hold a relative pose, in every mode: with the triplet filter off the pairs are simply unscored
@@ -90,19 +92,23 @@ above 0; 0 skips it (`RemoveTranslationContradictions`).
    offset of those two centres exceeds the bar.
 
 Steps 3 and 4 are one function, `SolveScaleComponents` (`GlobalRotationAveraging.cpp`), which the
-chain of an image sequence (below) runs on its own pairs and weights.
+chain of an image sequence (below) runs on its own pairs and weights. With `--image-sequence` the
+veto runs before step 1 and the verdict of step 5 spares the chain links (below).
 
 ### The chain of an image sequence
 
 With `--image-sequence` (`PairSelection.md`) the images are frames of a possibly interrupted
 sequence, and the neighbour pairs alone (at most the sequence overlap apart, no name break between,
 `SequenceNeighbours`) place the camera centres along it: `SolveSequenceChain` runs the scale and
-centres solve of steps 3 and 4 on the chain links, weighted by composite weight alone. A link is a
+centres solve of steps 3 and 4 on the chain links, weighted by composite weight alone. It runs
+between the two stages, when the translation stage runs (a bar of 0: no chain, the option does
+nothing in the cut). A link is a
 scene pair with a relative pose whose images are neighbours, both rotated, not removed, with a world
 baseline of some length (as the stage's judged pairs), a mean ray angle of at least `kNearDuplicateRayAngle` (a frame standing still has no baseline direction),
 and whose covisibility, when its matcher gave one, is at least `--sequence-min-covisibility` (0.75;
 0 disables the test): a neighbour pair that does not show the same place is no link, so it splits
-the chain as a name break does.
+the chain as a name break does. In the cut a link also joins two images of one rotation component
+(the rotations of two components share no frame), so a segment lies inside one.
 
 Each solved component of the links' pair-scale graph (at least 10 links) is a segment; a smaller
 one places nothing. An image two components place belongs to the larger, a component whose every
@@ -114,11 +120,58 @@ placed images, and per pair the solved scale of a link: a link's offset in its s
 world baseline times that scale. A link keeps its scale only when the component that solved it owns
 both its images, so a positive scale means both images lie in one segment and the scale is in that
 segment's frame; a neighbour pair joining two segments, or solved by a component other than its
-images' segment, has 0, as every pair that is no link. Nothing reads the chain yet.
+images' segment, has 0, as every pair that is no link. A neighbour pair whose pose triangulates none
+of its matches has no pair-scale equation, so no scale: it is no link either.
 
 On a walk of 40 cameras 1 unit apart with exact relative poses (`SequenceChainTest`) the chain is
 one segment whose centres, after a scale and translation fit, are within 1e-7 of the truth; a name
 break or a covisibility of 0.3 across the middle splits it into two segments of 20.
+
+### The veto of the chain
+
+In a repetitive place (a corridor whose bays look alike) a pair of frames a period apart verifies
+with the right rotation and a short baseline along the corridor. Its direction agrees with the
+camera centres, so step 5 does not see it; enough of them out-vote the true pairs in the centres
+solve, which then contradicts true pairs. The chain knows how far apart the two frames are, so the
+pairs that contradict it are removed before the translation stage reads them (`VetoPairsByChain`).
+
+A pair is judged when it is not removed by the rotation stage and is no chain link, has a pose, a
+non-zero world baseline and a mean ray angle of at least `kNearDuplicateRayAngle`, both its images
+lie in one segment, and it shares at least one pair-scale equation (`ComputePairScales`, over the
+links and those pairs) with a link of that segment. A neighbour pair that is no link (a covisibility
+under the bar, for one) is judged like any other pair. Every other pair is left to the two stages.
+
+Each equation with a link carries the link's solved scale to the pair (`s_pair = s_link * ratio`
+for `ScalePair(link, pair, ratio)`, `s_link / ratio` for `ScalePair(pair, link, ratio)`); the pair's
+scale is the median over them. In the segment's frame the pair's length is that scale times the
+length of its pose's baseline, and its offset the scale times its world baseline. With the chain
+offset the difference of the chain centres of its two images, the chain distance its length, the
+path the chain's path length between the two images and the local step the segment's median step,
+the pair is vetoed (`ChainVetoes`) when
+
+- the distance between its offset and the chain offset exceeds both 8 local steps and 0.2 of the
+  path (the chain drifts with its length, so a loop closure off by a share of the path is no
+  contradiction), and
+- its length is under a third of the chain distance (a look-alike claims that two distant frames
+  stand close; a pair as long as the chain says differs from it in direction, which is step 5's to
+  judge).
+
+A vetoed pair counts as removed and is never offered to the repair: its matches agree on a
+direction, and along a corridor it is the centres', so the repair would bring it back.
+
+### The protected links
+
+The translation stage solves with the chain links among its pairs as without the option; only its
+verdict changes: a chain link (a pair of positive `SequenceChain::linkScale`) whose direction is
+past the bar is kept and counted as protected. Where the centres contradict a link of the chain,
+the centres are the ones in doubt.
+
+One log line reports the chain in the cut: `Sequence chain: S segment(s) over K links; veto removed
+V of J judged pairs; P chain pairs protected (veto <time>)`; `SequenceFilterStats` returns the same
+five numbers. At `-v 3` the cut also writes one line per judged pair, `Chain pair: <image> <image>
+length <L> chain <distance> path <path> discrepancy <d> veto <0|1>`, and one per placed image,
+`Chain centre: <image> <segment> <x> <y> <z>`, an image named by its file name without directory
+and extension (a white space replaced by `_`, its index when it has no name).
 
 ## The repair
 
@@ -127,7 +180,8 @@ back a removed pair instead of losing it. It is part of the translation stage, b
 refitted direction against that stage's camera centres: with the bar at 0 it does not act
 (`FilterPairsByContradiction` asserts `repair` only with a bar above 0, and the scene passes
 `repair` only then). `RepairContradictedPairs` runs once, after both stages, on the pairs they
-removed, in parallel over those pairs.
+removed, in parallel over those pairs. A pair the chain of an image sequence vetoed is not among
+them, and vouches for nothing.
 
 For a removed pair the repair
 
@@ -171,6 +225,10 @@ One log line reports the pairs repaired of those removed and the seconds.
 | `GlobalRotationEstimatorOptions::maxNumL1Iterations`, `maxNumIrlsIterations` | none | 5, 100 | solver rounds |
 | repair constants (`GlobalRotationAveraging.cpp`) | none | 1 degree, 200 rounds, 8 matches, 80%, 20 degrees | epipolar band, RANSAC rounds, minimum matches, minimum agreeing share, maximum angle to the centres |
 | translation constants | none | 10 pairs, 40 rounds, 0.001, 1.05 | smallest solved component, reweighting rounds, L1 floor, scale bar |
+| `MatchConfig::imageSequence` | `--image-sequence B` | false | the chain of the neighbour pairs is solved, the pairs that contradict it vetoed, its links protected (needs the bar above 0) |
+| `MatchConfig::matchSequenceOverlap`, `sequenceMaxGap` | `--match-sequence-overlap N`, `--sequence-max-gap N` | 3, 10 | the neighbours (`PairSelection.md`) |
+| `MatchConfig::sequenceMinCovisibility` | `--sequence-min-covisibility F` | 0.75 | a neighbour pair carrying a covisibility below it is no link |
+| veto constants (`GlobalRotationAveraging.cpp`) | none | 8 steps, 0.2, 3 | tolerance in local steps, tolerance as a share of the path, the chain distance over this is the length a vetoed pair stays under |
 
 Python: `ReconstructionConfig.max_pair_direction_residual` (set outside [0,180], NaN included, it
 raises `ValueError`, as the command line refuses it). The repair flag has no Python attribute.
@@ -185,6 +243,13 @@ raises `ValueError`, as the command line refuses it). The repair flag has no Pyt
 - The pair order of the scene is kept; removal compacts the pair array in one pass and the weights
   are recomputed after it.
 - The repair modifies only pairs the stages removed, and unmarks them as removed.
+- Without the neighbours (`--image-sequence` off) no chain is solved and the cut is the two stages and
+  the repair alone. With them and a bar of 0, or a chain too small to solve (under 10 links in every
+  component), nothing is judged and nothing protected.
+- A vetoed pair is never repaired. A chain link is never removed by the translation stage (the
+  rotation stage runs before the chain and may remove a neighbour pair).
+- A segment of the chain lies inside one rotation component, so a judged pair's rotations and its
+  segment's centres share a frame.
 
 ## Validation
 
@@ -207,6 +272,20 @@ With the rotation weights scaled to a median of 10 the verdicts do not change wi
 size of the weights: replaying the rotation stage at the weights times 0.25, 1, 4 and 10, no pair
 changes verdict on five captures. The end-to-end reconstructions of the pairs the cut leaves are in
 `PairWeight.md`.
+
+The chain's veto and protection, on synthetic scenes with exact poses (`SequenceVetoTest`). A
+corridor whose point pattern repeats every 10 units, 60 cameras walking 30 steps out and 30 back 2
+units to the side (the revisits), every pair up to 6 apart and every revisit true, and the planted
+look-alikes (i, i+11) and (i, i+21), each with the true pose of (i, i+1) on matches one and two
+periods on: the chain is one segment of 174 links, and of the 220 judged pairs the 28 look-alikes
+are vetoed (1 step long against a chain distance of 11 and 21 steps, 10 and 20 steps off) and no
+true pair is (the pairs 4 to 6 apart and the 27 revisits come out at their true length, under 1e-6
+steps off the chain); without the option the cut keeps all 28, their direction being the centres'.
+Through the view-graph filter, with the look-alikes of both ways (56) and a name break at the turn:
+without the option the 56 stay and the translation stage removes 48 true pairs; with it the 56 are
+vetoed and no true pair is removed. On the 16-camera arc a neighbour pair whose baseline is flipped,
+its matches supporting the flipped pose, is removed without the option and kept with it, the one
+protected link.
 
 ## Rejected alternatives
 
@@ -242,6 +321,7 @@ Weighting:
 
 ## Open items
 
+- The veto and the protection of the chain are validated on synthetic scenes only (above).
 - A pair the cut keeps at under 2 degrees of parallax is outside the repair's reach (the
   translation stage skips such a pair, and the repair reconsiders only removed ones). On a panorama
   capture 54% of the kept pairs under 1 degree and 21% of those from 1 to 2 degrees have a baseline

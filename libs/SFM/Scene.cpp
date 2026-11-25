@@ -14,6 +14,7 @@
 #include "Triangulation.h"
 #include "SceneCluster.h"
 #include "SceneBlocks.h"
+#include "SequenceNeighbours.h"
 #include "StarInitializer.h"
 #include "Resection.h"
 #include "BundleAdjustment.h"
@@ -746,7 +747,10 @@ void WeighAndExportPairs(Scene& scene, const ReconstructionConfig& config)
 // global rotation and translation averaging contradict. The CSV describes the whole matched graph,
 // each pair with its triplet score, the pairs the filters remove included. The scene keeps the
 // images of the largest piece the triplet filter's ceiling leaves as its seed views (empty without
-// the filter) and reaches PAIRS_FILTERED: the filters run once on a scene's pairs.
+// the filter) and reaches PAIRS_FILTERED: the filters run once on a scene's pairs. With --image-sequence
+// the cut is given the neighbours of the sequence (SequenceNeighbours, the ones the matcher forced): it
+// trusts the chain of the verified neighbour pairs, vetoes the pairs that contradict it and removes none
+// of its links.
 void FilterViewGraph(Scene& scene, const ReconstructionConfig& config)
 {
 	ASSERT(scene.status.nState.isSet(Scene::Status::STATE::MATCHED));
@@ -754,10 +758,14 @@ void FilterViewGraph(Scene& scene, const ReconstructionConfig& config)
 	WeighAndExportPairs(scene, config);
 	std::vector<float> scores;
 	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &scene.seedViews, &scores);
+	std::optional<SequenceNeighbours> sequenceNeighbours;
+	if (config.matchCfg.imageSequence)
+		sequenceNeighbours.emplace(scene, config.matchCfg.matchSequenceOverlap, config.matchCfg.sequenceMaxGap);
 	// the repair confirms a refitted direction against the centres of the translation stage, so
 	// without that stage (a bar of 0) there is nothing for it to act on
 	FilterPairsByContradiction(scene, scores, config.minPairWeight, config.maxPairDirectionResidual, config.matchCfg.weightingCfg,
-		config.repairContradictedPairs && config.maxPairDirectionResidual > 0.f);
+		config.repairContradictedPairs && config.maxPairDirectionResidual > 0.f,
+		sequenceNeighbours.has_value() ? &sequenceNeighbours.value() : nullptr, config.matchCfg.sequenceMinCovisibility);
 	scene.status.nState.set(Scene::Status::STATE::PAIRS_FILTERED);
 }
 
@@ -844,8 +852,20 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 			return false;
 
 		// Match image pairs
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		const bool matchedBefore = status.nState.isSet(Status::STATE::MATCHED);
+		#endif
 		if (!MatchPairs(cfg.matchCfg, cfg.denseCfg, cfg.viewgraphCfg))
 			return false;
+
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2 && !matchedBefore) {
+			// Save the scene this run matched, before the view-graph filters, for debugging: the filters run
+			// once on a scene's pairs, so only this scene can be given back to run them with other options
+			// (a scene that came in matched is that file already)
+			Save(MAKE_PATH("scene_matched.sfm"), cfg.importCfg.archiveType);
+		}
+		#endif
 
 		// export the pairs CSV right after matching, before any reconstruction step (clustering,
 		// weak-image filtering, resection) can drop pairs or leave images unregistered; covers both

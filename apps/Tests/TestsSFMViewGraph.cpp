@@ -1285,6 +1285,486 @@ bool SequenceChainTest()
 		numImages, drift, REAL(100) * drift / walkLength, fittedStep, REAL(100) * maxStepError, REAL(100) * maxLinkError, stillDrift);
 }
 
+// The chain of an image sequence in the contradiction cut (FilterPairsByContradiction given the neighbours): the veto of
+// the pairs that contradict the chain, and the protection of its links.
+// (1) The rule by values (ChainVetoes): the tolerance is the larger of 8 local steps and 0.2 of the path, and only a
+//     pair shorter than a third of the chain distance is vetoed.
+// On a periodic corridor with real features: a pattern of points repeated every 10 units along X, 60 cameras looking
+// sideways at it, 30 walking out along +X one unit apart and 30 walking back 2 units further from the points, so
+// (i, 59 - i) are true revisits; every pair up to 6 apart and every revisit with its exact relative pose (the baseline at
+// an arbitrary length per pair, so the lengths are the scales'), and the planted look-alikes (i, i + 11) and (i, i + 21)
+// of the way out, whose relative pose is the true one of (i, i + 1) and whose matches join each point's feature in i
+// to the feature of its copy one (two) periods on: the right rotation and a baseline of one step between frames 11
+// and 21 apart. Neighbours 3 apart, the cut unscored:
+// (2) every look-alike is vetoed and nothing else is removed, the chain one segment of 174 links, every other pair
+//     judged; the lines of the judged pairs give each look-alike the length of one step against a chain distance of 11
+//     or 21, and each true pair its true length; the same with no covisibility on any pair (a scene saved before the
+//     score existed), and a neighbour pair under the covisibility bar is no link but is judged like any other pair;
+// (3) without the neighbours the cut is the call as it was (the same kept pairs as the six-argument call, the stats
+//     zero), and keeps the look-alikes: their direction agrees with the centres;
+// (4) with the repair on, a vetoed look-alike stays removed (its matches would pass the repair: they agree on the
+//     chain's direction) while a true pair with a flipped baseline comes back;
+// (5) a break at the turn (29|30) gives two segments: the look-alikes of each (those of the way back planted too) are
+//     still vetoed, and the pairs across the turn, the revisits among them, are neither judged nor removed;
+// (6) the veto abstains: 5 cameras (9 links, under the pairs a scale component needs), a bar of 0 (no translation
+//     stage), overlap 0, and scenes of no image and of one give the result of the cut without the neighbours;
+// (7) a segment does not span two components of the rotation averaging (their rotations share no frame);
+// (8) the view-graph filter of a matched scene reads the option: Scene::Reconstruct with imageSequence set vetoes the
+//     look-alikes of the saved corridor, the names of its images making the break at the turn, and keeps them without.
+// On the arc of ContradictionCutTest (6): (9) a neighbour pair with a flipped baseline that its matches support (new
+// features of its second image, where a camera at the mirrored centre sees the points) is removed without the
+// neighbours and kept with them, the one protected link; flipped with its true matches it triangulates nothing, has
+// no scale, is no link and is removed with the neighbours as without.
+bool SequenceVetoTest()
+{
+	TestScope scope("SequenceVetoTest");
+	// (1) the rule by values, the local step 1
+	TEST_CHECK(!ChainVetoes(10, 1, 11, 1, 100), "a discrepancy of 10 on a path of 100 (tolerance 20) vetoes");
+	TEST_CHECK(ChainVetoes(10, 1, 11, 1, 20), "a discrepancy of 10 on a path of 20 (tolerance 8) does not veto");
+	TEST_CHECK(!ChainVetoes(7.9, 1, 9, 1, 9), "a discrepancy of 7.9 (tolerance 8) vetoes");
+	TEST_CHECK(!ChainVetoes(30, 12, 30, 1, 30), "a pair of length 12 on a chain distance of 30 (not short: 12 >= 30 / 3) is vetoed");
+	TEST_CHECK(ChainVetoes(30, 9, 30, 1, 30), "a pair of length 9 on a chain distance of 30, 30 off, is not vetoed");
+
+	using PairIds = std::pair<IIndex,IIndex>;
+	using PairSet = std::set<PairIds>;
+	constexpr IIndex numOut = 30, numImages = 2 * numOut;
+	constexpr IIndex overlap = 3, maxPairSpan = 6;
+	constexpr int period = 10, firstCopy = -2, numCopies = 7;
+	constexpr unsigned numPatternPoints = 400;
+	constexpr float minPairWeight = 3.f;
+	constexpr REAL tolerance = REAL(0.02);
+	const PairsWeightingConfig weightingCfg;
+	const float maxDirectionResidual = ReconstructionConfig().maxPairDirectionResidual;
+	const float minCovisibility = MatchConfig().sequenceMinCovisibility;
+	using STATE = Scene::Status::STATE;
+
+	// the corridor: image i of the way out at (i,0,0), of the way back at (59-i,0,-2), turned 4 sin(2 pi x / 10) degrees
+	// about the vertical (the period of the pattern, so the frames a period apart see the same picture)
+	const auto positionOf = [&](IIndex i) { return i < numOut ? Point3(REAL(i), 0, 0) : Point3(REAL(numImages - 1 - i), 0, -2); };
+	struct Corridor { PairSet pairs, lookAlikes; };
+	const auto buildCorridor = [&](Scene& scene, IIndex numCameras, bool lookAlikesBack) {
+		Corridor corridor;
+		PinholeCamera* pCamera = new PinholeCamera(cv::Size(640, 480), 400.0, 400.0, 320.0, 240.0);
+		pCamera->trustIntrinsics = true;
+		scene.cameras.emplace_back(pCamera);
+		for (IIndex i = 0; i < numCameras; ++i) {
+			const Point3 C = positionOf(i);
+			const Pose3D pose(RMatrix(Point3(0, D2R(REAL(4) * SIN(REAL(2) * M_PI * C.x / period)), 0)), C);
+			scene.images.emplace_back(i, String::FormatString("%s_%04u.jpg", i < numOut ? "out" : "back", i), pose, 0, pCamera);
+		}
+		// the features: point k of the pattern in copy c is the point c * numPatternPoints + k
+		std::mt19937 rng(11);
+		std::uniform_real_distribution<REAL> xDist(0, period), yDist(-2, 2), zDist(5, 15);
+		std::vector<Point3> pattern;
+		for (unsigned k = 0; k < numPatternPoints; ++k)
+			pattern.emplace_back(xDist(rng), yDist(rng), zDist(rng));
+		std::vector<std::vector<uint32_t>> featureOf(numCameras); // per image: the feature of each point, NO_ID where unseen
+		for (int copy = 0; copy < numCopies; ++copy) {
+			for (const Point3& X0 : pattern) {
+				const Point3 X(X0.x + REAL(period * (firstCopy + copy)), X0.y, X0.z);
+				for (Image& image : scene.images) {
+					const auto [proj, valid] = image.ProjectPoint(X);
+					if (!valid || proj.x < 10 || proj.y < 10 || proj.x > 630 || proj.y > 470) {
+						featureOf[image.ID].push_back(NO_ID);
+						continue;
+					}
+					featureOf[image.ID].push_back((uint32_t)image.keypoints.size());
+					image.keypoints.emplace_back(proj, 0.f, 0.f, 10.f);
+				}
+			}
+		}
+		// a pair (a,b) with the true relative pose of (a,standIn), where b stands copyShift periods from standIn, its
+		// matches joining each point in a to its copy copyShift periods on in b: a true pair is its own stand-in
+		const auto addPair = [&](IIndex a, IIndex b, IIndex standIn) {
+			const int copyShift = ROUND2INT((positionOf(b).x - positionOf(standIn).x) / period);
+			ImagePair& pair = scene.pairs.emplace_back(a, b);
+			for (int copy = MAXF(0, -copyShift); copy < MINF(numCopies, numCopies - copyShift); ++copy)
+				for (unsigned k = 0; k < numPatternPoints; ++k) {
+					const uint32_t feature1 = featureOf[a][copy * numPatternPoints + k];
+					const uint32_t feature2 = featureOf[b][(copy + copyShift) * numPatternPoints + k];
+					if (feature1 != NO_ID && feature2 != NO_ID)
+						pair.matches.emplace_back(feature1, feature2);
+				}
+			Pose3D relativePose = scene.images[standIn] / scene.images[a];
+			relativePose.C = CMatrix(relativePose.C * ((REAL(0.5) + REAL(0.25) * ((3 * a + 5 * b) % 7)) / norm(relativePose.C)));
+			pair.relativePose = relativePose;
+			pair.E = ImagePair::ComposeEssentialMatrix(relativePose);
+			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[a].GetK(), scene.images[b].GetK());
+			pair.meanRayAngle = D2R(10.f);
+			corridor.pairs.emplace(a, b);
+		};
+		for (IIndex i = 0; i + 1 < numCameras; ++i) {
+			for (IIndex j = i + 1; j < numCameras; ++j) {
+				const bool sameWay = j < numOut || (lookAlikesBack && i >= numOut);
+				if (j - i <= maxPairSpan || i + j == numImages - 1) {
+					addPair(i, j, j);
+				} else if (sameWay && (j - i == period + 1 || j - i == 2 * period + 1)) {
+					addPair(i, j, i + 1);
+					corridor.lookAlikes.emplace(i, j);
+				}
+			}
+		}
+		if (numCameras > 0) // the weights of a scene without images are not ComputePairsWeights' to compute
+			ComputePairsWeights(scene);
+		return corridor;
+	};
+	const auto keptPairs = [](const Scene& scene) {
+		PairSet kept;
+		for (const ImagePair& pair : scene.pairs)
+			kept.emplace(pair.ID1, pair.ID2);
+		return kept;
+	};
+	const auto without = [](const PairSet& pairs, const PairSet& removed) {
+		PairSet left;
+		std::set_difference(pairs.begin(), pairs.end(), removed.begin(), removed.end(), std::inserter(left, left.end()));
+		return left;
+	};
+	const auto findPair = [](Scene& scene, IIndex a, IIndex b) -> ImagePair* {
+		for (ImagePair& pair : scene.pairs)
+			if (pair.ID1 == a && pair.ID2 == b)
+				return &pair;
+		return NULL;
+	};
+	const auto noBreaks = [](IIndex numCameras, IIndex numNeighbours) {
+		return SequenceNeighbours(std::vector<bool>(numCameras > 0 ? numCameras - 1 : 0, false), numNeighbours);
+	};
+	const auto run = [&](Scene& scene, float bar, bool repair, const SequenceNeighbours* neighbours, SequenceFilterStats* stats) {
+		const std::vector<float> scores(scene.pairs.size(), TripletScores::unscored);
+		return FilterPairsByContradiction(scene, scores, minPairWeight, bar, weightingCfg, repair, neighbours, minCovisibility, stats);
+	};
+	const auto isZero = [](const SequenceFilterStats& stats) {
+		return stats.numSegments == 0 && stats.numLinks == 0 && stats.numJudged == 0 && stats.numVetoed == 0 && stats.numProtected == 0;
+	};
+	// the lines the cut logs per judged pair and per placed image, as the measurements read them; the images are named
+	// by their index
+	struct JudgedPair { IIndex a, b; double length, chain, path, discrepancy; int veto; };
+	struct PlacedImage { unsigned segment; Point3 centre; };
+	const auto indexOf = [](const char* stem) { const char* number = strrchr(stem, '_'); return number == NULL ? NO_ID : (IIndex)atoi(number + 1); };
+	const auto parseLog = [&](const String& text, std::vector<JudgedPair>& judged, std::map<IIndex,PlacedImage>& placed) {
+		char stem1[64], stem2[64];
+		for (size_t pos = text.find("Chain pair: "); pos != String::npos; pos = text.find("Chain pair: ", pos + 1)) {
+			JudgedPair pair;
+			if (sscanf(text.c_str() + pos, "Chain pair: %63s %63s length %lf chain %lf path %lf discrepancy %lf veto %d",
+				stem1, stem2, &pair.length, &pair.chain, &pair.path, &pair.discrepancy, &pair.veto) != 7)
+				return false;
+			pair.a = indexOf(stem1);
+			pair.b = indexOf(stem2);
+			judged.push_back(pair);
+		}
+		for (size_t pos = text.find("Chain centre: "); pos != String::npos; pos = text.find("Chain centre: ", pos + 1)) {
+			PlacedImage image;
+			double x, y, z;
+			if (sscanf(text.c_str() + pos, "Chain centre: %63s %u %lf %lf %lf", stem1, &image.segment, &x, &y, &z) != 5)
+				return false;
+			image.centre = Point3(x, y, z);
+			placed[indexOf(stem1)] = image;
+		}
+		return true;
+	};
+
+	// (2) the corridor with the neighbours: the look-alikes vetoed, nothing else removed
+	const unsigned numChainLinks = (numImages - 1) + (numImages - 2) + (numImages - 3);
+	struct Range { double lo{std::numeric_limits<double>::max()}, hi{std::numeric_limits<double>::lowest()}; void Add(double v) { lo = MINF(lo, v); hi = MAXF(hi, v); } };
+	Range lengthOne, lengthTwo, discrepancyOne, discrepancyTwo, trueLengthError, trueDiscrepancy, revisitDiscrepancy;
+	unsigned numLookAlikes = 0, numJudgedPairs = 0;
+	{
+		Scene scene;
+		const Corridor corridor = buildCorridor(scene, numImages, false);
+		for (ImagePair& pair : scene.pairs)
+			pair.covisibility = 0.9f;
+		numLookAlikes = (unsigned)corridor.lookAlikes.size();
+		numJudgedPairs = (unsigned)corridor.pairs.size() - numChainLinks;
+		TEST_CHECK(numLookAlikes == 19 + 9 && corridor.pairs.size() == numChainLinks + (56 + 55 + 54) + 27 + numLookAlikes, "the corridor holds %zu pairs, %u of them look-alikes", corridor.pairs.size(), numLookAlikes);
+		const SequenceNeighbours neighbours = noBreaks(numImages, overlap);
+		SequenceFilterStats stats;
+		LogCapture log;
+		const unsigned removed = run(scene, maxDirectionResidual, false, &neighbours, &stats);
+		TEST_CHECK(stats.numSegments == 1 && stats.numLinks == numChainLinks, "the corridor: %u segment(s) over %u links, expected one over %u", stats.numSegments, stats.numLinks, numChainLinks);
+		TEST_CHECK(stats.numVetoed == numLookAlikes && stats.numJudged == numJudgedPairs && stats.numProtected == 0,
+			"the corridor: %u of %u judged pairs vetoed, %u links protected, expected the %u look-alikes of %u and none", stats.numVetoed, stats.numJudged, stats.numProtected, numLookAlikes, numJudgedPairs);
+		TEST_CHECK(removed == numLookAlikes && keptPairs(scene) == without(corridor.pairs, corridor.lookAlikes), "the corridor: %u pairs removed, expected exactly the %u look-alikes", removed, numLookAlikes);
+		const String report = String::FormatString("Sequence chain: 1 segment(s) over %u links; veto removed %u of %u judged pairs; 0 chain pairs protected", numChainLinks, numLookAlikes, numJudgedPairs);
+		TEST_CHECK(log.Contains(report), "the corridor: the cut did not report \"%s\"", report.c_str());
+		// the lines of the judged pairs and of the centres: in steps of the chain's frame, a look-alike is one step
+		// long on a chain distance of 11 or 21, a true pair has its true length and no discrepancy
+		std::vector<JudgedPair> judged;
+		std::map<IIndex,PlacedImage> placed;
+		TEST_CHECK(parseLog(log.text, judged, placed), "the corridor: a line of a judged pair or of a centre does not read");
+		TEST_CHECK(judged.size() == numJudgedPairs && placed.size() == numImages, "the corridor: %zu lines of judged pairs and %zu of centres, expected %u and %u", judged.size(), placed.size(), numJudgedPairs, numImages);
+		const REAL step = norm(placed[numOut - 1].centre - placed[0].centre) / REAL(numOut - 1);
+		TEST_CHECK(step > 0, "the corridor: the centres of the way out do not move");
+		for (const JudgedPair& pair : judged) {
+			TEST_CHECK(pair.a < pair.b && corridor.pairs.count({pair.a, pair.b}), "the corridor: the line of a judged pair names (%u,%u)", pair.a, pair.b);
+			const REAL trueDistance = norm(positionOf(pair.b) - positionOf(pair.a));
+			const REAL chainDistance = norm(placed[pair.b].centre - placed[pair.a].centre);
+			const REAL length = pair.length / step, discrepancy = pair.discrepancy / step;
+			TEST_CHECK(ABS(pair.chain - chainDistance) <= tolerance * step && ABS(pair.chain / step - trueDistance) <= tolerance * trueDistance,
+				"the corridor: the pair (%u,%u) has the chain distance %g steps, its centres %g, the truth %g", pair.a, pair.b, pair.chain / step, chainDistance / step, trueDistance);
+			if (corridor.lookAlikes.count({pair.a, pair.b})) {
+				const bool onePeriod = pair.b - pair.a == period + 1;
+				(onePeriod ? lengthOne : lengthTwo).Add(length);
+				(onePeriod ? discrepancyOne : discrepancyTwo).Add(discrepancy);
+				TEST_CHECK(pair.veto == 1 && ABS(length - 1) <= tolerance && ABS(discrepancy - (trueDistance - 1)) <= tolerance * trueDistance &&
+					ABS(pair.path / step - trueDistance) <= tolerance * trueDistance,
+					"the corridor: the look-alike (%u,%u) has veto %d, length %g steps, discrepancy %g and path %g, expected 1, 1, %g and %g", pair.a, pair.b, pair.veto, length, discrepancy, pair.path / step, trueDistance - 1, trueDistance);
+				continue;
+			}
+			const bool revisit = pair.a + pair.b == numImages - 1;
+			trueLengthError.Add(ABS(length - trueDistance) / trueDistance);
+			(revisit ? revisitDiscrepancy : trueDiscrepancy).Add(discrepancy);
+			// the path runs through the turn, a step of 2
+			const REAL truePath = REAL(pair.b - pair.a) + (pair.a < numOut && pair.b >= numOut ? 1 : 0);
+			TEST_CHECK(pair.veto == 0 && ABS(length - trueDistance) <= tolerance * trueDistance && discrepancy <= tolerance * MAXF(trueDistance, REAL(1)) &&
+				ABS(pair.path / step - truePath) <= tolerance * truePath,
+				"the corridor: the true pair (%u,%u) has veto %d, length %g steps, discrepancy %g and path %g, expected 0, %g, 0 and %g", pair.a, pair.b, pair.veto, length, discrepancy, pair.path / step, trueDistance, truePath);
+		}
+	}
+	{
+		// no pair carries a covisibility (a scene saved before the score existed): the same chain and the same veto
+		Scene scene;
+		const Corridor corridor = buildCorridor(scene, numImages, false);
+		const SequenceNeighbours neighbours = noBreaks(numImages, overlap);
+		SequenceFilterStats stats;
+		const unsigned removed = run(scene, maxDirectionResidual, false, &neighbours, &stats);
+		TEST_CHECK(stats.numSegments == 1 && stats.numLinks == numChainLinks && stats.numVetoed == numLookAlikes && stats.numJudged == numJudgedPairs &&
+			removed == numLookAlikes && keptPairs(scene) == without(corridor.pairs, corridor.lookAlikes),
+			"no covisibility: %u segment(s) over %u links, %u of %u judged pairs vetoed, %u removed", stats.numSegments, stats.numLinks, stats.numVetoed, stats.numJudged, removed);
+	}
+	{
+		// a neighbour pair under the covisibility bar is no link: it is judged like any other pair, and kept, being true
+		Scene scene;
+		const Corridor corridor = buildCorridor(scene, numImages, false);
+		for (ImagePair& pair : scene.pairs)
+			pair.covisibility = 0.9f;
+		findPair(scene, 10, 12)->covisibility = 0.3f;
+		const SequenceNeighbours neighbours = noBreaks(numImages, overlap);
+		SequenceFilterStats stats;
+		const unsigned removed = run(scene, maxDirectionResidual, false, &neighbours, &stats);
+		TEST_CHECK(stats.numSegments == 1 && stats.numLinks == numChainLinks - 1 && stats.numVetoed == numLookAlikes && stats.numJudged == numJudgedPairs + 1 &&
+			removed == numLookAlikes && keptPairs(scene) == without(corridor.pairs, corridor.lookAlikes),
+			"a neighbour pair under the covisibility bar: %u segment(s) over %u links, %u of %u judged pairs vetoed, %u removed", stats.numSegments, stats.numLinks, stats.numVetoed, stats.numJudged, removed);
+	}
+
+	// (3) without the neighbours: the call as it was
+	PairSet keptWithout;
+	{
+		Scene asBefore, scene;
+		const Corridor corridor = buildCorridor(asBefore, numImages, false);
+		buildCorridor(scene, numImages, false);
+		const std::vector<float> scores(asBefore.pairs.size(), TripletScores::unscored);
+		const unsigned removedBefore = FilterPairsByContradiction(asBefore, scores, minPairWeight, maxDirectionResidual, weightingCfg, false);
+		SequenceFilterStats stats;
+		stats.numSegments = stats.numLinks = stats.numJudged = stats.numVetoed = stats.numProtected = 7;
+		const unsigned removed = run(scene, maxDirectionResidual, false, nullptr, &stats);
+		keptWithout = keptPairs(scene);
+		TEST_CHECK(removed == removedBefore && keptWithout == keptPairs(asBefore), "without the neighbours: %u pairs removed, the six-argument call removes %u", removed, removedBefore);
+		TEST_CHECK(isZero(stats), "without the neighbours: the stats are not zero (%u segments, %u links, %u judged, %u vetoed, %u protected)", stats.numSegments, stats.numLinks, stats.numJudged, stats.numVetoed, stats.numProtected);
+		for (const PairIds& ids : corridor.lookAlikes)
+			TEST_CHECK(keptWithout.count(ids), "premise not met: without the neighbours the cut removes the look-alike (%u,%u)", ids.first, ids.second);
+	}
+
+	// (4) the repair: a vetoed pair is not offered to it, a pair the translation stage removed is
+	{
+		Scene scene;
+		const Corridor corridor = buildCorridor(scene, numImages, false);
+		ImagePair* pFlipped = findPair(scene, 12, 17);
+		pFlipped->relativePose->C = -pFlipped->relativePose->C;
+		const SequenceNeighbours neighbours = noBreaks(numImages, overlap);
+		SequenceFilterStats stats;
+		const unsigned removed = run(scene, maxDirectionResidual, true, &neighbours, &stats);
+		TEST_CHECK(stats.numVetoed == numLookAlikes && removed == numLookAlikes && keptPairs(scene) == without(corridor.pairs, corridor.lookAlikes),
+			"the repair: %u pairs vetoed and %u removed, expected the %u look-alikes to stay removed", stats.numVetoed, removed, numLookAlikes);
+		unsigned numReturned = 0;
+		for (const ImagePair& pair : scene.pairs)
+			numReturned += pair.returnedByRepair;
+		pFlipped = findPair(scene, 12, 17);
+		TEST_CHECK(numReturned == 1 && pFlipped != NULL && pFlipped->returnedByRepair, "the repair: %u pairs returned, expected the flipped (12,17) alone", numReturned);
+	}
+
+	// (5) a break at the turn
+	{
+		Scene scene;
+		const Corridor corridor = buildCorridor(scene, numImages, true);
+		std::vector<bool> breaks(numImages - 1, false);
+		breaks[numOut - 1] = true;
+		const SequenceNeighbours neighbours(breaks, overlap);
+		unsigned numInside = 0; // the pairs inside a way that are not neighbours
+		for (const PairIds& ids : corridor.pairs)
+			numInside += (ids.first < numOut) == (ids.second < numOut) && ids.second - ids.first > overlap;
+		SequenceFilterStats stats;
+		const unsigned removed = run(scene, maxDirectionResidual, false, &neighbours, &stats);
+		TEST_CHECK(corridor.lookAlikes.size() == 2 * numLookAlikes && numInside == 2 * (26 + 25 + 24 + numLookAlikes), "the corridor with the look-alikes of the way back holds %zu look-alikes and %u pairs inside a way", corridor.lookAlikes.size(), numInside);
+		TEST_CHECK(stats.numSegments == 2 && stats.numLinks == 2 * ((numOut - 1) + (numOut - 2) + (numOut - 3)), "the break at the turn: %u segment(s) over %u links", stats.numSegments, stats.numLinks);
+		TEST_CHECK(stats.numVetoed == 2 * numLookAlikes && stats.numJudged == numInside, "the break at the turn: %u of %u judged pairs vetoed, expected the %u look-alikes of the %u pairs inside a way",
+			stats.numVetoed, stats.numJudged, 2 * numLookAlikes, numInside);
+		TEST_CHECK(removed == 2 * numLookAlikes && keptPairs(scene) == without(corridor.pairs, corridor.lookAlikes), "the break at the turn: %u pairs removed, expected exactly the %u look-alikes", removed, 2 * numLookAlikes);
+	}
+
+	// (6) the veto abstains
+	{
+		// 5 cameras: 9 links, under the pairs a scale component needs
+		Scene scene, plain;
+		const Corridor corridor = buildCorridor(scene, 5, false);
+		buildCorridor(plain, 5, false);
+		const SequenceNeighbours neighbours = noBreaks(5, overlap);
+		SequenceFilterStats stats;
+		const unsigned removed = run(scene, maxDirectionResidual, false, &neighbours, &stats);
+		const unsigned removedPlain = run(plain, maxDirectionResidual, false, nullptr, nullptr);
+		TEST_CHECK(corridor.pairs.size() == 10 && isZero(stats) && removed == removedPlain && keptPairs(scene) == keptPairs(plain),
+			"5 cameras: %u segment(s), %u judged, %u vetoed, %u removed (%u without the neighbours)", stats.numSegments, stats.numJudged, stats.numVetoed, removed, removedPlain);
+	}
+	{
+		// a bar of 0: no translation stage, so no chain and no veto
+		Scene scene, plain;
+		buildCorridor(scene, numImages, false);
+		buildCorridor(plain, numImages, false);
+		const SequenceNeighbours neighbours = noBreaks(numImages, overlap);
+		SequenceFilterStats stats;
+		const unsigned removed = run(scene, 0.f, false, &neighbours, &stats);
+		const unsigned removedPlain = run(plain, 0.f, false, nullptr, nullptr);
+		TEST_CHECK(isZero(stats) && removed == removedPlain && keptPairs(scene) == keptPairs(plain), "the bar 0: %u segment(s), %u judged, %u vetoed, %u removed (%u without the neighbours)",
+			stats.numSegments, stats.numJudged, stats.numVetoed, removed, removedPlain);
+	}
+	{
+		// overlap 0: no neighbours, no chain
+		Scene scene;
+		buildCorridor(scene, numImages, false);
+		const SequenceNeighbours neighbours = noBreaks(numImages, 0);
+		SequenceFilterStats stats;
+		run(scene, maxDirectionResidual, false, &neighbours, &stats);
+		TEST_CHECK(isZero(stats) && keptPairs(scene) == keptWithout, "overlap 0: %u segment(s), %u judged, %u vetoed, or other pairs kept than without the neighbours", stats.numSegments, stats.numJudged, stats.numVetoed);
+	}
+	for (const IIndex numCameras : {IIndex(0), IIndex(1)}) {
+		// no image, and one: nothing to judge
+		Scene scene;
+		buildCorridor(scene, numCameras, false);
+		const SequenceNeighbours neighbours(scene, overlap, MatchConfig().sequenceMaxGap);
+		SequenceFilterStats stats;
+		const unsigned removed = run(scene, maxDirectionResidual, false, &neighbours, &stats);
+		TEST_CHECK(isZero(stats) && removed == 0 && scene.pairs.empty(), "%u image(s): %u segment(s), %u judged, %u removed", numCameras, stats.numSegments, stats.numJudged, removed);
+	}
+
+	// (7) two components of the rotation averaging: the pairs joining the images 0-14 to the rest score 0, so the
+	// averaging solves the two sides apart, each in its own frame; the chain's segments stay inside a side, so the veto
+	// judges only pairs whose rotations share a frame: the four look-alikes inside each side
+	{
+		Scene scene;
+		const Corridor corridor = buildCorridor(scene, numImages, false);
+		const IIndex firstOfSecond = 15;
+		std::vector<float> scores(scene.pairs.size(), TripletScores::unscored);
+		PairSet inside;
+		FOREACH(idxPair, scene.pairs) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			if ((pair.ID1 < firstOfSecond) != (pair.ID2 < firstOfSecond))
+				scores[idxPair] = 0.f;
+			else if (corridor.lookAlikes.count({pair.ID1, pair.ID2}))
+				inside.emplace(pair.ID1, pair.ID2);
+		}
+		const SequenceNeighbours neighbours = noBreaks(numImages, overlap);
+		SequenceFilterStats stats;
+		const unsigned removed = FilterPairsByContradiction(scene, scores, minPairWeight, maxDirectionResidual, weightingCfg, false, &neighbours, minCovisibility, &stats);
+		TEST_CHECK(inside.size() == 8 && stats.numSegments == 2 && stats.numVetoed == inside.size() && removed == inside.size() && keptPairs(scene) == without(corridor.pairs, inside),
+			"two rotation components: %u segment(s), %u vetoed and %u removed, expected two segments and the %zu look-alikes inside a side", stats.numSegments, stats.numVetoed, removed, inside.size());
+	}
+
+	// (8) the view-graph filter of a matched scene: the option off keeps the look-alikes, the option on vetoes them, the
+	// neighbours read from the scene's names (out_0000..out_0029, back_0030..back_0059: a break at the turn)
+	unsigned numKeptLookAlikes = 0, numLostTruePairs = 0;
+	{
+		const ScopedTempDir tmpDir(_T("SequenceVetoTest"));
+		TEST_CHECK(tmpDir.IsValid(), "cannot create the temporary folder");
+		Corridor corridor;
+		const String matchedPath = tmpDir(_T("matched.sfm"));
+		{
+			Scene matched;
+			corridor = buildCorridor(matched, numImages, true);
+			matched.status.nState.set(STATE::FEATURES_EXTRACTED);
+			matched.status.nState.set(STATE::MATCHED);
+			TEST_CHECK(matched.Save(matchedPath), "cannot save the matched corridor '%s'", matchedPath.c_str());
+		}
+		ReconstructionConfig cfg;
+		cfg.matchImagesOnly = true;
+		cfg.matchCfg.lensFitEnabled = false; // the corridor's camera is exact: no lens to fit
+		Scene plain(2);
+		TEST_CHECK(plain.Reconstruct(matchedPath, cfg) && plain.status.nState.isSet(STATE::PAIRS_FILTERED), "the match-images-only run of the matched corridor failed");
+		const PairSet keptPlain = keptPairs(plain);
+		for (const PairIds& ids : corridor.lookAlikes)
+			numKeptLookAlikes += (unsigned)keptPlain.count(ids);
+		numLostTruePairs = (unsigned)(corridor.pairs.size() - corridor.lookAlikes.size()) - ((unsigned)keptPlain.size() - numKeptLookAlikes);
+		TEST_CHECK(numKeptLookAlikes != 0, "premise not met: without the option the view-graph filter keeps no look-alike");
+		cfg.matchCfg.imageSequence = true;
+		LogCapture log;
+		Scene sequence(2);
+		TEST_CHECK(sequence.Reconstruct(matchedPath, cfg) && sequence.status.nState.isSet(STATE::PAIRS_FILTERED), "the match-images-only run of the matched corridor as a sequence failed");
+		const String report = String::FormatString("Sequence chain: 2 segment(s) over %u links; veto removed %u of", 2 * ((numOut - 1) + (numOut - 2) + (numOut - 3)), 2 * numLookAlikes);
+		TEST_CHECK(log.Contains(report), "the view-graph filter with the option did not report \"%s\"", report.c_str());
+		TEST_CHECK(keptPairs(sequence) == without(corridor.pairs, corridor.lookAlikes), "the view-graph filter with the option keeps %u pairs, expected the %zu pairs that are no look-alikes",
+			(unsigned)sequence.pairs.size(), corridor.pairs.size() - corridor.lookAlikes.size());
+	}
+
+	// (9) the protection, on the arc of ContradictionCutTest (6): the neighbour pair (7,8) with its baseline flipped
+	const auto buildArc = [&](Scene& scene, bool supported) {
+		Scene sceneGT;
+		GenerateTestScene(sceneGT, RingConfig(300), &scene);
+		for (ImagePair& pair : scene.pairs)
+			pair.meanRayAngle = D2R(10.f);
+		ImagePair& pair = *findPair(scene, 7, 8);
+		pair.relativePose->C = -pair.relativePose->C;
+		if (supported) {
+			// matches that support the flipped pose: every point image 7 sees, joined to a new feature of image 8 where
+			// a camera of image 8's rotation standing at its centre mirrored about image 7's sees the point
+			const Image& image1 = scene.images[7];
+			Image& image2 = scene.images[8];
+			const Image mirrored(image2.ID, "", Pose3D(image2.R, Point3(image1.C) * REAL(2) - Point3(image2.C)), image2.cameraID, image2.pCamera);
+			pair.matches.clear();
+			for (const Track& track : sceneGT.tracks) {
+				const auto [proj, valid] = mirrored.ProjectPoint(track.position);
+				if (!valid || !Image8U::isInside(proj, mirrored.GetSize()))
+					continue;
+				for (const Observation& obs : track.observations) {
+					if (obs.imageID != image1.ID)
+						continue;
+					pair.matches.emplace_back(obs.featureID, (uint32_t)image2.keypoints.size());
+					image2.keypoints.emplace_back(proj, 0.f, 0.f, 10.f);
+				}
+			}
+			pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
+			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), image1.GetK(), image2.GetK());
+		}
+		ComputePairsWeights(scene);
+		return (unsigned)pair.matches.size();
+	};
+	const SequenceNeighbours arcNeighbours = noBreaks(16, overlap);
+	unsigned numSupporting = 0;
+	{
+		Scene scene, plain;
+		numSupporting = buildArc(scene, true);
+		buildArc(plain, true);
+		const size_t numPairs = scene.pairs.size();
+		const unsigned removedPlain = run(plain, maxDirectionResidual, false, nullptr, nullptr);
+		TEST_CHECK(removedPlain == 1 && plain.pairs.size() == numPairs - 1 && !keptPairs(plain).count({7, 8}), "the flipped neighbour pair (7,8) without the neighbours: %u pairs removed, expected it alone", removedPlain);
+		SequenceFilterStats stats;
+		const unsigned removed = run(scene, maxDirectionResidual, false, &arcNeighbours, &stats);
+		TEST_CHECK(stats.numSegments == 1 && stats.numLinks == 15 + 14 + 13 && stats.numVetoed == 0, "the arc: %u segment(s) over %u links, %u pairs vetoed", stats.numSegments, stats.numLinks, stats.numVetoed);
+		TEST_CHECK(removed == 0 && scene.pairs.size() == numPairs && stats.numProtected == 1, "the flipped neighbour pair (7,8) with the neighbours: %u pairs removed and %u links protected, expected it kept as the one protected link",
+			removed, stats.numProtected);
+	}
+	{
+		// flipped with its true matches, the pair triangulates nothing: no scale, so no link, and nothing protects it
+		Scene scene;
+		buildArc(scene, false);
+		SequenceFilterStats stats;
+		const unsigned removed = run(scene, maxDirectionResidual, false, &arcNeighbours, &stats);
+		TEST_CHECK(stats.numSegments == 1 && stats.numLinks == 15 + 14 + 13 - 1 && stats.numProtected == 0 && removed == 1 && !keptPairs(scene).count({7, 8}),
+			"the neighbour pair (7,8) flipped against its matches: %u links, %u protected, %u removed, expected no link, none and it alone", stats.numLinks, stats.numProtected, removed);
+	}
+	return scope.Pass("the corridor: %u look-alikes vetoed of %u judged pairs (length %.4g-%.4g and %.4g-%.4g steps on 11 and 21, discrepancy %.4g-%.4g and %.4g-%.4g), "
+		"the true pairs' length within %.3g%%, their discrepancy under %.3g steps (the revisits' %.3g); the repair, the break, the abstentions, two rotation components; "
+		"the view-graph filter (without the option %u of %u look-alikes kept and %u true pairs removed, with it none of either); the arc: the flipped link protected (%u supporting matches)",
+		numLookAlikes, numJudgedPairs, lengthOne.lo, lengthOne.hi, lengthTwo.lo, lengthTwo.hi, discrepancyOne.lo, discrepancyOne.hi, discrepancyTwo.lo, discrepancyTwo.hi,
+		REAL(100) * trueLengthError.hi, trueDiscrepancy.hi, revisitDiscrepancy.hi, numKeptLookAlikes, 2 * numLookAlikes, numLostTruePairs, numSupporting);
+}
+
 // A matched scene goes through the view-graph filters (the triplet filter, the contradiction cut and its repair)
 // once, and a scene saved after them is where the reconstruction starts. On the ring of ContradictionCutTest saved as
 // matched, three pairs planted the repair brings back: (1) a match-images-only run that loads it filters it once,

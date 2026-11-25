@@ -292,6 +292,12 @@ bool ContradictionCutTest();
 // angle are no links
 bool SequenceChainTest();
 
+// The chain of an image sequence in the contradiction cut: a pair that contradicts the chain and is short against it
+// is vetoed (the look-alikes of a periodic corridor, 11 and 21 frames apart with a baseline of one step), a true pair
+// and a revisit never, a vetoed pair is not offered to the repair, a chain link is not removed by the translation
+// stage, and without the neighbours, or with a chain too small to solve, the cut is unchanged
+bool SequenceVetoTest();
+
 // A matched scene is filtered once (the triplet filter, the contradiction cut and its repair), on load as on a fresh
 // run, and a scene saved after the filters is reloaded with its pairs, repair marks and seed views and not filtered again
 bool FilteredSceneReloadTest();

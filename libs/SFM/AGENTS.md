@@ -178,7 +178,12 @@ GPS. Clustering is never involved.
 - **Image sequence** (`--image-sequence`, `SequenceNeighbours.h`): the neighbour pairs (at most
   `matchSequenceOverlap` positions apart, no name break between) are added to the candidates of every mode
   (`AddNeighbourPairs`, in place of the `AddSequentialPairs` prior of VOCABULARY/RETRIEVAL) and `PreMatch` never
-  removes one
+  removes one; the view-graph filter (`FilterViewGraph`) passes the same neighbours to the contradiction cut, which
+  solves the chain of the verified neighbour pairs (`SolveSequenceChain`), vetoes the pairs that contradict it
+  (`VetoPairsByChain`, `ChainVetoes`: off the chain by more than 8 local steps and 0.2 of the path, and under a
+  third of the chain distance long; never offered to the repair) and removes no chain link in its translation
+  stage (`docs/design/ContradictionCut.md`); `SequenceFilterStats` and one `Sequence chain:` log line report it,
+  `-v 3` adds a `Chain pair:` line per judged pair and a `Chain centre:` line per placed image
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
 - **ROMAv2 one-pass dense matching** (`MatchDense.h`, `DenseWarp.h` helpers, `--dense-match`): the
   bidirectional dense warps are computed in-process (no external files) and, when enabled, ARE the
@@ -367,6 +372,11 @@ instead of the images folder**. No code change needed:
 - A normal `-v 3` run writes `scene_pre_reconstruction.sfm` to the working folder (the
   matched and filtered scene, carrying the `FEATURES_EXTRACTED` + `MATCHED` + `PAIRS_FILTERED`
   state flags); a `--match-images-only` run saves the same scene as its output.
+- A `-v 3` run that did the matching also writes `scene_matched.sfm`, the matched scene before the
+  view-graph filters (`MATCHED` without `PAIRS_FILTERED`): given as source it is filtered (once) with
+  the run's view-graph options (`--filter-triplets`, `--max-pair-direction-residual`,
+  `--image-sequence`, ...), which a `PAIRS_FILTERED` scene no longer reads. A scene that came in
+  matched is not saved again.
 - **Rename it first** (e.g. to `matches.sfm`) so the new run cannot overwrite it.
 - Feed it as the source: `CreateStructure matches.sfm -o scene.sfm -v 3`. `Scene::Import`
   detects the single `.sfm` and `Load`s it; on the `PAIRS_FILTERED` flag `Reconstruct` skips

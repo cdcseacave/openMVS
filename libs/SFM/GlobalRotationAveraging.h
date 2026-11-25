@@ -186,6 +186,15 @@ private:
 };
 /*----------------------------------------------------------------*/
 
+// What the chain of an image sequence did in the contradiction cut (FilterPairsByContradiction given the neighbours)
+struct SFM_API SequenceFilterStats {
+	unsigned numSegments{0};  // segments of the chain
+	unsigned numLinks{0};     // chain links (of positive scale)
+	unsigned numJudged{0};    // pairs the veto judged against the chain
+	unsigned numVetoed{0};    // of them, the pairs it removed
+	unsigned numProtected{0}; // chain links the translation stage would have removed
+};
+
 // The contradiction cut: remove every pair whose relative rotation is more than the estimator's
 // maxRelativeRotationAngle from the global rotations a robust averaging of the usable pairs
 // gives. The usable pairs are those holding a relative pose and a composite weight above
@@ -205,10 +214,33 @@ private:
 //    the camera centres of the translation stage confirm and a neighbouring spot vouches for (the
 //    guard is in GlobalRotationAveraging.cpp, RepairContradictedPairs); it then carries that relative
 //    pose and its agreeing matches, and is not counted as removed.
+//  - neighbours (needs maxDirectionResidual above 0; nullptr: none of this): the images are frames of a sequence
+//    and the chain of its verified neighbour pairs is trusted (SolveSequenceChain below, on the pairs the rotation
+//    stage kept, at the covisibility bar minLinkCovisibility; a link joins two images of one component of the
+//    averaging, whose rotations share a frame). Before the translation stage, the veto: a pair that is no link,
+//    with a pose, a world baseline of some length and a ray angle of at least kNearDuplicateRayAngle, whose two
+//    images one segment of the chain places and that shares a pair-scale equation (ComputePairScales) with a link
+//    of that segment, is judged. Its scale is the median, over those equations, of the link's scale carried
+//    through the equation; the scale times its baseline is its offset in the segment's frame, and it is removed
+//    when ChainVetoes says so: far from where the chain puts its two images and short against their distance, the
+//    look-alike of a repetitive place, which claims that two distant frames stand close. A vetoed pair is not
+//    offered to the repair. Then the protection: the translation stage solves as it does without the chain, but
+//    removes no link (a pair of positive SequenceChain::linkScale).
+//  - stats: what the chain did; all zero without it.
 // The pair weights are recomputed when anything was removed or repaired. Returns the number of removed
-// pairs.
+// pairs, the vetoed ones among them.
 unsigned SFM_API FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
-	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair = false);
+	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair = false,
+	const SequenceNeighbours* neighbours = nullptr, float minLinkCovisibility = 0.f, SequenceFilterStats* stats = nullptr);
+
+// The rule of the chain's veto, every length in the frame of the pair's segment: discrepancy is the distance between
+// the pair's offset and the chain's (the offset of the centres of its two images), pairLength the length of the pair's
+// baseline, chainDistance the distance of the two centres, localStep the segment's median step and path the length of
+// the chain between the two images. The pair is vetoed when it is off the chain by more than 8 local steps and more
+// than 0.2 of the path (the chain drifts with its length, so a loop closure off by a share of the path is no
+// contradiction), and shorter than a third of the chain distance (a look-alike claims that its images stand close; a
+// pair as long as the chain says differs from it in direction, which is the translation stage's to judge).
+SFM_API bool ChainVetoes(REAL discrepancy, REAL pairLength, REAL chainDistance, REAL localStep, REAL path);
 
 // The chain of an image sequence: the camera centres along the sequence as the verified neighbour pairs alone place
 // them, segment by segment. The vectors are indexed by image (segmentOf, centres, pathLength), by scene pair

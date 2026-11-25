@@ -114,6 +114,10 @@ is still logged) does not end the stage with the option: the neighbour pairs are
 when there are none either. A neighbour pair goes through the normal matching and verification and
 is stored only if it verifies. Without the option nothing of this runs: every mode's candidates are those described above.
 
+The view-graph filter reads the same neighbours: the contradiction cut solves the chain of the verified neighbour pairs,
+vetoes the pairs that contradict it and removes none of its links (`ContradictionCut.md`, "The chain of an image
+sequence").
+
 ## Budget and verification feedback
 
 `--vocab-max-pairs` (`maxPairsPerImage`, default 50) is the target number of pairs per image for VOCABULARY, RETRIEVAL
@@ -161,7 +165,7 @@ image, matches descriptors, and verifies:
 |---|---|---|
 | `--match-mode` | 1 (3 when poses were imported and the option is not given) | the mode |
 | `--match-sequence-overlap` | 3 | images ahead matched by SEQUENTIAL; sequential prior of VOCABULARY and RETRIEVAL; with `--image-sequence` the farthest neighbours; 0 = no prior (and no neighbours) |
-| `--image-sequence` | off | the images in import order are frames of a possibly interrupted sequence, whose neighbour pairs every mode matches (see Sequence neighbours) |
+| `--image-sequence` | off | the images in import order are frames of a possibly interrupted sequence, whose neighbour pairs every mode matches (see Sequence neighbours) and whose chain the contradiction cut trusts (`ContradictionCut.md`) |
 | `--sequence-max-gap` | 10 | with `--image-sequence`: a frame number rising by more than this many median rises is a break; refused without `--image-sequence` |
 | `--sequence-min-covisibility` | 0.75 | with `--image-sequence`: a neighbour pair carrying a covisibility below this is no chain link; in [0,1], refused without `--image-sequence` |
 | `--vocab-max-pairs` | 50 | target pairs per image (VOCABULARY, RETRIEVAL, KNOWN_POSES) |
