@@ -287,6 +287,11 @@ bool RotationAveragingTest();
 // component's pairs removes nothing, two components solved apart)
 bool ContradictionCutTest();
 
+// The chain of an image sequence: the neighbour pairs alone place a walk of 40 cameras within 2% of its length, a name
+// break or a covisibility under the bar splits it, a frame standing still and every pair under the near-duplicate ray
+// angle are no links
+bool SequenceChainTest();
+
 // A matched scene is filtered once (the triplet filter, the contradiction cut and its repair), on load as on a fresh
 // run, and a scene saved after the filters is reloaded with its pairs, repair marks and seed views and not filtered again
 bool FilteredSceneReloadTest();

@@ -27,6 +27,7 @@ namespace SFM {
 class SFM_API Scene;
 class SFM_API Image;
 struct SFM_API PairsWeightingConfig;
+class SFM_API SequenceNeighbours;
 
 // Pairwise relative rotation
 struct SFM_API RotationPair
@@ -208,6 +209,31 @@ private:
 // pairs.
 unsigned SFM_API FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
 	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair = false);
+
+// The chain of an image sequence: the camera centres along the sequence as the verified neighbour pairs alone place
+// them, segment by segment. The vectors are indexed by image (segmentOf, centres, pathLength), by scene pair
+// (linkScale) and by segment (localStep).
+struct SFM_API SequenceChain {
+	std::vector<uint32_t> segmentOf; // per image: its chain segment, NO_ID where the chain placed nothing
+	std::vector<Point3> centres;     // per image: its centre in its segment's frame (valid where segmentOf != NO_ID)
+	std::vector<REAL> pathLength;    // per image: the path along its segment from the segment's first placed image, through the placed images in order
+	std::vector<REAL> localStep;     // per segment: the median distance between adjacent placed images (0 for a segment of one image)
+	// per scene pair: a chain link's solved scale, the multiplier of its relative pose's baseline as the translation
+	// stage uses a pair's scale, so the link's offset in the segment's frame is its world baseline
+	// (RMatrix(rotations[ID1]).t() * relativePose->C, at the pose's own length) times this scale; 0 for every pair
+	// that is not a link of a solved segment
+	std::vector<REAL> linkScale;
+	unsigned numSegments{0}, numLinks{0};
+};
+// The chain of a sequence: the scale + centres solve of the translation stage on the chain links alone. A link is a
+// scene pair with a relative pose whose images are neighbours, both rotated (rotations != Point3::INF), not `removed`,
+// with meanRayAngle >= kNearDuplicateRayAngle, and whose covisibility, when it carries one, is >= minCovisibility
+// (0 disables that test). Weights: the composite weight. One segment per solved component of the links' pair-scale
+// graph (components under minScaleComponent links: unplaced); an image two components place belongs to the larger
+// one (a component whose every image a larger one holds is no segment). The segments are numbered in the order of
+// their first image, so they follow the sequence.
+SFM_API SequenceChain SolveSequenceChain(const Scene& scene, const std::vector<Point3>& rotations,
+	const SequenceNeighbours& neighbours, float minCovisibility, const std::vector<bool>* removed = nullptr);
 
 } // namespace SFM
 

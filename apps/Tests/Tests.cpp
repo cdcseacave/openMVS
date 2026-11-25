@@ -344,6 +344,7 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(TripletFilterTest),
 				SFM_TEST(RotationAveragingTest),
 				SFM_TEST(ContradictionCutTest),
+				SFM_TEST(SequenceChainTest),
 				SFM_TEST(FilteredSceneReloadTest),
 				SFM_TEST(PairScalesTest),
 				SFM_TEST(ScaleAveragingTest),

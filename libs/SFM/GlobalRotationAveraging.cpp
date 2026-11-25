@@ -15,6 +15,7 @@
 #include "GlobalTranslationAveraging.h"
 #include "PoseLink.h"
 #include "RobustAveraging.h"
+#include "SequenceNeighbours.h"
 #include "StarInitializer.h"
 #include "../Math/DisjointSet.h"
 #include "../Math/LeastAbsoluteDeviationSolver.h"
@@ -624,9 +625,9 @@ namespace {
 // score; the scale equations are StarInitializer's (ComputePairScales), solved per component of the
 // pair-scale graph by RobustAverage (Geman-McClure at maxScaleResidual) around GlobalScaleEstimator;
 // the centres per component by GlobalTranslationEstimator reweighted towards the sum of norms (convex,
-// so no start decides). A pair of a component is judged by its own solve, any other pair with a pose
-// and a measurable baseline by the largest solve that places both its images. Marks the removed pairs
-// in `removed`; returns their number. Appends every solve to `solves`, the largest first.
+// so no start decides); both are SolveScaleComponents, which the chain of a sequence shares. A pair of
+// a component is judged by its own solve, any other pair with a pose and a measurable baseline by the
+// largest solve that places both its images. Marks the removed pairs in `removed`; returns their number. Appends every solve to `solves`, the largest first.
 constexpr unsigned minScaleComponent = 10;  // pairs a component of the pair-scale graph needs to be solved
 constexpr unsigned numL1Rounds = 40;        // reweighting rounds of the centres
 constexpr REAL l1Floor = REAL(1e-3);        // the L1 weight's error floor, in median pair lengths
@@ -644,34 +645,33 @@ REAL DirectionAngle(const Point3& baseline, const Point3& centresOffset)
 	return R2D(ACOS(MINF(MAXF(cosAngle, REAL(-1)), REAL(1)))); // the clamp is rounding only
 }
 
-unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<Point3>& rotations,
-	const std::vector<uint32_t>& componentOf, const std::vector<float>& scores, float minPairWeight,
-	float maxDirectionResidual, std::vector<bool>& removed, std::vector<CentresSolve>& solves)
+// One solved component of the pair-scale graph: its pairs (scene pair indices, ascending), their scales (indexed by
+// scene pair: C_2 - C_1 = scale * baseline), the offsets the centres were solved from, the camera centres (indexed by
+// image) with the residual of each offset, and the images it places
+struct ScaleComponentSolve {
+	std::vector<uint32_t> pairs;
+	std::vector<REAL> scales;
+	std::vector<TranslationPair> offsets;
+	std::vector<Point3> centres;
+	std::vector<REAL> centreResiduals;
+	std::vector<bool> placed;
+};
+
+// The scale + centres solve of the translation stage, shared by the contradiction cut and the chain of a sequence: the
+// pair-scale equations of the given pairs (ComputePairScales), the components of their graph, largest first (by pairs,
+// ties to the lower root pair), and per component of at least minScaleComponent pairs the scales by RobustAverage
+// (Geman-McClure at maxScaleResidual) around GlobalScaleEstimator, then the centres from C_2 - C_1 = scale * baseline
+// (baselines: per scene pair, the world-frame baseline) weighted by weightOf(idxPair), by GlobalTranslationEstimator
+// reweighted towards the sum of norms. Calls onSolved(ScaleComponentSolve&) for every component solved, in that order
+// (a component whose scale or centres solve fails is skipped). Sets the number of components and of equations.
+template <typename WeightOf, typename OnSolved>
+void SolveScaleComponents(const Scene& scene, const IIndexArr& pairIndices, const std::vector<Point3>& baselines,
+	WeightOf weightOf, OnSolved onSolved, unsigned& numComponents, unsigned& numEquations)
 {
-	TD_TIMER_STARTD();
 	const uint32_t numPairs = (uint32_t)scene.pairs.size();
 	const uint32_t numImages = (uint32_t)scene.images.size();
-	// the pairs judged, with their world-frame baseline (length: the pair's own, usually arbitrary)
-	std::vector<Point3> baselines(numPairs);
-	IIndexArr judged, solved;
-	FOREACH(idxPair, scene.pairs) {
-		const ImagePair& pair = scene.pairs[idxPair];
-		if (removed[idxPair] || !pair.relativePose.has_value() || !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) ||
-			componentOf[pair.ID1] == NO_ID || componentOf[pair.ID1] != componentOf[pair.ID2])
-			continue;
-		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
-		if (norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
-			continue;
-		judged.push_back((IIndex)idxPair);
-		if (pair.ExceedsWeightBar(minPairWeight) && scores[idxPair] != 0.f)
-			solved.push_back((IIndex)idxPair);
-	}
-	const auto weightOf = [&](IIndex idxPair) {
-		return scene.pairs[idxPair].GetCompositeWeight() * (scores[idxPair] < 0.f ? 1.f : scores[idxPair]);
-	};
-
 	// the components of the pair-scale graph, largest first (by pairs, ties to the lower pair)
-	const std::vector<ScalePair> equations = ComputePairScales(scene, solved);
+	const std::vector<ScalePair> equations = ComputePairScales(scene, pairIndices);
 	DisjointSet<uint32_t> sets(numPairs);
 	for (const ScalePair& equation : equations)
 		sets.Union(equation.idxA, equation.idxB);
@@ -694,41 +694,37 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 	std::sort(components.begin(), components.end(), [](const Component* a, const Component* b) {
 		return a->pairs.size() != b->pairs.size() ? a->pairs.size() > b->pairs.size() : a->root < b->root;
 	});
+	numComponents = (unsigned)components.size();
+	numEquations = (unsigned)equations.size();
 
-	// one solve per component: the pair's angle against the centres, NaN where no solve judged it
-	std::vector<REAL> angles(numPairs, std::numeric_limits<REAL>::quiet_NaN());
-	std::vector<bool> scaled(numPairs, false);
+	// one solve per component
 	const REAL maxLogScaleResidual = LOGN((REAL)maxScaleResidual);
-	unsigned numComponents = 0;
-	std::vector<REAL> centresMedianResidual;
 	for (const Component* pComponent : components) {
 		if (pComponent->pairs.size() < minScaleComponent)
 			break;
+		ScaleComponentSolve solve;
 		// the scales of the component's pairs
 		GlobalScaleEstimator scaleEstimator;
-		std::vector<REAL> scales, scaleResiduals;
+		std::vector<REAL> scaleResiduals;
 		if (!RobustAverage(pComponent->equations, maxLogScaleResidual, kRobustRounds,
 			[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) { return scaleEstimator.EstimateScales(active, numPairs, NO_ID, s); },
 			[&](size_t i, const std::vector<REAL>& s) {
 				const ScalePair& p = pComponent->equations[i];
 				return LOGN(p.scaleRatio) - (LOGN(s[p.idxB]) - LOGN(s[p.idxA]));
 			},
-			scales, scaleResiduals))
+			solve.scales, scaleResiduals))
 			continue;
 		// the centres: C_2 - C_1 = scale * baseline of every pair, towards the sum of norms
-		std::vector<TranslationPair> offsets;
 		std::vector<REAL> lengths;
 		for (const uint32_t idxPair : pComponent->pairs) {
 			const ImagePair& pair = scene.pairs[idxPair];
-			offsets.emplace_back(pair.ID1, pair.ID2, baselines[idxPair] * scales[idxPair], weightOf(idxPair));
-			lengths.push_back(norm(offsets.back().relativeTranslation));
+			solve.offsets.emplace_back(pair.ID1, pair.ID2, baselines[idxPair] * solve.scales[idxPair], weightOf((IIndex)idxPair));
+			lengths.push_back(norm(solve.offsets.back().relativeTranslation));
 		}
 		std::sort(lengths.begin(), lengths.end());
 		const REAL floorLength = l1Floor * lengths[lengths.size() / 2];
 		GlobalTranslationEstimator translationEstimator;
-		std::vector<Point3> centres;
-		std::vector<REAL> centreResiduals;
-		if (!RobustAverageWith(offsets, numL1Rounds,
+		if (!RobustAverageWith(solve.offsets, numL1Rounds,
 			[&](const std::vector<TranslationPair>& active, std::vector<Point3>& t) {
 				// the estimator's rows are scaled by the weight, the least squares' weight is its square
 				std::vector<TranslationPair> rows(active);
@@ -737,35 +733,71 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 				return translationEstimator.EstimateTranslations(rows, numImages, NO_ID, t);
 			},
 			[&](size_t i, const std::vector<Point3>& t) {
-				const TranslationPair& p = offsets[i];
+				const TranslationPair& p = solve.offsets[i];
 				return norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation);
 			},
 			[&](REAL r) { return (float)(REAL(1) / MAXF(r, floorLength)); },
-			centres, centreResiduals))
+			solve.centres, solve.centreResiduals))
 			continue;
+		solve.placed.assign(numImages, false);
+		for (const TranslationPair& p : solve.offsets)
+			solve.placed[p.idxA] = solve.placed[p.idxB] = true;
+		solve.pairs = pComponent->pairs;
+		onSolved(solve);
+	}
+}
+
+unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<Point3>& rotations,
+	const std::vector<uint32_t>& componentOf, const std::vector<float>& scores, float minPairWeight,
+	float maxDirectionResidual, std::vector<bool>& removed, std::vector<CentresSolve>& solves)
+{
+	TD_TIMER_STARTD();
+	const uint32_t numPairs = (uint32_t)scene.pairs.size();
+	// the pairs judged, with their world-frame baseline (length: the pair's own, usually arbitrary)
+	std::vector<Point3> baselines(numPairs);
+	IIndexArr judged, solved;
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
+		if (removed[idxPair] || !pair.relativePose.has_value() || !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) ||
+			componentOf[pair.ID1] == NO_ID || componentOf[pair.ID1] != componentOf[pair.ID2])
+			continue;
+		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
+		if (norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
+			continue;
+		judged.push_back((IIndex)idxPair);
+		if (pair.ExceedsWeightBar(minPairWeight) && scores[idxPair] != 0.f)
+			solved.push_back((IIndex)idxPair);
+	}
+	const auto weightOf = [&](IIndex idxPair) {
+		return scene.pairs[idxPair].GetCompositeWeight() * (scores[idxPair] < 0.f ? 1.f : scores[idxPair]);
+	};
+
+	// one solve per component: the pair's angle against the centres, NaN where no solve judged it
+	std::vector<REAL> angles(numPairs, std::numeric_limits<REAL>::quiet_NaN());
+	std::vector<bool> scaled(numPairs, false);
+	unsigned numComponents = 0, numScaleComponents, numEquations;
+	std::vector<REAL> centresMedianResidual;
+	SolveScaleComponents(scene, solved, baselines, weightOf, [&](ScaleComponentSolve& solve) {
 		++numComponents;
-		std::vector<bool> placed(numImages, false);
-		for (const TranslationPair& p : offsets)
-			placed[p.idxA] = placed[p.idxB] = true;
-		for (const uint32_t idxPair : pComponent->pairs)
+		for (const uint32_t idxPair : solve.pairs)
 			scaled[idxPair] = true;
 		// the angles: the component's own pairs by this solve, any other judged pair no solve has judged
 		// yet when both its images are placed
-		std::vector<REAL> residualsSorted(centreResiduals);
+		std::vector<REAL> residualsSorted(solve.centreResiduals);
 		std::sort(residualsSorted.begin(), residualsSorted.end());
 		centresMedianResidual.push_back(residualsSorted[residualsSorted.size() / 2]);
 		for (const IIndex idxPair : judged) {
 			const ImagePair& pair = scene.pairs[idxPair];
-			const bool own = sets.Find(idxPair) == pComponent->root && inEquation[idxPair];
-			if (!own && (scaled[idxPair] || !std::isnan(angles[idxPair]) || !placed[pair.ID1] || !placed[pair.ID2]))
+			const bool own = std::binary_search(solve.pairs.begin(), solve.pairs.end(), (uint32_t)idxPair);
+			if (!own && (scaled[idxPair] || !std::isnan(angles[idxPair]) || !solve.placed[pair.ID1] || !solve.placed[pair.ID2]))
 				continue;
-			const Point3 centresOffset = centres[pair.ID2] - centres[pair.ID1];
+			const Point3 centresOffset = solve.centres[pair.ID2] - solve.centres[pair.ID1];
 			if (norm(centresOffset) <= ZEROTOLERANCE<REAL>())
 				continue;
 			angles[idxPair] = DirectionAngle(baselines[idxPair], centresOffset);
 		}
-		solves.push_back({std::move(placed), std::move(centres)});
-	}
+		solves.push_back({std::move(solve.placed), std::move(solve.centres)});
+	}, numScaleComponents, numEquations);
 	unsigned numJudged = 0, numRemoved = 0;
 	for (const IIndex idxPair : judged) {
 		if (std::isnan(angles[idxPair]))
@@ -778,7 +810,7 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 	}
 	VERBOSE("Translation cut: removed %u/%u pairs whose baseline direction is more than %g degrees from the centres of %u of %u scale components "
 		"(%u pairs scaled by %u equations, median residual of the largest %.3g) (%s)",
-		numRemoved, numJudged, maxDirectionResidual, numComponents, (unsigned)components.size(), (unsigned)solved.size(), (unsigned)equations.size(),
+		numRemoved, numJudged, maxDirectionResidual, numComponents, numScaleComponents, (unsigned)solved.size(), numEquations,
 		centresMedianResidual.empty() ? REAL(0) : centresMedianResidual.front(), TD_TIMER_GET_FMT().c_str());
 	return numRemoved;
 }
@@ -1072,6 +1104,101 @@ unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>&
 	DEBUG("Filtered the view graph by contradiction with its %s averaging: %u pairs removed (%s)",
 		maxDirectionResidual > 0 ? "rotation and translation" : "rotation", numRemoved, TD_TIMER_GET_FMT().c_str());
 	return numRemoved;
+}
+/*----------------------------------------------------------------*/
+
+SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Point3>& rotations,
+	const SequenceNeighbours& neighbours, float minCovisibility, const std::vector<bool>* removed)
+{
+	TD_TIMER_STARTD();
+	const uint32_t numPairs = (uint32_t)scene.pairs.size();
+	const uint32_t numImages = (uint32_t)scene.images.size();
+	ASSERT(rotations.size() == numImages && (removed == nullptr || removed->size() == numPairs));
+	SequenceChain chain;
+	chain.segmentOf.assign(numImages, NO_ID);
+	chain.centres.assign(numImages, Point3::ZERO);
+	chain.pathLength.assign(numImages, REAL(0));
+	chain.linkScale.assign(numPairs, REAL(0));
+	// the links, with their world-frame baseline (length: the pair's own)
+	std::vector<Point3> baselines(numPairs);
+	IIndexArr links;
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
+		if ((removed != nullptr && (*removed)[idxPair]) || !pair.relativePose.has_value() ||
+			!neighbours.AreNeighbours(pair.ID1, pair.ID2) ||
+			rotations[pair.ID1] == Point3::INF || rotations[pair.ID2] == Point3::INF ||
+			!(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) ||
+			(pair.covisibility.has_value() && *pair.covisibility < minCovisibility))
+			continue;
+		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
+		links.push_back((IIndex)idxPair);
+	}
+	if (links.empty()) {
+		VERBOSE("Sequence chain: no link among the neighbour pairs (%s)", TD_TIMER_GET_FMT().c_str());
+		return chain;
+	}
+
+	// one segment per solved component, the largest first: an image keeps the first segment that places it
+	std::vector<uint32_t> componentOf(numImages, NO_ID); // per image: the solved component it belongs to
+	uint32_t numOwning = 0; // the solved components that own an image
+	unsigned numComponents, numEquations;
+	SolveScaleComponents(scene, links, baselines, [&](IIndex idxPair) { return scene.pairs[idxPair].GetCompositeWeight(); },
+		[&](ScaleComponentSolve& solve) {
+			const uint32_t idxComponent = numOwning;
+			bool owns = false;
+			for (uint32_t i = 0; i < numImages; ++i) {
+				if (!solve.placed[i] || componentOf[i] != NO_ID)
+					continue;
+				componentOf[i] = idxComponent;
+				chain.centres[i] = solve.centres[i];
+				owns = true;
+			}
+			if (!owns)
+				return; // every image it places belongs to a larger segment: no segment of its own
+			++numOwning;
+			for (const uint32_t idxPair : solve.pairs)
+				chain.linkScale[idxPair] = solve.scales[idxPair];
+			chain.numLinks += (unsigned)solve.pairs.size();
+		}, numComponents, numEquations);
+
+	// the segments numbered in the order of their first image, so they follow the sequence
+	std::vector<uint32_t> segmentOfComponent(numOwning, NO_ID);
+	for (uint32_t i = 0; i < numImages; ++i) {
+		if (componentOf[i] == NO_ID || segmentOfComponent[componentOf[i]] != NO_ID)
+			continue;
+		segmentOfComponent[componentOf[i]] = chain.numSegments++;
+	}
+	for (uint32_t i = 0; i < numImages; ++i)
+		if (componentOf[i] != NO_ID)
+			chain.segmentOf[i] = segmentOfComponent[componentOf[i]];
+
+	// the path along each segment through its placed images in order, and the median step
+	std::vector<uint32_t> lastOfSegment(chain.numSegments, NO_ID);
+	std::vector<std::vector<REAL>> stepsOfSegment(chain.numSegments);
+	for (uint32_t i = 0; i < numImages; ++i) {
+		const uint32_t segment = chain.segmentOf[i];
+		if (segment == NO_ID)
+			continue;
+		const uint32_t last = lastOfSegment[segment];
+		if (last != NO_ID) {
+			const REAL step = norm(chain.centres[i] - chain.centres[last]);
+			chain.pathLength[i] = chain.pathLength[last] + step;
+			stepsOfSegment[segment].push_back(step);
+		}
+		lastOfSegment[segment] = i;
+	}
+	chain.localStep.assign(chain.numSegments, REAL(0));
+	for (uint32_t segment = 0; segment < chain.numSegments; ++segment) {
+		std::vector<REAL>& steps = stepsOfSegment[segment];
+		if (steps.empty())
+			continue;
+		std::nth_element(steps.begin(), steps.begin() + steps.size() / 2, steps.end());
+		chain.localStep[segment] = steps[steps.size() / 2];
+	}
+	VERBOSE("Sequence chain: %u segments placing %u images by %u of %u links (%u scale components, %u equations) (%s)",
+		chain.numSegments, (unsigned)std::count_if(chain.segmentOf.begin(), chain.segmentOf.end(), [](uint32_t s) { return s != NO_ID; }),
+		chain.numLinks, (unsigned)links.size(), numComponents, numEquations, TD_TIMER_GET_FMT().c_str());
+	return chain;
 }
 /*----------------------------------------------------------------*/
 

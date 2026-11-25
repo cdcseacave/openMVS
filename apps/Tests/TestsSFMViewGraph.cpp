@@ -998,6 +998,241 @@ bool ContradictionCutTest()
 		"flipped and turned baselines, the bridge, the short rays, bar 0, the repair, the small graph and two components");
 }
 
+// The chain of an image sequence (SolveSequenceChain), on a walk with real features: 40 cameras 1 unit apart along X,
+// each turned a few degrees about the vertical, looking sideways at points 5-15 units away, every pair up to 6 apart
+// with its exact relative pose (unit baseline, so the scales are the solve's) and 10 degrees of ray angle, the true
+// rotations, neighbours 3 apart: (1) one segment of all 40 images, whose centres after a scale and translation fit to
+// the truth (the segment's frame has the rotations' orientation) are within 2% of the walk's length, the local step and
+// every step of the path within 2% of the fitted step, and a chain scale exactly on the 114 neighbour pairs, each
+// giving its link the length of its true baseline; (2) a name break between 19 and 20 makes two segments of 20, no pair
+// across it a link; (3) the covisibility bar: the pairs across 19|20 carrying 0.3 make two segments at the bar 0.75 and
+// one at the bar 0, carrying 0.9 or nothing one; (4) a frame that stands still (image 20 at image 19's centre, their
+// pair under the near-duplicate ray angle with a meaningless baseline) is no link, and the pairs 2 and 3 apart keep the
+// one segment; (5) every pair under the near-duplicate ray angle places nothing; (6) a removed pair, an unrotated image,
+// overlap 0 and an empty scene.
+bool SequenceChainTest()
+{
+	TestScope scope("SequenceChainTest");
+	constexpr IIndex numImages = 40;
+	constexpr IIndex overlap = 3, maxPairSpan = 6;
+	constexpr REAL tolerance = REAL(0.02);
+	const REAL walkLength = REAL(numImages - 1);
+	// the walk: image i at (i,0,0) (image standStill at the centre of the one before it), turned 4 sin(0.9 i) degrees
+	// about the vertical; the pairs up to maxPairSpan apart, each with the matches of the points both images see
+	const auto buildWalk = [&](Scene& scene, std::vector<Point3>& trueCentres, IIndex standStill = NO_ID) {
+		PinholeCamera* pCamera = new PinholeCamera(cv::Size(640, 480), 400.0, 400.0, 320.0, 240.0);
+		pCamera->trustIntrinsics = true;
+		scene.cameras.emplace_back(pCamera);
+		trueCentres.clear();
+		for (IIndex i = 0; i < numImages; ++i) {
+			const Pose3D pose(RMatrix(Point3(0, D2R(REAL(4) * SIN(REAL(0.9) * i)), 0)),
+				Point3(REAL(i == standStill ? i - 1 : i), 0, 0));
+			scene.images.emplace_back(i, "", pose, 0, pCamera);
+			trueCentres.push_back(pose.C);
+		}
+		std::mt19937 rng(7);
+		std::uniform_real_distribution<REAL> xDist(-6, 45), yDist(-2, 2), zDist(5, 15);
+		std::vector<std::vector<uint32_t>> featureOf(numImages); // per image: the feature of each point, NO_ID where unseen
+		for (unsigned p = 0; p < 2000; ++p) {
+			const Point3 X(xDist(rng), yDist(rng), zDist(rng));
+			for (Image& image : scene.images) {
+				const auto [proj, valid] = image.ProjectPoint(X);
+				if (!valid || proj.x < 10 || proj.y < 10 || proj.x > 630 || proj.y > 470) {
+					featureOf[image.ID].push_back(NO_ID);
+					continue;
+				}
+				featureOf[image.ID].push_back((uint32_t)image.keypoints.size());
+				image.keypoints.emplace_back(proj, 0.f, 0.f, 10.f);
+			}
+		}
+		for (IIndex i = 0; i + 1 < numImages; ++i) {
+			for (IIndex j = i + 1; j < numImages && j - i <= maxPairSpan; ++j) {
+				ImagePair& pair = scene.pairs.emplace_back(i, j);
+				FOREACH(p, featureOf[i])
+					if (featureOf[i][p] != NO_ID && featureOf[j][p] != NO_ID)
+						pair.matches.emplace_back(featureOf[i][p], featureOf[j][p]);
+				Pose3D relativePose = scene.images[j] / scene.images[i];
+				const bool still = standStill != NO_ID && i + 1 == standStill && j == standStill;
+				// a pair that stands still has no baseline: its two-view pose gives a meaningless unit direction
+				relativePose.C = still ? CMatrix(0, 1, 0) : CMatrix(relativePose.C * (REAL(1) / norm(relativePose.C)));
+				pair.relativePose = relativePose;
+				pair.E = ImagePair::ComposeEssentialMatrix(relativePose);
+				pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[i].GetK(), scene.images[j].GetK());
+				pair.meanRayAngle = still ? 0.f : D2R(10.f);
+			}
+		}
+		ComputePairsWeights(scene);
+	};
+	const auto rotationsOf = [](const Scene& scene) {
+		std::vector<Point3> rotations;
+		for (const Image& image : scene.images)
+			rotations.emplace_back(image.R.GetRotationAxisAngle());
+		return rotations;
+	};
+	const auto noBreaks = [&]() { return SequenceNeighbours(std::vector<bool>(numImages - 1, false), overlap); };
+	const auto breakAt = [&](IIndex k) { std::vector<bool> breaks(numImages - 1, false); breaks[k] = true; return SequenceNeighbours(breaks, overlap); };
+	const auto acrossMiddle = [](const ImagePair& pair) { return pair.ID1 < 20 && pair.ID2 >= 20; };
+	const auto numPlaced = [](const SequenceChain& chain) {
+		return (unsigned)std::count_if(chain.segmentOf.begin(), chain.segmentOf.end(), [](uint32_t s) { return s != NO_ID; });
+	};
+	// the scale of the least squares fit s * c + t of a segment's centres to the true ones, and the largest distance after it
+	const auto fit = [](const SequenceChain& chain, const std::vector<Point3>& trueCentres, uint32_t segment, REAL& scale) {
+		Point3 meanChain(0, 0, 0), meanTrue(0, 0, 0);
+		unsigned n = 0;
+		FOREACH(i, chain.segmentOf)
+			if (chain.segmentOf[i] == segment) {
+				meanChain += chain.centres[i];
+				meanTrue += trueCentres[i];
+				++n;
+			}
+		meanChain *= REAL(1) / n;
+		meanTrue *= REAL(1) / n;
+		REAL num = 0, den = 0;
+		FOREACH(i, chain.segmentOf)
+			if (chain.segmentOf[i] == segment) {
+				num += (chain.centres[i] - meanChain).dot(trueCentres[i] - meanTrue);
+				den += normSq(chain.centres[i] - meanChain);
+			}
+		scale = num / den;
+		REAL maxDistance = 0;
+		FOREACH(i, chain.segmentOf)
+			if (chain.segmentOf[i] == segment)
+				maxDistance = MAXF(maxDistance, norm(scale * (chain.centres[i] - meanChain) - (trueCentres[i] - meanTrue)));
+		return maxDistance;
+	};
+
+	// (1) the walk
+	REAL drift = 0, fittedStep = 0, maxStepError = 0, maxLinkError = 0;
+	{
+		Scene scene;
+		std::vector<Point3> trueCentres;
+		buildWalk(scene, trueCentres);
+		const std::vector<Point3> rotations = rotationsOf(scene);
+		const SequenceChain chain = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f);
+		TEST_CHECK(chain.numSegments == 1 && numPlaced(chain) == numImages, "the walk: %u segments placing %u images, expected one of %u", chain.numSegments, numPlaced(chain), numImages);
+		TEST_CHECK(chain.segmentOf.size() == numImages && chain.centres.size() == numImages && chain.pathLength.size() == numImages &&
+			chain.localStep.size() == 1 && chain.linkScale.size() == scene.pairs.size(), "the walk: the vectors are not sized by image, segment and pair");
+		REAL scale;
+		drift = fit(chain, trueCentres, 0, scale);
+		TEST_CHECK(scale > 0 && drift <= tolerance * walkLength, "the walk: a centre is %g from the truth after the fit, over %g of the walk's length %g", drift, tolerance, walkLength);
+		fittedStep = REAL(1) / scale;
+		TEST_CHECK(ABS(chain.localStep[0] - fittedStep) <= tolerance * fittedStep, "the walk: the local step is %g, the fitted step %g", chain.localStep[0], fittedStep);
+		TEST_CHECK(chain.pathLength[0] == 0, "the walk: the path starts at %g", chain.pathLength[0]);
+		for (IIndex i = 1; i < numImages; ++i)
+			maxStepError = MAXF(maxStepError, ABS(chain.pathLength[i] - chain.pathLength[i - 1] - fittedStep) / fittedStep);
+		TEST_CHECK(maxStepError <= tolerance, "the walk: a step of the path is %g of the fitted step off", maxStepError);
+		unsigned numNeighbourPairs = 0;
+		FOREACH(idxPair, scene.pairs) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			const bool neighbours = pair.ID2 - pair.ID1 <= overlap;
+			numNeighbourPairs += neighbours;
+			TEST_CHECK(neighbours == (chain.linkScale[idxPair] > 0), "the walk: the pair (%u,%u) has the chain scale %g", pair.ID1, pair.ID2, chain.linkScale[idxPair]);
+			if (!neighbours)
+				continue;
+			// the link's length in the segment's frame is its scale times its baseline's: the true one in fitted steps
+			const REAL length = chain.linkScale[idxPair] * norm(pair.relativePose->C) * scale;
+			maxLinkError = MAXF(maxLinkError, ABS(length - REAL(pair.ID2 - pair.ID1)) / REAL(pair.ID2 - pair.ID1));
+		}
+		TEST_CHECK(chain.numLinks == numNeighbourPairs && numNeighbourPairs == 114, "the walk: %u links, expected the %u neighbour pairs", chain.numLinks, numNeighbourPairs);
+		TEST_CHECK(maxLinkError <= tolerance, "the walk: a link's length is %g of its true baseline off", maxLinkError);
+	}
+
+	// (2) a name break between 19 and 20, (3) the covisibility bar on the pairs across 19|20, and (6) those pairs removed
+	{
+		Scene scene;
+		std::vector<Point3> trueCentres;
+		buildWalk(scene, trueCentres);
+		const std::vector<Point3> rotations = rotationsOf(scene);
+		const auto twoSegments = [&](const SequenceChain& chain) {
+			if (chain.numSegments != 2 || numPlaced(chain) != numImages)
+				return false;
+			for (IIndex i = 0; i < numImages; ++i)
+				if (chain.segmentOf[i] != (i < 20 ? 0u : 1u))
+					return false;
+			FOREACH(idxPair, scene.pairs)
+				if (acrossMiddle(scene.pairs[idxPair]) && chain.linkScale[idxPair] != 0)
+					return false;
+			return chain.localStep.size() == 2 && chain.pathLength[20] == 0;
+		};
+		const SequenceChain broken = SolveSequenceChain(scene, rotations, breakAt(19), 0.75f);
+		TEST_CHECK(twoSegments(broken), "the break at 19|20: %u segments placing %u images, expected 0-19 and 20-39 with no link across", broken.numSegments, numPlaced(broken));
+		TEST_CHECK(broken.numLinks == 2 * (19 + 18 + 17), "the break at 19|20: %u links", broken.numLinks);
+		for (ImagePair& pair : scene.pairs)
+			if (acrossMiddle(pair))
+				pair.covisibility = 0.3f;
+		const SequenceChain low = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f);
+		TEST_CHECK(twoSegments(low), "covisibility 0.3 across 19|20 at the bar 0.75: %u segments placing %u images, expected 0-19 and 20-39", low.numSegments, numPlaced(low));
+		const SequenceChain unbarred = SolveSequenceChain(scene, rotations, noBreaks(), 0.f);
+		TEST_CHECK(unbarred.numSegments == 1 && numPlaced(unbarred) == numImages, "covisibility 0.3 across 19|20 at the bar 0: %u segments", unbarred.numSegments);
+		for (ImagePair& pair : scene.pairs)
+			if (acrossMiddle(pair))
+				pair.covisibility = 0.9f;
+		const SequenceChain high = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f);
+		TEST_CHECK(high.numSegments == 1 && numPlaced(high) == numImages, "covisibility 0.9 across 19|20 at the bar 0.75: %u segments", high.numSegments);
+		for (ImagePair& pair : scene.pairs)
+			pair.covisibility.reset();
+		const SequenceChain none = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f);
+		TEST_CHECK(none.numSegments == 1 && numPlaced(none) == numImages, "no covisibility at the bar 0.75: %u segments", none.numSegments);
+		std::vector<bool> removed(scene.pairs.size(), false);
+		FOREACH(idxPair, scene.pairs)
+			removed[idxPair] = acrossMiddle(scene.pairs[idxPair]);
+		const SequenceChain cut = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f, &removed);
+		TEST_CHECK(twoSegments(cut), "the pairs across 19|20 removed: %u segments placing %u images, expected 0-19 and 20-39", cut.numSegments, numPlaced(cut));
+		// an unrotated image: its pairs are no links, it is not placed, the rest is one segment
+		std::vector<Point3> unrotated(rotations);
+		unrotated[numImages - 1] = Point3::INF;
+		const SequenceChain partial = SolveSequenceChain(scene, unrotated, noBreaks(), 0.75f);
+		TEST_CHECK(partial.numSegments == 1 && numPlaced(partial) == numImages - 1 && partial.segmentOf[numImages - 1] == NO_ID &&
+			partial.numLinks == 114 - 3, "an unrotated last image: %u segments placing %u images with %u links", partial.numSegments, numPlaced(partial), partial.numLinks);
+		// overlap 0: no neighbours, no link
+		const SequenceChain alone = SolveSequenceChain(scene, rotations, SequenceNeighbours(std::vector<bool>(numImages - 1, false), 0), 0.75f);
+		TEST_CHECK(alone.numSegments == 0 && numPlaced(alone) == 0 && alone.numLinks == 0 && alone.segmentOf.size() == numImages &&
+			alone.linkScale.size() == scene.pairs.size(), "overlap 0: %u segments", alone.numSegments);
+	}
+
+	// (4) a frame that stands still
+	REAL stillDrift = 0;
+	{
+		Scene scene;
+		std::vector<Point3> trueCentres;
+		const IIndex standStill = 20;
+		buildWalk(scene, trueCentres, standStill);
+		const SequenceChain chain = SolveSequenceChain(scene, rotationsOf(scene), noBreaks(), 0.75f);
+		TEST_CHECK(chain.numSegments == 1 && numPlaced(chain) == numImages && chain.numLinks == 114 - 1, "the frame standing still: %u segments placing %u images with %u links, expected one of %u with 113",
+			chain.numSegments, numPlaced(chain), chain.numLinks, numImages);
+		FOREACH(idxPair, scene.pairs) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			const bool still = pair.ID1 == standStill - 1 && pair.ID2 == standStill;
+			TEST_CHECK(!still || chain.linkScale[idxPair] == 0, "the pair standing still is a link of scale %g", chain.linkScale[idxPair]);
+		}
+		REAL scale;
+		stillDrift = fit(chain, trueCentres, 0, scale);
+		TEST_CHECK(scale > 0 && stillDrift <= tolerance * walkLength, "the frame standing still: a centre is %g from the truth after the fit", stillDrift);
+	}
+
+	// (5) every pair under the near-duplicate ray angle
+	{
+		Scene scene;
+		std::vector<Point3> trueCentres;
+		buildWalk(scene, trueCentres);
+		for (ImagePair& pair : scene.pairs)
+			pair.meanRayAngle = D2R(kNearDuplicateRayAngle * 0.75f);
+		const SequenceChain chain = SolveSequenceChain(scene, rotationsOf(scene), noBreaks(), 0.75f);
+		TEST_CHECK(chain.numSegments == 0 && numPlaced(chain) == 0 && chain.numLinks == 0 && chain.localStep.empty() &&
+			std::all_of(chain.linkScale.begin(), chain.linkScale.end(), [](REAL s) { return s == 0; }), "every pair under the near-duplicate angle: %u segments placing %u images", chain.numSegments, numPlaced(chain));
+	}
+
+	// (6) an empty scene
+	{
+		Scene scene;
+		const SequenceChain chain = SolveSequenceChain(scene, {}, SequenceNeighbours(std::vector<bool>(), overlap), 0.75f);
+		TEST_CHECK(chain.numSegments == 0 && chain.segmentOf.empty() && chain.linkScale.empty(), "the empty scene: %u segments", chain.numSegments);
+	}
+	return scope.Pass("the walk of %u images: one segment, drift %.4g after the fit (%.3g%% of the walk), fitted step %.4g, step error %.3g%%, "
+		"link length error %.3g%%; standing still: drift %.4g; the break, the covisibility bar, the near-duplicates, the edge cases",
+		numImages, drift, REAL(100) * drift / walkLength, fittedStep, REAL(100) * maxStepError, REAL(100) * maxLinkError, stillDrift);
+}
+
 // A matched scene goes through the view-graph filters (the triplet filter, the contradiction cut and its repair)
 // once, and a scene saved after them is where the reconstruction starts. On the ring of ContradictionCutTest saved as
 // matched, three pairs planted the repair brings back: (1) a match-images-only run that loads it filters it once,
