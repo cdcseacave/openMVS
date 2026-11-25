@@ -444,11 +444,8 @@ bool RetrievalTest()
 		"VOCABULARY on the local clustering (%u cross), the .sfm round-trip", numMatched, vocabCross);
 }
 
-// The four ways a candidate pair is made or pruned: the known-pose selection must still produce candidates for an image
-// absent from the pose file; PairsMatcher::AddSequentialPairs appends the (i, i+k) pairs for k = 1..overlap (no wrap-around)
-// to an existing candidate list, never duplicating a pair already present, and adds nothing at overlap 0; the SEQUENTIAL
-// mode matches exactly the (i, i+1) and (i, i+2) pairs; and the pre-match threshold keeps a pair with enough shared descriptors
-// and drops the weak ones
+// The name breaks of an image sequence (directory, name prefix, falling or jumping frame numbers, names without a
+// number) and the neighbours they leave (SequenceNeighbours)
 bool SequenceNeighboursTest()
 {
 	TestScope scope("SequenceNeighboursTest");
@@ -519,6 +516,11 @@ bool SequenceNeighboursTest()
 	return scope.Pass("name breaks and neighbours: gap, number, prefix and directory rules");
 }
 
+// The four ways a candidate pair is made or pruned: the known-pose selection must still produce candidates for an image
+// absent from the pose file; PairsMatcher::AddSequentialPairs appends the (i, i+k) pairs for k = 1..overlap (no wrap-around)
+// to an existing candidate list, never duplicating a pair already present, and adds nothing at overlap 0; the SEQUENTIAL
+// mode matches exactly the (i, i+1) and (i, i+2) pairs; and the pre-match threshold keeps a pair with enough shared descriptors
+// and drops the weak ones
 bool PairSelectionTest()
 {
 	TestScope scope("PairSelectionTest");
