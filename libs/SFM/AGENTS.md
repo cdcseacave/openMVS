@@ -175,6 +175,10 @@ GPS. Clustering is never involved.
   propagates each verified pair to its endpoints' top-5 retrieval candidates; the images with the
   weakest verified connectivity refill any leftover budget (2 pairs/image) from their next
   best-ranked first-round candidates
+- **Image sequence** (`--image-sequence`, `SequenceNeighbours.h`): the neighbour pairs (at most
+  `matchSequenceOverlap` positions apart, no name break between) are added to the candidates of every mode
+  (`AddNeighbourPairs`, in place of the `AddSequentialPairs` prior of VOCABULARY/RETRIEVAL) and `PreMatch` never
+  removes one
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
 - **ROMAv2 one-pass dense matching** (`MatchDense.h`, `DenseWarp.h` helpers, `--dense-match`): the
   bidirectional dense warps are computed in-process (no external files) and, when enabled, ARE the

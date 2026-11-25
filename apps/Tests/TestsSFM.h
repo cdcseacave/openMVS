@@ -98,6 +98,10 @@ bool PairSelectionTest();
 // number) and the neighbours they leave (SequenceNeighbours)
 bool SequenceNeighboursTest();
 
+// --image-sequence: the neighbour pairs are always matched (PairsMatcher::AddNeighbourPairs, PreMatch keeping them,
+// every match mode attempting them and nothing across a break); the candidates are today's with the option off
+bool SequenceForcedMatchTest();
+
 // Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty, and
 // PairsMatcher::Match()'s fatal-round signal is not "this round stored nothing"
 bool MatchOutcomeSignalsTest();

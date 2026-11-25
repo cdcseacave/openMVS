@@ -29,6 +29,7 @@
 #include "PairsWeighting.h"
 #include "VocabularyTree.h"
 #include "GlobalDescriptors.h"
+#include "SequenceNeighbours.h"
 #include "ViewGraphTriplets.h"
 #include <PoseLib/poselib.h>
 
@@ -1483,6 +1484,29 @@ unsigned PairsMatcher::AddSequentialPairs(const Scene& scene, unsigned overlap, 
 	return numAdded;
 }
 
+unsigned PairsMatcher::AddNeighbourPairs(const Scene& scene, const SequenceNeighbours& neighbours, PairIdxArr& pairs)
+{
+	const IIndex nImages = (IIndex)scene.images.size();
+	const unsigned overlap = neighbours.Overlap();
+	std::unordered_set<PairIdx::PairIndex> present;
+	present.reserve(pairs.size() + (size_t)nImages*overlap);
+	for (const PairIdx& pair : pairs)
+		present.emplace(pair.idx);
+	unsigned numAdded = 0;
+	for (IIndex i = 0; i < nImages; ++i) {
+		for (unsigned k = 1; k <= overlap && i+k < nImages; ++k) {
+			if (!neighbours.AreNeighbours(i, i+k))
+				continue;
+			const PairIdx pair(MakePairIdx(scene.images[i].ID, scene.images[i+k].ID));
+			if (present.emplace(pair.idx).second) {
+				pairs.emplace_back(pair);
+				++numAdded;
+			}
+		}
+	}
+	return numAdded;
+}
+
 void PairsMatcher::OptimizePairsOrder(PairIdxArr& pairsToMatch)
 {
 	if (pairsToMatch.empty())
@@ -1911,18 +1935,25 @@ void PairsMatcher::FilterRedundantKeypoints()
 		numRemoved, numRemovedDense, numTotal, numDuplicateMatches, TD_TIMER_GET_FMT().c_str());
 }
 
-void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
+void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch, const SequenceNeighbours* keep)
 {
 	if (vocabularyTree == nullptr || !vocabularyTree->IsValid()) {
 		VERBOSE("error: vocabulary tree not initialized for pre-matching");
 		return;
 	}
 	TD_TIMER_STARTD();
+	// a neighbour pair of an image sequence is always matched: pre-matching may still store its
+	// geometry, but never removes it (the pair IDs index scene.images, as everywhere below)
+	const auto IsKept = [keep](const PairIdx& p) {
+		return keep != nullptr && keep->AreNeighbours(p.i, p.j);
+	};
 
 	// Filter out already verified pairs from the list
 	{
 		size_t numAlreadyVerified = 0;
 		RFOREACH(i, pairsToMatch) {
+			if (IsKept(pairsToMatch[i]))
+				continue;
 			const ImagePair* pPair = scene.FindPair(pairsToMatch[i].i, pairsToMatch[i].j);
 			// Removing pair if it exists, has verification, and sufficient matches
 			if (pPair && pPair->HasGeometricVerification() && pPair->GetNumFilteredInliers() >= config.minMatches) {
@@ -1943,14 +1974,20 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
 	std::mutex pairsMutex;
 	scene.threadPool.detach_loop(0u, pairsToMatch.size(), [&](unsigned idx) {
 		PairIdx& p = pairsToMatch[idx];
+		const bool bKept = IsKept(p);
+		const auto Remove = [&]() {
+			if (bKept)
+				return;
+			p = PairIdx(NO_ID, NO_ID);
+			++atomicNumRemoved;
+		};
 		const Image& img1 = scene.images[p.i];
 		const Image& img2 = scene.images[p.j];
 		// Use cached top descriptors
 		const cv::Mat& desc1 = vocabularyTree->GetTopDescriptors(img1);
 		const cv::Mat& desc2 = vocabularyTree->GetTopDescriptors(img2);
 		if (desc1.empty() || desc2.empty()) {
-			p = PairIdx(NO_ID, NO_ID);
-			++atomicNumRemoved;
+			Remove();
 			return;
 		}
 		// always a pool thread: this lambda only ever runs through detach_loop below
@@ -1960,8 +1997,7 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
 		std::vector<DMatch> matches;
 		MatchFeatures(desc1, desc2, matches, threadIdx);
 		if (matches.size() < config.preMatchThreshold) {
-			p = PairIdx(NO_ID, NO_ID);
-			++atomicNumRemoved;
+			Remove();
 			return;
 		}
 		// Geometric verification for PreMatch
@@ -1970,8 +2006,7 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
 			pair.matches = std::move(matches);
 			if (!GeometricFilter(img1, img2, pair)) {
 				// Failed geometric verification
-				p = PairIdx(NO_ID, NO_ID);
-				++atomicNumRemoved;
+				Remove();
 				return;
 			}
 			// Succeeded: Store pair with geometry, but clear matches to force rematch
@@ -2212,12 +2247,26 @@ unsigned PairsMatcher::Match(bool& bFatal)
 	// leave out, in addition to whatever it already picked (see AddSequentialPairs). Added here,
 	// before the snapshot the verification-feedback round attempts against, so that round never
 	// re-proposes or double-counts them.
-	if (matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::RETRIEVAL) {
+	// With --image-sequence the neighbour pairs below take its place: the prior would also add the
+	// pairs across a name break.
+	if (!config.imageSequence && (matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::RETRIEVAL)) {
 		const unsigned numRetrieved = (unsigned)pairsToMatch.size();
 		const unsigned numAdded = AddSequentialPairs(scene, config.matchSequenceOverlap, pairsToMatch);
 		if (numAdded > 0)
 			DEBUG("Sequential prior: %u consecutive pairs added to the %u retrieved (overlap %u)",
 				numAdded, numRetrieved, config.matchSequenceOverlap);
+	}
+	// --image-sequence: the neighbour pairs are always matched, in every mode: whatever the mode
+	// picked, the missing ones are added to the candidates (before the snapshot, as the prior) and
+	// pre-matching never removes one; they still go through the normal matching and verification
+	std::optional<SequenceNeighbours> sequenceNeighbours;
+	if (config.imageSequence) {
+		sequenceNeighbours.emplace(scene, config.matchSequenceOverlap, config.sequenceMaxGap);
+		const unsigned numCandidates = (unsigned)pairsToMatch.size();
+		const unsigned numAdded = AddNeighbourPairs(scene, *sequenceNeighbours, pairsToMatch);
+		DEBUG("Image sequence: %u neighbour pairs added to the %u candidates (overlap %u, %u name breaks)",
+			numAdded, numCandidates, config.matchSequenceOverlap,
+			(unsigned)std::count(sequenceNeighbours->Breaks().begin(), sequenceNeighbours->Breaks().end(), true));
 	}
 	ASSERT(!pairsToMatch.empty());
 
@@ -2243,7 +2292,7 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		// never builds one, so pre-matching stays unreachable there regardless of this setting.
 		if (vocabularyTree) {
 			if (config.preMatchThreshold > 0)
-				PreMatch(pairs);
+				PreMatch(pairs, sequenceNeighbours ? &*sequenceNeighbours : nullptr);
 			// Clear descriptors cache
 			vocabularyTree->ClearDescriptorsCache();
 		}

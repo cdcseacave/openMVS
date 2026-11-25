@@ -46,6 +46,7 @@ struct SFM_API DMatch;
 class SFM_API Scene;
 class SFM_API VocabularyTree;
 class SFM_API GlobalDescriptors;
+class SFM_API SequenceNeighbours;
 enum class FeatureType : uint8_t;
 
 /**
@@ -170,8 +171,9 @@ public:
 	// The calling thread's own descriptor matcher, for the guided pass's k-NN query
 	cv::DescriptorMatcher& GetMatcher(unsigned threadIdx) { ASSERT(threadIdx < matchers.size()); return *matchers[threadIdx]; }
 
-	// Pre-match pairs using vocabulary tree top descriptors (filters weak pairs)
-	void PreMatch(PairIdxArr& pairsToMatch);
+	// Pre-match pairs using vocabulary tree top descriptors (filters weak pairs);
+	// never removes a pair keep calls neighbours (--image-sequence): such a pair is always matched
+	void PreMatch(PairIdxArr& pairsToMatch, const SequenceNeighbours* keep = nullptr);
 
 	// Match all image pairs according to strategy.
 	// Checks existing pairs and only matches new or incomplete pairs.
@@ -326,6 +328,12 @@ public:
 	// missing (i, i+k) pairs for k = 1..overlap (no wrap-around) to pairs, skipping any already
 	// present. overlap 0 is the prior switched off (no-op). Returns the number of pairs added.
 	static unsigned AddSequentialPairs(const Scene& scene, unsigned overlap, PairIdxArr& pairs);
+
+	// The neighbour pairs of an image sequence (--image-sequence, see SequenceNeighbours): appends every
+	// pair of positions neighbours calls neighbours that is not yet in pairs. With the option on it is what
+	// adds the consecutive pairs in every match mode, in place of the sequential prior, which would also
+	// add the pairs across a name break. Returns the number of pairs appended.
+	static unsigned AddNeighbourPairs(const Scene& scene, const SequenceNeighbours& neighbours, PairIdxArr& pairs);
 
 	// Reorder pairs to minimize GPU descriptor transfers by grouping pairs sharing the same first image,
 	// with secondary ordering by descriptor cost (descending) for better thread pool load balancing

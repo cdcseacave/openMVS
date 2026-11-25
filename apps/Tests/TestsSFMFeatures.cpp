@@ -661,6 +661,215 @@ bool PairSelectionTest()
 		"and the pre-match threshold keeps the strong pair only");
 }
 
+// Ten posed frames of an interrupted sequence, a_0001..a_0005 then b_0006..b_0010 (a name break between positions 4 and 5),
+// where every pair matches (30 descriptors shared by all the images) but the two halves share nothing else: 60 more
+// descriptors are shared within a half only, and the global descriptors of the halves are orthogonal. So every candidate
+// pair a match mode attempts is stored, and the visual rankings keep to the halves
+static void BuildInterruptedSequenceScene(Scene& scene)
+{
+	SceneConfig scfg;
+	scfg.numImages = 10;
+	scfg.numPoints = 0; // the posed cameras only, the features are set below
+	GenerateTestScene(scene, scfg);
+	constexpr int numShared = 30, numHalf = 60, numOwn = 20, numRows = numShared + numHalf + numOwn, D = 64;
+	cv::RNG rng(17);
+	cv::Mat shared(numShared, 128, CV_8U), halves[2] = {cv::Mat(numHalf, 128, CV_8U), cv::Mat(numHalf, 128, CV_8U)};
+	rng.fill(shared, cv::RNG::UNIFORM, 0, 256);
+	rng.fill(halves[0], cv::RNG::UNIFORM, 0, 256);
+	rng.fill(halves[1], cv::RNG::UNIFORM, 0, 256);
+	FOREACH(i, scene.images) {
+		Image& img = scene.images[i];
+		const int half = i < 5 ? 0 : 1;
+		img.fileName = String::FormatString("%c_%04u.jpg", half ? 'b' : 'a', i + 1);
+		img.descriptors.create(numRows, 128, CV_8U);
+		shared.copyTo(img.descriptors.rowRange(0, numShared));
+		halves[half].copyTo(img.descriptors.rowRange(numShared, numShared + numHalf));
+		cv::Mat own = img.descriptors.rowRange(numShared + numHalf, numRows);
+		rng.fill(own, cv::RNG::UNIFORM, 0, 256);
+		img.keypoints.clear();
+		for (int r = 0; r < numRows; ++r)
+			img.keypoints.emplace_back(cv::Point2f(10.f + (r % 20) * 25.f, 10.f + (r / 20) * 40.f), 10.f);
+		img.globalDescriptor.create(1, D, CV_32F);
+		for (int c = 0; c < D; ++c)
+			img.globalDescriptor.at<float>(c) = (c / (D / 2) == half ? 1.f : 0.f) + (float)rng.gaussian(0.05);
+		img.globalDescriptor /= cv::norm(img.globalDescriptor);
+	}
+	scene.status.nFeaturesType = FeatureType::SIFT;
+	scene.status.nState.set(Scene::Status::STATE::GLOBAL_DESCRIPTORS);
+}
+
+// --image-sequence: the neighbour pairs of the sequence are always matched. PairsMatcher::AddNeighbourPairs appends the
+// missing ones (none across the name break), PreMatch never removes one, and every match mode attempts all of them while
+// adding nothing else; with the option off every mode's candidates are today's (the sequential prior of the retrieval modes
+// included, which does cross the break)
+bool SequenceForcedMatchTest()
+{
+	TestScope scope("SequenceForcedMatchTest");
+	using PairSet = std::set<uint64_t>;
+	constexpr IIndex numImages = 10;
+	const auto ToSet = [](const PairIdxArr& pairs) {
+		PairSet set;
+		for (const PairIdx& pair : pairs)
+			set.insert(pair.idx);
+		return set;
+	};
+	const auto Spans = [](uint64_t pairIndex) {
+		const PairIdx pair(pairIndex);
+		return (pair.i < 5) != (pair.j < 5);
+	};
+	const auto CountSpanning = [&Spans](const PairSet& set) {
+		return (unsigned)std::count_if(set.begin(), set.end(), Spans);
+	};
+	PairIdxArr allPairs;
+	for (IIndex a = 0; a < numImages; ++a)
+		for (IIndex b = a + 1; b < numImages; ++b)
+			allPairs.emplace_back(MakePairIdx(a, b));
+
+	Scene scene;
+	BuildInterruptedSequenceScene(scene);
+	const SequenceNeighbours neighbours(scene, 3, 10);
+	TEST_CHECK(neighbours.Breaks() == (std::vector<bool>{0,0,0,0,1,0,0,0,0}), "the fixture's break is not between positions 4 and 5");
+	// the neighbour pairs: (a, b), b - a <= 3, both on one side of the break: 9 on each side
+	PairSet expectedNeighbours;
+	for (IIndex a = 0; a < numImages; ++a)
+		for (IIndex b = a + 1; b <= a + 3 && b < numImages; ++b)
+			if ((a < 5) == (b < 5))
+				expectedNeighbours.insert(MakePairIdx(a, b).idx);
+	ASSERT(expectedNeighbours.size() == 18);
+
+	// 1. AddNeighbourPairs appends exactly the missing neighbour pairs
+	{
+		PairIdxArr pairs;
+		unsigned numAdded = PairsMatcher::AddNeighbourPairs(scene, neighbours, pairs);
+		TEST_CHECK(numAdded == 18 && pairs.size() == 18 && ToSet(pairs) == expectedNeighbours,
+			"an empty list gained %u pairs (%u total), expected the 18 neighbour pairs", numAdded, (unsigned)pairs.size());
+		numAdded = PairsMatcher::AddNeighbourPairs(scene, neighbours, pairs);
+		TEST_CHECK(numAdded == 0 && pairs.size() == 18, "a list holding every neighbour pair gained %u pairs", numAdded);
+		PairIdxArr partial;
+		partial.emplace_back(MakePairIdx(0, 1));
+		partial.emplace_back(MakePairIdx(0, 9));
+		numAdded = PairsMatcher::AddNeighbourPairs(scene, neighbours, partial);
+		PairSet expectedPartial = expectedNeighbours;
+		expectedPartial.insert(MakePairIdx(0, 9).idx);
+		TEST_CHECK(numAdded == 17 && partial.size() == 19 && ToSet(partial) == expectedPartial,
+			"a list holding (0,1) and (0,9) gained %u pairs (%u total), expected 17 (19 total, both kept)", numAdded, (unsigned)partial.size());
+	}
+
+	// the configuration of every Match run below: at most 2 pairs per image keeps VOCABULARY itself on 10 images and the
+	// verification-feedback round off (it needs at least 10), so the candidates of a mode are those of its first round:
+	// the top 2*8/5 = 3 of the retrieval modes and the top 2*4/3 = 2 of the known poses
+	const auto Config = [](MatchConfig::MatchMode mode, bool imageSequence) {
+		MatchConfig cfg;
+		cfg.mode = mode;
+		cfg.imageSequence = imageSequence;
+		cfg.maxPairsPerImage = 2;
+		cfg.maxEpipolarError = 0; // rely on descriptor matches only, as PairSelectionTest does
+		cfg.minMatches = 10;
+		cfg.matchDistance = FLT_MAX;
+		return cfg;
+	};
+	// the pairs Match stores on a fresh fixture: every attempted pair matches, so these are the attempted candidates
+	const auto Matched = [](const MatchConfig& cfg, bool& bFatal) {
+		Scene fresh;
+		BuildInterruptedSequenceScene(fresh);
+		PairsMatcher matcher(fresh, cfg);
+		matcher.Match(bFatal);
+		PairSet stored;
+		for (const ImagePair& pair : fresh.pairs)
+			stored.insert(MakePairIdx(pair.ID1, pair.ID2).idx);
+		return stored;
+	};
+
+	// 2. PreMatch at a threshold no pair can reach keeps exactly the neighbour pairs when given them, and nothing without
+	{
+		MatchConfig cfg = Config(MatchConfig::VOCABULARY, true);
+		cfg.preMatchThreshold = 100000;
+		PairsMatcher matcher(scene, cfg);
+		TEST_CHECK(!matcher.CollectVocabularyPairs(3).empty(), "the vocabulary tree PreMatch reads was not built");
+		PairIdxArr kept = allPairs;
+		matcher.PreMatch(kept, &neighbours);
+		TEST_CHECK(kept.size() == 18 && ToSet(kept) == expectedNeighbours,
+			"PreMatch given the neighbours kept %u pairs, expected the 18 neighbour pairs", (unsigned)kept.size());
+		PairIdxArr none = allPairs;
+		matcher.PreMatch(none);
+		TEST_CHECK(none.empty(), "PreMatch without the neighbours kept %u pairs", (unsigned)none.size());
+		TEST_CHECK(scene.pairs.empty(), "PreMatch stored %u pairs", (unsigned)scene.pairs.size());
+		// and through Match: the vocabulary mode pre-matches its candidates with the neighbours of the option
+		bool bFatal;
+		const PairSet stored = Matched(cfg, bFatal);
+		TEST_CHECK(!bFatal && stored == expectedNeighbours,
+			"VOCABULARY pre-matching at an unreachable threshold stored %u pairs, expected the 18 neighbour pairs", (unsigned)stored.size());
+		cfg.imageSequence = false;
+		TEST_CHECK(Matched(cfg, bFatal).empty() && !bFatal, "VOCABULARY pre-matching at an unreachable threshold stored pairs without the option");
+	}
+
+	// 3. every match mode: the option attempts every neighbour pair and adds nothing else, in particular no pair across the
+	// break; off, the candidates are today's: the mode's own and, in VOCABULARY and RETRIEVAL, the sequential prior
+	PairSet priorPairs; {
+		PairIdxArr prior;
+		PairsMatcher::AddSequentialPairs(scene, 3, prior);
+		priorPairs = ToSet(prior);
+	}
+	unsigned numModes = 0;
+	for (const MatchConfig::MatchMode mode : {MatchConfig::EXHAUSTIVE, MatchConfig::VOCABULARY, MatchConfig::SEQUENTIAL,
+		MatchConfig::RETRIEVAL, MatchConfig::KNOWN_POSES})
+	{
+		const char* const name = mode == MatchConfig::EXHAUSTIVE ? "EXHAUSTIVE" : mode == MatchConfig::VOCABULARY ? "VOCABULARY" :
+			mode == MatchConfig::SEQUENTIAL ? "SEQUENTIAL" : mode == MatchConfig::RETRIEVAL ? "RETRIEVAL" : "KNOWN_POSES";
+		// the mode's own candidates, from the call Match makes on the same fixture
+		PairSet own; {
+			Scene fresh;
+			BuildInterruptedSequenceScene(fresh);
+			PairsMatcher matcher(fresh, Config(mode, false));
+			switch (mode) {
+			case MatchConfig::EXHAUSTIVE: own = ToSet(allPairs); break;
+			case MatchConfig::VOCABULARY: own = ToSet(matcher.CollectVocabularyPairs(3)); break;
+			case MatchConfig::RETRIEVAL: own = ToSet(matcher.CollectRetrievalPairs(3)); break;
+			case MatchConfig::KNOWN_POSES: own = ToSet(matcher.CollectKnownPosePairs(2)); break;
+			default: // SEQUENTIAL: (i, i+k) for k = 1..3 with the wrap-around of 10 >= 2*3 images
+				for (IIndex i = 0; i < numImages; ++i)
+					for (IIndex k = 1; k <= 3; ++k)
+						own.insert(MakePairIdx(i, (i + k) % numImages).idx);
+			}
+		}
+		TEST_CHECK(!own.empty(), "%s: no candidates of its own", name);
+		const bool withPrior = mode == MatchConfig::VOCABULARY || mode == MatchConfig::RETRIEVAL;
+		bool bFatal;
+		// on: every neighbour pair is attempted, and nothing but the mode's own candidates besides
+		const PairSet on = Matched(Config(mode, true), bFatal);
+		TEST_CHECK(!bFatal, "%s: a fatal round failure with the option", name);
+		for (const uint64_t pairIndex : expectedNeighbours)
+			TEST_CHECK(on.count(pairIndex), "%s: the neighbour pair (%u, %u) was not attempted", name, PairIdx(pairIndex).i, PairIdx(pairIndex).j);
+		PairSet expectedOn = own;
+		expectedOn.insert(expectedNeighbours.begin(), expectedNeighbours.end());
+		TEST_CHECK(on == expectedOn, "%s: the option attempted %u pairs, expected the %u of the mode and the neighbours", name,
+			(unsigned)on.size(), (unsigned)expectedOn.size());
+		for (const uint64_t pairIndex : on)
+			TEST_CHECK(!Spans(pairIndex) || own.count(pairIndex), "%s: the option added (%u, %u), across the break", name,
+				PairIdx(pairIndex).i, PairIdx(pairIndex).j);
+		// off: today's candidates, whatever the sequence options left unread
+		const PairSet off = Matched(Config(mode, false), bFatal);
+		TEST_CHECK(!bFatal, "%s: a fatal round failure without the option", name);
+		PairSet expectedOff = own;
+		if (withPrior)
+			expectedOff.insert(priorPairs.begin(), priorPairs.end());
+		TEST_CHECK(off == expectedOff, "%s: %u pairs attempted without the option, expected today's %u", name,
+			(unsigned)off.size(), (unsigned)expectedOff.size());
+		MatchConfig unread = Config(mode, false);
+		unread.sequenceMaxGap = 1;
+		unread.sequenceMinCovisibility = 0.f;
+		TEST_CHECK(Matched(unread, bFatal) == off && !bFatal, "%s: the sequence options changed the candidates with the option off", name);
+		// the halves share nothing, so the visual rankings cross the break at most by their connectivity bridge, where the
+		// prior crosses it six times: the option is seen not to add those
+		if (withPrior)
+			TEST_CHECK(CountSpanning(own) <= 1 && CountSpanning(on) < CountSpanning(off), "%s: %u pairs across the break with the option, "
+				"%u without (%u of the mode's own)", name, CountSpanning(on), CountSpanning(off), CountSpanning(own));
+		++numModes;
+	}
+	return scope.Pass("the 18 neighbour pairs appended once, kept by PreMatch, attempted by %u match modes with nothing across the break; "
+		"today's candidates with the option off", numModes);
+}
+
 // Scene::MatchPairs() must fail the stage rather than report success when matching leaves the view graph empty over two or
 // more images -- the state a fatal matching failure leaves behind, indistinguishable by return value alone from a scene whose
 // candidates were already all matched. A device-allocation failure can not be provoked from a unit test, but the observable

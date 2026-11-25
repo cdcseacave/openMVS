@@ -10,8 +10,8 @@ This document covers the modes, the sequential prior, the budget and the feedbac
 view-graph weight that ranks the matched pairs is in `PairWeight.md`.
 
 Source: `PairsMatcher.h/cpp` (`Match`, `CollectVocabularyPairs`, `CollectRetrievalPairs`, `CollectFusedRetrievalPairs`,
-`CollectKnownPosePairs`, `CollectVerificationFeedbackPairs`, `AddSequentialPairs`), `VocabularyTree.h/cpp`,
-`GlobalDescriptors.h/cpp`.
+`CollectKnownPosePairs`, `CollectVerificationFeedbackPairs`, `AddSequentialPairs`, `AddNeighbourPairs`, `PreMatch`),
+`SequenceNeighbours.h/cpp`, `VocabularyTree.h/cpp`, `GlobalDescriptors.h/cpp`.
 
 ## Match modes
 
@@ -89,7 +89,8 @@ leave out a share of the truly overlapping consecutive pairs, exactly the ones t
 together end to end. `AddSequentialPairs` adds, unconditionally, for every image its next `--match-sequence-overlap`
 neighbours in import order (`k = 1..overlap`, no wrap-around), skipping pairs already present; 0 turns it off. It is
 added before the snapshot the feedback round attempts against, so the feedback round never re-proposes them. It does not
-apply to the other modes.
+apply to the other modes, nor with `--image-sequence`, where the neighbour pairs take its place (the prior would also add
+the pairs across a name break).
 
 ### Sequence neighbours
 
@@ -101,8 +102,14 @@ stem (none, or more than 18 digits: no number) and its prefix is the rest. `Comp
 adjacent names that both have a number when the prefixes differ (another directory included), or the number does not
 rise, or it rises by more than `--sequence-max-gap` times the median rise over the adjacent same-prefix rising pairs
 of the input (with no such pair there is no gap rule). A name without a number makes no break with either neighbour.
-The definition is shared by everything that reads the capture as a sequence; this stage adds only the definition and
-the options.
+The definition is shared by everything that reads the capture as a sequence.
+
+With the option the neighbour pairs are always matched. In every mode that matches (all but SKIP), `Match` appends the
+neighbour pairs the mode did not pick (`AddNeighbourPairs`) before the snapshot the feedback round attempts against, in
+place of the sequential prior of VOCABULARY and RETRIEVAL; the other candidates of a mode are unchanged (SEQUENTIAL keeps
+its wrap-around pairs, which are no neighbours, and normally lacks none). `PreMatch` never removes a neighbour pair, though
+it may still store the geometry it found for one. A neighbour pair goes through the normal matching and verification and
+is stored only if it verifies. Without the option nothing of this runs: every mode's candidates are those described above.
 
 ## Budget and verification feedback
 
@@ -150,8 +157,8 @@ image, matches descriptors, and verifies:
 | parameter | default | effect |
 |---|---|---|
 | `--match-mode` | 1 (3 when poses were imported and the option is not given) | the mode |
-| `--match-sequence-overlap` | 3 | images ahead matched by SEQUENTIAL; sequential prior of VOCABULARY and RETRIEVAL; 0 = no prior |
-| `--image-sequence` | off | the images in import order are frames of a possibly interrupted sequence (see Sequence neighbours) |
+| `--match-sequence-overlap` | 3 | images ahead matched by SEQUENTIAL; sequential prior of VOCABULARY and RETRIEVAL; with `--image-sequence` the farthest neighbours; 0 = no prior (and no neighbours) |
+| `--image-sequence` | off | the images in import order are frames of a possibly interrupted sequence, whose neighbour pairs every mode matches (see Sequence neighbours) |
 | `--sequence-max-gap` | 10 | with `--image-sequence`: a frame number rising by more than this many median rises is a break; refused without `--image-sequence` |
 | `--sequence-min-covisibility` | 0.75 | with `--image-sequence`: a neighbour pair carrying a covisibility below this is no chain link; in [0,1], refused without `--image-sequence` |
 | `--vocab-max-pairs` | 50 | target pairs per image (VOCABULARY, RETRIEVAL, KNOWN_POSES) |
@@ -168,6 +175,8 @@ image, matches descriptors, and verifies:
 - Candidates are unordered pairs listed once (`MakePairIdx` puts the smaller index first); the dense one pass relies on it.
 - A requested backend never degrades silently into another ranking.
 - The feedback round proposes only pairs not attempted in round 1, including pairs the dense verdict rejected.
+- With `--image-sequence` every neighbour pair is attempted in every mode that matches, and none across a name break is
+  added by the option.
 - Round 2 is never run when the feedback budget is spent, when fewer than 3 images are eligible, or when no verified pair
   exists; KNOWN_POSES that fell back to exhaustive matching skips it.
 
