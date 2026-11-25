@@ -107,8 +107,11 @@ The definition is shared by everything that reads the capture as a sequence.
 With the option the neighbour pairs are always matched. In every mode that matches (all but SKIP), `Match` appends the
 neighbour pairs the mode did not pick (`AddNeighbourPairs`) before the snapshot the feedback round attempts against, in
 place of the sequential prior of VOCABULARY and RETRIEVAL; the other candidates of a mode are unchanged (SEQUENTIAL keeps
-its wrap-around pairs, which are no neighbours, and normally lacks none). `PreMatch` never removes a neighbour pair, though
-it may still store the geometry it found for one. A neighbour pair goes through the normal matching and verification and
+its wrap-around pairs, which are no neighbours, and normally lacks none). The pre-match filter (`PreMatch`) never removes a
+neighbour pair, though it may still store the geometry it found for one; a neighbour pair the scene already holds verified
+leaves the list like any other, being already matched. A VOCABULARY or RETRIEVAL selection that comes out empty (its error
+is still logged) does not end the stage with the option: the neighbour pairs are matched alone, and `Match` stops only
+when there are none either. A neighbour pair goes through the normal matching and verification and
 is stored only if it verifies. Without the option nothing of this runs: every mode's candidates are those described above.
 
 ## Budget and verification feedback

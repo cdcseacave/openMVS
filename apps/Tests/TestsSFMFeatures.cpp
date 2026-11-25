@@ -699,8 +699,9 @@ static void BuildInterruptedSequenceScene(Scene& scene)
 }
 
 // --image-sequence: the neighbour pairs of the sequence are always matched. PairsMatcher::AddNeighbourPairs appends the
-// missing ones (none across the name break), PreMatch never removes one, and every match mode attempts all of them while
-// adding nothing else; with the option off every mode's candidates are today's (the sequential prior of the retrieval modes
+// missing ones (none across the name break), the pre-match filter never removes one (one the scene already holds verified
+// leaves the list, held once), and every match mode attempts all of them while adding nothing else, alone after a selection
+// that came out empty; with the option off every mode's candidates are today's (the sequential prior of the retrieval modes
 // included, which does cross the break)
 bool SequenceForcedMatchTest()
 {
@@ -794,6 +795,28 @@ bool SequenceForcedMatchTest()
 		matcher.PreMatch(none);
 		TEST_CHECK(none.empty(), "PreMatch without the neighbours kept %u pairs", (unsigned)none.size());
 		TEST_CHECK(scene.pairs.empty(), "PreMatch stored %u pairs", (unsigned)scene.pairs.size());
+		// a neighbour pair the scene already holds verified is done, not filtered: with the geometric verification on
+		// (which stores what a pre-match verifies) it leaves the list, is held once, and the other neighbours stay
+		{
+			Scene verified;
+			BuildInterruptedSequenceScene(verified);
+			ImagePair& pair = verified.pairs.emplace_back(1, 2);
+			pair.matches.resize(30);
+			pair.F = Matrix3x3::IDENTITY;
+			MatchConfig verifyCfg = cfg;
+			verifyCfg.maxEpipolarError = 4.f;
+			PairsMatcher verifyMatcher(verified, verifyCfg);
+			TEST_CHECK(!verifyMatcher.CollectVocabularyPairs(3).empty(), "the vocabulary tree PreMatch reads was not built");
+			PairIdxArr toMatch = allPairs;
+			verifyMatcher.PreMatch(toMatch, &neighbours);
+			PairSet expectedLeft = expectedNeighbours;
+			expectedLeft.erase(MakePairIdx(1, 2).idx);
+			TEST_CHECK(toMatch.size() == 17 && ToSet(toMatch) == expectedLeft,
+				"PreMatch kept %u pairs, expected the 17 neighbour pairs the scene does not hold verified", (unsigned)toMatch.size());
+			TEST_CHECK(verified.pairs.size() == 1 && verified.FindPair(1, 2) == &verified.pairs[0],
+				"the verified neighbour pair is held %u times among %u pairs", (unsigned)std::count_if(verified.pairs.begin(), verified.pairs.end(),
+				[](const ImagePair& p) { return MakePairIdx(p.ID1, p.ID2).idx == MakePairIdx(1, 2).idx; }), (unsigned)verified.pairs.size());
+		}
 		// and through Match: the vocabulary mode pre-matches its candidates with the neighbours of the option
 		bool bFatal;
 		const PairSet stored = Matched(cfg, bFatal);
@@ -866,8 +889,30 @@ bool SequenceForcedMatchTest()
 				"%u without (%u of the mode's own)", name, CountSpanning(on), CountSpanning(off), CountSpanning(own));
 		++numModes;
 	}
-	return scope.Pass("the 18 neighbour pairs appended once, kept by PreMatch, attempted by %u match modes with nothing across the break; "
-		"today's candidates with the option off", numModes);
+
+	// 4. a selection that comes out empty (RETRIEVAL with a global descriptor missing, an error) ends the stage without
+	// the option, and with it the neighbour pairs are still matched, alone
+	{
+		const auto MatchedWithoutDescriptor = [](const MatchConfig& cfg, bool& bFatal) {
+			Scene fresh;
+			BuildInterruptedSequenceScene(fresh);
+			fresh.images[7].globalDescriptor.release();
+			PairsMatcher matcher(fresh, cfg);
+			matcher.Match(bFatal);
+			PairSet stored;
+			for (const ImagePair& pair : fresh.pairs)
+				stored.insert(MakePairIdx(pair.ID1, pair.ID2).idx);
+			return stored;
+		};
+		bool bFatal;
+		const PairSet on = MatchedWithoutDescriptor(Config(MatchConfig::RETRIEVAL, true), bFatal);
+		TEST_CHECK(!bFatal && on == expectedNeighbours, "an empty RETRIEVAL selection with the option matched %u pairs, expected the 18 neighbour pairs",
+			(unsigned)on.size());
+		const PairSet off = MatchedWithoutDescriptor(Config(MatchConfig::RETRIEVAL, false), bFatal);
+		TEST_CHECK(!bFatal && off.empty(), "an empty RETRIEVAL selection without the option matched %u pairs", (unsigned)off.size());
+	}
+	return scope.Pass("the 18 neighbour pairs appended once, kept by PreMatch, attempted by %u match modes with nothing across the break, "
+		"and alone after an empty selection; today's candidates with the option off", numModes);
 }
 
 // Scene::MatchPairs() must fail the stage rather than report success when matching leaves the view graph empty over two or

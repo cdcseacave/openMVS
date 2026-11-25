@@ -1942,8 +1942,10 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch, const SequenceNeighbours* 
 		return;
 	}
 	TD_TIMER_STARTD();
-	// a neighbour pair of an image sequence is always matched: pre-matching may still store its
-	// geometry, but never removes it (the pair IDs index scene.images, as everywhere below)
+	// a neighbour pair of an image sequence is always matched: the pre-match filter may still store
+	// its geometry, but never removes it (the pair IDs index scene.images, as everywhere below);
+	// a neighbour pair the scene already holds verified is done, not filtered, and leaves the list
+	// below like any other (pre-matching it again would store a second entry for it)
 	const auto IsKept = [keep](const PairIdx& p) {
 		return keep != nullptr && keep->AreNeighbours(p.i, p.j);
 	};
@@ -1952,8 +1954,6 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch, const SequenceNeighbours* 
 	{
 		size_t numAlreadyVerified = 0;
 		RFOREACH(i, pairsToMatch) {
-			if (IsKept(pairsToMatch[i]))
-				continue;
 			const ImagePair* pPair = scene.FindPair(pairsToMatch[i].i, pairsToMatch[i].j);
 			// Removing pair if it exists, has verification, and sufficient matches
 			if (pPair && pPair->HasGeometricVerification() && pPair->GetNumFilteredInliers() >= config.minMatches) {
@@ -2191,7 +2191,8 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		pairsToMatch = CollectVocabularyPairs(retrievalTopK);
 		if (pairsToMatch.empty()) {
 			VERBOSE("error: vocabulary produced no new candidate pairs");
-			return 0;
+			if (!config.imageSequence)
+				return 0;
 		}
 		break;
 	}
@@ -2202,7 +2203,8 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		pairsToMatch = CollectRetrievalPairs(retrievalTopK);
 		if (pairsToMatch.empty()) {
 			VERBOSE("error: retrieval produced no candidate pairs (see the global-descriptor error above)");
-			return 0;
+			if (!config.imageSequence)
+				return 0;
 		}
 		break;
 	}
@@ -2267,6 +2269,10 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		DEBUG("Image sequence: %u neighbour pairs added to the %u candidates (overlap %u, %u name breaks)",
 			numAdded, numCandidates, config.matchSequenceOverlap,
 			(unsigned)std::count(sequenceNeighbours->Breaks().begin(), sequenceNeighbours->Breaks().end(), true));
+		// a mode that selected nothing (logged above) still matches the neighbour pairs; the stage ends
+		// only when there are none either
+		if (pairsToMatch.empty())
+			return 0;
 	}
 	ASSERT(!pairsToMatch.empty());
 

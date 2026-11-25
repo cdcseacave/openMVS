@@ -172,7 +172,8 @@ public:
 	cv::DescriptorMatcher& GetMatcher(unsigned threadIdx) { ASSERT(threadIdx < matchers.size()); return *matchers[threadIdx]; }
 
 	// Pre-match pairs using vocabulary tree top descriptors (filters weak pairs);
-	// never removes a pair keep calls neighbours (--image-sequence): such a pair is always matched
+	// the filter never removes a pair keep calls neighbours (--image-sequence): such a pair is always matched;
+	// a pair the scene already holds verified leaves the list, a neighbour or not (it is already matched)
 	void PreMatch(PairIdxArr& pairsToMatch, const SequenceNeighbours* keep = nullptr);
 
 	// Match all image pairs according to strategy.
