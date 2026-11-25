@@ -24,8 +24,9 @@ smoothed plane built from the current estimates of its neighbours.
 
 During a black (red) pass the 4 adjacent pixels `q` of `p` (up, down, left, right) are red (black): the pass
 does not rewrite them, so `ProcessPixel` reads their current estimates directly, with no snapshot and no
-extra launch, and each pass sees the estimates the previous pass left. Over those of them with an estimate
-(`depth > 0`):
+extra launch, and each pass sees the estimates and the stored costs the previous pass left (the first black
+pass of a run sees the plain costs `InitializeScore` stores). Over those of them in the image with an
+estimate (`depth > 0`):
 
 ```
 w(q)   = exp(-(I(q) - I(p))^2 / (2*(25/255)^2)  -  cost(q)^2 / (2*0.3^2))
@@ -37,9 +38,11 @@ depthS = n.X / n.Ray(p)                       the plane (n, X) met along the pix
 `I` is the reference image texel (`FetchRefTexel`), `cost` the stored cost of the neighbour (its
 confidence: an unconverged or occluded neighbour stops pulling), the colour term the patch's bilateral
 weight (no smoothing across image edges). The pixel has no smoothed plane when no neighbour has an
-estimate, their normals cancel out (`|sum w n| <= 1e-3 * sum w`), the plane is seen edge-on or from behind
+estimate or all their weights vanish (`sum w <= 1e-4`: dissimilar in colour or unconfident), their normals
+cancel out (`|sum w n| <= 1e-3 * sum w`), the plane is seen edge-on or from behind
 (`n.Ray(p) >= -0.01`) or meets the ray behind the camera. The neighbours are the propagation's
-`neighborPositions` (`valid[0..3]`): an equirectangular reference (`MODEL_SPHERICAL_REF`) wraps the columns
+`neighborPositions`, taken when in the image (`valid[0..3]`: every sample of the near up, down, left and
+right patterns lies on that side of the pixel); an equirectangular reference (`MODEL_SPHERICAL_REF`) wraps the columns
 across the seam (`SEACAVE::WrapColumn`, rays from the `refTrig` tables through `RefPixel::Ray`).
 
 ### Cost factor (`SmoothnessFactor`, `ProcessPixel`)
@@ -56,11 +59,11 @@ factor = 1 - 0.2 * exp(-d^2 / (2*0.02^2)  -  (1 - ns.n) / (13 deg)^2)
 the 8 propagated neighbour planes (`finalCosts`), to the pixel's own plane re-scored with the new view
 weights, and to the 3 or 4 refinement candidates; the stored cost is the scaled one. A pixel without a
 smoothed plane keeps its plain costs. The per-view costs (`costArray`) that drive the view selection stay
-photometric.
+unscaled.
 
 The scaled stored cost then also feeds the neighbour choice of the propagation (the lowest cost along each
-direction), the neighbour weights of the next pass's smoothed planes, `FilterPlanes` (`fThresholdKeepCost`) and the
-photometric confidence, from which the confidence recalibration starts (`DepthMapConfidence.md`).
+direction), the neighbour weights of the next pass's smoothed planes, `FilterPlanes`
+(`fThresholdKeepCost`) and the photometric confidence, from which the confidence recalibration starts (`DepthMapConfidence.md`).
 
 ### Metal
 
@@ -110,14 +113,19 @@ of the depth-maps, p50/p90.
 | electro | 0.8901 / 0.9048 (+0.0147) | 0.969 / 0.849 | 0.9312 / 0.9366 (+0.0054) | 0.986 / 0.892 | 10.3/79.3 / 2.5/33.8 deg |
 | mean dF | +0.0136 | | +0.0088 | | |
 
-Metal (Apple Silicon, the same scenes, inputs and scorer): METAL_PLACEHOLDER
+Metal (Apple Silicon, the same scenes, inputs and scorer): F@2cm pipes 0.7311 / 0.7465, office
+0.5687 / 0.5886; F@5cm pipes 0.8022 / 0.8074, office 0.6980 / 0.7169, within 0.0018 of CUDA in every
+cell. `MetalModelMathTest`, `SyntheticSphericalGPUTest` (held to the CUDA bounds), `SyntheticMixedGPUTest`
+and `GPUConfidenceTest` pass on Metal.
 
-Tanks and Temples Barn at r1 (official evaluator, both arms scored in one process). Holo360D Outdoor_004:
+Tanks and Temples Barn at r1 (official evaluator, both arms scored in one process); Ignatius at its 3 mm
+tolerance, each arm scored in its own process. Holo360D Outdoor_004:
 40 panoramas at 1440 px, the fused cloud against the GT range maps (`Tests evalcloud`).
 
 | measure | without | with |
 |---|---:|---:|
 | T&T Barn F / P / R | 0.6559 / 0.601 / 0.722 | 0.6575 / 0.561 / 0.793 |
+| T&T Ignatius (default options) F / P / R | 0.788 / 0.712 / 0.882 | 0.770 / 0.679 / 0.890 |
 | Holo360D fused F@1% / F@2% / F@5% | 0.272 / 0.452 / 0.647 | 0.324 / 0.511 / 0.700 |
 | Holo360D median relative error, pixels both estimate | 0.0347 | 0.0322 |
 | GPU time of the black + red passes, photometric, pipes / office | 2.18 / 3.79 s | 2.20 / 3.84 s (+0.8 % / +1.1 %) |
@@ -148,6 +156,8 @@ runs per scene; the run-to-run spread of the total is 0.5-3 %.
 ## 7. Open items
 
 - HIP: the backend port takes the CUDA kernel as it is now, coupling included.
+- Tanks and Temples: the coupling densifies more points and loses precision (Barn -0.04, Ignatius -0.033);
+  Barn gains as much recall, Ignatius does not (F -0.018).
 - The constants were tuned on ETH3D at level 1; full-resolution and aerial scenes are untested.
 - The recalibrated confidence (`DepthMapConfidence.md`) is not yet scored against local ground truth with
   the coupling.

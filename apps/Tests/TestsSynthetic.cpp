@@ -1173,7 +1173,7 @@ bool MVS::SyntheticSphericalGPUTest(bool forceCPU)
 	const DepthEvaluator::Stats seam(evaluator.GetStats(DepthEvaluator::SEAM)), center(evaluator.GetStats(DepthEvaluator::CENTER));
 	const DepthEvaluator::Stats north(evaluator.GetStats(DepthEvaluator::NORTH)), south(evaluator.GetStats(DepthEvaluator::SOUTH));
 	// bounds: the accuracy measured on CUDA and Metal less a margin (every band at or above the CPU
-	// estimator); the seam band is held to its antipodal band as there
+	// estimator); the seam band is held to its antipodal band as in SyntheticSphericalTest
 	struct Bounds { double completeness, absRel, within1, within5, normalDeg, poleCompleteness[2], poleWithin5; };
 	const Bounds bounds{0.94, 0.002, 0.90, 0.975, 3.5, {0.8, 0.8}, 0.97};
 	if (!(all.completeness > bounds.completeness) || !(all.absRelMedian < bounds.absRel) || !(all.within1 > bounds.within1) ||

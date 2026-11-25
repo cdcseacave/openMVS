@@ -261,15 +261,15 @@ Fused F is the harmonic mean of precision and recall at the stated range toleran
 | Dataset and shipped configuration | Depth completeness | Median relative depth error | Fused F |
 |---|---:|---:|---:|
 | Synthetic 1536, CPU | 0.911 | 0.00050 | 0.975 at 1% |
-| Synthetic 1536, CUDA | 0.983 | 0.00041 | |
-| Synthetic 1536, Metal | 0.982 | 0.00041 | |
-| Mixed 96 px faces against two 384 px panoramas, CPU / CUDA / Metal | 0.838 / 0.991 / 0.990 | 0.00247 / 0.00226 / 0.00225 | |
+| Synthetic 1536, CUDA | 0.983 | 0.00040 | |
+| Synthetic 1536, Metal | 0.983 | 0.00040 | |
+| Mixed 96 px faces against two 384 px panoramas, CPU / CUDA / Metal | 0.838 / 0.993 / 0.993 | 0.00247 / 0.00214 / 0.00217 | |
 | Holo360D, CPU | 0.954 | 0.201 | 0.522 at 5% |
-| Holo360D, CUDA / Metal | 0.681 | 0.0471 | 0.617 at 5% |
+| Holo360D, CUDA | 0.754 | 0.0439 | 0.700 at 5% |
 
 Pinhole scenes run the same GPU kernels with the spherical branches compiled out: Tanks and Temples
-Ignatius (263 images, CUDA, default options) fuses to F 0.803 at its 3 mm tolerance (precision 0.730,
-recall 0.892).
+Ignatius (263 images, CUDA, default options) fuses to F 0.770 at its 3 mm tolerance (precision 0.679,
+recall 0.890).
 
 The synthetic suite checks seam accuracy against the antipodal band and exercises CUDA or Metal
 with the scene translated 1e6 m from the origin along every axis. `TestSphericalPatchWarp` measures
