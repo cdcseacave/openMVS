@@ -71,6 +71,8 @@ public:
 		float* H, float hdistmax, float* F, float fdistmax);
 	static void GetRowMatch(CuTexImage* texDot, CuTexImage* texMatch, float distmax, float ratiomax);
 	static void GetColMatch(CuTexImage* texCRT, CuTexImage* texMatch, float distmax, float ratiomax);
+	static void MultiplyDescriptorRows(CuTexImage* des1, int row0, int num1, CuTexImage* des2, CuTexImage* texDot, CuTexImage* texCRT);
+	static void GetColBest(CuTexImage* texCRT, CuTexImage* texBest);
 };
 
 #endif

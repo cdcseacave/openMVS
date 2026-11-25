@@ -65,9 +65,15 @@ public:
 	SiftGPUMatchCoordinator(PairsMatcher& _pairsMatcher)
 		: pairsMatcher(_pairsMatcher) {}
 
-	// Initialize SiftMatchGPU context (returns false on failure)
-	bool Initialize() {
-		const int maxNumMatches = 32768;
+	// Initialize SiftMatchGPU context (returns false on failure); the matcher is sized to the largest feature count
+	// among the images of the pairs to match, so no feature is ever dropped (SiftMatchCU::SetDescriptors keeps only
+	// the first max_sift); a fixed 32768 dropped 30-55% of the features of 50-80k-feature panoramas. Pairs whose full
+	// product does not fit in one GPU tile are matched tile by tile (SiftMatchCU::GetTiledSiftMatch), with the same result.
+	bool Initialize(const PairIdxArr& pairsToMatch) {
+		const Scene& scene = pairsMatcher.GetScene();
+		int maxNumMatches = 4096;
+		for (const PairIdx& p: pairsToMatch)
+			maxNumMatches = MAXF(maxNumMatches, MAXF(scene.images[p.i].descriptors.rows, scene.images[p.j].descriptors.rows));
 		gpu.reset(CreateNewSiftMatchGPU(maxNumMatches));
 		if (!gpu) {
 			VERBOSE("error: failed to create SiftMatchGPU");
@@ -94,7 +100,7 @@ public:
       		VERBOSE("warning: OpenGL version of SiftGPU only supports a maximum of %d matches; try switching to CUDA to avoid this limitation",
 				gpu->GetMaxSift());
 		}
-		DEBUG_EXTRA("SiftGPU matcher initialized: %s mode", gpu->GetLanguage() == SiftMatchGPU::SIFTMATCH_CUDA ? "CUDA" : "GLSL");
+		DEBUG_EXTRA("SiftGPU matcher initialized: %s mode, up to %d features an image", gpu->GetLanguage() == SiftMatchGPU::SIFTMATCH_CUDA ? "CUDA" : "GLSL", gpu->GetMaxSift());
 		return true;
 	}
 
@@ -2016,7 +2022,7 @@ bool PairsMatcher::MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progr
 	// SiftGPU branch (only if using CUDA, even if SiftGPU can use GLSL for matching, is slower than modern CPU)
 	if (scene.status.nFeaturesType == FeatureType::SIFTGPU) {
 		SiftGPUMatchCoordinator coordinator(*this);
-		if (!coordinator.Initialize()) {
+		if (!coordinator.Initialize(pairsToMatch)) {
 			VERBOSE("error: SiftMatchGPU coordinator initialization failed");
 			GET_LOGCONSOLE().Play();
 			progress.close();

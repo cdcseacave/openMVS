@@ -315,6 +315,7 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(DetectorConfigTest),
 				SFM_TEST(SphericalPairGeometryTest),
 				SFM_TEST(TwoViewGeometryTest),
+				SFM_TEST(SiftGPUTiledMatchTest),
 				// TestsSFMDense.cpp: dense matching
 				SFM_TEST(DenseWarpSamplingTest),
 				SFM_TEST(DenseWarpGridConventionTest),

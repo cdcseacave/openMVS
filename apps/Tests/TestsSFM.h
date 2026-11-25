@@ -111,6 +111,7 @@ bool DetectorConfigTest();
 // The relative pose of two panoramas through PairsMatcher::MatchPair (bearing vectors) and MatchFeaturesGeometric
 // (angular epipolar filter, no F), back-hemisphere bearings admitted.
 bool SphericalPairGeometryTest();
+bool SiftGPUTiledMatchTest();
 
 // Two-view geometry: PairsMatcher and ImagePair matrix operations, the two-view calibration refinement, and the
 // relative pose recovered from the fundamental matrix (GeometricFilter's F branch, then DecomposeFundamentalToPose)

@@ -49,6 +49,9 @@
 #include "../../libs/SFM/RoMa2Matcher.h"
 #include "../../libs/SFM/FlexGlueMatcher.h"
 #include "../../libs/Math/Camera/CameraUndistort.h"
+#if defined(_USE_SIFTGPU) && defined(SIFTGPU_CUDA)
+#include <siftgpu/SiftGPU.h>
+#endif
 #include "../../libs/SFM/InterfaceMVS.h"
 #include "../../libs/MVS.h"
 #include <nlohmann/json.hpp>
@@ -57,6 +60,7 @@
 #include <filesystem>
 #include <chrono>
 #include <random>
+#include <numeric>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -1043,6 +1047,96 @@ bool TwoViewGeometryTest()
 	return scope.Pass("projection round trip, essential and fundamental matrix operations (the decomposed rotation %.4f rad from the recovered one), "
 		"MatchPair, CheckEpipolarInliers, the two-view calibration refinement, and the pose from F for cameras of different and of equal sizes",
 		angle_decomp_err);
+}
+/*----------------------------------------------------------------*/
+
+// SiftGPU's CUDA matcher on a pair too large for one product of descriptors (SiftMatchCU::GetTiledSiftMatch): 70000 x 60000
+// features, past the old fixed max_sift of 32768 (features beyond it were dropped) and past the 46340 at which the full
+// int-indexed product overflows. Random unit descriptors (scaled to 512, as SiftGPU wants them) never match; planted copies
+// (small noise) spread over the whole of both images, in every tile of rows, must all come back as matches. Twin rows in two
+// different tiles with the same column test the merge of each column's best and second best over the tiles: without the
+// mutual check both twins match the column; with it the column fails its ratio test and neither does. A small pair (one
+// tile, the untiled path) gives its planted matches too. Skipped without a CUDA device.
+bool SiftGPUTiledMatchTest()
+{
+	TestScope scope("SiftGPUTiledMatchTest");
+	#if defined(_USE_SIFTGPU) && defined(SIFTGPU_CUDA)
+	const int num1 = 70000, num2 = 60000;
+	std::unique_ptr<SiftMatchGPU> gpu(CreateNewSiftMatchGPU(num1));
+	TEST_CHECK(gpu != nullptr, "CreateNewSiftMatchGPU failed");
+	gpu->SetLanguage(SiftMatchGPU::SIFTMATCH_CUDA);
+	if (!gpu->CreateContextGL())
+		return scope.Pass("skipped: no CUDA device for SiftMatchGPU");
+	TEST_CHECK(gpu->Allocate(num1, 1), "Allocate(%d) failed", num1);
+	TEST_CHECK(gpu->GetMaxSift() >= num1, "max_sift %d below %d", gpu->GetMaxSift(), num1);
+	std::mt19937 rng(7);
+	std::normal_distribution<float> gauss(0.f, 1.f);
+	const auto Random = [&](uint8_t* d) {
+		float v[128], n = 0;
+		for (int k = 0; k < 128; ++k) { v[k] = std::abs(gauss(rng)); n += v[k] * v[k]; }
+		n = 512.f / std::sqrt(n);
+		for (int k = 0; k < 128; ++k) d[k] = (uint8_t)std::min(255.f, std::round(v[k] * n));
+	};
+	std::vector<uint8_t> d1((size_t)num1 * 128), d2((size_t)num2 * 128);
+	for (int i = 0; i < num1; ++i) Random(&d1[(size_t)i * 128]);
+	for (int j = 0; j < num2; ++j) Random(&d2[(size_t)j * 128]);
+	// planted pairs: row i -> column j, spread over both images
+	std::vector<std::pair<int,int>> planted;
+	std::uniform_int_distribution<int> jitter(-2, 2);
+	const auto Copy = [&](const uint8_t* src, uint8_t* dst) {
+		for (int k = 0; k < 128; ++k) dst[k] = (uint8_t)std::clamp((int)src[k] + jitter(rng), 0, 255);
+	};
+	for (int t = 0; t < 600; ++t) {
+		const int i = (int)((int64_t)t * (num1 - 1) / 599), j = (int)((int64_t)(599 - t) * (num2 - 1) / 599);
+		Copy(&d1[(size_t)i * 128], &d2[(size_t)j * 128]);
+		planted.emplace_back(i, j);
+	}
+	// twins: rows 1001 and 65001 (different tiles) copies of one descriptor, both close to column 30001
+	const int twinA = 1001, twinB = 65001, twinCol = 30001;
+	Copy(&d2[(size_t)twinCol * 128], &d1[(size_t)twinA * 128]);
+	Copy(&d2[(size_t)twinCol * 128], &d1[(size_t)twinB * 128]);
+	gpu->SetDescriptors(0, num1, d1.data());
+	gpu->SetDescriptors(1, num2, d2.data());
+	const auto Match = [&](int mbm, int n1) {
+		std::vector<uint32_t> buf((size_t)n1 * 2);
+		const int n = gpu->GetSiftMatch(n1, reinterpret_cast<uint32_t (*)[2]>(buf.data()), 0.7f, 0.8f, mbm);
+		std::set<std::pair<int,int>> got;
+		for (int k = 0; k < n; ++k) got.emplace((int)buf[2 * k], (int)buf[2 * k + 1]);
+		return std::make_pair(n, got);
+	};
+	for (int mbm = 0; mbm < 2; ++mbm) {
+		const auto [n, got] = Match(mbm, num1);
+		TEST_CHECK(n >= 0, "GetSiftMatch reported a device error (mbm %d)", mbm);
+		unsigned found = 0;
+		for (const auto& p: planted) found += got.count(p);
+		TEST_CHECK(found == planted.size(), "mbm %d: %u of %u planted matches found", mbm, found, (unsigned)planted.size());
+		const bool a = got.count({twinA, twinCol}) != 0, b = got.count({twinB, twinCol}) != 0;
+		TEST_CHECK(mbm ? (!a && !b) : (a && b), "mbm %d: twins matched %d %d", mbm, a, b);
+		TEST_CHECK(got.size() == planted.size() + (mbm ? 0 : 2), "mbm %d: %u matches, expected %u", mbm, (unsigned)got.size(),
+			(unsigned)(planted.size() + (mbm ? 0 : 2)));
+	}
+	// a small pair, matched in one product: 300 planted pairs among 3000 x 3000 features, the columns shuffled
+	const int small = 3000, numSmallPlanted = 300;
+	std::vector<uint8_t> s1((size_t)small * 128), s2((size_t)small * 128);
+	for (int k = 0; k < small; ++k) { Random(&s1[(size_t)k * 128]); Random(&s2[(size_t)k * 128]); }
+	std::vector<int> perm(small);
+	std::iota(perm.begin(), perm.end(), 0);
+	std::shuffle(perm.begin(), perm.end(), rng);
+	std::set<std::pair<int,int>> smallPlanted;
+	for (int k = 0; k < numSmallPlanted; ++k) {
+		memcpy(&s1[(size_t)k * 128], &d1[(size_t)planted[k].first * 128], 128);
+		memcpy(&s2[(size_t)perm[k] * 128], &d2[(size_t)planted[k].second * 128], 128);
+		smallPlanted.emplace(k, perm[k]);
+	}
+	gpu->SetDescriptors(0, small, s1.data());
+	gpu->SetDescriptors(1, small, s2.data());
+	const auto [ns, gotSmall] = Match(1, small);
+	TEST_CHECK(ns >= 0 && gotSmall == smallPlanted, "small pair: %u matches, %u planted", (unsigned)gotSmall.size(), (unsigned)smallPlanted.size());
+	return scope.Pass("70000 x 60000 features: all %u planted matches with and without the mutual check, twins across tiles resolved",
+		(unsigned)planted.size());
+	#else
+	return scope.Pass("skipped: built without SiftGPU CUDA");
+	#endif
 }
 /*----------------------------------------------------------------*/
 
