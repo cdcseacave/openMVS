@@ -116,6 +116,11 @@ of the depth-maps, p50/p90.
 | electro | 0.8901 / 0.9048 (+0.0147) | 0.969 / 0.849 | 0.9312 / 0.9366 (+0.0054) | 0.986 / 0.892 | 10.3/79.3 / 2.5/32.4 deg |
 | mean dF | +0.0125 | | +0.0080 | | |
 
+Metal (Apple Silicon, the same scenes, inputs and scorer): F@2cm pipes 0.7311 / 0.7452, office
+0.5687 / 0.5871; F@5cm pipes 0.8022 / 0.8064, office 0.6980 / 0.7143, within 0.0012 of CUDA in every
+cell. `MetalModelMathTest`, `SyntheticSphericalGPUTest` (held to the CUDA bounds), `SyntheticMixedGPUTest`
+and `GPUConfidenceTest` pass on Metal.
+
 Tanks and Temples Barn at r1 (official evaluator, both arms scored in one process). Holo360D Outdoor_004:
 40 panoramas at 1440 px, the fused cloud against the GT range maps (`Tests evalcloud`). Confidence: the
 recalibrated confidence scored against local ground truth.
@@ -151,8 +156,6 @@ runs per scene; the run-to-run spread of the photometric total is 1-4 %.
 
 ## 7. Open items
 
-- Metal: mirrored, not yet compiled nor run on Apple hardware (`MetalModelMathTest`, `SyntheticSphericalGPUTest`,
-  `SyntheticMixedGPUTest` and an ETH3D A/B against CUDA to do on the Mac).
 - HIP: the backend port takes the CUDA kernel as it is now, coupling included.
 - The constants were tuned on ETH3D at level 1; full-resolution and aerial scenes are untested.
 - The photometric passes cost up to 3.5 % more; the cost is in `ProcessPixel` (not in `SmoothPlanes`).
