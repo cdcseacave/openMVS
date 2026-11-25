@@ -17,8 +17,8 @@ using namespace SFM;
 
 namespace {
 
-// 18 digits always fit the 64 bits number
-constexpr size_t MAX_NUMBER_DIGITS = 18;
+// 19 digits always fit the 64 bits number (nanosecond-epoch stems are 19 digits)
+constexpr size_t MAX_NUMBER_DIGITS = 19;
 
 struct ParsedName {
 	std::string prefix; // the directory and the stem without its trailing digits
@@ -63,31 +63,47 @@ std::vector<bool> SFM::ComputeNameBreaks(const std::vector<String>& fileNames, u
 	for (const String& fileName : fileNames)
 		names.push_back(ParseName(fileName));
 
-	// the usual step of the numbering, to tell a missing stretch from a numbering that just counts by tens
-	std::vector<double> rises;
+	// the usual step of the numbering, to tell a missing stretch from a numbering that just counts by tens: the median rise
+	// of each run of one prefix (consecutive names between two prefix changes; a number that does not rise is a break but
+	// keeps the run), so clips numbered at different steps each have their own
+	std::vector<bool> breaks(numNames-1, false);
+	std::vector<size_t> runOf(numNames, 0);
+	size_t numRuns = 1;
+	for (size_t k = 0; k+1 < numNames; ++k) {
+		const ParsedName& a = names[k];
+		const ParsedName& b = names[k+1];
+		if (a.hasNumber && b.hasNumber && a.prefix != b.prefix) {
+			breaks[k] = true;
+			++numRuns;
+		}
+		runOf[k+1] = numRuns-1;
+	}
+	std::vector<std::vector<double>> risesOfRun(numRuns);
 	for (size_t k = 0; k+1 < numNames; ++k) {
 		const ParsedName& a = names[k];
 		const ParsedName& b = names[k+1];
 		if (a.hasNumber && b.hasNumber && a.prefix == b.prefix && b.number > a.number)
-			rises.push_back(double(b.number-a.number));
+			risesOfRun[runOf[k]].push_back(double(b.number-a.number));
 	}
-	double medianRise = 0;
-	if (!rises.empty()) {
+	std::vector<double> medianRise(numRuns, 0.0);
+	for (size_t run = 0; run < numRuns; ++run) {
+		std::vector<double>& rises = risesOfRun[run];
+		if (rises.empty())
+			continue;
 		std::sort(rises.begin(), rises.end());
 		const size_t mid = rises.size()/2;
-		medianRise = (rises.size()%2 ? rises[mid] : 0.5*(rises[mid-1]+rises[mid]));
+		medianRise[run] = (rises.size()%2 ? rises[mid] : 0.5*(rises[mid-1]+rises[mid]));
 	}
 
-	std::vector<bool> breaks(numNames-1, false);
 	for (size_t k = 0; k+1 < numNames; ++k) {
 		const ParsedName& a = names[k];
 		const ParsedName& b = names[k+1];
-		if (!a.hasNumber || !b.hasNumber)
+		if (!a.hasNumber || !b.hasNumber || breaks[k])
 			continue;
-		if (a.prefix != b.prefix || b.number <= a.number)
+		if (b.number <= a.number)
 			breaks[k] = true;
-		else if (!rises.empty() && double(b.number-a.number) > double(maxGap)*medianRise)
-			breaks[k] = true;
+		else if (maxGap > 0 && !risesOfRun[runOf[k]].empty() && double(b.number-a.number) > double(maxGap)*medianRise[runOf[k]])
+			breaks[k] = true; // a gap of 0 gives no break by the rises (names that are clock times)
 	}
 	return breaks;
 }

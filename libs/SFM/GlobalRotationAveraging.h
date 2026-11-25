@@ -260,8 +260,9 @@ struct SFM_API SequenceChain {
 };
 // The chain of a sequence: the scale + centres solve of the translation stage on the chain links alone. A link is a
 // scene pair with a relative pose whose images are neighbours, both rotated (rotations != Point3::INF), not `removed`,
-// with a world baseline of some length, meanRayAngle >= kNearDuplicateRayAngle, and whose covisibility, when it
-// carries one, is >= minCovisibility (0 disables that test). Weights: the composite weight. One segment per solved
+// with a positive composite weight (the centres solve skips a weightless pair, which would place its images nowhere),
+// a world baseline of some length, meanRayAngle >= kNearDuplicateRayAngle, and whose covisibility, when it carries
+// one, is >= minCovisibility (0 disables that test). Weights: the composite weight. One segment per solved
 // component of the links' pair-scale graph (components under minScaleComponent links: unplaced); an image two
 // components place belongs to the larger one (a component whose every image a larger one holds is no segment);
 // numLinks counts the links of positive scale. The segments are numbered in the order of their first image, so they

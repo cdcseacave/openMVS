@@ -182,8 +182,11 @@ GPS. Clustering is never involved.
   solves the chain of the verified neighbour pairs (`SolveSequenceChain`), vetoes the pairs that contradict it
   (`VetoPairsByChain`, `ChainVetoes`: off the chain by more than 8 local steps and 0.2 of the path, and under a
   third of the chain distance long; never offered to the repair) and removes no chain link in its translation
-  stage (`docs/design/ContradictionCut.md`); `SequenceFilterStats` and one `Sequence chain:` log line report it,
-  `-v 3` adds a `Chain pair:` line per judged pair and a `Chain centre:` line per placed image
+  stage (`docs/design/ContradictionCut.md`); `SequenceFilterStats` and one `Sequence chain:` log line report it
+  (the solve logs its own `Sequence chain solve:` line), `-v 3` adds a `Chain pair:` line per judged pair (ending
+  `equations N`) and a `Chain centre:` line per placed image. A failed VOCABULARY/RETRIEVAL selection ends `Match` with
+  the option as without it; `FilterViewGraph` logs the name breaks and warns when the cut cannot use the option, and
+  a `PAIRS_FILTERED` scene given the option warns that its filters ran already
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
 - **ROMAv2 one-pass dense matching** (`MatchDense.h`, `DenseWarp.h` helpers, `--dense-match`): the
   bidirectional dense warps are computed in-process (no external files) and, when enabled, ARE the

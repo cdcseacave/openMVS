@@ -445,7 +445,7 @@ bool RetrievalTest()
 }
 
 // The name breaks of an image sequence (directory, name prefix, falling or jumping frame numbers, names without a
-// number) and the neighbours they leave (SequenceNeighbours)
+// number, 19 and 20 digits, the median rise per run of one prefix, a gap of 0) and the neighbours they leave (SequenceNeighbours)
 bool SequenceNeighboursTest()
 {
 	TestScope scope("SequenceNeighboursTest");
@@ -472,6 +472,29 @@ bool SequenceNeighboursTest()
 	TEST_CHECK(BreaksOf({"left.jpg", "right.jpg"}, 10) == (Breaks{0}), "stems without a number: a break");
 	TEST_CHECK(BreaksOf({"c_0001.jpg", "photo_12345678901234567890.jpg", "c_0002.jpg"}, 10) == (Breaks{0,0}),
 		"a 20-digit stem makes a break with a neighbour");
+	// 19 digits are a number (nanosecond-epoch stems), 20 are not: the same jump is a break by the gap rule, then none
+	TEST_CHECK(BreaksOf({"1403636579763555584.png", "1403636579763555585.png", "1403636579763555586.png", "1403636579763555686.png"}, 10) ==
+		(Breaks{0,0,1}), "19-digit stems: the jump of 100 steps is no break");
+	TEST_CHECK(BreaksOf({"14036365797635555840.png", "14036365797635555850.png", "14036365797635555860.png", "14036365797635556860.png"}, 10) ==
+		(Breaks{0,0,0}), "20-digit stems: a break");
+
+	// the median rise is taken per run of one prefix: a clip stepping by 100 after one stepping by 1 has no break of its own
+	TEST_CHECK(BreaksOf({"a_0001.jpg", "a_0002.jpg", "a_0003.jpg", "a_0004.jpg", "a_0005.jpg", "a_0006.jpg",
+		"b_0100.jpg", "b_0200.jpg", "b_0300.jpg"}, 10) == (Breaks{0,0,0,0,0,1,0,0}), "two clips numbered at different steps: "
+		"the breaks are not the prefix change alone");
+	// a falling number is a break and keeps the run: its rises still count in the run's median
+	// (rises 10, 10, 10, 1, 1, 100: a median of 10, so the rise of 100 is no break; a run of its own after the fall would
+	// have a median of 1 and break it)
+	TEST_CHECK(BreaksOf({"a_0010.jpg", "a_0020.jpg", "a_0030.jpg", "a_0040.jpg", "a_0001.jpg", "a_0002.jpg", "a_0003.jpg",
+		"a_0103.jpg"}, 10) == (Breaks{0,0,0,1,0,0,0}), "a falling number: the breaks of the run are wrong");
+
+	// a gap of 0: the rises give no break (names that are clock times), the prefix and the falling number still do
+	const std::initializer_list<const char*> clock = {"IMG_20261125_103058.jpg", "IMG_20261125_103059.jpg", "IMG_20261125_103100.jpg",
+		"IMG_20261125_103101.jpg"};
+	TEST_CHECK(BreaksOf(clock, 10) == (Breaks{0,1,0}), "clock-time names at a gap of 10: the minute rollover is no break");
+	TEST_CHECK(BreaksOf(clock, 0) == (Breaks{0,0,0}), "clock-time names at a gap of 0: a break");
+	TEST_CHECK(BreaksOf({"a_0001.jpg", "a_0005.jpg", "a_0003.jpg", "b_0004.jpg", "b_9000.jpg"}, 0) == (Breaks{0,1,1,0}),
+		"a gap of 0: the prefix and falling-number breaks are wrong");
 	TEST_CHECK(BreaksOf({"only.jpg"}, 10).empty(), "one name: breaks");
 	TEST_CHECK(BreaksOf({}, 10).empty(), "no name: breaks");
 
@@ -513,7 +536,7 @@ bool SequenceNeighboursTest()
 			"the scene's neighbours are wrong");
 	}
 
-	return scope.Pass("name breaks and neighbours: gap, number, prefix and directory rules");
+	return scope.Pass("name breaks and neighbours: gap, number, prefix and directory rules, 19 digits, the median per run, a gap of 0");
 }
 
 // The four ways a candidate pair is made or pruned: the known-pose selection must still produce candidates for an image
@@ -700,9 +723,9 @@ static void BuildInterruptedSequenceScene(Scene& scene)
 
 // --image-sequence: the neighbour pairs of the sequence are always matched. PairsMatcher::AddNeighbourPairs appends the
 // missing ones (none across the name break), the pre-match filter never removes one (one the scene already holds verified
-// leaves the list, held once), and every match mode attempts all of them while adding nothing else, alone after a selection
-// that came out empty; with the option off every mode's candidates are today's (the sequential prior of the retrieval modes
-// included, which does cross the break)
+// leaves the list, held once), and every match mode attempts all of them while adding nothing else, and none after a
+// selection that failed; with the option off every mode's candidates are today's (the sequential prior of the retrieval
+// modes included, which does cross the break)
 bool SequenceForcedMatchTest()
 {
 	TestScope scope("SequenceForcedMatchTest");
@@ -861,12 +884,14 @@ bool SequenceForcedMatchTest()
 		// on: every neighbour pair is attempted, and nothing but the mode's own candidates besides
 		const PairSet on = Matched(Config(mode, true), bFatal);
 		TEST_CHECK(!bFatal, "%s: a fatal round failure with the option", name);
+		// cannot fail for EXHAUSTIVE and SEQUENTIAL: their own candidates hold every neighbour pair
 		for (const uint64_t pairIndex : expectedNeighbours)
 			TEST_CHECK(on.count(pairIndex), "%s: the neighbour pair (%u, %u) was not attempted", name, PairIdx(pairIndex).i, PairIdx(pairIndex).j);
 		PairSet expectedOn = own;
 		expectedOn.insert(expectedNeighbours.begin(), expectedNeighbours.end());
 		TEST_CHECK(on == expectedOn, "%s: the option attempted %u pairs, expected the %u of the mode and the neighbours", name,
 			(unsigned)on.size(), (unsigned)expectedOn.size());
+		// cannot fail for EXHAUSTIVE and SEQUENTIAL either: every pair across the break they attempt is their own
 		for (const uint64_t pairIndex : on)
 			TEST_CHECK(!Spans(pairIndex) || own.count(pairIndex), "%s: the option added (%u, %u), across the break", name,
 				PairIdx(pairIndex).i, PairIdx(pairIndex).j);
@@ -890,29 +915,33 @@ bool SequenceForcedMatchTest()
 		++numModes;
 	}
 
-	// 4. a selection that comes out empty (RETRIEVAL with a global descriptor missing, an error) ends the stage without
-	// the option, and with it the neighbour pairs are still matched, alone
+	// 4. a selection that failed (RETRIEVAL with a global descriptor missing, an error) ends the stage with the option as
+	// without: nothing is matched, Match returns 0 and the error is logged, the neighbour pairs are not matched alone
 	{
-		const auto MatchedWithoutDescriptor = [](const MatchConfig& cfg, bool& bFatal) {
+		const auto MatchedWithoutDescriptor = [](const MatchConfig& cfg, bool& bFatal, unsigned& numMatched, bool& logged) {
 			Scene fresh;
 			BuildInterruptedSequenceScene(fresh);
 			fresh.images[7].globalDescriptor.release();
 			PairsMatcher matcher(fresh, cfg);
-			matcher.Match(bFatal);
+			LogCapture log;
+			numMatched = matcher.Match(bFatal);
+			logged = log.Contains("error: retrieval produced no candidate pairs");
 			PairSet stored;
 			for (const ImagePair& pair : fresh.pairs)
 				stored.insert(MakePairIdx(pair.ID1, pair.ID2).idx);
 			return stored;
 		};
-		bool bFatal;
-		const PairSet on = MatchedWithoutDescriptor(Config(MatchConfig::RETRIEVAL, true), bFatal);
-		TEST_CHECK(!bFatal && on == expectedNeighbours, "an empty RETRIEVAL selection with the option matched %u pairs, expected the 18 neighbour pairs",
-			(unsigned)on.size());
-		const PairSet off = MatchedWithoutDescriptor(Config(MatchConfig::RETRIEVAL, false), bFatal);
-		TEST_CHECK(!bFatal && off.empty(), "an empty RETRIEVAL selection without the option matched %u pairs", (unsigned)off.size());
+		bool bFatal, logged;
+		unsigned numMatched;
+		const PairSet on = MatchedWithoutDescriptor(Config(MatchConfig::RETRIEVAL, true), bFatal, numMatched, logged);
+		TEST_CHECK(!bFatal && on.empty() && numMatched == 0 && logged, "a failed RETRIEVAL selection with the option matched %u pairs "
+			"(Match returned %u, the error %slogged), expected none, as without the option", (unsigned)on.size(), numMatched, logged ? "" : "not ");
+		const PairSet off = MatchedWithoutDescriptor(Config(MatchConfig::RETRIEVAL, false), bFatal, numMatched, logged);
+		TEST_CHECK(!bFatal && off.empty() && numMatched == 0 && logged, "a failed RETRIEVAL selection without the option matched %u pairs "
+			"(Match returned %u, the error %slogged)", (unsigned)off.size(), numMatched, logged ? "" : "not ");
 	}
 	return scope.Pass("the 18 neighbour pairs appended once, kept by PreMatch, attempted by %u match modes with nothing across the break, "
-		"and alone after an empty selection; today's candidates with the option off", numModes);
+		"none after a failed selection; today's candidates with the option off", numModes);
 }
 
 // Scene::MatchPairs() must fail the stage rather than report success when matching leaves the view graph empty over two or

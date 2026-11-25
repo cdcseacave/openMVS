@@ -2190,8 +2190,10 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		// Build vocabulary candidates from the tree retrieval ranking
 		pairsToMatch = CollectVocabularyPairs(retrievalTopK);
 		if (pairsToMatch.empty()) {
+			// a failed selection (no tree) ends the stage with --image-sequence too; only a tree that ranked and
+			// returned no pair leaves the neighbour pairs to match alone
 			VERBOSE("error: vocabulary produced no new candidate pairs");
-			if (!config.imageSequence)
+			if (!config.imageSequence || !vocabularyTree)
 				return 0;
 		}
 		break;
@@ -2202,8 +2204,10 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		// descriptor already logged a specific error naming the image
 		pairsToMatch = CollectRetrievalPairs(retrievalTopK);
 		if (pairsToMatch.empty()) {
+			// a failed selection (a missing global descriptor) ends the stage with --image-sequence too; only an
+			// index that ranked and returned no pair leaves the neighbour pairs to match alone
 			VERBOSE("error: retrieval produced no candidate pairs (see the global-descriptor error above)");
-			if (!config.imageSequence)
+			if (!config.imageSequence || !globalDescriptors || !globalDescriptors->IsValid())
 				return 0;
 		}
 		break;
@@ -2269,8 +2273,8 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		DEBUG("Image sequence: %u neighbour pairs added to the %u candidates (overlap %u, %u name breaks)",
 			numAdded, numCandidates, config.matchSequenceOverlap,
 			(unsigned)std::count(sequenceNeighbours->Breaks().begin(), sequenceNeighbours->Breaks().end(), true));
-		// a mode that selected nothing (logged above) still matches the neighbour pairs; the stage ends
-		// only when there are none either
+		// a mode whose selection ran and returned nothing (logged above; a failed one returned already) still
+		// matches the neighbour pairs; the stage ends only when there are none either
 		if (pairsToMatch.empty())
 			return 0;
 	}

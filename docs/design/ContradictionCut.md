@@ -102,13 +102,17 @@ sequence, and the neighbour pairs alone (at most the sequence overlap apart, no 
 `SequenceNeighbours`) place the camera centres along it: `SolveSequenceChain` runs the scale and
 centres solve of steps 3 and 4 on the chain links, weighted by composite weight alone. It runs
 between the two stages, when the translation stage runs (a bar of 0: no chain, the option does
-nothing in the cut). A link is a
-scene pair with a relative pose whose images are neighbours, both rotated, not removed, with a world
-baseline of some length (as the stage's judged pairs), a mean ray angle of at least `kNearDuplicateRayAngle` (a frame standing still has no baseline direction),
+nothing in the cut, and `FilterViewGraph` warns, as it does at `--match-sequence-overlap 0`). A
+link is a scene pair with a relative pose whose images are neighbours, both rotated, not removed,
+with a positive composite weight (the centres solve skips a weightless pair, which would leave its
+images placed at the origin), a world baseline of some length (as the stage's judged pairs), a mean
+ray angle of at least `kNearDuplicateRayAngle` (a frame standing still has no baseline direction),
 and whose covisibility, when its matcher gave one, is at least `--sequence-min-covisibility` (0.75;
 0 disables the test): a neighbour pair that does not show the same place is no link, so it splits
-the chain as a name break does. In the cut a link also joins two images of one rotation component
-(the rotations of two components share no frame), so a segment lies inside one.
+the chain as a name break does. The covisibility is serialized with the pair, so the bar can be
+changed on a reload of a scene matched with a dense matcher; a pair matched without one (or saved
+before the score existed) carries none. In the cut a link also joins two images of one rotation
+component (the rotations of two components share no frame), so a segment lies inside one.
 
 Each solved component of the links' pair-scale graph (at least 10 links) is a segment; a smaller
 one places nothing. An image two components place belongs to the larger, a component whose every
@@ -125,7 +129,8 @@ of its matches has no pair-scale equation, so no scale: it is no link either.
 
 On a walk of 40 cameras 1 unit apart with exact relative poses (`SequenceChainTest`) the chain is
 one segment whose centres, after a scale and translation fit, are within 1e-7 of the truth; a name
-break or a covisibility of 0.3 across the middle splits it into two segments of 20.
+break or a covisibility of 0.3 across the middle splits it into two segments of 20; a neighbour
+pair of weight 0 is no link.
 
 ### The veto of the chain
 
@@ -168,8 +173,11 @@ the centres are the ones in doubt.
 
 One log line reports the chain in the cut: `Sequence chain: S segment(s) over K links; veto removed
 V of J judged pairs; P chain pairs protected (veto <time>)`; `SequenceFilterStats` returns the same
-five numbers. At `-v 3` the cut also writes one line per judged pair, `Chain pair: <image> <image>
-length <L> chain <distance> path <path> discrepancy <d> veto <0|1>`, and one per placed image,
+five numbers. The solve itself logs one line starting `Sequence chain solve:` (the segments, the
+images placed, the links and the scale equations, or that no neighbour pair is a link). At `-v 3`
+the cut also writes one line per judged pair, `Chain pair: <image> <image> length <L> chain
+<distance> path <path> discrepancy <d> veto <0|1> equations <N>` (N the pair-scale equations with
+links its scale is the median of), and one per placed image,
 `Chain centre: <image> <segment> <x> <y> <z>`, an image named by its file name without directory
 and extension (a white space replaced by `_`, its index when it has no name).
 
@@ -322,6 +330,11 @@ Weighting:
 ## Open items
 
 - The veto and the protection of the chain are validated on synthetic scenes only (above).
+- A wrong neighbour link is trusted: it is protected, and the true pairs that disagree with a chain
+  it bent can be vetoed; a vetoed pair is final (never repaired).
+- Protection does not depend on the link agreeing with the chain's own centres.
+- Look-alike pairs between two segments are not judged (both images must lie in one segment).
+- The rotation stage runs before the chain and may remove a neighbour pair, which then is no link.
 - A pair the cut keeps at under 2 degrees of parallax is outside the repair's reach (the
   translation stage skips such a pair, and the repair reconsiders only removed ones). On a panorama
   capture 54% of the kept pairs under 1 degree and 21% of those from 1 to 2 degrees have a baseline

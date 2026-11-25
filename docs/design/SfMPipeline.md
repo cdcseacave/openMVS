@@ -78,12 +78,16 @@ contradiction cut and select the seed views. With `--filter-triplets 0` the cont
 With `--image-sequence` the cut is given the neighbours of the sequence (`SequenceNeighbours` at
 `--match-sequence-overlap` and `--sequence-max-gap`, the ones the matcher forced) and the covisibility bar
 `--sequence-min-covisibility`: it vetoes the pairs that contradict the chain of the neighbour pairs and removes none
-of its links (`ContradictionCut.md`). A `-v 3` run that did the matching saves the matched scene as
+of its links (`ContradictionCut.md`). The step then logs the number of name breaks it found (`Image sequence: N name
+break(s) among M images`, a reload included), and warns when the cut cannot use the option: its translation stage off
+(`--max-pair-direction-residual 0`) or `--match-sequence-overlap 0`. A `-v 3` run that did the matching saves the matched scene as
 `scene_matched.sfm` in the working folder right before this step (`MATCHED` without `PAIRS_FILTERED`): the filters run
 once on a scene's pairs, so that file, not `scene_pre_reconstruction.sfm` (saved after them), is the one to give back
-as source to run the filters with other options. A scene that came in matched is not saved again.
+as source to run the filters with other options. A scene that came in matched is not saved again; a failed save is a
+warning and the run continues.
 A scene loaded at `PAIRS_FILTERED` skips stages 2 to 7: its pairs are weighed with the run's configuration and the pairs
-CSV describes them (`WeighAndExportPairs`), nothing is matched or filtered again. `--match-images-only` returns after
+CSV describes them (`WeighAndExportPairs`), nothing is matched or filtered again; with `--image-sequence` a warning says
+that the chain's veto and protection do not act on it (`scene_matched.sfm` is the scene to give back). `--match-images-only` returns after
 this step; it first resolves an automatic `frames.json` camera-axes convention when known poses were imported, so the
 saved scene carries resolved poses. The scene it saves is the one a reconstruction starts from.
 
@@ -197,11 +201,11 @@ The state flags (`Scene::Status::STATE`) and what they decide:
 | Flag | Value | Set by | Effect when set on a loaded scene |
 |---|---|---|---|
 | `FEATURES_EXTRACTED` | 1 | `ExtractFeatures` | feature extraction is skipped ("features already extracted"); `--detector-type`, `--max-features-per-cell`, `--min-features-per-cell`, `--siftgpu-*`, `--spherical-bottom-band` are not read for this scene |
-| `MATCHED` | 2 | `MatchPairs`, so `scene_matched.sfm` (a `-v 3` run's scene before the view-graph filters) | pair selection and matching are skipped; `--match-mode`, `--vocab-max-pairs`, `--match-sequence-overlap`, `--match-verification-feedback`, `--dense-*` (`--roma2-model` for RoMa2 only) matching options, `--dense-matcher` are not read (but a missing model path is still refused, see the table above); missing relative poses are computed and the lens fit, focal calibration and planar twin switch run again; without `PAIRS_FILTERED`, stages 6 and 7 run (once) |
+| `MATCHED` | 2 | `MatchPairs`, so `scene_matched.sfm` (a `-v 3` run's scene before the view-graph filters) | pair selection and matching are skipped; `--match-mode`, `--vocab-max-pairs`, `--match-sequence-overlap` (except with `--image-sequence`, where the view-graph filter reads it as the neighbours' reach), `--match-verification-feedback`, `--dense-*` (`--roma2-model` for RoMa2 only) matching options, `--dense-matcher` are not read (but a missing model path is still refused, see the table above); missing relative poses are computed and the lens fit, focal calibration and planar twin switch run again; without `PAIRS_FILTERED`, stages 6 and 7 run (once) |
 | `CALIBRATED` | 4 | the end of the solver, after `Reconstruct` filters and triangulates | `Reconstruct` returns false at once; see the table above |
 | `GEO_ALIGN` | 8 | `AlignToGPS` | GPS-prior refinement runs only when this is set and `--gps-position-weight` is positive |
 | `GLOBAL_DESCRIPTORS` | 16 | `ComputeGlobalDescriptors` | RETRIEVAL does not describe the images again, unless the stored descriptors have the size of another dense matcher |
-| `PAIRS_FILTERED` | 32 | `FilterViewGraph` (stage 7), so every `--match-images-only` output and `scene_pre_reconstruction.sfm` | stages 2 to 7 are skipped: no extraction, matching, lens fit or view-graph filter runs; the pairs are only weighed with the run's configuration (stage 6) and exported; the stored seed views reach the star initializer. The view-graph options (`--filter-triplets`, `--triplet-*`, `--max-pair-direction-residual`, `--repair-contradicted-pairs`, and `--image-sequence` with its `--sequence-*` options, which act in matching and in the cut) are not read for this scene |
+| `PAIRS_FILTERED` | 32 | `FilterViewGraph` (stage 7), so every `--match-images-only` output and `scene_pre_reconstruction.sfm` | stages 2 to 7 are skipped: no extraction, matching, lens fit or view-graph filter runs; the pairs are only weighed with the run's configuration (stage 6) and exported; the stored seed views reach the star initializer. The view-graph options (`--filter-triplets`, `--triplet-*`, `--max-pair-direction-residual`, `--repair-contradicted-pairs`, and `--image-sequence` with its `--sequence-*` options, which act in matching and in the cut) are not read for this scene (`--image-sequence` with a warning) |
 
 Options read only for a fresh scene (they act in `Scene::Import` on a new image list): the image source list, `--camera-type`,
 `--default-focal-ratio`, the camera merge. Options applied to a resumed scene too: `-f`, `--k1`, `--k2`,

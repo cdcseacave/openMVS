@@ -759,8 +759,17 @@ void FilterViewGraph(Scene& scene, const ReconstructionConfig& config)
 	std::vector<float> scores;
 	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &scene.seedViews, &scores);
 	std::optional<SequenceNeighbours> sequenceNeighbours;
-	if (config.matchCfg.imageSequence)
+	if (config.matchCfg.imageSequence) {
 		sequenceNeighbours.emplace(scene, config.matchCfg.matchSequenceOverlap, config.matchCfg.sequenceMaxGap);
+		VERBOSE("Image sequence: %u name break(s) among %u images (overlap %u, max gap %u)",
+			(unsigned)std::count(sequenceNeighbours->Breaks().begin(), sequenceNeighbours->Breaks().end(), true),
+			scene.images.size(), config.matchCfg.matchSequenceOverlap, config.matchCfg.sequenceMaxGap);
+		// the chain is solved, and its veto and protection act, only in the translation stage and on neighbours
+		if (config.maxPairDirectionResidual <= 0.f)
+			VERBOSE("warning: --image-sequence does nothing in the contradiction cut: its translation stage is off (--max-pair-direction-residual 0), so the sequence's chain is neither solved nor trusted");
+		else if (config.matchCfg.matchSequenceOverlap == 0)
+			VERBOSE("warning: --image-sequence does nothing in the contradiction cut: --match-sequence-overlap 0 leaves no neighbours, so the sequence has no chain");
+	}
 	// the repair confirms a refitted direction against the centres of the translation stage, so
 	// without that stage (a bar of 0) there is nothing for it to act on
 	FilterPairsByContradiction(scene, scores, config.minPairWeight, config.maxPairDirectionResidual, config.matchCfg.weightingCfg,
@@ -845,6 +854,9 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		// marks and the seed views the reconstruction starts from: it is neither matched nor filtered again,
 		// its pairs are only weighed with this configuration and exported
 		VERBOSE("The scene's %u pairs are matched and filtered already: the reconstruction starts from them", pairs.size());
+		if (cfg.matchCfg.imageSequence)
+			VERBOSE("warning: --image-sequence does not apply to this scene: its view-graph filters ran already, so the sequence's chain veto and protection do not act; "
+				"give back the scene before the filters (scene_matched.sfm of a -v 3 run) to run them with the option");
 		WeighAndExportPairs(*this, cfg);
 	} else {
 		// Extract image features
@@ -863,7 +875,8 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 			// Save the scene this run matched, before the view-graph filters, for debugging: the filters run
 			// once on a scene's pairs, so only this scene can be given back to run them with other options
 			// (a scene that came in matched is that file already)
-			Save(MAKE_PATH("scene_matched.sfm"), cfg.importCfg.archiveType);
+			if (!Save(MAKE_PATH("scene_matched.sfm"), cfg.importCfg.archiveType))
+				VERBOSE("warning: failed to save the matched scene 'scene_matched.sfm' (the run continues)");
 		}
 		#endif
 

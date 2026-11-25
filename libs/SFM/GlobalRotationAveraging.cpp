@@ -1059,7 +1059,7 @@ struct ChainVeto {
 // its length and its offset there are the scale times its baseline's, to compare with the offset of the chain's
 // centres of its two images and the path between them (ChainVetoes). `rotations` are the ones the chain was solved
 // with. Marks the vetoed pairs in `removed` and in the returned mask, and logs every judged pair at the ultimate
-// level.
+// level, with the number of equations its scale is the median of.
 ChainVeto VetoPairsByChain(const Scene& scene, const std::vector<Point3>& rotations, const SequenceChain& chain, std::vector<bool>& removed)
 {
 	TD_TIMER_STARTD();
@@ -1123,8 +1123,9 @@ ChainVeto VetoPairsByChain(const Scene& scene, const std::vector<Point3>& rotati
 		const REAL chainDistance = norm(chainOffset);
 		const REAL path = ABS(chain.pathLength[pair.ID2] - chain.pathLength[pair.ID1]);
 		const bool vetoes = ChainVetoes(discrepancy, pairLength, chainDistance, chain.localStep[chain.segmentOf[pair.ID1]], path);
-		DEBUG_ULTIMATE("Chain pair: %s %s length %.9g chain %.9g path %.9g discrepancy %.9g veto %d",
-			ChainImageName(scene, pair.ID1).c_str(), ChainImageName(scene, pair.ID2).c_str(), pairLength, chainDistance, path, discrepancy, vetoes ? 1 : 0);
+		DEBUG_ULTIMATE("Chain pair: %s %s length %.9g chain %.9g path %.9g discrepancy %.9g veto %d equations %u",
+			ChainImageName(scene, pair.ID1).c_str(), ChainImageName(scene, pair.ID2).c_str(), pairLength, chainDistance, path, discrepancy, vetoes ? 1 : 0,
+			(unsigned)scales.size());
 		if (!vetoes)
 			continue;
 		removed[idxPair] = veto.vetoed[idxPair] = true;
@@ -1288,7 +1289,7 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 	IIndexArr links;
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
-		if ((removed != nullptr && (*removed)[idxPair]) || !pair.relativePose.has_value() ||
+		if ((removed != nullptr && (*removed)[idxPair]) || !pair.relativePose.has_value() || !pair.HasValidWeight() ||
 			!neighbours.AreNeighbours(pair.ID1, pair.ID2) ||
 			rotations[pair.ID1] == Point3::INF || rotations[pair.ID2] == Point3::INF ||
 			!(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) ||
@@ -1300,7 +1301,7 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 		links.push_back((IIndex)idxPair);
 	}
 	if (links.empty()) {
-		VERBOSE("Sequence chain: no link among the neighbour pairs (%s)", TD_TIMER_GET_FMT().c_str());
+		VERBOSE("Sequence chain solve: no link among the neighbour pairs (%s)", TD_TIMER_GET_FMT().c_str());
 		return chain;
 	}
 
@@ -1367,7 +1368,7 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 		std::nth_element(steps.begin(), steps.begin() + steps.size() / 2, steps.end());
 		chain.localStep[segment] = steps[steps.size() / 2];
 	}
-	VERBOSE("Sequence chain: %u segment(s) placing %u images by %u of %u links (%u scale components, %u equations) (%s)",
+	VERBOSE("Sequence chain solve: %u segment(s) placing %u images by %u of %u links (%u scale components, %u equations) (%s)",
 		chain.numSegments, (unsigned)std::count_if(chain.segmentOf.begin(), chain.segmentOf.end(), [](uint32_t s) { return s != NO_ID; }),
 		chain.numLinks, (unsigned)links.size(), numComponents, numEquations, TD_TIMER_GET_FMT().c_str());
 	return chain;

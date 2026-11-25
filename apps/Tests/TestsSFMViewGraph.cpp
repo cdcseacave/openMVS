@@ -1009,7 +1009,7 @@ bool ContradictionCutTest()
 // one at the bar 0, carrying 0.9 or nothing one; (4) a frame that stands still (image 20 at image 19's centre, their
 // pair under the near-duplicate ray angle with a meaningless baseline) is no link, and the pairs 2 and 3 apart keep the
 // one segment; (5) every pair under the near-duplicate ray angle places nothing; (6) a removed pair, a zero baseline, an
-// unrotated image, overlap 0 and an empty scene; (7) two components sharing an image: it belongs to the larger, and
+// unrotated image, overlap 0 and an empty scene, a neighbour pair of weight 0 (no link); (7) two components sharing an image: it belongs to the larger, and
 // the links of the smaller that touch it keep no scale.
 bool SequenceChainTest()
 {
@@ -1185,6 +1185,15 @@ bool SequenceChainTest()
 			pair.relativePose->C = C;
 			TEST_CHECK(flat.numSegments == 1 && numPlaced(flat) == numImages && flat.linkScale[idxPair] == 0 && flat.numLinks == 114 - 1,
 				"a zero baseline on (10,11): %u segment(s) placing %u images with %u links, its scale %g", flat.numSegments, numPlaced(flat), flat.numLinks, flat.linkScale[idxPair]);
+			// a neighbour pair of no composite weight is no link (the centres solve would skip it)
+			const float weightSpatial = pair.weightSpatial;
+			pair.InvalidateWeight();
+			ASSERT(!pair.HasValidWeight());
+			const SequenceChain weightless = SolveSequenceChain(scene, rotations, noBreaks(), 0.75f);
+			pair.weightSpatial = weightSpatial;
+			TEST_CHECK(weightless.numSegments == 1 && numPlaced(weightless) == numImages && weightless.linkScale[idxPair] == 0 && weightless.numLinks == 114 - 1,
+				"a weight of 0 on (10,11): %u segment(s) placing %u images with %u links, its scale %g", weightless.numSegments, numPlaced(weightless),
+				weightless.numLinks, weightless.linkScale[idxPair]);
 		}
 		std::vector<bool> removed(scene.pairs.size(), false);
 		FOREACH(idxPair, scene.pairs)

@@ -23,10 +23,13 @@ class SFM_API Scene;
 
 // The name breaks of an image sequence: breaks[k] is true when a break lies between the positions k and k+1
 // (the size is max(0, n-1)). A name is the directory and the stem of a file name (the extension is ignored);
-// its number is the trailing decimal digits of the stem (none, or more than 18 digits: no number) and its
+// its number is the trailing decimal digits of the stem (none, or more than 19 digits: no number) and its
 // prefix is the rest of the name. A break lies between two names that both have a number when the prefixes
-// differ, or the number does not rise, or it rises by more than maxGap times the median rise over the adjacent
-// pairs of the input that share a prefix and whose number rises (with no such pair there is no gap rule).
+// differ, or the number does not rise, or it rises by more than maxGap times the median rise of its run: a run
+// is the names between two prefix changes (a number that does not rise breaks but keeps the run), its median
+// over its adjacent pairs that share a prefix and whose number rises (with no such pair the run has no gap
+// rule). A maxGap of 0 gives no break by the rises (names that are clock times, IMG_20261125_103059, rise by
+// 41 or more at every minute rollover against a median of 1; the prefix and not-rising rules still apply).
 // A name without a number makes no break with either neighbour.
 SFM_API std::vector<bool> ComputeNameBreaks(const std::vector<String>& fileNames, unsigned maxGap);
 

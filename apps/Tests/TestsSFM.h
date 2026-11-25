@@ -95,12 +95,13 @@ bool RetrievalTest();
 bool PairSelectionTest();
 
 // The name breaks of an image sequence (directory, name prefix, falling or jumping frame numbers, names without a
-// number) and the neighbours they leave (SequenceNeighbours)
+// number, 19 and 20 digits, the median rise per run of one prefix, a gap of 0) and the neighbours they leave
+// (SequenceNeighbours)
 bool SequenceNeighboursTest();
 
 // --image-sequence: the neighbour pairs are always matched (PairsMatcher::AddNeighbourPairs, PreMatch keeping them but
-// not one already verified, every match mode attempting them and nothing across a break, even after an empty selection);
-// the candidates are today's with the option off
+// not one already verified, every match mode attempting them and nothing across a break; a failed selection ends the
+// stage as without the option); the candidates are today's with the option off
 bool SequenceForcedMatchTest();
 
 // Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty, and
@@ -288,8 +289,8 @@ bool RotationAveragingTest();
 bool ContradictionCutTest();
 
 // The chain of an image sequence: the neighbour pairs alone place a walk of 40 cameras within 2% of its length, a name
-// break or a covisibility under the bar splits it, a frame standing still and every pair under the near-duplicate ray
-// angle are no links
+// break or a covisibility under the bar splits it, a frame standing still, a pair of weight 0 and every pair under the
+// near-duplicate ray angle are no links
 bool SequenceChainTest();
 
 // The chain of an image sequence in the contradiction cut: a pair that contradicts the chain and is short against it

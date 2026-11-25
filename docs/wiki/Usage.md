@@ -53,7 +53,10 @@ Notable options:
 
 - `--detector-type` (default `SIFTGPU` when built with SiftGPU, `SIFT` otherwise) — feature detector; same choices as above.
 - `--match-mode` (`-1` skip: no matching, only for a saved `.sfm` that already holds matches; `0` exhaustive, `1` vocabulary, `2` sequential, `3` known-poses; default `1`) — pairwise-matching strategy.
-- `--match-sequence-overlap` (default `3`) — sequence overlap when using sequential matching.
+- `--match-sequence-overlap` (default `3`) — sequence overlap when using sequential matching; with `--image-sequence`, the reach of the neighbours.
+- `--image-sequence` (default `0`) — the images, in import order, are frames of a possibly interrupted sequence: the pairs of neighbours (at most `--match-sequence-overlap` positions apart with no name break between) are always matched, and the view-graph filter removes the pairs that contradict the chain they form and none of its links.
+- `--sequence-max-gap` (default `10`, with `--image-sequence`) — a frame number rising by more than this many times the median rise of its name prefix is a break of the sequence; `0` = the rises make no break (names that are clock times).
+- `--sequence-min-covisibility` (default `0.75`, with `--image-sequence`) — a neighbour pair carrying a dense matcher's covisibility below this is no link of the chain.
 - `--vocab-max-pairs` (default `50`) — target pairs per image for vocabulary-tree and known-poses matching (with `--match-verification-feedback`, the default, part of this budget is re-invested in pairs suggested by the verified matches).
 - `--import-poses-file` (default `poses.csv`) with `--import-poses-mode` (`0` none, `1` poses+intrinsics, `2` poses only, `3` positions only) — import camera data from an OpenMVS pose `.csv` or a Polycam-style `frames.json`; modes `1` and `2` select the known-poses workflow described below.
 - `--known-poses-convention` (`auto` | `arkit` | `opencv`, default `auto`) — camera-axes convention of the poses in a `frames.json`.
