@@ -801,13 +801,12 @@ static inline void ProcessPixel(const array<texture2d<float>, MAX_VIEWS> images,
             if (!valid[posId]) continue;
             const float4 nbPlane = planes[neighborPositions[posId]];
             if (nbPlane.w <= 0) continue;
-            const int nr = p.y + offsets[posId].y;
-            int nc = p.x + offsets[posId].x;
-            if (bWrapCols) nc = nc < 0 ? nc + width : (nc >= width ? nc - width : nc);
-            const float w = exp(Square(FetchRefTexel(images[0], views, nc, nr) - refPix)*smoothSigmaColor + Square(costs[neighborPositions[posId]])*smoothSigmaConf);
+            // FetchRefTexel and RefTexelRay wrap the column of an equirectangular reference themselves
+            const int2 o = offsets[posId];
+            const float w = exp(Square(FetchRefTexel(images[0], views, p.x + o.x, p.y + o.y) - refPix)*smoothSigmaColor + Square(costs[neighborPositions[posId]])*smoothSigmaConf);
             sumW += w;
             sumN += nbPlane.xyz * w;
-            sumX += RefTexelRay(cams[0], refTrig, p, offsets[posId].x, offsets[posId].y) * (nbPlane.w * w);
+            sumX += RefTexelRay(cams[0], refTrig, p, o.x, o.y) * (nbPlane.w * w);
         }
         const float normN = length(sumN);
         if (sumW > 1e-4f && normN > 1e-3f * sumW) {

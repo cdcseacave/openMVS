@@ -802,8 +802,9 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 			const Point4 nbPlane = LoadPlaneLDG(&planes[neighborPositions[posId]]);
 			if (nbPlane.w() <= 0)
 				continue;
-			const int nr = p.y() + offsets[posId].y;
-			const int nc = bWrapCols ? SEACAVE::WrapColumn(p.x() + offsets[posId].x, width) : p.x() + offsets[posId].x;
+			// across the seam of an equirectangular reference the column is taken as it is: FetchRefTexel
+			// wraps it (repeat addressing) and RefPixel::Ray wraps it itself
+			const int nc = p.x() + offsets[posId].x, nr = p.y() + offsets[posId].y;
 			const float w = __expf(Square(FetchRefTexel<MODEL>(images[0], nc, nr) - refPix) * smoothSigmaColor + Square(costs[neighborPositions[posId]]) * smoothSigmaConf);
 			sumW += w;
 			sumN += nbPlane.topLeftCorner<3,1>() * w;
