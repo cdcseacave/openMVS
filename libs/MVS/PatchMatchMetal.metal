@@ -671,26 +671,29 @@ static inline float3 GeneratePerturbedNormal(float3 viewDirection, float3 normal
 // smoothness coupling of the plane hypotheses (PatchMatchCUDA.cu): ProcessPixel fits per pixel a smoothed
 // plane to the current estimates of its 4 adjacent neighbors (of the other checkerboard color, so not
 // rewritten by the pass) and scales the aggregated cost of every hypothesis, the stored one included, by
-// SmoothnessFactor
+// SmoothnessFactor; the agreement of the normals counts by the texture weight of the reference patch
 constant float smoothBonus = 0.2f; // the cost reduction of a hypothesis on the smoothed plane
 constant float smoothSigmaDepth = -1.0f/(2.0f*0.02f*0.02f); // distance to the smoothed plane relative to the depth, sigma 0.02
 #define SMOOTH_ANGLE_NORMAL (13.0f*M_PI_F/180.0f) // normal sigma 13 deg
 constant float smoothSigmaNormal = 2.0f*(-1.0f/(2.0f*SMOOTH_ANGLE_NORMAL*SMOOTH_ANGLE_NORMAL)); // applied to 1-cos: acos(c)^2 ~ 2*(1-c)
 #undef SMOOTH_ANGLE_NORMAL
+constant float smoothSigmaTexture = -1.0f/0.0025f; // weight of the normal agreement by the texture of the reference patch (RefCache::varRef): exp(-varRef/0.0025), 0.0025 the texture-less bound of ScoreNCC
 constant float smoothSigmaColor = -1.0f/(2.0f*25.0f/255.0f*25.0f/255.0f); // neighbor weight: gray similarity, as the patch bilateral weight
 constant float smoothSigmaConf = -1.0f/(2.0f*0.3f*0.3f); // neighbor weight: confidence from its cost, as the view-selection weight
 
 // the factor scaling the aggregated cost of a plane hypothesis (normal, depth along the pixel ray) by its
-// agreement with the smoothed plane of the pixel: its point Xs on the pixel ray and its normal ns
-static inline float SmoothnessFactor(float3 ray, float3 Xs, float3 ns, float4 plane) {
+// agreement with the smoothed plane of the pixel: its point Xs on the pixel ray, its normal ns and the
+// normal sigma of the pixel, sigmaNormal = smoothSigmaNormal times the texture weight of its patch
+static inline float SmoothnessFactor(float3 ray, float3 Xs, float3 ns, float sigmaNormal, float4 plane) {
     const float depth = plane.w;
     const float d = dot(ns, ray*depth - Xs) / depth;
-    return 1.0f - smoothBonus * exp(Square(d)*smoothSigmaDepth + (1.0f - dot(ns, plane.xyz))*smoothSigmaNormal);
+    return 1.0f - smoothBonus * exp(Square(d)*smoothSigmaDepth + (1.0f - dot(ns, plane.xyz))*sigmaNormal);
 }
 
 // per-pixel processing (PatchMatchCUDA.cu ProcessPixel). Every aggregated cost of the propagation and of the
 // refinement, the stored one included, is scaled by the SmoothnessFactor of the hypothesis against the
-// pixel's smoothed plane, fitted to its 4 adjacent neighbors, when the pixel has one.
+// pixel's smoothed plane, fitted to its 4 adjacent neighbors, when the pixel has one; the agreement of the
+// normals counts by the texture weight of the reference patch.
 // An equirectangular reference wraps the neighbor columns across
 // the seam, which keeps the red/black parity as its width is even, and does not cross the poles (over
 // a pole the column moves by half the width, which flips the parity when the width is twice the
@@ -783,10 +786,12 @@ static inline void ProcessPixel(const array<texture2d<float>, MAX_VIEWS> images,
 
     // the smoothed plane of the pixel, if it has one: the estimates of its 4 adjacent neighbors (of the other
     // color, not rewritten by this pass) weighted by their gray similarity to the pixel times their confidence
-    // give the weighted mean normal through the weighted mean point; its point on the pixel ray and its normal
+    // give the weighted mean normal through the weighted mean point; its point on the pixel ray, its normal
+    // and the normal sigma of the pixel: the agreement of the normals counts in weakly textured patches only
     const float3 pixelRay = ref.F[2];
     bool bSmooth = false;
     float3 smoothX = float3(0), smoothNormal = float3(0);
+    float smoothSigmaN = 0;
     {
         const int2 offsets[4] = {int2(0,-1), int2(0,1), int2(-1,0), int2(1,0)};
         const float refPix = FetchRefTexel(images[0], views, p.x, p.y);
@@ -811,6 +816,7 @@ static inline void ProcessPixel(const array<texture2d<float>, MAX_VIEWS> images,
             if (nRay < -1e-2f) {
                 const float depthSmooth = dot(smoothNormal, sumX / sumW) / nRay;
                 smoothX = pixelRay * depthSmooth;
+                smoothSigmaN = smoothSigmaNormal * exp(refCache.varRef * smoothSigmaTexture);
                 bSmooth = depthSmooth > 0;
             }
         }
@@ -828,14 +834,14 @@ static inline void ProcessPixel(const array<texture2d<float>, MAX_VIEWS> images,
             if (valid[posId]) {
                 float4 nbPlane = planes[positions[posId]];
                 nbPlane.w = neighborDepths[posId];
-                finalCosts[posId] *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, nbPlane);
+                finalCosts[posId] *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, smoothSigmaN, nbPlane);
             }
     const int minCostIdx = FindMinIndex(finalCosts, 8);
     float costVector[MAX_VIEWS];
     MultiViewScorePlane(refCache, ref, images, depthImages, cams, views, refTrig, p, plane, lowDepth, prm, costVector);
     cost = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
     if (bSmooth)
-        cost *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, plane);
+        cost *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, smoothSigmaN, plane);
     if (finalCosts[minCostIdx] < cost) {
         plane = planes[positions[minCostIdx]];
         plane.w = neighborDepths[minCostIdx];
@@ -866,7 +872,7 @@ static inline void ProcessPixel(const array<texture2d<float>, MAX_VIEWS> images,
         MultiViewScorePlane(refCache, ref, images, depthImages, cams, views, refTrig, p, newPlane, lowDepth, prm, costVector);
         float costPlane = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
         if (bSmooth)
-            costPlane *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, newPlane);
+            costPlane *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, smoothSigmaN, newPlane);
         if (cost > costPlane) { cost = costPlane; plane = newPlane; }
     }
 

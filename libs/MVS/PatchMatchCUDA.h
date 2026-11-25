@@ -85,10 +85,11 @@ namespace MVS {
  *
  * **Smoothness coupling** (phases 3 and 4)
  * - Every aggregated cost, the stored one included, is scaled by SmoothnessFactor:
- *   up to 20 % lower the closer the hypothesis lies, in depth and normal, to the
- *   pixel's smoothed plane, fitted inline to the 4 adjacent neighbors of the
- *   other color (gray-similarity x confidence weights), which the pass does
- *   not rewrite (docs/design/PatchMatchSmoothness.md)
+ *   up to 20 % lower the closer the hypothesis lies, in depth and, where the
+ *   reference patch is weakly textured, in normal, to the pixel's smoothed
+ *   plane, fitted inline to the 4 adjacent neighbors of the other color
+ *   (gray-similarity x confidence weights), which the pass does not rewrite
+ *   (docs/design/PatchMatchSmoothness.md)
  *
  * @see InitializePixelScore() for initial setup before iterations
  * @see ScorePlane() for the photometric matching cost computation

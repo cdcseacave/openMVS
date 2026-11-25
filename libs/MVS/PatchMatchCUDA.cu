@@ -608,24 +608,30 @@ __device__ inline float AggregateMultiViewScores(const unsigned* viewWeights, co
 // PM-Huber style): ProcessPixel fits per pixel a smoothed plane to the current estimates of its 4
 // adjacent neighbors (of the other checkerboard color, so not rewritten by the pass), and scales the
 // aggregated cost of every hypothesis, the stored one included, by SmoothnessFactor, i.e. lowers it by
-// up to smoothBonus the closer the hypothesis lies to that plane in depth and in normal;
+// up to smoothBonus the closer the hypothesis lies to that plane in depth and, where the patch is
+// weakly textured, in normal: the texture of the patch constrains the normal by itself, and a normal
+// agreeing with its neighbors whatever the images say is no evidence for the consumers of the normal
+// (the fusion and the confidence compare the normals between views and with the depth-map);
 // see docs/design/PatchMatchSmoothness.md
 constexpr float smoothBonus = 0.2f; // the cost reduction of a hypothesis on the smoothed plane
 constexpr float smoothSigmaDepth = -1.f / (2.f * 0.02f * 0.02f); // distance to the smoothed plane relative to the depth, sigma 0.02
 constexpr float smoothAngleNormal = 13.f * (float)M_PI / 180.f; // normal sigma 13 deg
 constexpr float smoothSigmaNormal = 2.f * (-1.f / (2.f * smoothAngleNormal * smoothAngleNormal)); // applied to 1-cos: acos(c)^2 ~ 2*(1-c)
+constexpr float smoothSigmaTexture = -1.f / 0.0025f; // weight of the normal agreement by the texture of the reference patch (RefPatchCache::varRef): exp(-varRef/0.0025), 0.0025 the texture-less bound of ScoreNCC
 constexpr float smoothSigmaColor = -1.f / (2.f * 25.f/255.f*25.f/255.f); // neighbor weight: gray similarity, as the patch bilateral weight
 constexpr float smoothSigmaConf = -1.f / (2.f * 0.3f * 0.3f); // neighbor weight: confidence from its cost, as the view-selection weight
 
 // the factor scaling the aggregated cost of a plane hypothesis (normal, depth along the pixel ray) by its
-// agreement with the smoothed plane of the pixel: its point Xs on the pixel ray and its normal ns
-__device__ inline float SmoothnessFactor(const Point3& ray, const Point3& Xs, const Point3& ns, const Point4& plane)
+// agreement with the smoothed plane of the pixel: its point Xs on the pixel ray, its normal ns and the
+// normal sigma of the pixel, sigmaNormal = smoothSigmaNormal times the texture weight of its patch
+__device__ inline float SmoothnessFactor(const Point3& ray, const Point3& Xs, const Point3& ns, const float sigmaNormal, const Point4& plane)
 {
 	const float depth = plane.w();
 	ASSERT(depth > 0);
+	ASSERT(sigmaNormal <= 0);
 	const Point3 normal = plane.topLeftCorner<3,1>();
 	const float d = ns.dot(ray * depth - Xs) / depth;
-	return 1.f - smoothBonus * __expf(Square(d) * smoothSigmaDepth + (1.f - ns.dot(normal)) * smoothSigmaNormal);
+	return 1.f - smoothBonus * __expf(Square(d) * smoothSigmaDepth + (1.f - ns.dot(normal)) * sigmaNormal);
 }
 
 // Per-pixel update for ACMH-style patch-match stereo on GPU; reference:
@@ -651,7 +657,8 @@ __device__ inline float SmoothnessFactor(const Point3& ray, const Point3& Xs, co
 // are evaluated on a consistent view-selection footing within this pixel.
 // Every aggregated cost of (3) and (4), the stored one included, is scaled by
 // the SmoothnessFactor of the hypothesis against the pixel's smoothed plane,
-// fitted to its 4 adjacent neighbors, when the pixel has one.
+// fitted to its 4 adjacent neighbors, when the pixel has one; the agreement of
+// the normals counts by the texture weight of the reference patch.
 //
 // An equirectangular reference (MODEL_SPHERICAL_REF) wraps the neighbor columns across the seam, which
 // keeps the red/black parity as its width is even, and does not cross the poles (over a pole the
@@ -778,10 +785,12 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 
 	// the smoothed plane of the pixel, if it has one: the estimates of its 4 adjacent neighbors (of the other
 	// color, not rewritten by this pass) weighted by their gray similarity to the pixel times their confidence
-	// give the weighted mean normal through the weighted mean point; its point on the pixel ray and its normal
+	// give the weighted mean normal through the weighted mean point; its point on the pixel ray, its normal
+	// and the normal sigma of the pixel: the agreement of the normals counts in weakly textured patches only
 	const Point3 pixelRay(ref.F.col(2));
 	bool bSmooth = false;
 	Point3 smoothX, smoothNormal;
+	float smoothSigmaN;
 	{
 		static constexpr int2 offsets[4] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
 		const float refPix = FetchRefTexel<MODEL>(images[0], p.x(), p.y());
@@ -807,6 +816,7 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 			if (nRay < -1e-2f) {
 				const float depthSmooth = smoothNormal.dot(sumX / sumW) / nRay;
 				smoothX = pixelRay * depthSmooth;
+				smoothSigmaN = smoothSigmaNormal * __expf(refCache.varRef * smoothSigmaTexture);
 				bSmooth = depthSmooth > 0;
 			}
 		}
@@ -827,7 +837,7 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 			if (valid[posId]) {
 				Point4 nbPlane = LoadPlaneLDG(&planes[positions[posId]]);
 				nbPlane.w() = neighborDepths[posId];
-				finalCosts[posId] *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, nbPlane);
+				finalCosts[posId] *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, smoothSigmaN, nbPlane);
 			}
 		}
 	}
@@ -836,7 +846,7 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 	MultiViewScorePlane<GEOM, MODEL>(refCache, ref, images, depthImages, p, plane, lowDepth, costVector);
 	cost = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
 	if (bSmooth)
-		cost *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, plane);
+		cost *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, smoothSigmaN, plane);
 	if (finalCosts[minCostIdx] < cost) {
 		ASSERT(valid[minCostIdx]);
 		plane = LoadPlaneLDG(&planes[positions[minCostIdx]]);
@@ -878,7 +888,7 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 		MultiViewScorePlane<GEOM, MODEL>(refCache, ref, images, depthImages, p, newPlane, lowDepth, costVector);
 		float costPlane = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
 		if (bSmooth)
-			costPlane *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, newPlane);
+			costPlane *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, smoothSigmaN, newPlane);
 		if (cost > costPlane) {
 			cost = costPlane;
 			plane = newPlane;
