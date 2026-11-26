@@ -7,7 +7,7 @@ Unit and integration tests for the SFM and MVS libraries. No test framework libr
 ```
 main(argv)
   argv[1] == 0 or missing → UnitTests()      — data structures, math, codecs, mesh and image units
-  argv[1] == 1            → the SFM table    — 92 entries, file by file in pipeline order
+  argv[1] == 1            → the SFM table    — 97 entries, file by file in pipeline order
   argv[1] >= 2            → the MVS tests    — PipelineTest and the mesh/neighbor/cache tests after it
   argv[1] not a number    → MVS::SynthTool() — tool modes (see Synthetic Depth GT)
 ```
@@ -93,6 +93,8 @@ Every block states its contract with `ASSERT`; a call outside it is a bug in the
 | `BuildTracksConflictTest` | the track builder on a component holding one image twice: cut versus veto, merge distance |
 | `RetrievalTest` | global-descriptor retrieval: cosine ranking, the RETRIEVAL match mode, VOCABULARY against it, the `.sfm` round trip |
 | `PairSelectionTest` | how a candidate pair is made or pruned: known poses, sequential prior and mode, pre-match threshold |
+| `SequenceNeighboursTest` | the name breaks of an image sequence (directory, prefix, falling or jumping frame numbers) and the neighbours they leave |
+| `SequenceForcedMatchTest` | `--image-sequence`: the neighbour pairs are matched in every match mode, none across a break, and nothing changes with the option off |
 | `MatchOutcomeSignalsTest` | `Scene::MatchPairs()` fails on an empty view graph; the fatal-round signal is not "nothing stored" |
 | `SphericalBottomBandTest` | the bottom band of equirectangular feature extraction |
 | `DetectorConfigTest` | `FeatureTypeFromString` words and the shared default detector with its thresholds |
@@ -136,6 +138,8 @@ Every block states its contract with `ASSERT`; a call outside it is a bug in the
 | `TripletFilterTest` | the camera-triplet view-graph filter: scores, yield rule, both modes |
 | `RotationAveragingTest` | the rotation estimator on the 16-camera ring and its independence of the weight scale |
 | `ContradictionCutTest` | the contradiction cut: its rotation and translation stages on symmetric rings, roofs, bridges |
+| `SequenceChainTest` | the chain of an image sequence: the neighbour pairs place a walk, a break or the covisibility bar splits it, a frame standing still is placed at its neighbour |
+| `SequenceVetoTest` | the chain in the contradiction cut: the look-alikes of a periodic corridor vetoed (those under the near-duplicate angle too), no true pair, the repair, the protected links |
 | `FilteredSceneReloadTest` | a matched scene is filtered once, on load as on a fresh run |
 | `PairScalesTest` | the flat pair-scale build equals the node-map one |
 | `ScaleAveragingTest` | the scale estimator solves each connected component with its own gauge |

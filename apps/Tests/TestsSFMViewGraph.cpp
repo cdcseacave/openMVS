@@ -1524,6 +1524,7 @@ bool SequenceVetoTest()
 	TEST_CHECK(!ChainVetoes(7.9, 1, 9, 1, 9), "a discrepancy of 7.9 (tolerance 8) vetoes");
 	TEST_CHECK(!ChainVetoes(30, 12, 30, 1, 30), "a pair of length 12 on a chain distance of 30 (not short: 12 >= 30 / 3) is vetoed");
 	TEST_CHECK(ChainVetoes(30, 9, 30, 1, 30), "a pair of length 9 on a chain distance of 30, 30 off, is not vetoed");
+	TEST_CHECK(!ChainVetoes(1, 0.5, 0, 1, 0), "a pair whose two images share one centre (a chain distance of 0) is vetoed");
 
 	using PairIds = std::pair<IIndex,IIndex>;
 	using PairSet = std::set<PairIds>;
@@ -1535,7 +1536,7 @@ bool SequenceVetoTest()
 	constexpr REAL tolerance = REAL(0.02);
 	const PairsWeightingConfig weightingCfg;
 	const float maxDirectionResidual = ReconstructionConfig().maxPairDirectionResidual;
-	const float minCovisibility = MatchConfig().sequenceMinCovisibility;
+	constexpr float minCovisibility = 0.75f; // the bar of a link here: the option's default is 0, no bar
 	using STATE = Scene::Status::STATE;
 
 	// the corridor: image i of the way out at (i,0,0), of the way back at (59-i,0,-2), turned 4 sin(2 pi x / 10) degrees

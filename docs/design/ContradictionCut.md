@@ -107,12 +107,22 @@ link is a scene pair with a relative pose whose images are neighbours, both rota
 with a positive composite weight (the centres solve skips a weightless pair, which would leave its
 images placed at the origin), a world baseline of some length (as the stage's judged pairs), a mean
 ray angle of at least `kNearDuplicateRayAngle` (a frame standing still has no baseline direction),
-and whose covisibility, when its matcher gave one, is at least `--sequence-min-covisibility` (0.75;
-0 disables the test): a neighbour pair that does not show the same place is no link, so it splits
-the chain as a name break does. The covisibility is serialized with the pair, so the bar can be
-changed on a reload of a scene matched with a dense matcher; a pair matched without one (or saved
-before the score existed) carries none. In the cut a link also joins two images of one rotation
-component (the rotations of two components share no frame), so a segment lies inside one.
+and whose covisibility, when its matcher gave one, is at least `--sequence-min-covisibility` (0,
+the test off, by default): under a bar, a neighbour pair that does not show the same place is no
+link, so it splits the chain as a name break does. The covisibility is serialized with the pair, so
+the bar can be changed on a reload of a scene matched with a dense matcher; a pair matched without
+one (or saved before the score existed) carries none. In the cut a link also joins two images of
+one rotation component (the rotations of two components share no frame), so a segment lies inside
+one.
+
+The bar is off by default because the dense matcher's own covisibility gate (`--dense-min-covisibility`,
+0.5) already does its work, and the true neighbour pairs score from that gate up. Measured on 352
+frames of a shopping-mall capture matched with FlexGlue: the gate refuses the look-alike pairs, the
+forced neighbour pairs among them (no pair is stored across a cut between two look-alike places, and
+4 far pairs are stored where SIFT verified 400), while the covisibility of the true neighbour pairs
+spreads over 0.50 to 1.0 (median 0.83, 32% under 0.75). At a bar of 0.75 the chain placed 205 of
+the 352 frames by 341 of 401 links; at 0 it places 328 by 633 of 638. A bar above the matcher's gate
+is for a capture whose look-alike neighbour pairs pass the gate.
 
 Each solved component of the links' pair-scale graph (at least 10 links) is a segment; a smaller
 one places nothing. An image two components place belongs to the larger, a component whose every
@@ -144,7 +154,8 @@ nothing placed), and `SequenceChain::numStill` counts those images.
 
 On a walk of 40 cameras 1 unit apart with exact relative poses (`SequenceChainTest`) the chain is
 one segment whose centres, after a scale and translation fit, are within 1e-7 of the truth; a name
-break or a covisibility of 0.3 across the middle splits it into two segments of 20; a neighbour
+break, or a covisibility of 0.3 across the middle at a bar of 0.75, splits it into two segments of
+20; a neighbour
 pair of weight 0 is no link. When the walk ends with its last four cameras at one place, the last
 one, whose three neighbour pairs stand still, is placed at exactly the centre and path length of
 the one before it, the 108 links, the centres and the local step being those of the scene without
@@ -266,7 +277,7 @@ One log line reports the pairs repaired of those removed and the seconds.
 | translation constants | none | 10 pairs, 40 rounds, 0.001, 1.05 | smallest solved component, reweighting rounds, L1 floor, scale bar |
 | `MatchConfig::imageSequence` | `--image-sequence B` | false | the chain of the neighbour pairs is solved, the pairs that contradict it vetoed, its links protected (needs the bar above 0) |
 | `MatchConfig::matchSequenceOverlap`, `sequenceMaxGap` | `--match-sequence-overlap N`, `--sequence-max-gap N` | 3, 10 | the neighbours (`PairSelection.md`) |
-| `MatchConfig::sequenceMinCovisibility` | `--sequence-min-covisibility F` | 0.75 | a neighbour pair carrying a covisibility below it is no link |
+| `MatchConfig::sequenceMinCovisibility` | `--sequence-min-covisibility F` | 0 | a neighbour pair carrying a covisibility below it is no link; 0 = no bar (the dense matcher's gate, 0.5, already refuses the pairs that do not show one place) |
 | veto constants (`GlobalRotationAveraging.cpp`) | none | 8 steps, 0.2, 3 | tolerance in local steps, tolerance as a share of the path, the chain distance over this is the length a vetoed pair stays under |
 
 Python: `ReconstructionConfig.max_pair_direction_residual` (set outside [0,180], NaN included, it
