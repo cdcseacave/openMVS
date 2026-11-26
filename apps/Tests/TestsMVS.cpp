@@ -3009,8 +3009,9 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// the weighted mesh visibility, which this test exercises by calling the
 	// library directly -- the ReconstructMesh app releases them first, unless
 	// asked for the weighted path with --constant-weight 0.
-	// Measured (GPU adjust-ON / CPU adjust-OFF): recon faces 52.9k / 71.4k,
-	// cleaned faces 37.0k / 49.8k, quality 50.4 / 52.2.
+	// Measured, GPU adjust-ON (with the PatchMatch smoothness coupling): cleaned
+	// faces 50.0k, quality 56.0; CPU adjust-OFF: recon faces 71.4k, cleaned faces
+	// 49.8k, quality 52.2.
 	{
 		// the depth-maps are removed once the scene split test is done, whatever its outcome
 		struct DepthMapsRemover {

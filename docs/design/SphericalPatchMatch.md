@@ -141,7 +141,7 @@ reject a file whose flag disagrees with the view's model.
 
 ### CUDA estimator
 
-- The kernels (`InitializeScore`, `BlackPixelProcess`, `RedPixelProcess`) are templates on `<GEOM, MODEL>`:
+- The estimation kernels (`InitializeScore`, `BlackPixelProcess`, `RedPixelProcess`) are templates on `<GEOM, MODEL>`:
   `MODEL_PINHOLE` (every view pinhole), `MODEL_PINHOLE_REF` (pinhole reference, spherical views),
   `MODEL_SPHERICAL_REF`. `RunCUDA` picks it from `Params::sphericalViews`. Every MODEL runs the same code;
   the spherical branches and the view gate are compiled out of `MODEL_PINHOLE`.
@@ -179,6 +179,9 @@ reject a file whose flag disagrees with the view's model.
   consistency.
 - The confidence recalibration kernels (`ConfidenceCUDA.cu`) are templates on the reference model
   (`PinholeModel`, or `SphericalModel` with its trig table).
+- The smoothed plane of the smoothness coupling (`PatchMatchSmoothness.md`), built inside `ProcessPixel`,
+  reads only the reference: for `MODEL_SPHERICAL_REF` its 4 adjacent neighbours wrap across the seam, like
+  the propagation neighbours.
 
 ### Metal estimator
 
@@ -194,7 +197,7 @@ reject a file whose flag disagrees with the view's model.
   buffer 8 the per-view `ModelView` {R, t, C, texScale}; buffer 9 the reference trig table (W+H (sin, cos)
   pairs, a dummy for a pinhole reference). A second sampler (`coord::normalized`, repeat on columns, clamp
   on rows) reads the textures of an equirectangular view.
-- Kernel logic as in CUDA, including the view gate.
+- Kernel logic as in CUDA, including the view gate and the smoothness coupling.
 - Differences from CUDA: the relative view poses are composed in double precision (CUDA composes them in
   single precision from the reference-centered cameras); random numbers come from PCG, bilateral weights
   from `exp`.
@@ -258,15 +261,15 @@ Fused F is the harmonic mean of precision and recall at the stated range toleran
 | Dataset and shipped configuration | Depth completeness | Median relative depth error | Fused F |
 |---|---:|---:|---:|
 | Synthetic 1536, CPU | 0.911 | 0.00050 | 0.975 at 1% |
-| Synthetic 1536, CUDA | 0.983 | 0.00041 | |
-| Synthetic 1536, Metal | 0.982 | 0.00041 | |
-| Mixed 96 px faces against two 384 px panoramas, CPU / CUDA / Metal | 0.838 / 0.991 / 0.990 | 0.00247 / 0.00226 / 0.00225 | |
+| Synthetic 1536, CUDA | 0.984 | 0.00041 | |
+| Synthetic 1536, Metal | 0.983 | 0.00041 | |
+| Mixed 96 px faces against two 384 px panoramas, CPU / CUDA / Metal | 0.838 / 0.995 / 0.996 | 0.00247 / 0.00221 / 0.00221 | |
 | Holo360D, CPU | 0.954 | 0.201 | 0.522 at 5% |
-| Holo360D, CUDA / Metal | 0.681 | 0.0471 | 0.617 at 5% |
+| Holo360D, CUDA | 0.811 | 0.0513 | 0.670 at 5% |
 
 Pinhole scenes run the same GPU kernels with the spherical branches compiled out: Tanks and Temples
-Ignatius (263 images, CUDA, default options) fuses to F 0.803 at its 3 mm tolerance (precision 0.730,
-recall 0.892).
+Ignatius (263 images, CUDA, default options) fuses to F 0.788 at its 3 mm tolerance (precision 0.711,
+recall 0.883).
 
 The synthetic suite checks seam accuracy against the antipodal band and exercises CUDA or Metal
 with the scene translated 1e6 m from the origin along every axis. `TestSphericalPatchWarp` measures

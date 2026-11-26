@@ -1172,14 +1172,10 @@ bool MVS::SyntheticSphericalGPUTest(bool forceCPU)
 	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL));
 	const DepthEvaluator::Stats seam(evaluator.GetStats(DepthEvaluator::SEAM)), center(evaluator.GetStats(DepthEvaluator::CENTER));
 	const DepthEvaluator::Stats north(evaluator.GetStats(DepthEvaluator::NORTH)), south(evaluator.GetStats(DepthEvaluator::SOUTH));
-	// bounds: CUDA, the measured accuracy less a margin (every band at or above the CPU estimator); Metal,
-	// the CPU bounds of SyntheticSphericalTest; the seam band is held to its antipodal band as there
+	// bounds: the accuracy measured on CUDA and Metal less a margin (every band at or above the CPU
+	// estimator); the seam band is held to its antipodal band as in SyntheticSphericalTest
 	struct Bounds { double completeness, absRel, within1, within5, normalDeg, poleCompleteness[2], poleWithin5; };
-	#ifdef _USE_CUDA
-	const Bounds bounds{0.94, 0.002, 0.90, 0.975, 4.5, {0.8, 0.8}, 0.97};
-	#else
-	const Bounds bounds{0.93, 0.0025, 0.88, 0.97, 5.5, {0.8, 0.75}, 0.95};
-	#endif
+	const Bounds bounds{0.94, 0.002, 0.90, 0.975, 4.0, {0.8, 0.8}, 0.97};
 	if (!(all.completeness > bounds.completeness) || !(all.absRelMedian < bounds.absRel) || !(all.within1 > bounds.within1) ||
 		!(all.within5 > bounds.within5) || !(all.normalMedianDeg < bounds.normalDeg) ||
 		!(seam.completeness > 0.99*center.completeness) || !(seam.within5 > center.within5 - 0.01) ||
