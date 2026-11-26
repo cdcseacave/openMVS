@@ -110,7 +110,7 @@ Scene::DenseReconstruction(nFusionMode, ...)
 - **DMapCache** (`DMapCache.h`): LRU disk cache for large-scale processing; also holds the color pixels of the cached depth-maps during fusion
 - **ImageCache** (`ImageCache.h`): thread-safe LRU cache decoding images on demand through the decoder it is built with; densify stores the gray intensities the estimator consumes (`DecodeImageGray` in `SceneDensify.cpp`), the Viewer the full resolution color pixels it crops observation patches from
 - **View-locality order** (`SortImagesByViewLocality`): the depth-maps are estimated walking the view graph, so consecutive ones share views and the cache decodes each image once
-- **PatchMatchCUDA** (`PatchMatchCUDA.h`): GPU-accelerated depth estimation; every hypothesis cost is coupled to a per-pixel smoothed plane of its 4 adjacent neighbours of the other checkerboard colour (fitted inside `ProcessPixel`, mirrored in Metal; `docs/design/PatchMatchSmoothness.md`)
+- **PatchMatchCUDA** (`PatchMatchCUDA.h`): GPU-accelerated depth estimation; every hypothesis cost is coupled to a per-pixel smoothed plane of its 4 adjacent neighbours of the other checkerboard colour (agreement in depth and, by the texture weight of the reference patch, in normal; fitted inside `ProcessPixel`, mirrored in Metal; `docs/design/PatchMatchSmoothness.md`)
 
 ### 3. Mesh Reconstruction (`SceneReconstruct.cpp`, 43KB)
 ```cpp
