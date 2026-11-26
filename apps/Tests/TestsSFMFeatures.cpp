@@ -307,6 +307,35 @@ static void BuildCovisibleScene(Scene& scene)
 	GenerateTestScene(scene, scfg);
 }
 
+// The pairs of a candidate list, and the pairs a scene stores, as a set
+using PairSet = std::set<PairIdx::PairIndex>;
+static PairSet PairSetOf(const PairIdxArr& pairs)
+{
+	PairSet set;
+	for (const PairIdx& pair : pairs)
+		set.insert(pair.idx);
+	return set;
+}
+static PairSet PairSetOf(const Scene& scene)
+{
+	PairSet set;
+	for (const ImagePair& pair : scene.pairs)
+		set.insert(MakePairIdx(pair.ID1, pair.ID2).idx);
+	return set;
+}
+// How a set of pairs differs from the expected one, for a message: " +(a,b)" a pair too many, " -(a,b)" a missing one
+static String PairSetDifference(const PairSet& pairs, const PairSet& expected)
+{
+	String text;
+	for (const PairIdx::PairIndex idx : pairs)
+		if (!expected.count(idx))
+			text += String::FormatString(" +(%u,%u)", PairIdx(idx).i, PairIdx(idx).j);
+	for (const PairIdx::PairIndex idx : expected)
+		if (!pairs.count(idx))
+			text += String::FormatString(" -(%u,%u)", PairIdx(idx).i, PairIdx(idx).j);
+	return text;
+}
+
 // Global-descriptor retrieval, on the twelve images of BuildClusterScene: the cosine ranking of the per-image descriptors and
 // its deterministic tie order, PairsMatcher's RETRIEVAL-mode pair selection over the same descriptors (a connected view
 // graph joined by at most two cross-cluster bridges, whatever the DenseMatchConfig passed to SetDense: the mode is its own
@@ -444,125 +473,6 @@ bool RetrievalTest()
 		"VOCABULARY on the local clustering (%u cross), the .sfm round-trip", numMatched, vocabCross);
 }
 
-// The name breaks of an image sequence (directory, name prefix, falling or jumping frame numbers, names without a
-// number, 19 and 20 digits, the median rise per run of one prefix, a gap of 0) and the neighbours they leave (SequenceNeighbours)
-bool SequenceNeighboursTest()
-{
-	TestScope scope("SequenceNeighboursTest");
-	using Breaks = std::vector<bool>;
-	const auto BreaksOf = [](std::initializer_list<const char*> names, unsigned maxGap) {
-		std::vector<String> fileNames;
-		for (const char* name : names)
-			fileNames.emplace_back(name);
-		return ComputeNameBreaks(fileNames, maxGap);
-	};
-
-	// 1. a 4x gap is no break, a 40x gap, a falling number and a prefix change are
-	const std::initializer_list<const char*> sequence = {"c1_0002.jpg", "c1_0004.jpg", "c1_0006.jpg", "c1_0014.jpg",
-		"c1_0094.jpg", "c1_0096.jpg", "c1_0090.jpg", "c2_0092.jpg", "c2_0094.jpg"};
-	TEST_CHECK(BreaksOf(sequence, 10) == (Breaks{0,0,0,1,0,1,1,0}), "the breaks of the interrupted sequence are wrong");
-
-	// a gap is measured in the usual step of the numbering: frames numbered by hundreds have no break, a frame
-	// 20 steps on does
-	TEST_CHECK(BreaksOf({"f_0100.jpg", "f_0200.jpg", "f_0300.jpg", "f_2300.jpg"}, 10) == (Breaks{0,0,1}),
-		"the gap is not read against the median rise");
-
-	// 2. names without a break, or without a number
-	TEST_CHECK(BreaksOf({"000002.png", "000004.png", "000008.png"}, 10) == (Breaks{0,0}), "pure numeric stems: a break");
-	TEST_CHECK(BreaksOf({"left.jpg", "right.jpg"}, 10) == (Breaks{0}), "stems without a number: a break");
-	TEST_CHECK(BreaksOf({"c_0001.jpg", "photo_12345678901234567890.jpg", "c_0002.jpg"}, 10) == (Breaks{0,0}),
-		"a 20-digit stem makes a break with a neighbour");
-	// 19 digits are a number (nanosecond-epoch stems), 20 are not: the same jump is a break by the gap rule, then none
-	TEST_CHECK(BreaksOf({"1403636579763555584.png", "1403636579763555585.png", "1403636579763555586.png", "1403636579763555686.png"}, 10) ==
-		(Breaks{0,0,1}), "19-digit stems: the jump of 100 steps is no break");
-	TEST_CHECK(BreaksOf({"14036365797635555840.png", "14036365797635555850.png", "14036365797635555860.png", "14036365797635556860.png"}, 10) ==
-		(Breaks{0,0,0}), "20-digit stems: a break");
-
-	// the median rise is taken per run of one prefix: a clip stepping by 100 after one stepping by 1 has no break of its own
-	TEST_CHECK(BreaksOf({"a_0001.jpg", "a_0002.jpg", "a_0003.jpg", "a_0004.jpg", "a_0005.jpg", "a_0006.jpg",
-		"b_0100.jpg", "b_0200.jpg", "b_0300.jpg"}, 10) == (Breaks{0,0,0,0,0,1,0,0}), "two clips numbered at different steps: "
-		"the breaks are not the prefix change alone");
-	// a falling number is a break and keeps the run: its rises still count in the run's median
-	// (rises 10, 10, 10, 1, 1, 100: a median of 10, so the rise of 100 is no break; a run of its own after the fall would
-	// have a median of 1 and break it)
-	TEST_CHECK(BreaksOf({"a_0010.jpg", "a_0020.jpg", "a_0030.jpg", "a_0040.jpg", "a_0001.jpg", "a_0002.jpg", "a_0003.jpg",
-		"a_0103.jpg"}, 10) == (Breaks{0,0,0,1,0,0,0}), "a falling number: the breaks of the run are wrong");
-
-	// a gap of 0: the rises give no break (names that are clock times), the prefix and the falling number still do
-	const std::initializer_list<const char*> clock = {"IMG_20261125_103058.jpg", "IMG_20261125_103059.jpg", "IMG_20261125_103100.jpg",
-		"IMG_20261125_103101.jpg"};
-	TEST_CHECK(BreaksOf(clock, 10) == (Breaks{0,1,0}), "clock-time names at a gap of 10: the minute rollover is no break");
-	TEST_CHECK(BreaksOf(clock, 0) == (Breaks{0,0,0}), "clock-time names at a gap of 0: a break");
-	TEST_CHECK(BreaksOf({"a_0001.jpg", "a_0005.jpg", "a_0003.jpg", "b_0004.jpg", "b_9000.jpg"}, 0) == (Breaks{0,1,1,0}),
-		"a gap of 0: the prefix and falling-number breaks are wrong");
-	TEST_CHECK(BreaksOf({"only.jpg"}, 10).empty(), "one name: breaks");
-	TEST_CHECK(BreaksOf({}, 10).empty(), "no name: breaks");
-
-	// 3. the directory is part of the name
-	TEST_CHECK(BreaksOf({"a/0001.jpg", "a/0002.jpg", "b/0003.jpg"}, 10) == (Breaks{0,1}), "no break at the change of directory");
-
-	// 4. the neighbours: at most 3 apart, none across a break
-	{
-		const SequenceNeighbours neighbours({0,0,0,1,0,0}, 3);
-		TEST_CHECK(neighbours.Overlap() == 3 && neighbours.NumBreaks() == 1, "the overlap or the number of breaks is not kept");
-		TEST_CHECK(neighbours.AreNeighbours(0, 3) && neighbours.AreNeighbours(1, 3) && neighbours.AreNeighbours(4, 6),
-			"neighbours not found");
-		TEST_CHECK(!neighbours.AreNeighbours(0, 4), "positions 4 apart are neighbours");
-		TEST_CHECK(!neighbours.AreNeighbours(3, 4) && !neighbours.AreNeighbours(2, 5), "neighbours across a break");
-		TEST_CHECK(!neighbours.AreNeighbours(2, 2), "an image is its own neighbour");
-		// the positions past the flags have no break
-		TEST_CHECK(neighbours.AreNeighbours(6, 8) && neighbours.AreNeighbours(7, 9) && !neighbours.AreNeighbours(3, 8), "the neighbours past the breaks are wrong");
-		for (IIndex a = 0; a < 8; ++a)
-			for (IIndex b = 0; b < 8; ++b)
-				TEST_CHECK(neighbours.AreNeighbours(a, b) == neighbours.AreNeighbours(b, a),
-					"AreNeighbours(%u, %u) is not symmetric", a, b);
-		const SequenceNeighbours none({0,0,0}, 0);
-		for (IIndex a = 0; a < 4; ++a)
-			for (IIndex b = 0; b < 4; ++b)
-				TEST_CHECK(!none.AreNeighbours(a, b), "overlap 0: (%u, %u) are neighbours", a, b);
-	}
-
-	// 5. built from a scene and a configuration: the breaks of its file names in a sequence run, none in any other
-	{
-		Scene scene;
-		const char* names[] = {"c1_0002.jpg", "c1_0004.jpg", "c1_0094.jpg", "c1_0096.jpg", "c2_0001.jpg"};
-		std::vector<String> fileNames;
-		for (IIndex i = 0; i < 5; ++i) {
-			scene.images.emplace_back(i, names[i]);
-			fileNames.emplace_back(names[i]);
-		}
-		MatchConfig cfg;
-		cfg.matchSequenceOverlap = 2;
-		cfg.sequenceMaxGap = 10;
-		// without the option only the SEQUENTIAL mode is a sequence run, with the same neighbours as with it
-		for (const MatchConfig::MatchMode mode : {MatchConfig::SKIP, MatchConfig::EXHAUSTIVE, MatchConfig::VOCABULARY, MatchConfig::SEQUENTIAL,
-			MatchConfig::KNOWN_POSES, MatchConfig::RETRIEVAL})
-		{
-			cfg.mode = mode;
-			const std::optional<SequenceNeighbours> ofMode = SequenceNeighbours::FromConfig(scene, cfg);
-			TEST_CHECK(cfg.IsImageSequence() == (mode == MatchConfig::SEQUENTIAL) && ofMode.has_value() == cfg.IsImageSequence(),
-				"match mode %d without the option: a sequence run %d, neighbours %d", (int)mode, (int)cfg.IsImageSequence(), (int)ofMode.has_value());
-			if (ofMode.has_value())
-				TEST_CHECK(ofMode->NumBreaks() == 2 && ofMode->Overlap() == 2 && ofMode->AreNeighbours(0, 1) && !ofMode->AreNeighbours(1, 2),
-					"the SEQUENTIAL mode's neighbours are not those of the option");
-		}
-		cfg.mode = MatchConfig::VOCABULARY;
-		cfg.imageSequence = true;
-		const std::optional<SequenceNeighbours> neighbours = SequenceNeighbours::FromConfig(scene, cfg);
-		TEST_CHECK(cfg.IsImageSequence() && neighbours.has_value(), "no neighbours with the option");
-		const Breaks breaks = ComputeNameBreaks(fileNames, 10);
-		TEST_CHECK(breaks == (Breaks{0,1,0,1}) && neighbours->NumBreaks() == 2 && neighbours->Overlap() == 2, "the scene's breaks are wrong");
-		for (IIndex a = 0; a < 5; ++a)
-			for (IIndex b = a + 1; b < 5; ++b)
-				TEST_CHECK(neighbours->AreNeighbours(a, b) == (b - a <= 2 && std::none_of(breaks.begin() + a, breaks.begin() + b, [](bool isBreak) { return isBreak; })),
-					"the scene's neighbours are wrong: (%u, %u)", a, b);
-		cfg.sequenceMaxGap = 0;
-		TEST_CHECK(SequenceNeighbours::FromConfig(scene, cfg)->NumBreaks() == 1, "the scene's breaks at a gap of 0 are wrong");
-	}
-
-	return scope.Pass("name breaks and neighbours: gap, number, prefix and directory rules, 19 digits, the median per run, a gap of 0");
-}
-
 // The four ways a candidate pair is made or pruned: the known-pose selection must still produce candidates for an image
 // absent from the pose file; PairsMatcher::AddSequentialPairs appends the (i, i+k) pairs for k = 1..overlap (no wrap-around)
 // to an existing candidate list, never duplicating a pair already present, and adds nothing at overlap 0; the SEQUENTIAL
@@ -603,13 +513,7 @@ bool PairSelectionTest()
 	{
 		const std::vector<std::pair<IIndex,IIndex>> expectedPairs = {
 			{0,1}, {0,2}, {0,3}, {1,2}, {1,3}, {1,4}, {2,3}, {2,4}, {2,5}, {3,4}, {3,5}, {4,5}};
-		const auto ToSet = [](const PairIdxArr& pairs) {
-			std::unordered_set<PairIdx::PairIndex> set;
-			for (const PairIdx& pair : pairs)
-				set.emplace(pair.idx);
-			return set;
-		};
-		const auto HasAllExpected = [&expectedPairs](const std::unordered_set<PairIdx::PairIndex>& set) {
+		const auto HasAllExpected = [&expectedPairs](const PairSet& set) {
 			for (const auto& [i, j] : expectedPairs)
 				if (set.find(MakePairIdx(i, j).idx) == set.end())
 					return false;
@@ -618,14 +522,14 @@ bool PairSelectionTest()
 		// an empty candidate list gains exactly the expected pairs
 		PairIdxArr pairs;
 		unsigned numAdded = PairsMatcher::AddSequentialPairs(scene, 3, pairs);
-		TEST_CHECK(numAdded == expectedPairs.size() && pairs.size() == expectedPairs.size() && HasAllExpected(ToSet(pairs)),
+		TEST_CHECK(numAdded == expectedPairs.size() && pairs.size() == expectedPairs.size() && HasAllExpected(PairSetOf(pairs)),
 			"an empty list gained %u pairs (%u total), expected %u", numAdded, (unsigned)pairs.size(), (unsigned)expectedPairs.size());
 		// a list already holding (0,1) and (2,3) gains the rest and holds no duplicates
 		PairIdxArr partial;
 		partial.emplace_back(MakePairIdx(0, 1));
 		partial.emplace_back(MakePairIdx(2, 3));
 		numAdded = PairsMatcher::AddSequentialPairs(scene, 3, partial);
-		const std::unordered_set<PairIdx::PairIndex> partialSet = ToSet(partial);
+		const PairSet partialSet = PairSetOf(partial);
 		TEST_CHECK(numAdded == expectedPairs.size() - 2 && partial.size() == expectedPairs.size() && partialSet.size() == partial.size() &&
 			HasAllExpected(partialSet), "a partial list gained %u pairs (%u total, %u unique), expected %u (%u total)", numAdded,
 			(unsigned)partial.size(), (unsigned)partialSet.size(), (unsigned)expectedPairs.size() - 2, (unsigned)expectedPairs.size());
@@ -708,6 +612,92 @@ bool PairSelectionTest()
 		"and the pre-match threshold keeps the strong pair only");
 }
 
+// The name breaks of an image sequence (ComputeNameBreaks), one case per rule of the names, and the neighbours they
+// leave (SequenceNeighbours): from given breaks, and from a scene and its configuration, which a sequence run alone has
+bool SequenceNeighboursTest()
+{
+	TestScope scope("SequenceNeighboursTest");
+	using Breaks = std::vector<bool>;
+	const auto Text = [](const Breaks& breaks) {
+		String text;
+		for (const bool isBreak : breaks)
+			text += isBreak ? '|' : '-';
+		return text;
+	};
+	struct Case { std::vector<String> names; unsigned maxGap; Breaks expected; const char* pins; };
+	const std::vector<String> clockTimes{"IMG_20261125_103058.jpg", "IMG_20261125_103059.jpg", "IMG_20261125_103100.jpg", "IMG_20261125_103101.jpg"};
+	const Case cases[] = {
+		{{"c1_0002.jpg", "c1_0004.jpg", "c1_0006.jpg", "c1_0014.jpg", "c1_0094.jpg", "c1_0096.jpg", "c1_0090.jpg", "c2_0092.jpg", "c2_0094.jpg"}, 10,
+			{0,0,0,1,0,1,1,0}, "a 4x gap is no break; a 40x gap, a falling number and a prefix change are"},
+		{{"f_0100.jpg", "f_0200.jpg", "f_0300.jpg", "f_2300.jpg"}, 10, {0,0,1}, "the gap is read against the median rise (frames numbered by hundreds)"},
+		{{"000002.png", "000004.png", "000008.png"}, 10, {0,0}, "pure numeric stems"},
+		{{"left.jpg", "right.jpg"}, 10, {0}, "stems without a number never break"},
+		{{"c_0001.jpg", "photo_12345678901234567890.jpg", "c_0002.jpg"}, 10, {0,0}, "a stem of 20 digits has no number"},
+		{{"1403636579763555584.png", "1403636579763555585.png", "1403636579763555586.png", "1403636579763555686.png"}, 10, {0,0,1},
+			"19 digits are a number (nanosecond stems): a jump of 100 steps breaks"},
+		{{"14036365797635555840.png", "14036365797635555850.png", "14036365797635555860.png", "14036365797635556860.png"}, 10, {0,0,0},
+			"20 digits are no number: the same jump does not break"},
+		{{"a_0001.jpg", "a_0002.jpg", "a_0003.jpg", "a_0004.jpg", "a_0005.jpg", "a_0006.jpg", "b_0100.jpg", "b_0200.jpg", "b_0300.jpg"}, 10,
+			{0,0,0,0,0,1,0,0}, "the median rise is taken per run of one prefix (a clip stepping by 100 after one stepping by 1)"},
+		{{"a_0010.jpg", "a_0020.jpg", "a_0030.jpg", "a_0040.jpg", "a_0001.jpg", "a_0002.jpg", "a_0003.jpg", "a_0103.jpg"}, 10, {0,0,0,1,0,0,0},
+			"a falling number breaks and keeps its run (the rises 10, 10, 10, 1, 1, 100 have a median of 10: the rise of 100 is no break)"},
+		{clockTimes, 10, {0,1,0}, "clock-time names: the minute rollover is a jump"},
+		{clockTimes, 0, {0,0,0}, "a gap of 0: the rises give no break"},
+		{{"a_0001.jpg", "a_0005.jpg", "a_0003.jpg", "b_0004.jpg", "b_9000.jpg"}, 0, {0,1,1,0}, "a gap of 0: the falling number and the prefix still break"},
+		{{"only.jpg"}, 10, {}, "one name"},
+		{{}, 10, {}, "no name"},
+		{{"a/0001.jpg", "a/0002.jpg", "b/0003.jpg"}, 10, {0,1}, "a change of directory breaks"},
+	};
+	for (const Case& c : cases) {
+		const Breaks breaks = ComputeNameBreaks(c.names, c.maxGap);
+		TEST_CHECK(breaks == c.expected, "%s: the breaks at a gap of %u are %s, expected %s", c.pins, c.maxGap, Text(breaks).c_str(), Text(c.expected).c_str());
+	}
+
+	// the neighbours of given breaks: at most `overlap` apart with no break between them (here between 3 and 4), the
+	// positions past the flags without one; never an image with itself, and none at overlap 0
+	const SequenceNeighbours neighbours({0,0,0,1,0,0}, 3), none({0,0,0}, 0);
+	TEST_CHECK(neighbours.Overlap() == 3 && neighbours.NumBreaks() == 1, "the overlap %u or the %u break(s) are not the given ones", neighbours.Overlap(), neighbours.NumBreaks());
+	for (IIndex a = 0; a < 10; ++a)
+		for (IIndex b = 0; b < 10; ++b) {
+			const bool expected = a != b && MAXF(a, b) - MINF(a, b) <= 3 && (a < 4) == (b < 4);
+			TEST_CHECK(neighbours.AreNeighbours(a, b) == expected && !none.AreNeighbours(a, b), "(%u,%u) are %sneighbours at overlap 3 with a break at 3|4, %sat overlap 0",
+				a, b, neighbours.AreNeighbours(a, b) ? "" : "no ", none.AreNeighbours(a, b) ? "" : "not ");
+		}
+
+	// from a scene and a configuration: the breaks of the file names, in a sequence run (the option, or the SEQUENTIAL
+	// mode by itself) and in no other
+	const std::vector<String> fileNames{"c1_0002.jpg", "c1_0004.jpg", "c1_0094.jpg", "c1_0096.jpg", "c2_0001.jpg"};
+	const Breaks breaks = ComputeNameBreaks(fileNames, 10);
+	TEST_CHECK(breaks == (Breaks{0,1,0,1}), "the breaks of the scene's names are %s", Text(breaks).c_str());
+	Scene scene;
+	for (const String& fileName : fileNames)
+		scene.images.emplace_back((IIndex)scene.images.size(), fileName);
+	MatchConfig cfg;
+	cfg.matchSequenceOverlap = 2;
+	cfg.sequenceMaxGap = 10;
+	for (const bool option : {false, true})
+		for (const MatchConfig::MatchMode mode : {MatchConfig::SKIP, MatchConfig::EXHAUSTIVE, MatchConfig::VOCABULARY, MatchConfig::SEQUENTIAL,
+			MatchConfig::KNOWN_POSES, MatchConfig::RETRIEVAL})
+		{
+			cfg.mode = mode;
+			cfg.imageSequence = option;
+			const std::optional<SequenceNeighbours> ofScene = SequenceNeighbours::FromConfig(scene, cfg);
+			const bool sequenceRun = option || mode == MatchConfig::SEQUENTIAL;
+			TEST_CHECK(cfg.IsImageSequence() == sequenceRun && ofScene.has_value() == sequenceRun, "match mode %d, the option %s: a sequence run %d, neighbours %d",
+				(int)mode, option ? "on" : "off", (int)cfg.IsImageSequence(), (int)ofScene.has_value());
+			if (!sequenceRun)
+				continue;
+			TEST_CHECK(ofScene->NumBreaks() == 2 && ofScene->Overlap() == 2, "match mode %d: %u break(s) at overlap %u, expected 2 at 2", (int)mode, ofScene->NumBreaks(), ofScene->Overlap());
+			for (IIndex a = 0; a < 5; ++a)
+				for (IIndex b = a + 1; b < 5; ++b)
+					TEST_CHECK(ofScene->AreNeighbours(a, b) == (b - a <= 2 && std::find(breaks.begin() + a, breaks.begin() + b, true) == breaks.begin() + b),
+						"match mode %d: (%u,%u) are %sneighbours", (int)mode, a, b, ofScene->AreNeighbours(a, b) ? "" : "no ");
+		}
+	cfg.sequenceMaxGap = 0;
+	TEST_CHECK(SequenceNeighbours::FromConfig(scene, cfg)->NumBreaks() == 1, "the scene's names at a gap of 0: not the one break of the prefix");
+	return scope.Pass("%u cases of name breaks; the neighbours of given breaks, and of a scene in a sequence run alone", (unsigned)std::size(cases));
+}
+
 // Ten posed frames of an interrupted sequence, a_0001..a_0005 then b_0006..b_0010 (a name break between positions 4 and 5),
 // where every pair matches (30 descriptors shared by all the images) but the two halves share nothing else: 60 more
 // descriptors are shared within a half only, and the global descriptors of the halves are orthogonal. So every candidate
@@ -745,241 +735,204 @@ static void BuildInterruptedSequenceScene(Scene& scene)
 	scene.status.nState.set(Scene::Status::STATE::GLOBAL_DESCRIPTORS);
 }
 
-// --image-sequence: the neighbour pairs of the sequence are always matched. PairsMatcher::AddNeighbourPairs appends the
-// missing ones (none across the name break), the pre-match filter never removes one (one the scene already holds verified
-// leaves the list, held once), and every match mode attempts all of them while adding nothing else, and none after a
-// selection that failed; with the option off every mode's candidates are today's (the sequential prior of the retrieval
-// modes included, which does cross the break), and the SEQUENTIAL mode is a sequence run without the option
+// The configuration of a Match run on that fixture: at most 2 pairs per image keeps VOCABULARY itself on 10 images and
+// the verification-feedback round off (it needs at least 10), so the candidates of a mode are those of its first
+// round: the top 2*8/5 = 3 of the retrieval modes and the top 2*4/3 = 2 of the known poses
+static MatchConfig InterruptedSequenceConfig(MatchConfig::MatchMode mode, bool imageSequence)
+{
+	MatchConfig cfg;
+	cfg.mode = mode;
+	cfg.imageSequence = imageSequence;
+	cfg.maxPairsPerImage = 2;
+	cfg.maxEpipolarError = 0; // rely on descriptor matches only, as PairSelectionTest does
+	cfg.minMatches = 10;
+	cfg.matchDistance = FLT_MAX;
+	return cfg;
+}
+
+// The pairs Match stores on a fresh fixture: every attempted pair matches, so these are the candidates the run attempted
+static PairSet MatchedPairs(const MatchConfig& cfg, bool& bFatal)
+{
+	Scene scene;
+	BuildInterruptedSequenceScene(scene);
+	PairsMatcher matcher(scene, cfg);
+	matcher.Match(bFatal);
+	return PairSetOf(scene);
+}
+
+// The pairs (i, i+k) of the ten images for k = 1..span, wrapping around: the candidates of the SEQUENTIAL mode at an
+// overlap of `span` (10 >= 2*span images), and every pair at 5
+static PairIdxArr RingPairs(IIndex span)
+{
+	PairIdxArr pairs;
+	for (IIndex i = 0; i < 10; ++i)
+		for (IIndex k = 1; k <= span && (k < 5 || i < 5); ++k) // the opposite pairs once
+			pairs.emplace_back(MakePairIdx(i, (i + k) % 10));
+	return pairs;
+}
+
+// PairsMatcher::AddNeighbourPairs appends exactly the neighbour pairs a list lacks: all 18 to an empty list, none to
+// the list that holds them, 17 to a list of (0,1) and of a pair that is no neighbour, which stays
+static bool NeighbourPairsAreAppended(const TestScope& scope, const Scene& scene, const SequenceNeighbours& neighbours, const PairSet& neighbourPairs)
+{
+	PairIdxArr pairs;
+	unsigned numAdded = PairsMatcher::AddNeighbourPairs(scene, neighbours, pairs);
+	TEST_CHECK(numAdded == 18 && pairs.size() == 18 && PairSetOf(pairs) == neighbourPairs,
+		"an empty list gained %u pairs (%u total), expected the 18 neighbour pairs:%s", numAdded, (unsigned)pairs.size(), PairSetDifference(PairSetOf(pairs), neighbourPairs).c_str());
+	numAdded = PairsMatcher::AddNeighbourPairs(scene, neighbours, pairs);
+	TEST_CHECK(numAdded == 0 && pairs.size() == 18, "a list holding every neighbour pair gained %u pairs", numAdded);
+	PairIdxArr partial;
+	partial.emplace_back(MakePairIdx(0, 1));
+	partial.emplace_back(MakePairIdx(0, 9));
+	numAdded = PairsMatcher::AddNeighbourPairs(scene, neighbours, partial);
+	PairSet expected = neighbourPairs;
+	expected.insert(MakePairIdx(0, 9).idx);
+	TEST_CHECK(numAdded == 17 && partial.size() == 19 && PairSetOf(partial) == expected,
+		"a list holding (0,1) and (0,9) gained %u pairs (%u total), expected 17 (19 total, both kept):%s", numAdded, (unsigned)partial.size(), PairSetDifference(PairSetOf(partial), expected).c_str());
+	return true;
+}
+
+// PreMatch at a threshold no pair reaches keeps exactly the neighbour pairs of a sequence run, keeps none in another
+// run and stores nothing; a neighbour pair the scene already holds verified leaves the list and is held once. Match
+// in the VOCABULARY mode, which pre-matches its candidates, stores the neighbour pairs with the option, nothing without
+static bool NeighbourPairsSurvivePreMatch(const TestScope& scope, const PairSet& neighbourPairs)
+{
+	MatchConfig cfg = InterruptedSequenceConfig(MatchConfig::VOCABULARY, true), plainCfg = InterruptedSequenceConfig(MatchConfig::VOCABULARY, false);
+	cfg.preMatchThreshold = plainCfg.preMatchThreshold = 100000;
+	// what PreMatch leaves of every pair; false when the vocabulary tree it reads was not built
+	const auto PreMatched = [](Scene& scene, const MatchConfig& cfg, PairSet& kept) {
+		PairsMatcher matcher(scene, cfg);
+		if (matcher.CollectVocabularyPairs(3).empty())
+			return false;
+		PairIdxArr pairs = RingPairs(5);
+		matcher.PreMatch(pairs);
+		kept = PairSetOf(pairs);
+		return true;
+	};
+	Scene scene;
+	BuildInterruptedSequenceScene(scene);
+	PairSet kept;
+	TEST_CHECK(PreMatched(scene, cfg, kept) && kept == neighbourPairs, "PreMatch of a sequence run kept %zu pairs, expected the 18 neighbour pairs:%s",
+		kept.size(), PairSetDifference(kept, neighbourPairs).c_str());
+	TEST_CHECK(PreMatched(scene, plainCfg, kept) && kept.empty() && scene.pairs.empty(), "PreMatch without the option kept %zu pairs, and the two runs stored %u",
+		kept.size(), (unsigned)scene.pairs.size());
+	// held verified, a neighbour pair is done, not filtered: with the geometric verification on (which stores what a
+	// pre-match verifies) it leaves the list, and the other neighbours stay
+	ImagePair& verified = scene.pairs.emplace_back(1, 2);
+	verified.matches.resize(30);
+	verified.F = Matrix3x3::IDENTITY;
+	cfg.maxEpipolarError = 4.f;
+	PairSet expected = neighbourPairs;
+	expected.erase(MakePairIdx(1, 2).idx);
+	TEST_CHECK(PreMatched(scene, cfg, kept) && kept == expected && scene.pairs.size() == 1 && scene.FindPair(1, 2) == &scene.pairs[0],
+		"PreMatch kept %zu pairs and the scene holds %u, expected the 17 neighbour pairs the scene does not hold verified and that one pair:%s",
+		kept.size(), (unsigned)scene.pairs.size(), PairSetDifference(kept, expected).c_str());
+	cfg.maxEpipolarError = 0;
+	bool bFatal;
+	const PairSet stored = MatchedPairs(cfg, bFatal);
+	TEST_CHECK(!bFatal && stored == neighbourPairs, "VOCABULARY pre-matching at an unreachable threshold stored %zu pairs, expected the 18 neighbour pairs:%s",
+		stored.size(), PairSetDifference(stored, neighbourPairs).c_str());
+	TEST_CHECK(MatchedPairs(plainCfg, bFatal).empty() && !bFatal, "VOCABULARY pre-matching at an unreachable threshold stored pairs without the option");
+	return true;
+}
+
+// Every match mode attempts, with the option, its own candidates and the neighbour pairs, nothing else (so no pair
+// across the break but its own); without it, its own and, in VOCABULARY and RETRIEVAL, the sequential prior, which
+// crosses the break. SEQUENTIAL is a sequence run without the option; in the other modes the gap option is not read
+static bool EveryModeMatchesNeighbourPairs(const TestScope& scope, const PairSet& neighbourPairs)
+{
+	// the mode's own candidates, by the call Match makes
+	struct Mode { MatchConfig::MatchMode mode; const char* name; std::function<PairIdxArr(PairsMatcher&)> collectOwn; };
+	const Mode modes[] = {
+		{MatchConfig::EXHAUSTIVE, "EXHAUSTIVE", [](PairsMatcher&) { return RingPairs(5); }},
+		{MatchConfig::VOCABULARY, "VOCABULARY", [](PairsMatcher& matcher) { return matcher.CollectVocabularyPairs(3); }},
+		{MatchConfig::SEQUENTIAL, "SEQUENTIAL", [](PairsMatcher&) { return RingPairs(3); }},
+		{MatchConfig::RETRIEVAL, "RETRIEVAL", [](PairsMatcher& matcher) { return matcher.CollectRetrievalPairs(3); }},
+		{MatchConfig::KNOWN_POSES, "KNOWN_POSES", [](PairsMatcher& matcher) { return matcher.CollectKnownPosePairs(2); }},
+	};
+	Scene scene;
+	BuildInterruptedSequenceScene(scene);
+	PairIdxArr prior;
+	PairsMatcher::AddSequentialPairs(scene, 3, prior);
+	const PairSet priorPairs = PairSetOf(prior);
+	const auto NumAcrossBreak = [](const PairSet& pairs) {
+		return (unsigned)std::count_if(pairs.begin(), pairs.end(), [](PairIdx::PairIndex idx) { return (PairIdx(idx).i < 5) != (PairIdx(idx).j < 5); });
+	};
+	for (const Mode& m : modes) {
+		const bool hasPrior = m.mode == MatchConfig::VOCABULARY || m.mode == MatchConfig::RETRIEVAL, sequenceRun = m.mode == MatchConfig::SEQUENTIAL;
+		PairsMatcher matcher(scene, InterruptedSequenceConfig(m.mode, false));
+		const PairSet own = PairSetOf(m.collectOwn(matcher));
+		TEST_CHECK(!own.empty(), "%s: no candidates of its own", m.name);
+		PairSet expectedOn = own, expectedOff = own;
+		expectedOn.insert(neighbourPairs.begin(), neighbourPairs.end());
+		if (hasPrior)
+			expectedOff.insert(priorPairs.begin(), priorPairs.end());
+		if (sequenceRun)
+			expectedOff = expectedOn;
+		bool bFatal;
+		const PairSet on = MatchedPairs(InterruptedSequenceConfig(m.mode, true), bFatal);
+		TEST_CHECK(!bFatal && on == expectedOn, "%s with the option attempted %zu pairs, expected the %zu of the mode and the neighbours:%s", m.name,
+			on.size(), expectedOn.size(), PairSetDifference(on, expectedOn).c_str());
+		// without the option, the gap option set: read by a sequence run alone, whose break of the prefix it leaves
+		MatchConfig offCfg = InterruptedSequenceConfig(m.mode, false);
+		offCfg.sequenceMaxGap = 1;
+		LogCapture log;
+		const PairSet off = MatchedPairs(offCfg, bFatal);
+		TEST_CHECK(!bFatal && off == expectedOff, "%s without the option attempted %zu pairs, expected the %zu of the mode%s:%s", m.name,
+			off.size(), expectedOff.size(), hasPrior ? " and the sequential prior" : sequenceRun ? " and the neighbours" : "", PairSetDifference(off, expectedOff).c_str());
+		// a sequence run says so: SEQUENTIAL adds the neighbour pairs its candidates lack, which are none
+		TEST_CHECK(log.Contains("Image sequence: 0 neighbour pairs added") == sequenceRun, "%s without the option was %smatched as a sequence", m.name, sequenceRun ? "not " : "");
+		// the halves share nothing, so the visual rankings cross the break at most by their connectivity bridge, where
+		// the prior crosses it six times: the option is seen not to add those
+		if (hasPrior)
+			TEST_CHECK(NumAcrossBreak(own) <= 1 && NumAcrossBreak(on) < NumAcrossBreak(off), "premise not met: %s attempts %u pairs across the break with the option, "
+				"%u without (%u of the mode's own)", m.name, NumAcrossBreak(on), NumAcrossBreak(off), NumAcrossBreak(own));
+	}
+	return true;
+}
+
+// A selection that failed (RETRIEVAL with a global descriptor missing) ends the stage, with the option as without:
+// Match returns 0, logs the error and stores nothing; the neighbour pairs are not matched alone
+static bool FailedSelectionMatchesNothing(const TestScope& scope)
+{
+	for (const bool option : {true, false}) {
+		Scene scene;
+		BuildInterruptedSequenceScene(scene);
+		scene.images[7].globalDescriptor.release();
+		PairsMatcher matcher(scene, InterruptedSequenceConfig(MatchConfig::RETRIEVAL, option));
+		LogCapture log;
+		bool bFatal;
+		const unsigned numMatched = matcher.Match(bFatal);
+		const bool logged = log.Contains("error: RETRIEVAL matching needs a global descriptor on every image");
+		TEST_CHECK(!bFatal && scene.pairs.empty() && numMatched == 0 && logged, "a failed RETRIEVAL selection %s the option stored %u pairs (Match returned %u, the error %slogged), expected none",
+			option ? "with" : "without", (unsigned)scene.pairs.size(), numMatched, logged ? "" : "not ");
+	}
+	return true;
+}
+
+// A sequence run always matches its neighbour pairs, on ten frames with a name break in the middle:
+//  - PairsMatcher::AddNeighbourPairs appends the neighbour pairs a candidate list lacks, none across the break;
+//  - the pre-match filter never removes one, but one the scene already holds verified;
+//  - every match mode attempts them besides its own candidates and nothing else; SEQUENTIAL is a sequence run by itself;
+//  - a selection that failed matches nothing, the neighbour pairs neither.
 bool SequenceForcedMatchTest()
 {
 	TestScope scope("SequenceForcedMatchTest");
-	using PairSet = std::set<uint64_t>;
-	constexpr IIndex numImages = 10;
-	const auto ToSet = [](const PairIdxArr& pairs) {
-		PairSet set;
-		for (const PairIdx& pair : pairs)
-			set.insert(pair.idx);
-		return set;
-	};
-	const auto Spans = [](uint64_t pairIndex) {
-		const PairIdx pair(pairIndex);
-		return (pair.i < 5) != (pair.j < 5);
-	};
-	const auto CountSpanning = [&Spans](const PairSet& set) {
-		return (unsigned)std::count_if(set.begin(), set.end(), Spans);
-	};
-	PairIdxArr allPairs;
-	for (IIndex a = 0; a < numImages; ++a)
-		for (IIndex b = a + 1; b < numImages; ++b)
-			allPairs.emplace_back(MakePairIdx(a, b));
-
-	// the configuration of every Match run below: at most 2 pairs per image keeps VOCABULARY itself on 10 images and the
-	// verification-feedback round off (it needs at least 10), so the candidates of a mode are those of its first round:
-	// the top 2*8/5 = 3 of the retrieval modes and the top 2*4/3 = 2 of the known poses
-	const auto Config = [](MatchConfig::MatchMode mode, bool imageSequence) {
-		MatchConfig cfg;
-		cfg.mode = mode;
-		cfg.imageSequence = imageSequence;
-		cfg.maxPairsPerImage = 2;
-		cfg.maxEpipolarError = 0; // rely on descriptor matches only, as PairSelectionTest does
-		cfg.minMatches = 10;
-		cfg.matchDistance = FLT_MAX;
-		return cfg;
-	};
-
 	Scene scene;
 	BuildInterruptedSequenceScene(scene);
-	const SequenceNeighbours neighbours = SequenceNeighbours::FromConfig(scene, Config(MatchConfig::EXHAUSTIVE, true)).value();
-	TEST_CHECK(neighbours.NumBreaks() == 1 && neighbours.Overlap() == 3 && neighbours.AreNeighbours(3, 4) && !neighbours.AreNeighbours(4, 5) && neighbours.AreNeighbours(5, 6),
-		"the fixture's break is not between positions 4 and 5");
-	// the neighbour pairs: (a, b), b - a <= 3, both on one side of the break: 9 on each side
-	PairSet expectedNeighbours;
-	for (IIndex a = 0; a < numImages; ++a)
-		for (IIndex b = a + 1; b <= a + 3 && b < numImages; ++b)
-			if ((a < 5) == (b < 5))
-				expectedNeighbours.insert(MakePairIdx(a, b).idx);
-	ASSERT(expectedNeighbours.size() == 18);
-
-	// 1. AddNeighbourPairs appends exactly the missing neighbour pairs
-	{
-		PairIdxArr pairs;
-		unsigned numAdded = PairsMatcher::AddNeighbourPairs(scene, neighbours, pairs);
-		TEST_CHECK(numAdded == 18 && pairs.size() == 18 && ToSet(pairs) == expectedNeighbours,
-			"an empty list gained %u pairs (%u total), expected the 18 neighbour pairs", numAdded, (unsigned)pairs.size());
-		numAdded = PairsMatcher::AddNeighbourPairs(scene, neighbours, pairs);
-		TEST_CHECK(numAdded == 0 && pairs.size() == 18, "a list holding every neighbour pair gained %u pairs", numAdded);
-		PairIdxArr partial;
-		partial.emplace_back(MakePairIdx(0, 1));
-		partial.emplace_back(MakePairIdx(0, 9));
-		numAdded = PairsMatcher::AddNeighbourPairs(scene, neighbours, partial);
-		PairSet expectedPartial = expectedNeighbours;
-		expectedPartial.insert(MakePairIdx(0, 9).idx);
-		TEST_CHECK(numAdded == 17 && partial.size() == 19 && ToSet(partial) == expectedPartial,
-			"a list holding (0,1) and (0,9) gained %u pairs (%u total), expected 17 (19 total, both kept)", numAdded, (unsigned)partial.size());
-	}
-
-	// the pairs Match stores on a fresh fixture: every attempted pair matches, so these are the attempted candidates
-	const auto Matched = [](const MatchConfig& cfg, bool& bFatal) {
-		Scene fresh;
-		BuildInterruptedSequenceScene(fresh);
-		PairsMatcher matcher(fresh, cfg);
-		matcher.Match(bFatal);
-		PairSet stored;
-		for (const ImagePair& pair : fresh.pairs)
-			stored.insert(MakePairIdx(pair.ID1, pair.ID2).idx);
-		return stored;
-	};
-
-	// 2. PreMatch at a threshold no pair can reach keeps exactly the neighbour pairs in a sequence run, and nothing in another
-	{
-		MatchConfig cfg = Config(MatchConfig::VOCABULARY, true);
-		cfg.preMatchThreshold = 100000;
-		PairsMatcher matcher(scene, cfg);
-		TEST_CHECK(!matcher.CollectVocabularyPairs(3).empty(), "the vocabulary tree PreMatch reads was not built");
-		PairIdxArr kept = allPairs;
-		matcher.PreMatch(kept);
-		TEST_CHECK(kept.size() == 18 && ToSet(kept) == expectedNeighbours,
-			"PreMatch of a sequence run kept %u pairs, expected the 18 neighbour pairs", (unsigned)kept.size());
-		MatchConfig plainCfg = cfg;
-		plainCfg.imageSequence = false;
-		PairsMatcher plainMatcher(scene, plainCfg);
-		TEST_CHECK(!plainMatcher.CollectVocabularyPairs(3).empty(), "the vocabulary tree PreMatch reads was not built");
-		PairIdxArr none = allPairs;
-		plainMatcher.PreMatch(none);
-		TEST_CHECK(none.empty(), "PreMatch without the option kept %u pairs", (unsigned)none.size());
-		TEST_CHECK(scene.pairs.empty(), "PreMatch stored %u pairs", (unsigned)scene.pairs.size());
-		// a neighbour pair the scene already holds verified is done, not filtered: with the geometric verification on
-		// (which stores what a pre-match verifies) it leaves the list, is held once, and the other neighbours stay
-		{
-			Scene verified;
-			BuildInterruptedSequenceScene(verified);
-			ImagePair& pair = verified.pairs.emplace_back(1, 2);
-			pair.matches.resize(30);
-			pair.F = Matrix3x3::IDENTITY;
-			MatchConfig verifyCfg = cfg;
-			verifyCfg.maxEpipolarError = 4.f;
-			PairsMatcher verifyMatcher(verified, verifyCfg);
-			TEST_CHECK(!verifyMatcher.CollectVocabularyPairs(3).empty(), "the vocabulary tree PreMatch reads was not built");
-			PairIdxArr toMatch = allPairs;
-			verifyMatcher.PreMatch(toMatch);
-			PairSet expectedLeft = expectedNeighbours;
-			expectedLeft.erase(MakePairIdx(1, 2).idx);
-			TEST_CHECK(toMatch.size() == 17 && ToSet(toMatch) == expectedLeft,
-				"PreMatch kept %u pairs, expected the 17 neighbour pairs the scene does not hold verified", (unsigned)toMatch.size());
-			TEST_CHECK(verified.pairs.size() == 1 && verified.FindPair(1, 2) == &verified.pairs[0],
-				"the verified neighbour pair is held %u times among %u pairs", (unsigned)std::count_if(verified.pairs.begin(), verified.pairs.end(),
-				[](const ImagePair& p) { return MakePairIdx(p.ID1, p.ID2).idx == MakePairIdx(1, 2).idx; }), (unsigned)verified.pairs.size());
-		}
-		// and through Match: the vocabulary mode pre-matches its candidates with the neighbours of the option
-		bool bFatal;
-		const PairSet stored = Matched(cfg, bFatal);
-		TEST_CHECK(!bFatal && stored == expectedNeighbours,
-			"VOCABULARY pre-matching at an unreachable threshold stored %u pairs, expected the 18 neighbour pairs", (unsigned)stored.size());
-		cfg.imageSequence = false;
-		TEST_CHECK(Matched(cfg, bFatal).empty() && !bFatal, "VOCABULARY pre-matching at an unreachable threshold stored pairs without the option");
-	}
-
-	// 3. every match mode: the option attempts every neighbour pair and adds nothing else, in particular no pair across the
-	// break; off, the candidates are today's: the mode's own and, in VOCABULARY and RETRIEVAL, the sequential prior
-	PairSet priorPairs; {
-		PairIdxArr prior;
-		PairsMatcher::AddSequentialPairs(scene, 3, prior);
-		priorPairs = ToSet(prior);
-	}
-	unsigned numModes = 0;
-	for (const MatchConfig::MatchMode mode : {MatchConfig::EXHAUSTIVE, MatchConfig::VOCABULARY, MatchConfig::SEQUENTIAL,
-		MatchConfig::RETRIEVAL, MatchConfig::KNOWN_POSES})
-	{
-		const char* const name = mode == MatchConfig::EXHAUSTIVE ? "EXHAUSTIVE" : mode == MatchConfig::VOCABULARY ? "VOCABULARY" :
-			mode == MatchConfig::SEQUENTIAL ? "SEQUENTIAL" : mode == MatchConfig::RETRIEVAL ? "RETRIEVAL" : "KNOWN_POSES";
-		// the mode's own candidates, from the call Match makes on the same fixture
-		PairSet own; {
-			Scene fresh;
-			BuildInterruptedSequenceScene(fresh);
-			PairsMatcher matcher(fresh, Config(mode, false));
-			switch (mode) {
-			case MatchConfig::EXHAUSTIVE: own = ToSet(allPairs); break;
-			case MatchConfig::VOCABULARY: own = ToSet(matcher.CollectVocabularyPairs(3)); break;
-			case MatchConfig::RETRIEVAL: own = ToSet(matcher.CollectRetrievalPairs(3)); break;
-			case MatchConfig::KNOWN_POSES: own = ToSet(matcher.CollectKnownPosePairs(2)); break;
-			default: // SEQUENTIAL: (i, i+k) for k = 1..3 with the wrap-around of 10 >= 2*3 images
-				for (IIndex i = 0; i < numImages; ++i)
-					for (IIndex k = 1; k <= 3; ++k)
-						own.insert(MakePairIdx(i, (i + k) % numImages).idx);
-			}
-		}
-		TEST_CHECK(!own.empty(), "%s: no candidates of its own", name);
-		const bool withPrior = mode == MatchConfig::VOCABULARY || mode == MatchConfig::RETRIEVAL;
-		bool bFatal;
-		// on: every neighbour pair is attempted, and nothing but the mode's own candidates besides
-		const PairSet on = Matched(Config(mode, true), bFatal);
-		TEST_CHECK(!bFatal, "%s: a fatal round failure with the option", name);
-		// cannot fail for EXHAUSTIVE and SEQUENTIAL: their own candidates hold every neighbour pair
-		for (const uint64_t pairIndex : expectedNeighbours)
-			TEST_CHECK(on.count(pairIndex), "%s: the neighbour pair (%u, %u) was not attempted", name, PairIdx(pairIndex).i, PairIdx(pairIndex).j);
-		PairSet expectedOn = own;
-		expectedOn.insert(expectedNeighbours.begin(), expectedNeighbours.end());
-		TEST_CHECK(on == expectedOn, "%s: the option attempted %u pairs, expected the %u of the mode and the neighbours", name,
-			(unsigned)on.size(), (unsigned)expectedOn.size());
-		// cannot fail for EXHAUSTIVE and SEQUENTIAL either: every pair across the break they attempt is their own
-		for (const uint64_t pairIndex : on)
-			TEST_CHECK(!Spans(pairIndex) || own.count(pairIndex), "%s: the option added (%u, %u), across the break", name,
-				PairIdx(pairIndex).i, PairIdx(pairIndex).j);
-		// off: today's candidates, whatever the sequence options left unread
-		const PairSet off = Matched(Config(mode, false), bFatal);
-		TEST_CHECK(!bFatal, "%s: a fatal round failure without the option", name);
-		PairSet expectedOff = own;
-		if (withPrior)
-			expectedOff.insert(priorPairs.begin(), priorPairs.end());
-		TEST_CHECK(off == expectedOff, "%s: %u pairs attempted without the option, expected today's %u", name,
-			(unsigned)off.size(), (unsigned)expectedOff.size());
-		MatchConfig unread = Config(mode, false);
-		unread.sequenceMaxGap = 1;
-		TEST_CHECK(Matched(unread, bFatal) == off && !bFatal, "%s: the sequence options changed the candidates with the option off", name);
-		// the SEQUENTIAL mode is a sequence run by itself: without the option it matches what it matches with it and
-		// adds the neighbour pairs its candidates lack (none), which no other mode does
-		{
-			LogCapture log;
-			Matched(Config(mode, false), bFatal);
-			const bool sequenceRun = log.Contains("Image sequence: 0 neighbour pairs added");
-			TEST_CHECK(sequenceRun == (mode == MatchConfig::SEQUENTIAL) && (!sequenceRun || off == on), "%s without the option: %s as a sequence, %u pairs attempted against %u with the option",
-				name, sequenceRun ? "matched" : "not matched", (unsigned)off.size(), (unsigned)on.size());
-		}
-		// the halves share nothing, so the visual rankings cross the break at most by their connectivity bridge, where the
-		// prior crosses it six times: the option is seen not to add those
-		if (withPrior)
-			TEST_CHECK(CountSpanning(own) <= 1 && CountSpanning(on) < CountSpanning(off), "%s: %u pairs across the break with the option, "
-				"%u without (%u of the mode's own)", name, CountSpanning(on), CountSpanning(off), CountSpanning(own));
-		++numModes;
-	}
-
-	// 4. a selection that failed (RETRIEVAL with a global descriptor missing, an error) ends the stage with the option as
-	// without: nothing is matched, Match returns 0 and the error is logged, the neighbour pairs are not matched alone
-	{
-		const auto MatchedWithoutDescriptor = [](const MatchConfig& cfg, bool& bFatal, unsigned& numMatched, bool& logged) {
-			Scene fresh;
-			BuildInterruptedSequenceScene(fresh);
-			fresh.images[7].globalDescriptor.release();
-			PairsMatcher matcher(fresh, cfg);
-			LogCapture log;
-			numMatched = matcher.Match(bFatal);
-			logged = log.Contains("error: RETRIEVAL matching needs a global descriptor on every image");
-			PairSet stored;
-			for (const ImagePair& pair : fresh.pairs)
-				stored.insert(MakePairIdx(pair.ID1, pair.ID2).idx);
-			return stored;
-		};
-		bool bFatal, logged;
-		unsigned numMatched;
-		const PairSet on = MatchedWithoutDescriptor(Config(MatchConfig::RETRIEVAL, true), bFatal, numMatched, logged);
-		TEST_CHECK(!bFatal && on.empty() && numMatched == 0 && logged, "a failed RETRIEVAL selection with the option matched %u pairs "
-			"(Match returned %u, the error %slogged), expected none, as without the option", (unsigned)on.size(), numMatched, logged ? "" : "not ");
-		const PairSet off = MatchedWithoutDescriptor(Config(MatchConfig::RETRIEVAL, false), bFatal, numMatched, logged);
-		TEST_CHECK(!bFatal && off.empty() && numMatched == 0 && logged, "a failed RETRIEVAL selection without the option matched %u pairs "
-			"(Match returned %u, the error %slogged)", (unsigned)off.size(), numMatched, logged ? "" : "not ");
-	}
-	return scope.Pass("the 18 neighbour pairs appended once, kept by PreMatch, attempted by %u match modes with nothing across the break, "
-		"none after a failed selection; today's candidates with the option off", numModes);
+	const SequenceNeighbours neighbours = SequenceNeighbours::FromConfig(scene, InterruptedSequenceConfig(MatchConfig::EXHAUSTIVE, true)).value();
+	// the neighbour pairs: at most 3 apart, both on one side of the break between 4 and 5: 9 on each side
+	PairSet neighbourPairs;
+	for (const PairIdx& pair : RingPairs(3))
+		if ((pair.i < 5) == (pair.j < 5))
+			neighbourPairs.insert(pair.idx);
+	TEST_CHECK(neighbours.NumBreaks() == 1 && neighbours.Overlap() == 3 && neighbours.AreNeighbours(3, 4) && !neighbours.AreNeighbours(4, 5) && neighbours.AreNeighbours(5, 6) &&
+		neighbourPairs.size() == 18, "the fixture has not its one break between positions 4 and 5, at an overlap of 3");
+	if (!NeighbourPairsAreAppended(scope, scene, neighbours, neighbourPairs) || !NeighbourPairsSurvivePreMatch(scope, neighbourPairs) ||
+		!EveryModeMatchesNeighbourPairs(scope, neighbourPairs) || !FailedSelectionMatchesNothing(scope))
+		return false;
+	return scope.Pass("the 18 neighbour pairs appended once, kept by PreMatch, attempted by every match mode with nothing else added; "
+		"none matched after a failed selection");
 }
 
 // Scene::MatchPairs() must fail the stage rather than report success when matching leaves the view graph empty over two or

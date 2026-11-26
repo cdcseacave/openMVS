@@ -94,15 +94,16 @@ bool RetrievalTest();
 // (PairsMatcher::AddSequentialPairs), the SEQUENTIAL match mode, and the pre-match threshold
 bool PairSelectionTest();
 
-// The name breaks of an image sequence (directory, name prefix, falling or jumping frame numbers, names without a
-// number, 19 and 20 digits, the median rise per run of one prefix, a gap of 0) and the neighbours they leave
-// (SequenceNeighbours), built for a sequence run alone: the option, or the SEQUENTIAL match mode
+// The name breaks of an image sequence, one case per rule of the names (directory, prefix, falling or jumping frame
+// numbers, names without a number, 19 and 20 digits, the median rise per run of one prefix, a gap of 0), and the
+// neighbours they leave (SequenceNeighbours): from given breaks, and from a scene in a sequence run alone (the
+// option, or the SEQUENTIAL match mode)
 bool SequenceNeighboursTest();
 
-// --image-sequence: the neighbour pairs are always matched (PairsMatcher::AddNeighbourPairs, PreMatch keeping them but
-// not one already verified, every match mode attempting them and nothing across a break; a failed selection ends the
-// stage as without the option); with the option off the candidates of every mode are its own, and the SEQUENTIAL
-// mode is a sequence run by itself
+// A sequence run always matches its neighbour pairs: PairsMatcher::AddNeighbourPairs appends the ones a list lacks,
+// PreMatch keeps them but one already verified, every match mode attempts them besides its own candidates and
+// nothing else (no pair across a name break), and a failed selection matches none; without the option the candidates
+// of a mode are its own with the sequential prior, and the SEQUENTIAL mode is a sequence run by itself
 bool SequenceForcedMatchTest();
 
 // Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty, and
