@@ -29,7 +29,6 @@
 #include "PairsWeighting.h"
 #include "VocabularyTree.h"
 #include "GlobalDescriptors.h"
-#include "SequenceNeighbours.h"
 #include "ViewGraphTriplets.h"
 #include <PoseLib/poselib.h>
 
@@ -281,7 +280,7 @@ MatchConfig& MatchConfig::DefaultsForFeatureType(FeatureType type) {
 
 
 PairsMatcher::PairsMatcher(Scene& _scene, const MatchConfig& _config)
-	: scene(_scene), config(_config)
+	: scene(_scene), config(_config), sequence(SequenceNeighbours::FromConfig(_scene, _config))
 {
 	// Determine norm type from descriptor kind (binary vs quantized float)
 	// Both are stored as CV_8U, but binary uses Hamming distance, quantized uses L2
@@ -1464,24 +1463,8 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 
 unsigned PairsMatcher::AddSequentialPairs(const Scene& scene, unsigned overlap, PairIdxArr& pairs)
 {
-	if (overlap == 0)
-		return 0;
-	const IIndex nImages = (IIndex)scene.images.size();
-	std::unordered_set<PairIdx::PairIndex> present;
-	present.reserve(pairs.size() + (size_t)nImages*overlap);
-	for (const PairIdx& pair : pairs)
-		present.emplace(pair.idx);
-	unsigned numAdded = 0;
-	for (IIndex i = 0; i < nImages; ++i) {
-		for (unsigned k = 1; k <= overlap && i+k < nImages; ++k) {
-			const PairIdx pair(MakePairIdx(scene.images[i].ID, scene.images[i+k].ID));
-			if (present.emplace(pair.idx).second) {
-				pairs.emplace_back(pair);
-				++numAdded;
-			}
-		}
-	}
-	return numAdded;
+	// the neighbour pairs of a sequence without a break
+	return AddNeighbourPairs(scene, SequenceNeighbours({}, overlap), pairs);
 }
 
 unsigned PairsMatcher::AddNeighbourPairs(const Scene& scene, const SequenceNeighbours& neighbours, PairIdxArr& pairs)
@@ -1935,19 +1918,18 @@ void PairsMatcher::FilterRedundantKeypoints()
 		numRemoved, numRemovedDense, numTotal, numDuplicateMatches, TD_TIMER_GET_FMT().c_str());
 }
 
-void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch, const SequenceNeighbours* keep)
+void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
 {
 	if (vocabularyTree == nullptr || !vocabularyTree->IsValid()) {
 		VERBOSE("error: vocabulary tree not initialized for pre-matching");
 		return;
 	}
 	TD_TIMER_STARTD();
-	// a neighbour pair of an image sequence is always matched: the pre-match filter may still store
+	// a neighbour pair of a sequence run is always matched: the pre-match filter may still store
 	// its geometry, but never removes it (the pair IDs index scene.images, as everywhere below);
-	// a neighbour pair the scene already holds verified is done, not filtered, and leaves the list
-	// below like any other (pre-matching it again would store a second entry for it)
-	const auto IsKept = [keep](const PairIdx& p) {
-		return keep != nullptr && keep->AreNeighbours(p.i, p.j);
+	// one the scene already holds verified leaves the list below like any other pair
+	const auto IsKept = [this](const PairIdx& p) {
+		return sequence && sequence->AreNeighbours(p.i, p.j);
 	};
 
 	// Filter out already verified pairs from the list
@@ -2187,29 +2169,25 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		break;
 	}
 	case MatchConfig::VOCABULARY: {
-		// Build vocabulary candidates from the tree retrieval ranking
-		pairsToMatch = CollectVocabularyPairs(retrievalTopK);
-		if (pairsToMatch.empty()) {
-			// a failed selection (no tree) ends the stage with --image-sequence too; only a tree that ranked and
-			// returned no pair leaves the neighbour pairs to match alone
+		// Build vocabulary candidates from the tree retrieval ranking; a selection that failed (no tree)
+		// ends the stage, one that ranked no pair is left to the check after the consecutive pairs
+		EnsureVocabularyTree();
+		if (!vocabularyTree) {
 			VERBOSE("error: vocabulary produced no new candidate pairs");
-			if (!config.imageSequence || !vocabularyTree)
-				return 0;
+			return 0;
 		}
+		pairsToMatch = CollectVocabularyPairs(retrievalTopK);
 		break;
 	}
 	case MatchConfig::RETRIEVAL: {
 		// Build candidates from the global-descriptor retrieval alone: no vocabulary tree, no
-		// fallback (see CollectRetrievalPairs / EnsureGlobalDescriptorsIndex); a missing
-		// descriptor already logged a specific error naming the image
-		pairsToMatch = CollectRetrievalPairs(retrievalTopK);
-		if (pairsToMatch.empty()) {
-			// a failed selection (a missing global descriptor) ends the stage with --image-sequence too; only an
-			// index that ranked and returned no pair leaves the neighbour pairs to match alone
+		// fallback (see CollectRetrievalPairs / EnsureGlobalDescriptorsIndex); a selection that
+		// failed (a missing descriptor, which already logged an error naming the image) ends the stage
+		if (!EnsureGlobalDescriptorsIndex()) {
 			VERBOSE("error: retrieval produced no candidate pairs (see the global-descriptor error above)");
-			if (!config.imageSequence || !globalDescriptors || !globalDescriptors->IsValid())
-				return 0;
+			return 0;
 		}
+		pairsToMatch = CollectRetrievalPairs(retrievalTopK);
 		break;
 	}
 	case MatchConfig::KNOWN_POSES: {
@@ -2249,36 +2227,27 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		return 0;
 	}
 
-	// Sequential prior: propose the consecutive-frame pairs a visual ranking is most likely to
-	// leave out, in addition to whatever it already picked (see AddSequentialPairs). Added here,
-	// before the snapshot the verification-feedback round attempts against, so that round never
-	// re-proposes or double-counts them.
-	// With --image-sequence the neighbour pairs below take its place: the prior would also add the
-	// pairs across a name break.
-	if (!config.imageSequence && (matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::RETRIEVAL)) {
-		const unsigned numRetrieved = (unsigned)pairsToMatch.size();
+	// The consecutive pairs, added here, before the snapshot the verification-feedback round
+	// attempts against, so that round never re-proposes or double-counts them.
+	// In a sequence run the neighbour pairs are always matched, in every mode: the missing ones are
+	// added to the candidates, and pre-matching never removes one. In any other run, the sequential
+	// prior: the consecutive-frame pairs a visual ranking that picked some pairs is most likely to
+	// leave out (see AddSequentialPairs); it would also add the pairs across a name break.
+	const unsigned numCandidates = (unsigned)pairsToMatch.size();
+	if (sequence) {
+		const unsigned numAdded = AddNeighbourPairs(scene, *sequence, pairsToMatch);
+		DEBUG("Image sequence: %u neighbour pairs added to the %u candidates (overlap %u, %u name breaks)",
+			numAdded, numCandidates, sequence->Overlap(), sequence->NumBreaks());
+	} else if (numCandidates > 0 && (matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::RETRIEVAL)) {
 		const unsigned numAdded = AddSequentialPairs(scene, config.matchSequenceOverlap, pairsToMatch);
 		if (numAdded > 0)
 			DEBUG("Sequential prior: %u consecutive pairs added to the %u retrieved (overlap %u)",
-				numAdded, numRetrieved, config.matchSequenceOverlap);
+				numAdded, numCandidates, config.matchSequenceOverlap);
 	}
-	// --image-sequence: the neighbour pairs are always matched, in every mode: whatever the mode
-	// picked, the missing ones are added to the candidates (before the snapshot, as the prior) and
-	// pre-matching never removes one; they still go through the normal matching and verification
-	std::optional<SequenceNeighbours> sequenceNeighbours;
-	if (config.imageSequence) {
-		sequenceNeighbours.emplace(scene, config.matchSequenceOverlap, config.sequenceMaxGap);
-		const unsigned numCandidates = (unsigned)pairsToMatch.size();
-		const unsigned numAdded = AddNeighbourPairs(scene, *sequenceNeighbours, pairsToMatch);
-		DEBUG("Image sequence: %u neighbour pairs added to the %u candidates (overlap %u, %u name breaks)",
-			numAdded, numCandidates, config.matchSequenceOverlap,
-			(unsigned)std::count(sequenceNeighbours->Breaks().begin(), sequenceNeighbours->Breaks().end(), true));
-		// a mode whose selection ran and returned nothing (logged above; a failed one returned already) still
-		// matches the neighbour pairs; the stage ends only when there are none either
-		if (pairsToMatch.empty())
-			return 0;
+	if (pairsToMatch.empty()) {
+		VERBOSE("error: no candidate pairs to match");
+		return 0;
 	}
-	ASSERT(!pairsToMatch.empty());
 
 	// Run a matching round, in one of its two shapes: the dense one pass when the dense matcher
 	// is enabled, otherwise the descriptor round -- pre-match filter if requested, GPU-friendly
@@ -2302,7 +2271,7 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		// never builds one, so pre-matching stays unreachable there regardless of this setting.
 		if (vocabularyTree) {
 			if (config.preMatchThreshold > 0)
-				PreMatch(pairs, sequenceNeighbours ? &*sequenceNeighbours : nullptr);
+				PreMatch(pairs);
 			// Clear descriptors cache
 			vocabularyTree->ClearDescriptorsCache();
 		}

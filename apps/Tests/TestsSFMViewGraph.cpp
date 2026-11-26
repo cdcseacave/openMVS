@@ -1821,7 +1821,10 @@ bool SequenceVetoTest()
 		// no image, and one: nothing to judge
 		Scene scene;
 		buildCorridor(scene, numCameras, false);
-		const SequenceNeighbours neighbours(scene, overlap, MatchConfig().sequenceMaxGap);
+		MatchConfig sequenceCfg;
+		sequenceCfg.imageSequence = true;
+		ASSERT(sequenceCfg.matchSequenceOverlap == overlap);
+		const SequenceNeighbours neighbours = SequenceNeighbours::FromConfig(scene, sequenceCfg).value();
 		SequenceFilterStats stats;
 		const unsigned removed = run(scene, maxDirectionResidual, false, &neighbours, &stats);
 		TEST_CHECK(isZero(stats) && removed == 0 && scene.pairs.empty(), "%u image(s): %u segment(s), %u judged, %u removed", numCameras, stats.numSegments, stats.numJudged, removed);

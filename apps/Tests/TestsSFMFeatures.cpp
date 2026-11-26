@@ -504,12 +504,14 @@ bool SequenceNeighboursTest()
 	// 4. the neighbours: at most 3 apart, none across a break
 	{
 		const SequenceNeighbours neighbours({0,0,0,1,0,0}, 3);
-		TEST_CHECK(neighbours.Overlap() == 3 && neighbours.Breaks().size() == 6, "the overlap or the breaks are not kept");
+		TEST_CHECK(neighbours.Overlap() == 3 && neighbours.NumBreaks() == 1, "the overlap or the number of breaks is not kept");
 		TEST_CHECK(neighbours.AreNeighbours(0, 3) && neighbours.AreNeighbours(1, 3) && neighbours.AreNeighbours(4, 6),
 			"neighbours not found");
 		TEST_CHECK(!neighbours.AreNeighbours(0, 4), "positions 4 apart are neighbours");
 		TEST_CHECK(!neighbours.AreNeighbours(3, 4) && !neighbours.AreNeighbours(2, 5), "neighbours across a break");
 		TEST_CHECK(!neighbours.AreNeighbours(2, 2), "an image is its own neighbour");
+		// the positions past the flags have no break
+		TEST_CHECK(neighbours.AreNeighbours(6, 8) && neighbours.AreNeighbours(7, 9) && !neighbours.AreNeighbours(3, 8), "the neighbours past the breaks are wrong");
 		for (IIndex a = 0; a < 8; ++a)
 			for (IIndex b = 0; b < 8; ++b)
 				TEST_CHECK(neighbours.AreNeighbours(a, b) == neighbours.AreNeighbours(b, a),
@@ -520,7 +522,7 @@ bool SequenceNeighboursTest()
 				TEST_CHECK(!none.AreNeighbours(a, b), "overlap 0: (%u, %u) are neighbours", a, b);
 	}
 
-	// 5. built from a scene: the breaks of its file names
+	// 5. built from a scene and a configuration: the breaks of its file names in a sequence run, none in any other
 	{
 		Scene scene;
 		const char* names[] = {"c1_0002.jpg", "c1_0004.jpg", "c1_0094.jpg", "c1_0096.jpg", "c2_0001.jpg"};
@@ -529,11 +531,21 @@ bool SequenceNeighboursTest()
 			scene.images.emplace_back(i, names[i]);
 			fileNames.emplace_back(names[i]);
 		}
-		const SequenceNeighbours neighbours(scene, 2, 10);
-		TEST_CHECK(neighbours.Breaks() == ComputeNameBreaks(fileNames, 10), "the scene's breaks differ from those of its file names");
-		TEST_CHECK(neighbours.Breaks() == (Breaks{0,1,0,1}), "the scene's breaks are wrong");
-		TEST_CHECK(neighbours.AreNeighbours(0, 1) && !neighbours.AreNeighbours(1, 2) && !neighbours.AreNeighbours(3, 4),
-			"the scene's neighbours are wrong");
+		MatchConfig cfg;
+		cfg.matchSequenceOverlap = 2;
+		cfg.sequenceMaxGap = 10;
+		TEST_CHECK(!cfg.IsImageSequence() && !SequenceNeighbours::FromConfig(scene, cfg).has_value(), "the default configuration is a sequence run");
+		cfg.imageSequence = true;
+		const std::optional<SequenceNeighbours> neighbours = SequenceNeighbours::FromConfig(scene, cfg);
+		TEST_CHECK(cfg.IsImageSequence() && neighbours.has_value(), "no neighbours with the option");
+		const Breaks breaks = ComputeNameBreaks(fileNames, 10);
+		TEST_CHECK(breaks == (Breaks{0,1,0,1}) && neighbours->NumBreaks() == 2 && neighbours->Overlap() == 2, "the scene's breaks are wrong");
+		for (IIndex a = 0; a < 5; ++a)
+			for (IIndex b = a + 1; b < 5; ++b)
+				TEST_CHECK(neighbours->AreNeighbours(a, b) == (b - a <= 2 && std::none_of(breaks.begin() + a, breaks.begin() + b, [](bool isBreak) { return isBreak; })),
+					"the scene's neighbours are wrong: (%u, %u)", a, b);
+		cfg.sequenceMaxGap = 0;
+		TEST_CHECK(SequenceNeighbours::FromConfig(scene, cfg)->NumBreaks() == 1, "the scene's breaks at a gap of 0 are wrong");
 	}
 
 	return scope.Pass("name breaks and neighbours: gap, number, prefix and directory rules, 19 digits, the median per run, a gap of 0");
@@ -749,10 +761,25 @@ bool SequenceForcedMatchTest()
 		for (IIndex b = a + 1; b < numImages; ++b)
 			allPairs.emplace_back(MakePairIdx(a, b));
 
+	// the configuration of every Match run below: at most 2 pairs per image keeps VOCABULARY itself on 10 images and the
+	// verification-feedback round off (it needs at least 10), so the candidates of a mode are those of its first round:
+	// the top 2*8/5 = 3 of the retrieval modes and the top 2*4/3 = 2 of the known poses
+	const auto Config = [](MatchConfig::MatchMode mode, bool imageSequence) {
+		MatchConfig cfg;
+		cfg.mode = mode;
+		cfg.imageSequence = imageSequence;
+		cfg.maxPairsPerImage = 2;
+		cfg.maxEpipolarError = 0; // rely on descriptor matches only, as PairSelectionTest does
+		cfg.minMatches = 10;
+		cfg.matchDistance = FLT_MAX;
+		return cfg;
+	};
+
 	Scene scene;
 	BuildInterruptedSequenceScene(scene);
-	const SequenceNeighbours neighbours(scene, 3, 10);
-	TEST_CHECK(neighbours.Breaks() == (std::vector<bool>{0,0,0,0,1,0,0,0,0}), "the fixture's break is not between positions 4 and 5");
+	const SequenceNeighbours neighbours = SequenceNeighbours::FromConfig(scene, Config(MatchConfig::EXHAUSTIVE, true)).value();
+	TEST_CHECK(neighbours.NumBreaks() == 1 && neighbours.Overlap() == 3 && neighbours.AreNeighbours(3, 4) && !neighbours.AreNeighbours(4, 5) && neighbours.AreNeighbours(5, 6),
+		"the fixture's break is not between positions 4 and 5");
 	// the neighbour pairs: (a, b), b - a <= 3, both on one side of the break: 9 on each side
 	PairSet expectedNeighbours;
 	for (IIndex a = 0; a < numImages; ++a)
@@ -779,19 +806,6 @@ bool SequenceForcedMatchTest()
 			"a list holding (0,1) and (0,9) gained %u pairs (%u total), expected 17 (19 total, both kept)", numAdded, (unsigned)partial.size());
 	}
 
-	// the configuration of every Match run below: at most 2 pairs per image keeps VOCABULARY itself on 10 images and the
-	// verification-feedback round off (it needs at least 10), so the candidates of a mode are those of its first round:
-	// the top 2*8/5 = 3 of the retrieval modes and the top 2*4/3 = 2 of the known poses
-	const auto Config = [](MatchConfig::MatchMode mode, bool imageSequence) {
-		MatchConfig cfg;
-		cfg.mode = mode;
-		cfg.imageSequence = imageSequence;
-		cfg.maxPairsPerImage = 2;
-		cfg.maxEpipolarError = 0; // rely on descriptor matches only, as PairSelectionTest does
-		cfg.minMatches = 10;
-		cfg.matchDistance = FLT_MAX;
-		return cfg;
-	};
 	// the pairs Match stores on a fresh fixture: every attempted pair matches, so these are the attempted candidates
 	const auto Matched = [](const MatchConfig& cfg, bool& bFatal) {
 		Scene fresh;
@@ -804,19 +818,23 @@ bool SequenceForcedMatchTest()
 		return stored;
 	};
 
-	// 2. PreMatch at a threshold no pair can reach keeps exactly the neighbour pairs when given them, and nothing without
+	// 2. PreMatch at a threshold no pair can reach keeps exactly the neighbour pairs in a sequence run, and nothing in another
 	{
 		MatchConfig cfg = Config(MatchConfig::VOCABULARY, true);
 		cfg.preMatchThreshold = 100000;
 		PairsMatcher matcher(scene, cfg);
 		TEST_CHECK(!matcher.CollectVocabularyPairs(3).empty(), "the vocabulary tree PreMatch reads was not built");
 		PairIdxArr kept = allPairs;
-		matcher.PreMatch(kept, &neighbours);
+		matcher.PreMatch(kept);
 		TEST_CHECK(kept.size() == 18 && ToSet(kept) == expectedNeighbours,
-			"PreMatch given the neighbours kept %u pairs, expected the 18 neighbour pairs", (unsigned)kept.size());
+			"PreMatch of a sequence run kept %u pairs, expected the 18 neighbour pairs", (unsigned)kept.size());
+		MatchConfig plainCfg = cfg;
+		plainCfg.imageSequence = false;
+		PairsMatcher plainMatcher(scene, plainCfg);
+		TEST_CHECK(!plainMatcher.CollectVocabularyPairs(3).empty(), "the vocabulary tree PreMatch reads was not built");
 		PairIdxArr none = allPairs;
-		matcher.PreMatch(none);
-		TEST_CHECK(none.empty(), "PreMatch without the neighbours kept %u pairs", (unsigned)none.size());
+		plainMatcher.PreMatch(none);
+		TEST_CHECK(none.empty(), "PreMatch without the option kept %u pairs", (unsigned)none.size());
 		TEST_CHECK(scene.pairs.empty(), "PreMatch stored %u pairs", (unsigned)scene.pairs.size());
 		// a neighbour pair the scene already holds verified is done, not filtered: with the geometric verification on
 		// (which stores what a pre-match verifies) it leaves the list, is held once, and the other neighbours stay
@@ -831,7 +849,7 @@ bool SequenceForcedMatchTest()
 			PairsMatcher verifyMatcher(verified, verifyCfg);
 			TEST_CHECK(!verifyMatcher.CollectVocabularyPairs(3).empty(), "the vocabulary tree PreMatch reads was not built");
 			PairIdxArr toMatch = allPairs;
-			verifyMatcher.PreMatch(toMatch, &neighbours);
+			verifyMatcher.PreMatch(toMatch);
 			PairSet expectedLeft = expectedNeighbours;
 			expectedLeft.erase(MakePairIdx(1, 2).idx);
 			TEST_CHECK(toMatch.size() == 17 && ToSet(toMatch) == expectedLeft,

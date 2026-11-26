@@ -11,8 +11,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "Common.h"
-#include "Image.h"
+#include "Camera.h"
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -20,37 +19,33 @@
 namespace SFM {
 
 class SFM_API Scene;
+struct SFM_API MatchConfig;
 
-// The name breaks of an image sequence: breaks[k] is true when a break lies between the positions k and k+1
-// (the size is max(0, n-1)). A name is the directory and the stem of a file name (the extension is ignored);
-// its number is the trailing decimal digits of the stem (none, or more than 19 digits: no number) and its
-// prefix is the rest of the name. A break lies between two names that both have a number when the prefixes
-// differ, or the number does not rise, or it rises by more than maxGap times the median rise of its run: a run
-// is the names between two prefix changes (a number that does not rise breaks but keeps the run), its median
-// over its adjacent pairs that share a prefix and whose number rises (with no such pair the run has no gap
-// rule). A maxGap of 0 gives no break by the rises (names that are clock times, IMG_20261125_103059, rise by
-// 41 or more at every minute rollover against a median of 1; the prefix and not-rising rules still apply).
-// A name without a number makes no break with either neighbour.
+// Where an image sequence is interrupted, from its file names in sequence order. Returns n-1 flags (none for n < 2):
+// breaks[k] is true when the sequence breaks between the names k and k+1.
+// A name (directory and stem; the extension is ignored) splits into a number, its trailing digits (at most 19, else
+// none), and a prefix, the rest. Between two names that both have a number there is a break when the prefixes
+// differ, when the number does not rise, or, if maxGap > 0, when it rises by more than maxGap times the median rise
+// of its run (the names between two prefix changes). A name without a number never breaks.
 SFM_API std::vector<bool> ComputeNameBreaks(const std::vector<String>& fileNames, unsigned maxGap);
 
-// The positions that are neighbours in a sequence of images: at most overlap positions apart with no name break
-// between them. Everything that reads a capture as a sequence (the matcher's candidates, the view graph
-// filter) shares this definition.
+// Which images of a sequence are neighbours: positions (indices of scene.images) at most `overlap` apart with no
+// name break (ComputeNameBreaks) between them. The one definition the matcher and the contradiction cut share.
 class SFM_API SequenceNeighbours {
 public:
-	// positions are the indices of scene.images, their names the images' fileName
-	SequenceNeighbours(const Scene& scene, unsigned overlap, unsigned maxGap);
-	// explicit breaks (tests)
-	SequenceNeighbours(std::vector<bool> breaks, unsigned overlap);
+	// breaks[k]: a break between the positions k and k+1 (the positions past the flags have none)
+	SequenceNeighbours(const std::vector<bool>& breaks, unsigned overlap);
+	// The neighbours of a run that reads the scene's images as a sequence (config.IsImageSequence()): the breaks of
+	// their file names at config.sequenceMaxGap, config.matchSequenceOverlap apart. nullopt for any other run.
+	static std::optional<SequenceNeighbours> FromConfig(const Scene& scene, const MatchConfig& config);
 
 	// a != b, |a - b| <= overlap, and no break between them
 	bool AreNeighbours(IIndex a, IIndex b) const;
 	unsigned Overlap() const { return overlap; }
-	const std::vector<bool>& Breaks() const { return breaks; }
+	unsigned NumBreaks() const { return breaksBefore.back(); }
 
 private:
-	std::vector<bool> breaks;
-	std::vector<unsigned> breaksBefore; // breaksBefore[k]: the number of breaks between positions 0 and k
+	std::vector<unsigned> breaksBefore; // breaksBefore[k]: the number of breaks between the positions 0 and k
 	unsigned overlap;
 };
 

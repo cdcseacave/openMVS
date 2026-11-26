@@ -30,6 +30,7 @@
 #include "Camera.h"
 #include "PairsWeighting.h"
 #include "MatchDense.h"
+#include "SequenceNeighbours.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -46,7 +47,6 @@ struct SFM_API DMatch;
 class SFM_API Scene;
 class SFM_API VocabularyTree;
 class SFM_API GlobalDescriptors;
-class SFM_API SequenceNeighbours;
 enum class FeatureType : uint8_t;
 
 /**
@@ -70,9 +70,9 @@ struct SFM_API MatchConfig
 	unsigned maxDescriptorsPerImage;    // Max descriptors per image for vocabulary tree (set by DefaultsForFeatureType: 1000 SIFT/SIFTGPU, 2000 AKAZE/ORB)
 	unsigned maxPairsPerImage = 50;     // Target pairs per image (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	bool verificationFeedback = true;   // Two-round matching: hold back part of the pair budget and re-invest it in pairs suggested by the geometrically verified matches (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
-	unsigned matchSequenceOverlap = 3;  // Consecutive images each image is matched with: the whole candidate set of SEQUENTIAL mode, and a prior added to the VOCABULARY/RETRIEVAL candidates (0 = no prior); with imageSequence the neighbours' reach (0 = no neighbours)
-	bool imageSequence = false;            // --image-sequence: the images, in scene order, are frames of a (possibly interrupted) sequence; the neighbours are at most matchSequenceOverlap positions apart with no name break between (SequenceNeighbours)
-	unsigned sequenceMaxGap = 10;          // --sequence-max-gap: a frame number rising by more than this many median increases of its run is a break; 0 = no break by the rises (names that are clock times)
+	unsigned matchSequenceOverlap = 3;  // Consecutive images each image is matched with: the whole candidate set of SEQUENTIAL mode, and a prior added to the VOCABULARY/RETRIEVAL candidates (0 = no prior); in a sequence run (IsImageSequence), the farthest two neighbours may be (0 = no neighbours)
+	bool imageSequence = false;         // --image-sequence: the images, in scene order, are frames of a possibly interrupted sequence (IsImageSequence)
+	unsigned sequenceMaxGap = 10;       // --sequence-max-gap: ComputeNameBreaks' maxGap in a sequence run; 0 = a jump of the frame number never breaks
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
 	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled; above 0 the geometric verification refuses, see GeometricFilter)
 	float matchDistance;                // Absolute distance test threshold (set by DefaultsForFeatureType: 100 - AKAZE 486bit, 64 - ORB 256bit, FLT_MAX - SIFT)
@@ -129,6 +129,12 @@ struct SFM_API MatchConfig
 	// Pairs weighting parameters
 	PairsWeightingConfig weightingCfg;
 
+	// Does this run read the scene's images as a sequence? Its neighbour pairs (SequenceNeighbours) are then always
+	// matched, in every match mode, and the contradiction cut trusts the chain they form. Nothing else decides it.
+	inline bool IsImageSequence() const {
+		return imageSequence;
+	}
+
 	inline bool IsMatchesFilterOn() const {
 		return minTriangulationAngle > 0.f || reprojThreshold > 0.f || epipoleFilterThreshold > 0.f;
 	}
@@ -170,10 +176,9 @@ public:
 	// The calling thread's own descriptor matcher, for the guided pass's k-NN query
 	cv::DescriptorMatcher& GetMatcher(unsigned threadIdx) { ASSERT(threadIdx < matchers.size()); return *matchers[threadIdx]; }
 
-	// Pre-match pairs using vocabulary tree top descriptors (filters weak pairs);
-	// the filter never removes a pair keep calls neighbours (--image-sequence): such a pair is always matched;
-	// a pair the scene already holds verified leaves the list, a neighbour or not (it is already matched)
-	void PreMatch(PairIdxArr& pairsToMatch, const SequenceNeighbours* keep = nullptr);
+	// Pre-matches pairs with the vocabulary tree's top descriptors and drops the weak ones; a neighbour pair of a
+	// sequence run is never dropped. A pair the scene already holds verified leaves the list, a neighbour or not.
+	void PreMatch(PairIdxArr& pairsToMatch);
 
 	// Match all image pairs according to strategy.
 	// Checks existing pairs and only matches new or incomplete pairs.
@@ -329,10 +334,8 @@ public:
 	// present. overlap 0 is the prior switched off (no-op). Returns the number of pairs added.
 	static unsigned AddSequentialPairs(const Scene& scene, unsigned overlap, PairIdxArr& pairs);
 
-	// The neighbour pairs of an image sequence (--image-sequence, see SequenceNeighbours): appends every
-	// pair of positions neighbours calls neighbours that is not yet in pairs. With the option on it is what
-	// adds the consecutive pairs in every match mode, in place of the sequential prior, which would also
-	// add the pairs across a name break. Returns the number of pairs appended.
+	// Appends the neighbour pairs not yet in `pairs`; in a sequence run they take the place of the sequential
+	// prior, which would also add the pairs across a name break. Returns the number of pairs appended.
 	static unsigned AddNeighbourPairs(const Scene& scene, const SequenceNeighbours& neighbours, PairIdxArr& pairs);
 
 	// Reorder pairs to minimize GPU descriptor transfers by grouping pairs sharing the same first image,
@@ -385,6 +388,9 @@ private:
 
 	Scene& scene;
 	const MatchConfig config;
+
+	// The neighbours of a sequence run (config.IsImageSequence(), else none): their pairs are always matched
+	const std::optional<SequenceNeighbours> sequence;
 
 	// Per-thread matchers for efficient parallel processing
 	std::vector<cv::Ptr<cv::DescriptorMatcher>> matchers;

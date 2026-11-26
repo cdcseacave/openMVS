@@ -747,10 +747,10 @@ void WeighAndExportPairs(Scene& scene, const ReconstructionConfig& config)
 // global rotation and translation averaging contradict. The CSV describes the whole matched graph,
 // each pair with its triplet score, the pairs the filters remove included. The scene keeps the
 // images of the largest piece the triplet filter's ceiling leaves as its seed views (empty without
-// the filter) and reaches PAIRS_FILTERED: the filters run once on a scene's pairs. With --image-sequence
-// the cut is given the neighbours of the sequence (SequenceNeighbours, the ones the matcher forced): it
-// trusts the chain of the verified neighbour pairs, vetoes the pairs that contradict it and removes none
-// of its links.
+// the filter) and reaches PAIRS_FILTERED: the filters run once on a scene's pairs. In a sequence run
+// (MatchConfig::IsImageSequence) the cut is given the neighbours of the sequence, the ones the matcher
+// forced: it trusts the chain of the verified neighbour pairs, vetoes the pairs that contradict it and
+// removes none of its links.
 void FilterViewGraph(Scene& scene, const ReconstructionConfig& config)
 {
 	ASSERT(scene.status.nState.isSet(Scene::Status::STATE::MATCHED));
@@ -758,23 +758,21 @@ void FilterViewGraph(Scene& scene, const ReconstructionConfig& config)
 	WeighAndExportPairs(scene, config);
 	std::vector<float> scores;
 	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &scene.seedViews, &scores);
-	std::optional<SequenceNeighbours> sequenceNeighbours;
-	if (config.matchCfg.imageSequence) {
-		sequenceNeighbours.emplace(scene, config.matchCfg.matchSequenceOverlap, config.matchCfg.sequenceMaxGap);
+	const std::optional<SequenceNeighbours> sequence = SequenceNeighbours::FromConfig(scene, config.matchCfg);
+	if (sequence) {
 		VERBOSE("Image sequence: %u name break(s) among %u images (overlap %u, max gap %u)",
-			(unsigned)std::count(sequenceNeighbours->Breaks().begin(), sequenceNeighbours->Breaks().end(), true),
-			scene.images.size(), config.matchCfg.matchSequenceOverlap, config.matchCfg.sequenceMaxGap);
+			sequence->NumBreaks(), scene.images.size(), sequence->Overlap(), config.matchCfg.sequenceMaxGap);
 		// the chain is solved, and its veto and protection act, only in the translation stage and on neighbours
 		if (config.maxPairDirectionResidual <= 0.f)
 			VERBOSE("warning: --image-sequence does nothing in the contradiction cut: its translation stage is off (--max-pair-direction-residual 0), so the sequence's chain is neither solved nor trusted");
-		else if (config.matchCfg.matchSequenceOverlap == 0)
+		else if (sequence->Overlap() == 0)
 			VERBOSE("warning: --image-sequence does nothing in the contradiction cut: --match-sequence-overlap 0 leaves no neighbours, so the sequence has no chain");
 	}
 	// the repair confirms a refitted direction against the centres of the translation stage, so
 	// without that stage (a bar of 0) there is nothing for it to act on
 	FilterPairsByContradiction(scene, scores, config.minPairWeight, config.maxPairDirectionResidual, config.matchCfg.weightingCfg,
 		config.repairContradictedPairs && config.maxPairDirectionResidual > 0.f,
-		sequenceNeighbours.has_value() ? &sequenceNeighbours.value() : nullptr);
+		sequence ? &*sequence : nullptr);
 	scene.status.nState.set(Scene::Status::STATE::PAIRS_FILTERED);
 }
 
@@ -854,7 +852,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		// marks and the seed views the reconstruction starts from: it is neither matched nor filtered again,
 		// its pairs are only weighed with this configuration and exported
 		VERBOSE("The scene's %u pairs are matched and filtered already: the reconstruction starts from them", pairs.size());
-		if (cfg.matchCfg.imageSequence)
+		if (cfg.matchCfg.IsImageSequence())
 			VERBOSE("warning: --image-sequence does not apply to this scene: its view-graph filters ran already, so the sequence's chain veto and protection do not act; "
 				"give back the scene before the filters (scene_matched.sfm of a -v 4 run) to run them with the option");
 		WeighAndExportPairs(*this, cfg);
