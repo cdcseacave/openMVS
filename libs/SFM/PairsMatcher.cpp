@@ -794,6 +794,7 @@ void PairsMatcher::EnsureVocabularyTree()
 	if (!vocabularyTree->Build(scene, vcfg)) {
 		VERBOSE("error: failed to build vocabulary tree");
 		vocabularyTree.reset();
+		return;
 	}
 	DEBUG("Vocabulary tree built from %u images in %s",
 	      scene.images.size(), TD_TIMER_GET_FMT().c_str());
@@ -2169,24 +2170,21 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		break;
 	}
 	case MatchConfig::VOCABULARY: {
-		// Build vocabulary candidates from the tree retrieval ranking; a selection that failed (no tree)
-		// ends the stage, one that ranked no pair is left to the check after the consecutive pairs
+		// Build vocabulary candidates from the tree retrieval ranking; a selection that failed (no tree:
+		// EnsureVocabularyTree logged the error) ends the stage, one that ranked no pair is left to the
+		// check after the consecutive pairs
 		EnsureVocabularyTree();
-		if (!vocabularyTree) {
-			VERBOSE("error: vocabulary produced no new candidate pairs");
+		if (!vocabularyTree)
 			return 0;
-		}
 		pairsToMatch = CollectVocabularyPairs(retrievalTopK);
 		break;
 	}
 	case MatchConfig::RETRIEVAL: {
 		// Build candidates from the global-descriptor retrieval alone: no vocabulary tree, no
 		// fallback (see CollectRetrievalPairs / EnsureGlobalDescriptorsIndex); a selection that
-		// failed (a missing descriptor, which already logged an error naming the image) ends the stage
-		if (!EnsureGlobalDescriptorsIndex()) {
-			VERBOSE("error: retrieval produced no candidate pairs (see the global-descriptor error above)");
+		// failed (a missing descriptor: the index logged the error, naming the image) ends the stage
+		if (!EnsureGlobalDescriptorsIndex())
 			return 0;
-		}
 		pairsToMatch = CollectRetrievalPairs(retrievalTopK);
 		break;
 	}

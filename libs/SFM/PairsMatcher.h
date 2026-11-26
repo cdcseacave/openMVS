@@ -58,7 +58,7 @@ struct SFM_API MatchConfig
 		SKIP = -1,       // No matching: the scene's own matches are used; Scene::Reconstruct refuses it for a scene whose pairs hold no match (a --match-images-only run or ExtractKeyframes stores them)
 		EXHAUSTIVE = 0,  // Match all O(N²) pairs (small scenes only)
 		VOCABULARY = 1,  // Use vocabulary tree retrieval over the local descriptors (recommended)
-		SEQUENTIAL = 2,  // Match consecutive images only (ordered sequences)
+		SEQUENTIAL = 2,  // Match consecutive images only, wrapping around to close a loop; a sequence run by itself (IsImageSequence)
 		KNOWN_POSES = 3, // Select pairs from already-known camera poses
 		RETRIEVAL = 4    // Use retrieval over the DINOv3+GeM global descriptors instead: no
 		                 // vocabulary tree is ever built, and an image missing its descriptor
@@ -70,7 +70,7 @@ struct SFM_API MatchConfig
 	unsigned maxDescriptorsPerImage;    // Max descriptors per image for vocabulary tree (set by DefaultsForFeatureType: 1000 SIFT/SIFTGPU, 2000 AKAZE/ORB)
 	unsigned maxPairsPerImage = 50;     // Target pairs per image (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	bool verificationFeedback = true;   // Two-round matching: hold back part of the pair budget and re-invest it in pairs suggested by the geometrically verified matches (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
-	unsigned matchSequenceOverlap = 3;  // Consecutive images each image is matched with: the whole candidate set of SEQUENTIAL mode, and a prior added to the VOCABULARY/RETRIEVAL candidates (0 = no prior); in a sequence run (IsImageSequence), the farthest two neighbours may be (0 = no neighbours)
+	unsigned matchSequenceOverlap = 3;  // Consecutive images each image is matched with: the whole candidate set of SEQUENTIAL mode, and a prior added to the VOCABULARY/RETRIEVAL candidates (0 = no prior); in a sequence run (IsImageSequence), how many positions apart two neighbours may be (0 = none)
 	bool imageSequence = false;         // --image-sequence: the images, in scene order, are frames of a possibly interrupted sequence, in any match mode (IsImageSequence)
 	unsigned sequenceMaxGap = 10;       // --sequence-max-gap: ComputeNameBreaks' maxGap in a sequence run; 0 = a jump of the frame number never breaks
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)

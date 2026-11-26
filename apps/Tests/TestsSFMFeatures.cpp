@@ -963,7 +963,7 @@ bool SequenceForcedMatchTest()
 			PairsMatcher matcher(fresh, cfg);
 			LogCapture log;
 			numMatched = matcher.Match(bFatal);
-			logged = log.Contains("error: retrieval produced no candidate pairs");
+			logged = log.Contains("error: RETRIEVAL matching needs a global descriptor on every image");
 			PairSet stored;
 			for (const ImagePair& pair : fresh.pairs)
 				stored.insert(MakePairIdx(pair.ID1, pair.ID2).idx);

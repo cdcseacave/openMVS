@@ -14,7 +14,6 @@
 #include "Triangulation.h"
 #include "SceneCluster.h"
 #include "SceneBlocks.h"
-#include "SequenceNeighbours.h"
 #include "StarInitializer.h"
 #include "Resection.h"
 #include "BundleAdjustment.h"
@@ -863,16 +862,18 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 
 		// Match image pairs
 		#if TD_VERBOSE != TD_VERBOSE_OFF
-		const bool matchedBefore = status.nState.isSet(Status::STATE::MATCHED);
+		// does the matching run: not for a scene loaded matched, nor in the SKIP mode, which uses the scene's matches
+		const bool matchingRuns = !status.nState.isSet(Status::STATE::MATCHED) && cfg.matchCfg.mode != MatchConfig::SKIP;
 		#endif
 		if (!MatchPairs(cfg.matchCfg, cfg.denseCfg, cfg.viewgraphCfg))
 			return false;
 
 		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 3 && !matchedBefore) {
+		if (VERBOSITY_LEVEL > 3 && matchingRuns) {
 			// Save the scene this run matched, before the view-graph filters, for debugging (-v 4: the file
 			// holds every match): the filters run once on a scene's pairs, so only this scene can be given
-			// back to run them with other options (a scene loaded already matched is not saved again)
+			// back to run them with other options. A run whose matching did not run saves nothing: the scene
+			// it was given holds those matches already
 			if (!Save(MAKE_PATH("scene_matched.sfm"), cfg.importCfg.archiveType))
 				VERBOSE("warning: failed to save the matched scene 'scene_matched.sfm' (the run continues)");
 		}
