@@ -161,7 +161,6 @@ void PatchMatch::ReleaseCUDA()
 	cudaFree(cudaTextureImages);
 	cudaFree(cudaDepthNormalEstimates);
 	cudaFree(cudaDepthNormalCosts);
-	cudaFree(cudaSmoothPlanes);
 	cudaFree(cudaRandStates);
 	cudaFree(cudaSelectedViews);
 	if (params.bGeomConsistency)
@@ -196,7 +195,6 @@ void PatchMatch::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 	CUDA_CHECK(cudaMalloc((void**)&cudaDepthNormalEstimates, sizeof(Point4) * size));
 
 	CUDA_CHECK(cudaMalloc((void**)&cudaDepthNormalCosts, sizeof(float) * size));
-	CUDA_CHECK(cudaMalloc((void**)&cudaSmoothPlanes, sizeof(Point4) * size));
 	CUDA_CHECK(cudaMalloc((void**)&cudaSelectedViews, sizeof(unsigned) * size));
 	CUDA_CHECK(cudaMalloc((void**)&cudaRandStates, sizeof(curandState) * size));
 }

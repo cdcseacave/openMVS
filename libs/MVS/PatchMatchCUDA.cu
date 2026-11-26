@@ -605,26 +605,33 @@ __device__ inline float AggregateMultiViewScores(const unsigned* viewWeights, co
 }
 
 // Smoothness coupling of the plane hypotheses (a quadratic relaxation of a pairwise smoothness energy,
-// PM-Huber style): before every black and red pass SmoothPlanes fits per pixel a smoothed plane to the
-// current estimates of its 3x3 neighborhood, and ProcessPixel scales the aggregated cost of every
-// hypothesis, the stored one included, by SmoothnessFactor, i.e. lowers it by up to smoothBonus the
-// closer the hypothesis lies to that plane in depth and in normal; see docs/design/PatchMatchSmoothness.md
+// PM-Huber style): ProcessPixel fits per pixel a smoothed plane to the current estimates of its 4
+// adjacent neighbors (of the other checkerboard color, so not rewritten by the pass), and scales the
+// aggregated cost of every hypothesis, the stored one included, by SmoothnessFactor, i.e. lowers it by
+// up to smoothBonus the closer the hypothesis lies to that plane in depth and, where the patch is
+// weakly textured, in normal: the texture of the patch constrains the normal by itself, and a normal
+// agreeing with its neighbors whatever the images say is no evidence for the consumers of the normal
+// (the fusion and the confidence compare the normals between views and with the depth-map);
+// see docs/design/PatchMatchSmoothness.md
 constexpr float smoothBonus = 0.2f; // the cost reduction of a hypothesis on the smoothed plane
 constexpr float smoothSigmaDepth = -1.f / (2.f * 0.02f * 0.02f); // distance to the smoothed plane relative to the depth, sigma 0.02
 constexpr float smoothAngleNormal = 13.f * (float)M_PI / 180.f; // normal sigma 13 deg
 constexpr float smoothSigmaNormal = 2.f * (-1.f / (2.f * smoothAngleNormal * smoothAngleNormal)); // applied to 1-cos: acos(c)^2 ~ 2*(1-c)
+constexpr float smoothSigmaTexture = -1.f / 0.0025f; // weight of the normal agreement by the texture of the reference patch (RefPatchCache::varRef): exp(-varRef/0.0025), 0.0025 the texture-less bound of ScoreNCC
 constexpr float smoothSigmaColor = -1.f / (2.f * 25.f/255.f*25.f/255.f); // neighbor weight: gray similarity, as the patch bilateral weight
 constexpr float smoothSigmaConf = -1.f / (2.f * 0.3f * 0.3f); // neighbor weight: confidence from its cost, as the view-selection weight
 
 // the factor scaling the aggregated cost of a plane hypothesis (normal, depth along the pixel ray) by its
-// agreement with the smoothed plane of the pixel: its point Xs on the pixel ray and its normal ns
-__device__ inline float SmoothnessFactor(const Point3& ray, const Point3& Xs, const Point3& ns, const Point4& plane)
+// agreement with the smoothed plane of the pixel: its point Xs on the pixel ray, its normal ns and the
+// normal sigma of the pixel, sigmaNormal = smoothSigmaNormal times the texture weight of its patch
+__device__ inline float SmoothnessFactor(const Point3& ray, const Point3& Xs, const Point3& ns, const float sigmaNormal, const Point4& plane)
 {
 	const float depth = plane.w();
 	ASSERT(depth > 0);
+	ASSERT(sigmaNormal <= 0);
 	const Point3 normal = plane.topLeftCorner<3,1>();
 	const float d = ns.dot(ray * depth - Xs) / depth;
-	return 1.f - smoothBonus * __expf(Square(d) * smoothSigmaDepth + (1.f - ns.dot(normal)) * smoothSigmaNormal);
+	return 1.f - smoothBonus * __expf(Square(d) * smoothSigmaDepth + (1.f - ns.dot(normal)) * sigmaNormal);
 }
 
 // Per-pixel update for ACMH-style patch-match stereo on GPU; reference:
@@ -649,15 +656,16 @@ __device__ inline float SmoothnessFactor(const Point3& ray, const Point3& Xs, co
 // The shared viewWeights basis across (3) and (4) ensures plane hypotheses
 // are evaluated on a consistent view-selection footing within this pixel.
 // Every aggregated cost of (3) and (4), the stored one included, is scaled by
-// the SmoothnessFactor of the hypothesis against the pixel's smoothed plane
-// (smoothPlanes, built by SmoothPlanes), when the pixel has one.
+// the SmoothnessFactor of the hypothesis against the pixel's smoothed plane,
+// fitted to its 4 adjacent neighbors, when the pixel has one; the agreement of
+// the normals counts by the texture weight of the reference patch.
 //
 // An equirectangular reference (MODEL_SPHERICAL_REF) wraps the neighbor columns across the seam, which
 // keeps the red/black parity as its width is even, and does not cross the poles (over a pole the
 // column moves by half the width, which flips the parity when the width is twice the height); its
 // rows next to the poles are not estimated, as on the CPU.
 template <bool GEOM, int MODEL>
-__device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depthImages, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point4* smoothPlanes, const Point2i& p, const int iter)
+__device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depthImages, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const int iter)
 {
 	const int width = g_cameras[0].size.x();
 	const int height = g_cameras[0].size.y();
@@ -775,12 +783,45 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 		}
 	}
 
-	// the smoothed plane of the pixel, if it has one: its point on the pixel ray and its normal
+	// the smoothed plane of the pixel, if it has one: the estimates of its 4 adjacent neighbors (of the other
+	// color, not rewritten by this pass) weighted by their gray similarity to the pixel times their confidence
+	// give the weighted mean normal through the weighted mean point; its point on the pixel ray, its normal
+	// and the normal sigma of the pixel: the agreement of the normals counts in weakly textured patches only
 	const Point3 pixelRay(ref.F.col(2));
-	const Point4 smoothPlane = LoadPlaneLDG(smoothPlanes + idx);
-	const bool bSmooth = smoothPlane.w() > 0;
-	const Point3 smoothX = pixelRay * smoothPlane.w();
-	const Point3 smoothNormal = smoothPlane.topLeftCorner<3,1>();
+	bool bSmooth = false;
+	Point3 smoothX, smoothNormal;
+	float smoothSigmaN;
+	{
+		static constexpr int2 offsets[4] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
+		const float refPix = FetchRefTexel<MODEL>(images[0], p.x(), p.y());
+		Point3 sumN(Point3::Zero()), sumX(Point3::Zero());
+		float sumW = 0.f;
+		for (int posId = 0; posId < 4; ++posId) {
+			if (!valid[posId])
+				continue;
+			const Point4 nbPlane = LoadPlaneLDG(&planes[neighborPositions[posId]]);
+			if (nbPlane.w() <= 0)
+				continue;
+			// across the seam of an equirectangular reference the column is taken as it is: FetchRefTexel
+			// wraps it (repeat addressing) and RefPixel::Ray wraps it itself
+			const int nc = p.x() + offsets[posId].x, nr = p.y() + offsets[posId].y;
+			const float w = __expf(Square(FetchRefTexel<MODEL>(images[0], nc, nr) - refPix) * smoothSigmaColor + Square(costs[neighborPositions[posId]]) * smoothSigmaConf);
+			sumW += w;
+			sumN += nbPlane.topLeftCorner<3,1>() * w;
+			sumX += ref.Ray(nc, nr) * (nbPlane.w() * w);
+		}
+		const float normN = sumN.norm();
+		if (sumW > 1e-4f && normN > 1e-3f * sumW) {
+			smoothNormal = sumN / normN;
+			const float nRay = smoothNormal.dot(pixelRay);
+			if (nRay < -1e-2f) {
+				const float depthSmooth = smoothNormal.dot(sumX / sumW) / nRay;
+				smoothX = pixelRay * depthSmooth;
+				smoothSigmaN = smoothSigmaNormal * __expf(refCache.varRef * smoothSigmaTexture);
+				bSmooth = depthSmooth > 0;
+			}
+		}
+	}
 
 	// propagate best neighbor plane
 	Point4& plane = planes[idx];
@@ -797,7 +838,7 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 			if (valid[posId]) {
 				Point4 nbPlane = LoadPlaneLDG(&planes[positions[posId]]);
 				nbPlane.w() = neighborDepths[posId];
-				finalCosts[posId] *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, nbPlane);
+				finalCosts[posId] *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, smoothSigmaN, nbPlane);
 			}
 		}
 	}
@@ -806,7 +847,7 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 	MultiViewScorePlane<GEOM, MODEL>(refCache, ref, images, depthImages, p, plane, lowDepth, costVector);
 	cost = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
 	if (bSmooth)
-		cost *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, plane);
+		cost *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, smoothSigmaN, plane);
 	if (finalCosts[minCostIdx] < cost) {
 		ASSERT(valid[minCostIdx]);
 		plane = LoadPlaneLDG(&planes[positions[minCostIdx]]);
@@ -848,7 +889,7 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 		MultiViewScorePlane<GEOM, MODEL>(refCache, ref, images, depthImages, p, newPlane, lowDepth, costVector);
 		float costPlane = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
 		if (bSmooth)
-			costPlane *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, newPlane);
+			costPlane *= SmoothnessFactor(pixelRay, smoothX, smoothNormal, smoothSigmaN, newPlane);
 		if (cost > costPlane) {
 			cost = costPlane;
 			plane = newPlane;
@@ -860,9 +901,9 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 // register spills); the kernels with a spherical view must inline it to keep the register budget of
 // their launch bounds
 template <bool GEOM>
-__device__ void ProcessPixelPinhole(const ImagePixels* images, const ImagePixels* depthImages, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point4* smoothPlanes, const Point2i& p, const int iter)
+__device__ void ProcessPixelPinhole(const ImagePixels* images, const ImagePixels* depthImages, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const int iter)
 {
-	ProcessPixel<GEOM, MODEL_PINHOLE>(images, depthImages, planes, lowDepths, costs, randStates, selectedViews, smoothPlanes, p, iter);
+	ProcessPixel<GEOM, MODEL_PINHOLE>(images, depthImages, planes, lowDepths, costs, randStates, selectedViews, p, iter);
 }
 
 // compute the score of the current plane estimate
@@ -936,83 +977,24 @@ __global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void InitializeScore(const cudaTextureOb
 
 // traverse image in a back/red checkerboard pattern
 template <bool GEOM, int MODEL>
-__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const Point4* smoothPlanes, const int iter)
+__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const int iter)
 {
 	Point2i p = GetThreadIndex2();
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 0 : 1);
 	if constexpr (MODEL == MODEL_PINHOLE)
-		ProcessPixelPinhole<GEOM>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, smoothPlanes, p, iter);
+		ProcessPixelPinhole<GEOM>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, iter);
 	else
-		ProcessPixel<GEOM, MODEL>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, smoothPlanes, p, iter);
+		ProcessPixel<GEOM, MODEL>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, iter);
 }
 template <bool GEOM, int MODEL>
-__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const Point4* smoothPlanes, const int iter)
+__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const int iter)
 {
 	Point2i p = GetThreadIndex2();
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 1 : 0);
 	if constexpr (MODEL == MODEL_PINHOLE)
-		ProcessPixelPinhole<GEOM>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, smoothPlanes, p, iter);
+		ProcessPixelPinhole<GEOM>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, iter);
 	else
-		ProcessPixel<GEOM, MODEL>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, smoothPlanes, p, iter);
-}
-
-// the smoothed plane of every pixel (the smoothness coupling of ProcessPixel): the estimates of its 3x3
-// neighborhood weighted by their gray similarity to the pixel times their confidence (from the stored
-// cost) give the weighted mean normal through the weighted mean point, stored as (normal, depth along
-// the pixel ray); zero if the neighborhood holds no estimate, its normals cancel out or the plane misses
-// the pixel ray in front of the camera. An equirectangular reference (MODEL_SPHERICAL_REF) wraps the
-// columns across the seam; any other reference is a pinhole one (MODEL_PINHOLE).
-template <int MODEL>
-__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void SmoothPlanes(const cudaTextureObject_t* textureImages, const Point4* planes, const float* costs, Point4* smoothPlanes)
-{
-	static_assert(MODEL == MODEL_PINHOLE || MODEL == MODEL_SPHERICAL_REF, "the reference model");
-	const Point2i p = GetThreadIndex2();
-	const int width = g_cameras[0].size.x();
-	const int height = g_cameras[0].size.y();
-	if (p.x() >= width || p.y() >= height)
-		return;
-	const int idx = Point2Idx(p, width);
-	const ImagePixels refImage = ((const ImagePixels*)textureImages)[0];
-	const RefPixel<MODEL> ref(p);
-	const float refPix = FetchRefTexel<MODEL>(refImage, p.x(), p.y());
-	Point3 sumN(Point3::Zero()), sumX(Point3::Zero());
-	float sumW = 0.f;
-	for (int dy = -1; dy <= 1; ++dy) {
-		const int nr = p.y() + dy;
-		if (nr < 0 || nr >= height)
-			continue;
-		for (int dx = -1; dx <= 1; ++dx) {
-			int nc = p.x() + dx;
-			if constexpr (MODEL == MODEL_SPHERICAL_REF) {
-				nc = SEACAVE::WrapColumn(nc, width);
-			} else {
-				if (nc < 0 || nc >= width)
-					continue;
-			}
-			const int nidx = nr * width + nc;
-			const Point4 plane = planes[nidx];
-			if (plane.w() <= 0)
-				continue;
-			const float w = __expf(Square(FetchRefTexel<MODEL>(refImage, nc, nr) - refPix) * smoothSigmaColor + Square(costs[nidx]) * smoothSigmaConf);
-			sumW += w;
-			sumN += plane.topLeftCorner<3,1>() * w;
-			sumX += ref.Ray(nc, nr) * (plane.w() * w);
-		}
-	}
-	Point4 smoothPlane(Point4::Zero());
-	const float normN = sumN.norm();
-	if (sumW > 1e-4f && normN > 1e-3f * sumW) {
-		const Point3 n(sumN / normN);
-		const float nRay = n.dot(Point3(ref.F.col(2)));
-		if (nRay < -1e-2f) {
-			const float depth = n.dot(sumX / sumW) / nRay;
-			if (depth > 0) {
-				smoothPlane.topLeftCorner<3,1>() = n;
-				smoothPlane.w() = depth;
-			}
-		}
-	}
-	smoothPlanes[idx] = smoothPlane;
+		ProcessPixel<GEOM, MODEL>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, iter);
 }
 
 // filter depth/normals
@@ -1098,18 +1080,9 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 	// caller (EstimateDepthMap) syncs the stream once before reading results.
 	LAUNCH_GEOM(InitializeScore, gridSizeFull, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews);
 
-	// the smoothed planes of the current estimates, rebuilt before every black and red pass
-	const auto LaunchSmoothPlanes = [&]() {
-		if (params.sphericalViews & 1u)
-			SmoothPlanes<MODEL_SPHERICAL_REF><<<gridSizeFull, blockSize, 0, cudaStream>>>(cudaTextureImages, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaSmoothPlanes);
-		else
-			SmoothPlanes<MODEL_PINHOLE><<<gridSizeFull, blockSize, 0, cudaStream>>>(cudaTextureImages, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaSmoothPlanes);
-	};
 	for (int iter = 0; iter < params.nEstimationIters; ++iter) {
-		LaunchSmoothPlanes();
-		LAUNCH_GEOM(BlackPixelProcess, gridSizeCheckerboard, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, cudaSmoothPlanes, iter);
-		LaunchSmoothPlanes();
-		LAUNCH_GEOM(RedPixelProcess, gridSizeCheckerboard, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, cudaSmoothPlanes, iter);
+		LAUNCH_GEOM(BlackPixelProcess, gridSizeCheckerboard, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, iter);
+		LAUNCH_GEOM(RedPixelProcess, gridSizeCheckerboard, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, iter);
 	}
 
 	#undef LAUNCH_GEOM

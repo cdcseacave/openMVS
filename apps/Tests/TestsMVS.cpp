@@ -3010,7 +3010,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// library directly -- the ReconstructMesh app releases them first, unless
 	// asked for the weighted path with --constant-weight 0.
 	// Measured, GPU adjust-ON (with the PatchMatch smoothness coupling): cleaned
-	// faces 56.3k, quality 57.6; CPU adjust-OFF: recon faces 71.4k, cleaned faces
+	// faces 50.0k, quality 56.0; CPU adjust-OFF: recon faces 71.4k, cleaned faces
 	// 49.8k, quality 52.2.
 	{
 		// the depth-maps are removed once the scene split test is done, whatever its outcome
