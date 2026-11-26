@@ -853,8 +853,8 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		// its pairs are only weighed with this configuration and exported
 		VERBOSE("The scene's %u pairs are matched and filtered already: the reconstruction starts from them", pairs.size());
 		if (cfg.matchCfg.IsImageSequence())
-			VERBOSE("warning: the image sequence (--image-sequence or --match-mode 2) does not apply to this scene: its view-graph filters ran already, so the sequence's chain veto and protection do not act; "
-				"give back the scene before the filters (scene_matched.sfm of a -v 4 run) to run them with the option");
+			VERBOSE("warning: the image sequence (--image-sequence or --match-mode 2) is not read for this scene: its view-graph filters ran already, with the options of the run that saved it; "
+				"to run them with the sequence's chain veto and protection, give back the scene before the filters (scene_matched.sfm of a -v 4 run)");
 		WeighAndExportPairs(*this, cfg);
 	} else {
 		// Extract image features
