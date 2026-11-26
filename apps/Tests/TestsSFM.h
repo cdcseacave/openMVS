@@ -290,18 +290,18 @@ bool RotationAveragingTest();
 // component's pairs removes nothing, two components solved apart)
 bool ContradictionCutTest();
 
-// The chain of an image sequence: the neighbour pairs alone place a walk of 40 cameras within 2% of its length, a name
-// break or removed pairs split it, a frame standing still, a pair of weight 0 and every pair under the
-// near-duplicate ray angle are no links, and a frame no link places stands where the nearest placed neighbour a still
-// pair joins it to stands
+// The chain of an image sequence (SolveSequenceChain): the neighbour pairs alone place a walk of 40 cameras within 2%
+// of its length; a name break or removed pairs split it; a pair without baseline length, weight or direction is no
+// link and an unrotated image is not placed; an image no link places stands where the nearest placed image of its
+// still pairs stands; an image two scale components place belongs to the larger
 bool SequenceChainTest();
 
 // The chain of an image sequence in the contradiction cut: a pair that contradicts the chain and is short against it
 // is vetoed (the look-alikes of a periodic corridor, 11 and 21 frames apart with a baseline of one step, and those 10
-// apart under the near-duplicate ray angle), a true pair and a revisit never, a vetoed pair is not offered to the
-// repair and makes no spot there, the pairs of a frame placed by standing still are judged, a chain link is not
-// removed by the translation stage, and without the neighbours, or with a chain too small to solve, the cut is
-// unchanged; ComputePairScales given anchors forms the plain call's equations between an anchor and a pair that is none
+// apart under the near-duplicate ray angle), a true pair, a revisit and the pairs closing a loop never, not even on
+// a chain that drifts within the path term; the veto keeps to a segment and abstains without a chain; a vetoed pair
+// is not repaired and makes no spot; a link is not removed by the translation stage; Scene::Reconstruct reads the
+// sequence; ComputePairScales given anchors forms the plain call's equations between an anchor and a pair that is none
 bool SequenceVetoTest();
 
 // A matched scene is filtered once (the triplet filter, the contradiction cut and its repair), on load as on a fresh
