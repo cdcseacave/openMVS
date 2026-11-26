@@ -325,8 +325,8 @@ units to the side (the revisits), every pair up to 6 apart and every revisit tru
 look-alikes (i, i+11) and (i, i+21), each with the true pose of (i, i+1) on matches one and two
 periods on: the chain is one segment of 174 links, and of the 220 judged pairs the 28 look-alikes
 are vetoed (1 step long against a chain distance of 11 and 21 steps, 10 and 20 steps off) and no
-true pair is (the pairs 4 to 6 apart and the 27 revisits come out at their true length, under 1e-6
-steps off the chain); without the option the cut keeps all 28, their direction being the centres'.
+true pair is (the pairs 4 to 6 apart and the 27 revisits are all judged and kept); without the
+option the cut keeps all 28, their direction being the centres'.
 Through the view-graph filter, with the look-alikes of both ways (56) and a name break at the turn:
 without the option the 56 stay and the translation stage removes 48 true pairs; with it the 56 are
 vetoed and no true pair is removed. On the 16-camera arc a neighbour pair whose baseline is flipped,
@@ -338,14 +338,14 @@ the way out, the second frame a quarter of a step past the period or before it (
 to 1.11 degrees): all 20 are judged and vetoed, 0.25 steps long against a chain distance of 10
 steps, 9.75 and 10.25 off, with the 28 look-alikes and nothing else; without the option all 20 stay.
 65 true pairs, 4 to 6 apart or revisits, with the ray angle set to 1.5 degrees and their geometry
-untouched, are judged at their true length and kept. With the second frame at the period exactly no
+untouched, are judged and kept. With the second frame at the period exactly no
 match has a ray angle, the 20 pairs have no scale equation, are not judged and stay. With the repair
 on, the vetoed near-duplicate look-alikes stay removed, and a look-alike two periods on that the
 rotation stage removed, which the repair would return if the vetoed (5,15) and (15,25) made its two
 images one spot, stays removed too. The corridor ending with its last six cameras at one place: 54
-to 56 are placed by their links and 57 to 59 by standing still, at the centre of 56; the 56
+to 56 are placed by their links and 57 to 59 by standing still; the 56
 look-alikes are vetoed, the 6 of the images 57 to 59 among them, the 9 true pairs of those images
-are judged at their true length, the 15 pairs among the six have no equation and are not judged,
+are judged, the 15 pairs among the six have no equation and are not judged,
 and no true pair is removed.
 
 The measurement these two rules answer, by the veto before them on a capture of 1086 panoramas of a

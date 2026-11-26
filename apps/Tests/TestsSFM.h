@@ -96,12 +96,13 @@ bool PairSelectionTest();
 
 // The name breaks of an image sequence (directory, name prefix, falling or jumping frame numbers, names without a
 // number, 19 and 20 digits, the median rise per run of one prefix, a gap of 0) and the neighbours they leave
-// (SequenceNeighbours)
+// (SequenceNeighbours), built for a sequence run alone: the option, or the SEQUENTIAL match mode
 bool SequenceNeighboursTest();
 
 // --image-sequence: the neighbour pairs are always matched (PairsMatcher::AddNeighbourPairs, PreMatch keeping them but
 // not one already verified, every match mode attempting them and nothing across a break; a failed selection ends the
-// stage as without the option); the candidates are today's with the option off
+// stage as without the option); with the option off the candidates of every mode are its own, and the SEQUENTIAL
+// mode is a sequence run by itself
 bool SequenceForcedMatchTest();
 
 // Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty, and
@@ -298,7 +299,8 @@ bool SequenceChainTest();
 // is vetoed (the look-alikes of a periodic corridor, 11 and 21 frames apart with a baseline of one step, and those 10
 // apart under the near-duplicate ray angle), a true pair and a revisit never, a vetoed pair is not offered to the
 // repair and makes no spot there, the pairs of a frame placed by standing still are judged, a chain link is not
-// removed by the translation stage, and without the neighbours, or with a chain too small to solve, the cut is unchanged
+// removed by the translation stage, and without the neighbours, or with a chain too small to solve, the cut is
+// unchanged; ComputePairScales given anchors forms the plain call's equations between an anchor and a pair that is none
 bool SequenceVetoTest();
 
 // A matched scene is filtered once (the triplet filter, the contradiction cut and its repair), on load as on a fresh
