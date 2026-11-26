@@ -1761,9 +1761,9 @@ static bool ReconstructReadsTheSequence(const TestScope& scope)
 	cfg.matchImagesOnly = true;
 	cfg.matchCfg.lensFitEnabled = false; // the corridor's camera is exact: no lens to fit
 	const String solved = String::FormatString("Sequence chain solve: 2 segment(s) placing %u images by %u links of", kCorridorImages, 2 * (29 + 28 + 27));
-	struct Run { bool option; MatchConfig::MatchMode mode; const char* what; };
-	for (const Run& run : {Run{false, MatchConfig::VOCABULARY, "without the option"}, Run{true, MatchConfig::VOCABULARY, "with the option"},
-		Run{false, MatchConfig::SEQUENTIAL, "in the SEQUENTIAL mode"}})
+	struct Run { bool option; MatchConfig::MatchMode mode; bool isSequence; const char* what; };
+	for (const Run& run : {Run{false, MatchConfig::VOCABULARY, false, "without the option"}, Run{true, MatchConfig::VOCABULARY, true, "with the option"},
+		Run{false, MatchConfig::SEQUENTIAL, true, "in the SEQUENTIAL mode"}})
 	{
 		cfg.matchCfg.imageSequence = run.option;
 		cfg.matchCfg.mode = run.mode;
@@ -1771,7 +1771,7 @@ static bool ReconstructReadsTheSequence(const TestScope& scope)
 		Scene scene(2);
 		TEST_CHECK(scene.Reconstruct(matchedPath, cfg) && scene.status.nState.isSet(STATE::PAIRS_FILTERED), "the match-images-only run of the matched corridor %s failed", run.what);
 		const PairSet kept = KeptPairs(scene);
-		if (cfg.matchCfg.IsImageSequence())
+		if (run.isSequence)
 			TEST_CHECK(log.Contains(solved) && kept == corridor.TruePairs(), "the view-graph filter %s keeps %zu pairs, expected the %zu that are no look-alikes, and \"%s\"",
 				run.what, kept.size(), corridor.TruePairs().size(), solved.c_str());
 		else
@@ -1931,10 +1931,11 @@ static bool VetoKeepsLoopClosures(const TestScope& scope)
 			pair.relativePose->C = CMatrix(pair.relativePose->C + Point3(0, REAL(0.15) * norm(pair.relativePose->C), 0));
 	MatchConfig cfg;
 	cfg.mode = MatchConfig::SEQUENTIAL;
-	const SequenceNeighbours neighbours = SequenceNeighbours::FromConfig(loop.scene, cfg).value();
+	const std::optional<SequenceNeighbours> neighbours = SequenceNeighbours::FromConfig(loop.scene, cfg);
+	TEST_CHECK(neighbours.has_value(), "the closed loop: the SEQUENTIAL mode has no neighbours");
 	const SequenceFilterStats expected{1, 3 * numImages - 6, 6, 0, 0};
-	return ExpectCut(scope, "the closed loop", loop.scene, &neighbours, expected, KeptPairs(loop.scene)) &&
-		ExpectCut(scope, "the closed loop, its chain drifting", drifting, &neighbours, expected, KeptPairs(drifting), false, 180.f);
+	return ExpectCut(scope, "the closed loop", loop.scene, &*neighbours, expected, KeptPairs(loop.scene)) &&
+		ExpectCut(scope, "the closed loop, its chain drifting", drifting, &*neighbours, expected, KeptPairs(drifting), false, 180.f);
 }
 
 // The chain of an image sequence in the contradiction cut (FilterPairsByContradiction given the neighbours), on a
