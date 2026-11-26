@@ -31,6 +31,7 @@
 
 #include "../../libs/SFM.h"
 #include "../../libs/SFM/GlobalRotationAveraging.h"
+#include "../../libs/SFM/SequenceChain.h"
 #include "../../libs/SFM/GlobalScaleAveraging.h"
 #include "../../libs/SFM/GlobalTranslationAveraging.h"
 #include "../../libs/Math/DisjointSet.h"
@@ -1076,12 +1077,22 @@ bool SequenceChainTest()
 			rotations.emplace_back(image.R.GetRotationAxisAngle());
 		return rotations;
 	};
+	// the chain as the cut solves it: the images of the given rotations (Point3::INF: not rotated) in one rotation
+	// component, the `removed` pairs cut
+	const auto solveChain = [](const Scene& scene, const std::vector<Point3>& rotations, const SequenceNeighbours& neighbours, const std::vector<bool>* removed = nullptr) {
+		std::vector<uint32_t> componentOf(rotations.size());
+		FOREACH(i, rotations)
+			componentOf[i] = rotations[i] == Point3::INF ? NO_ID : 0;
+		std::vector<PairState> states(scene.pairs.size(), PairState::KEPT);
+		FOREACH(idxPair, scene.pairs)
+			if (removed != nullptr && (*removed)[idxPair])
+				states[idxPair] = PairState::CUT;
+		return SolveSequenceChain(scene, ComputeWorldBaselines(scene, rotations, componentOf), neighbours, states);
+	};
 	const auto noBreaks = [&]() { return SequenceNeighbours(std::vector<bool>(numImages - 1, false), overlap); };
 	const auto breakAt = [&](IIndex k) { std::vector<bool> breaks(numImages - 1, false); breaks[k] = true; return SequenceNeighbours(breaks, overlap); };
 	const auto acrossMiddle = [](const ImagePair& pair) { return pair.ID1 < 20 && pair.ID2 >= 20; };
-	const auto numPlaced = [](const SequenceChain& chain) {
-		return (unsigned)std::count_if(chain.segmentOf.begin(), chain.segmentOf.end(), [](uint32_t s) { return s != NO_ID; });
-	};
+	const auto numPlaced = [](const SequenceChain& chain) { return chain.NumPlaced(); };
 	// the scale of the least squares fit s * c + t of a segment's centres to the true ones, and the largest distance after it
 	const auto fit = [](const SequenceChain& chain, const std::vector<Point3>& trueCentres, uint32_t segment, REAL& scale) {
 		Point3 meanChain(0, 0, 0), meanTrue(0, 0, 0);
@@ -1115,7 +1126,7 @@ bool SequenceChainTest()
 		std::vector<Point3> trueCentres;
 		buildWalk(scene, trueCentres);
 		const std::vector<Point3> rotations = rotationsOf(scene);
-		const SequenceChain chain = SolveSequenceChain(scene, rotations, noBreaks());
+		const SequenceChain chain = solveChain(scene, rotations, noBreaks());
 		TEST_CHECK(chain.numSegments == 1 && numPlaced(chain) == numImages, "the walk: %u segment(s) placing %u images, expected one of %u", chain.numSegments, numPlaced(chain), numImages);
 		TEST_CHECK(chain.segmentOf.size() == numImages && chain.centres.size() == numImages && chain.pathLength.size() == numImages &&
 			chain.localStep.size() == 1 && chain.linkScale.size() == scene.pairs.size(), "the walk: the vectors are not sized by image, segment and pair");
@@ -1161,7 +1172,7 @@ bool SequenceChainTest()
 					return false;
 			return chain.localStep.size() == 2 && chain.pathLength[20] == 0;
 		};
-		const SequenceChain broken = SolveSequenceChain(scene, rotations, breakAt(19));
+		const SequenceChain broken = solveChain(scene, rotations, breakAt(19));
 		TEST_CHECK(twoSegments(broken), "the break at 19|20: %u segment(s) placing %u images, expected 0-19 and 20-39 with no link across", broken.numSegments, numPlaced(broken));
 		TEST_CHECK(broken.numLinks == 2 * (19 + 18 + 17), "the break at 19|20: %u links", broken.numLinks);
 		// a neighbour pair whose baseline has no length is no link
@@ -1171,7 +1182,7 @@ bool SequenceChainTest()
 				continue;
 			const CMatrix C = pair.relativePose->C;
 			pair.relativePose->C = CMatrix::ZERO;
-			const SequenceChain flat = SolveSequenceChain(scene, rotations, noBreaks());
+			const SequenceChain flat = solveChain(scene, rotations, noBreaks());
 			pair.relativePose->C = C;
 			TEST_CHECK(flat.numSegments == 1 && numPlaced(flat) == numImages && flat.linkScale[idxPair] == 0 && flat.numLinks == 114 - 1,
 				"a zero baseline on (10,11): %u segment(s) placing %u images with %u links, its scale %g", flat.numSegments, numPlaced(flat), flat.numLinks, flat.linkScale[idxPair]);
@@ -1179,7 +1190,7 @@ bool SequenceChainTest()
 			const float weightSpatial = pair.weightSpatial;
 			pair.InvalidateWeight();
 			ASSERT(!pair.HasValidWeight());
-			const SequenceChain weightless = SolveSequenceChain(scene, rotations, noBreaks());
+			const SequenceChain weightless = solveChain(scene, rotations, noBreaks());
 			pair.weightSpatial = weightSpatial;
 			TEST_CHECK(weightless.numSegments == 1 && numPlaced(weightless) == numImages && weightless.linkScale[idxPair] == 0 && weightless.numLinks == 114 - 1,
 				"a weight of 0 on (10,11): %u segment(s) placing %u images with %u links, its scale %g", weightless.numSegments, numPlaced(weightless),
@@ -1188,16 +1199,16 @@ bool SequenceChainTest()
 		std::vector<bool> removed(scene.pairs.size(), false);
 		FOREACH(idxPair, scene.pairs)
 			removed[idxPair] = acrossMiddle(scene.pairs[idxPair]);
-		const SequenceChain cut = SolveSequenceChain(scene, rotations, noBreaks(), &removed);
+		const SequenceChain cut = solveChain(scene, rotations, noBreaks(), &removed);
 		TEST_CHECK(twoSegments(cut), "the pairs across 19|20 removed: %u segment(s) placing %u images, expected 0-19 and 20-39", cut.numSegments, numPlaced(cut));
 		// an unrotated image: its pairs are no links, it is not placed, the rest is one segment
 		std::vector<Point3> unrotated(rotations);
 		unrotated[numImages - 1] = Point3::INF;
-		const SequenceChain partial = SolveSequenceChain(scene, unrotated, noBreaks());
+		const SequenceChain partial = solveChain(scene, unrotated, noBreaks());
 		TEST_CHECK(partial.numSegments == 1 && numPlaced(partial) == numImages - 1 && partial.segmentOf[numImages - 1] == NO_ID &&
 			partial.numLinks == 114 - 3, "an unrotated last image: %u segment(s) placing %u images with %u links", partial.numSegments, numPlaced(partial), partial.numLinks);
 		// overlap 0: no neighbours, no link
-		const SequenceChain alone = SolveSequenceChain(scene, rotations, SequenceNeighbours(std::vector<bool>(numImages - 1, false), 0));
+		const SequenceChain alone = solveChain(scene, rotations, SequenceNeighbours(std::vector<bool>(numImages - 1, false), 0));
 		TEST_CHECK(alone.numSegments == 0 && numPlaced(alone) == 0 && alone.numLinks == 0 && alone.segmentOf.size() == numImages &&
 			alone.linkScale.size() == scene.pairs.size(), "overlap 0: %u segment(s)", alone.numSegments);
 	}
@@ -1209,7 +1220,7 @@ bool SequenceChainTest()
 		std::vector<Point3> trueCentres;
 		const IIndex standStill = 20;
 		buildWalk(scene, trueCentres, standStill);
-		const SequenceChain chain = SolveSequenceChain(scene, rotationsOf(scene), noBreaks());
+		const SequenceChain chain = solveChain(scene, rotationsOf(scene), noBreaks());
 		TEST_CHECK(chain.numSegments == 1 && numPlaced(chain) == numImages && chain.numLinks == 114 - 1, "the frame standing still: %u segment(s) placing %u images with %u links, expected one of %u with 113",
 			chain.numSegments, numPlaced(chain), chain.numLinks, numImages);
 		// its pairs 2 and 3 apart are links, which place it: none is placed by standing still
@@ -1231,7 +1242,7 @@ bool SequenceChainTest()
 		buildWalk(scene, trueCentres);
 		for (ImagePair& pair : scene.pairs)
 			pair.meanRayAngle = D2R(kNearDuplicateRayAngle * 0.75f);
-		const SequenceChain chain = SolveSequenceChain(scene, rotationsOf(scene), noBreaks());
+		const SequenceChain chain = solveChain(scene, rotationsOf(scene), noBreaks());
 		// every neighbour pair is a still pair, but no segment is solved: an image standing still starts none
 		TEST_CHECK(chain.numSegments == 0 && numPlaced(chain) == 0 && chain.numLinks == 0 && chain.numStill == 0 && chain.localStep.empty() &&
 			std::all_of(chain.linkScale.begin(), chain.linkScale.end(), [](REAL s) { return s == 0; }), "every pair under the near-duplicate angle: %u segment(s) placing %u images, %u by standing still",
@@ -1259,7 +1270,7 @@ bool SequenceChainTest()
 				return (sharedImage.keypoints[left ? match.trainIdx : match.queryIdx].pt.x < 320.f) != left;
 			}), pair.matches.end());
 		}
-		const SequenceChain chain = SolveSequenceChain(scene, rotationsOf(scene), noBreaks(), &removed);
+		const SequenceChain chain = solveChain(scene, rotationsOf(scene), noBreaks(), &removed);
 		bool segmentsRight = chain.numSegments == 2 && numPlaced(chain) == numImages;
 		for (IIndex i = 0; segmentsRight && i < numImages; ++i)
 			segmentsRight = chain.segmentOf[i] == (i < shared ? 0u : 1u);
@@ -1293,7 +1304,7 @@ bool SequenceChainTest()
 		SequenceChain chain;
 		{
 			LogCapture log;
-			chain = SolveSequenceChain(scene, rotations, noBreaks());
+			chain = solveChain(scene, rotations, noBreaks());
 			solveLine = log.text;
 		}
 		TEST_CHECK(chain.numSegments == 1 && numPlaced(chain) == numImages && chain.segmentOf[last] == 0 && chain.numStill == 1,
@@ -1322,7 +1333,7 @@ bool SequenceChainTest()
 			RFOREACH(idxPair, before.pairs)
 				if (before.pairs[idxPair].ID2 == last)
 					before.pairs.RemoveAtMove(idxPair);
-			const SequenceChain chainBefore = SolveSequenceChain(before, rotations, noBreaks());
+			const SequenceChain chainBefore = solveChain(before, rotations, noBreaks());
 			TEST_CHECK(chainBefore.numSegments == 1 && numPlaced(chainBefore) == numImages - 1 && chainBefore.segmentOf[last] == NO_ID && chainBefore.numStill == 0,
 				"the walk ending still, without the pairs of image %u: %u segment(s) placing %u images, %u by standing still", last, chainBefore.numSegments, numPlaced(chainBefore), chainBefore.numStill);
 			TEST_CHECK(chain.numLinks == chainBefore.numLinks && chain.localStep[0] == chainBefore.localStep[0],
@@ -1336,7 +1347,7 @@ bool SequenceChainTest()
 			std::vector<Point3> centresReversed;
 			buildWalk(reversed, centresReversed, NO_ID, stillFrom);
 			std::reverse(reversed.pairs.begin(), reversed.pairs.end());
-			const SequenceChain chainReversed = SolveSequenceChain(reversed, rotations, noBreaks());
+			const SequenceChain chainReversed = solveChain(reversed, rotations, noBreaks());
 			TEST_CHECK(chainReversed.numStill == 1 && chainReversed.segmentOf[last] == 0 && chainReversed.centres[last] == chainReversed.centres[last - 1] &&
 				chainReversed.pathLength[last] == chainReversed.pathLength[last - 1], "the walk ending still, its pairs reversed: %u image(s) placed by standing still, image %u %g from the centre of image %u",
 				chainReversed.numStill, last, norm(chainReversed.centres[last] - chainReversed.centres[last - 1]), last - 1);
@@ -1347,7 +1358,7 @@ bool SequenceChainTest()
 			std::vector<bool> removed(scene.pairs.size(), false);
 			FOREACH(idxPair, scene.pairs)
 				removed[idxPair] = ofLast(scene.pairs[idxPair]) && last - scene.pairs[idxPair].ID1 <= numRemoved;
-			return SolveSequenceChain(scene, rotations, noBreaks(), &removed);
+			return solveChain(scene, rotations, noBreaks(), &removed);
 		};
 		const SequenceChain removedOne = solveWithout(1);
 		TEST_CHECK(removedOne.numStill == 1 && removedOne.centres[last] == removedOne.centres[last - 2] && removedOne.pathLength[last] == removedOne.pathLength[last - 2],
@@ -1361,7 +1372,7 @@ bool SequenceChainTest()
 		// an unrotated image is not placed by standing still either
 		std::vector<Point3> unrotated(rotations);
 		unrotated[last] = Point3::INF;
-		const SequenceChain partial = SolveSequenceChain(scene, unrotated, noBreaks());
+		const SequenceChain partial = solveChain(scene, unrotated, noBreaks());
 		TEST_CHECK(partial.numStill == 0 && partial.segmentOf[last] == NO_ID, "the walk ending still, image %u unrotated: %u image(s) placed by standing still", last, partial.numStill);
 		// still by its baseline, not by its angle: the pairs of the last image at 10 degrees of ray angle and a
 		// baseline of no length are still pairs as well
@@ -1370,7 +1381,7 @@ bool SequenceChainTest()
 				pair.meanRayAngle = D2R(10.f);
 				pair.relativePose->C = CMatrix::ZERO;
 			}
-		const SequenceChain flat = SolveSequenceChain(scene, rotations, noBreaks());
+		const SequenceChain flat = solveChain(scene, rotations, noBreaks());
 		TEST_CHECK(flat.numStill == 1 && flat.segmentOf[last] == 0 && flat.centres[last] == flat.centres[last - 1] && flat.numLinks == chain.numLinks,
 			"the pairs of image %u with a baseline of no length: %u image(s) placed by standing still, %u links", last, flat.numStill, flat.numLinks);
 	}
@@ -1381,7 +1392,7 @@ bool SequenceChainTest()
 		Scene scene;
 		std::vector<Point3> trueCentres;
 		buildWalk(scene, trueCentres, NO_ID, stillFrom);
-		const SequenceChain chain = SolveSequenceChain(scene, rotationsOf(scene), noBreaks());
+		const SequenceChain chain = solveChain(scene, rotationsOf(scene), noBreaks());
 		TEST_CHECK(chain.numSegments == 1 && numPlaced(chain) == numImages && chain.numStill == 4, "seven cameras at one place: %u segment(s) placing %u images, %u by standing still, expected one of %u and the images 36-39",
 			chain.numSegments, numPlaced(chain), chain.numStill, numImages);
 		for (IIndex i = stillFrom + 3; i < numImages; ++i)
@@ -1408,7 +1419,7 @@ bool SequenceChainTest()
 					if ((pair.ID1 == middle && pair.ID2 == other) || (pair.ID2 == middle && pair.ID1 == other))
 						removed[idxPair] = true;
 			}
-			const SequenceChain chain = SolveSequenceChain(scene, rotations, noBreaks(), &removed);
+			const SequenceChain chain = solveChain(scene, rotations, noBreaks(), &removed);
 			numStill = chain.numStill;
 			numLinks = chain.numLinks;
 			if (chain.numSegments != 1 || numPlaced(chain) != numImages)
@@ -1435,7 +1446,7 @@ bool SequenceChainTest()
 	// (6) an empty scene
 	{
 		Scene scene;
-		const SequenceChain chain = SolveSequenceChain(scene, {}, SequenceNeighbours(std::vector<bool>(), overlap));
+		const SequenceChain chain = solveChain(scene, {}, SequenceNeighbours(std::vector<bool>(), overlap));
 		TEST_CHECK(chain.numSegments == 0 && chain.numStill == 0 && chain.segmentOf.empty() && chain.linkScale.empty(), "the empty scene: %u segment(s)", chain.numSegments);
 	}
 	return scope.Pass("the walk of %u images: one segment, drift %.4g after the fit (%.3g%% of the walk), fitted step %.4g, step error %.3g%%, "

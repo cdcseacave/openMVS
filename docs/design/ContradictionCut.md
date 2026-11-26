@@ -7,8 +7,11 @@ repeated structure and look-alike views fabricate pairs that pass two-view verif
 be placed consistently with the rest of the graph. A repair step brings back a removed pair whose
 own matches support a corrected relative pose. With `--image-sequence` the chain of the verified
 neighbour pairs is trusted: a pair that contradicts it is vetoed, and none of its links is removed.
-`FilterPairsByContradiction`, `RepairContradictedPairs`, `VetoPairsByChain`
-(`GlobalRotationAveraging.h/cpp`).
+`FilterPairsByContradiction`, `RepairContradictedPairs` (`GlobalRotationAveraging.h/cpp`); the chain is
+`SolveSequenceChain` and `ApplySequenceChain` (`SequenceChain.h/cpp`). The stages share one state per
+pair (`PairState`: kept, link of the chain, cut by a stage, vetoed by the chain) and one world
+baseline per pair (`ComputeWorldBaselines`: none for a pair without a pose or whose two images do not
+lie in one rotation component).
 
 It runs in `Scene::Reconstruct` right after the triplet scores (`TripletScores.md`), on the pairs
 that hold a relative pose, in every mode: with the triplet filter off the pairs are simply unscored
@@ -91,8 +94,8 @@ above 0; 0 skips it (`RemoveTranslationContradictions`).
    places both its images. It is removed when the angle between its baseline direction and the
    offset of those two centres exceeds the bar.
 
-Steps 3 and 4 are one function, `SolveScaleComponents` (`GlobalRotationAveraging.cpp`), which the
-chain of an image sequence (below) runs on its own pairs and weights. With `--image-sequence` the
+Steps 3 and 4 are one function, `SolveScaleComponents` (`GlobalRotationAveraging.cpp`), given the
+equations of step 2; the chain of an image sequence (below) runs it on its own pairs and weights. With `--image-sequence` the
 veto runs before step 1 and the verdict of step 5 spares the chain links (below).
 
 ### The chain of an image sequence
@@ -152,7 +155,8 @@ In a repetitive place (a corridor whose bays look alike) a pair of frames a peri
 with the right rotation and a short baseline along the corridor. Its direction agrees with the
 camera centres, so step 5 does not see it; enough of them out-vote the true pairs in the centres
 solve, which then contradicts true pairs. The chain knows how far apart the two frames are, so the
-pairs that contradict it are removed before the translation stage reads them (`VetoPairsByChain`).
+pairs that contradict it are removed before the translation stage reads them (`ApplySequenceChain`,
+`SequenceChain.cpp`).
 
 A pair is judged when it is not removed by the rotation stage and is no chain link, has a pose and a
 non-zero world baseline, both its images lie in one segment (placed by its links or by standing
@@ -193,12 +197,12 @@ direction, and along a corridor it is the centres', so the repair would bring it
 ### The protected links
 
 The translation stage solves with the chain links among its pairs as without the option; only its
-verdict changes: a chain link (a pair of positive `SequenceChain::linkScale`) whose direction is
+verdict changes: a chain link (a pair of positive `SequenceChain::linkScale`, `PairState::LINK`) whose direction is
 past the bar is kept and counted as protected. Where the centres contradict a link of the chain,
 the centres are the ones in doubt.
 
 One log line reports the chain in the cut: `Sequence chain: S segment(s) over K links; veto removed
-V of J judged pairs; P chain pairs protected (veto <time>)`; `SequenceFilterStats` returns the same
+V of J judged pairs; P chain pairs protected (<time>)` (the time of the chain's solve and veto); `SequenceFilterStats` returns the same
 five numbers. The solve itself logs one line starting `Sequence chain solve:` (the segments, the
 images the links place, the links and the scale equations, the time, and at its end `, N still
 image(s)`, the images placed by standing still; or that no neighbour pair is a link). At `-v 3`
@@ -263,7 +267,7 @@ One log line reports the pairs repaired of those removed and the seconds.
 | translation constants | none | 10 pairs, 40 rounds, 0.001, 1.05 | smallest solved component, reweighting rounds, L1 floor, scale bar |
 | `MatchConfig::imageSequence` | `--image-sequence B` | false | the chain of the neighbour pairs is solved, the pairs that contradict it vetoed, its links protected (needs the bar above 0) |
 | `MatchConfig::matchSequenceOverlap`, `sequenceMaxGap` | `--match-sequence-overlap N`, `--sequence-max-gap N` | 3, 10 | the neighbours (`PairSelection.md`) |
-| veto constants (`GlobalRotationAveraging.cpp`) | none | 8 steps, 0.2, 3 | tolerance in local steps, tolerance as a share of the path, the chain distance over this is the length a vetoed pair stays under |
+| veto constants (`SequenceChain.cpp`) | none | 8 steps, 0.2, 3 | tolerance in local steps, tolerance as a share of the path, the chain distance over this is the length a vetoed pair stays under |
 
 Python: `ReconstructionConfig.max_pair_direction_residual` (set outside [0,180], NaN included, it
 raises `ValueError`, as the command line refuses it). The repair flag has no Python attribute.

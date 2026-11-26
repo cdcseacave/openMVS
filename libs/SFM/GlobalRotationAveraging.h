@@ -26,6 +26,8 @@ namespace SFM {
 // Forward declarations
 class SFM_API Scene;
 class SFM_API Image;
+class SFM_API ImagePair;
+struct SFM_API ScalePair;
 struct SFM_API PairsWeightingConfig;
 class SFM_API SequenceNeighbours;
 
@@ -186,13 +188,54 @@ private:
 };
 /*----------------------------------------------------------------*/
 
+// The contradiction cut (FilterPairsByContradiction, below). The declarations down to SolveScaleComponents are what
+// its stages share with the chain of an image sequence (SequenceChain.h).
+
+// The state of a scene pair in the cut
+enum class PairState : uint8_t {
+	KEPT,   // kept
+	LINK,   // kept, and a link of the sequence chain with a solved scale: the translation stage's verdict leaves it
+	CUT,    // removed by the rotation or the translation stage: what the repair is offered
+	VETOED  // removed by the sequence chain: never repaired, joins no spot, vouches for no pair
+};
+inline bool IsRemoved(PairState state) { return state == PairState::CUT || state == PairState::VETOED; }
+
+// The baseline of every scene pair in the world frame, at its pose's own length: RMatrix(rotations[ID1]).t() *
+// relativePose->C. Point3::INF for a pair without a pose or whose two images do not lie in one rotation component
+// (componentOf: per image, NO_ID where not rotated): no stage after the rotations reads such a pair.
+SFM_API std::vector<Point3> ComputeWorldBaselines(const Scene& scene, const std::vector<Point3>& rotations,
+	const std::vector<uint32_t>& componentOf);
+// What the stages ask of a pair's world baseline: is there one; has it a length; has it a direction (a length, and a
+// mean ray angle of at least kNearDuplicateRayAngle: under it the direction is noise)
+bool HasBaseline(const Point3& baseline);
+bool HasBaselineLength(const Point3& baseline);
+bool HasBaselineDirection(const ImagePair& pair, const Point3& baseline);
+
+// One solved component of the pair-scale graph (SolveScaleComponents)
+struct ScaleComponentSolve {
+	std::vector<uint32_t> pairs;       // its scene pairs, ascending
+	std::vector<REAL> scales;          // per scene pair: C_2 - C_1 = scale * baseline (valid for `pairs`)
+	std::vector<Point3> centres;       // per image: its camera centre (valid where `placed`)
+	std::vector<REAL> centreResiduals; // per pair of `pairs`: the distance of its scaled baseline from the centres' offset
+	std::vector<bool> placed;          // per image: an image of one of `pairs`
+};
+// The scale + centres solve of the translation stage, which the chain of a sequence runs on its links: the components
+// of the graph of the given pair-scale equations (ComputePairScales), largest first (by pairs, ties to the lower
+// pair), and per component of at least 10 pairs the scales by RobustAverage (Geman-McClure) around
+// GlobalScaleEstimator, then the centres from C_2 - C_1 = scale * baseline (baselines and weights: per scene pair) by
+// GlobalTranslationEstimator reweighted towards the sum of norms (convex, so no start decides). Returns the solved
+// components in that order (one whose scale or centres solve fails is left out); numComponents: all the components
+// of the graph.
+std::vector<ScaleComponentSolve> SolveScaleComponents(const Scene& scene, const std::vector<ScalePair>& equations,
+	const std::vector<Point3>& baselines, const std::vector<float>& weights, unsigned& numComponents);
+
 // What the chain of an image sequence did in the contradiction cut (FilterPairsByContradiction given the neighbours)
 struct SFM_API SequenceFilterStats {
 	unsigned numSegments{0};  // segments of the chain
-	unsigned numLinks{0};     // chain links (of positive scale)
+	unsigned numLinks{0};     // links of the chain
 	unsigned numJudged{0};    // pairs the veto judged against the chain
 	unsigned numVetoed{0};    // of them, the pairs it removed
-	unsigned numProtected{0}; // chain links the translation stage would have removed
+	unsigned numProtected{0}; // links the translation stage would have removed
 };
 
 // The contradiction cut: remove every pair whose relative rotation is more than the estimator's
@@ -214,71 +257,16 @@ struct SFM_API SequenceFilterStats {
 //    the camera centres of the translation stage confirm and a neighbouring spot vouches for (the
 //    guard is in GlobalRotationAveraging.cpp, RepairContradictedPairs); it then carries that relative
 //    pose and its agreeing matches, and is not counted as removed.
-//  - neighbours (needs maxDirectionResidual above 0; nullptr: none of this): the images are frames of a sequence
-//    and the chain of its verified neighbour pairs is trusted (SolveSequenceChain below, on the pairs the rotation
-//    stage kept; a link joins two images of one component of the averaging, whose rotations share a frame). Before the translation stage, the veto: a pair that is no link,
-//    with a pose and a world baseline of some length, whose two images one segment of the chain places and that
-//    shares a pair-scale equation (ComputePairScales) with a link of that segment, is judged, a pair under
-//    kNearDuplicateRayAngle of ray angle like any other (the veto reads a pair's length, which needs no baseline
-//    direction). Its scale is the median, over those equations, of the link's scale carried
-//    through the equation; the scale times its baseline is its offset in the segment's frame, and it is removed
-//    when ChainVetoes says so: far from where the chain puts its two images and short against their distance, the
-//    look-alike of a repetitive place, which claims that two distant frames stand close. A vetoed pair is not
-//    offered to the repair. Then the protection: the translation stage solves as it does without the chain, but
-//    removes no link (a pair of positive SequenceChain::linkScale).
-//  - stats: what the chain did; all zero without it.
+//  - neighbours (nullptr: off; acts only with maxDirectionResidual above 0): the images are frames of a
+//    sequence. Between the two stages the chain of the kept neighbour pairs is solved and the pairs that
+//    contradict it are removed (ApplySequenceChain, SequenceChain.h); they are never offered to the
+//    repair. The translation stage then removes no link of the chain.
+//  - stats (optional): what the chain did; all zero without it.
 // The pair weights are recomputed when anything was removed or repaired. Returns the number of removed
 // pairs, the vetoed ones among them.
 unsigned SFM_API FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
 	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair = false,
 	const SequenceNeighbours* neighbours = nullptr, SequenceFilterStats* stats = nullptr);
-
-// The rule of the chain's veto, every length in the frame of the pair's segment: discrepancy is the distance between
-// the pair's offset and the chain's (the offset of the centres of its two images), pairLength the length of the pair's
-// baseline, chainDistance the distance of the two centres, localStep the segment's median step and path the length of
-// the chain between the two images. The pair is vetoed when it is off the chain by more than 8 local steps and more
-// than 0.2 of the path (the chain drifts with its length, so a loop closure off by a share of the path is no
-// contradiction), and shorter than a third of the chain distance (a look-alike claims that its images stand close; a
-// pair as long as the chain says differs from it in direction, which is the translation stage's to judge).
-SFM_API bool ChainVetoes(REAL discrepancy, REAL pairLength, REAL chainDistance, REAL localStep, REAL path);
-
-// The chain of an image sequence: the camera centres along the sequence as the verified neighbour pairs alone place
-// them, segment by segment. The vectors are indexed by image (segmentOf, centres, pathLength), by scene pair
-// (linkScale) and by segment (localStep).
-struct SFM_API SequenceChain {
-	std::vector<uint32_t> segmentOf; // per image: its chain segment, NO_ID where the chain placed nothing
-	std::vector<Point3> centres;     // per image: its centre in its segment's frame (valid where segmentOf != NO_ID)
-	// per image: the path along its segment from the segment's first image, through the images its links place, in
-	// order; an image placed by standing still has the path of the image it stands at
-	std::vector<REAL> pathLength;
-	std::vector<REAL> localStep;     // per segment: the median distance between adjacent images its links place (0 for a segment of one image)
-	// per scene pair: a chain link's solved scale, the multiplier of its relative pose's baseline as the translation
-	// stage uses a pair's scale, so the link's offset in the segment's frame is its world baseline
-	// (RMatrix(rotations[ID1]).t() * relativePose->C, at the pose's own length) times this scale; 0 for every other
-	// pair. A positive scale means both images of the pair lie in one segment and the scale is in that segment's
-	// frame: a neighbour pair joining two segments, or solved by a component other than its images' segment, has 0
-	std::vector<REAL> linkScale;
-	unsigned numSegments{0}, numLinks{0};
-	unsigned numStill{0}; // the images no link places, placed by standing still where a placed neighbour stands
-};
-// The chain of a sequence: the scale + centres solve of the translation stage on the chain links alone. A link is a
-// scene pair with a relative pose whose images are neighbours, both rotated (rotations != Point3::INF), not `removed`,
-// with a positive composite weight (the centres solve skips a weightless pair, which would place its images nowhere),
-// a world baseline of some length and meanRayAngle >= kNearDuplicateRayAngle. Weights: the composite weight. One segment per solved
-// component of the links' pair-scale graph (components under minScaleComponent links: unplaced); an image two
-// components place belongs to the larger one (a component whose every image a larger one holds is no segment);
-// numLinks counts the links of positive scale. The segments are numbered in the order of their first image, so they
-// follow the sequence.
-// Then the frames standing still. A still pair is a pair that is no link only for having no baseline direction: its
-// meanRayAngle is under kNearDuplicateRayAngle or its world baseline has no length, every other condition of a link
-// holding (neighbours, a pose, both images rotated, not `removed`, a positive weight). An image
-// no segment placed that a still pair joins to a placed image takes that image's segment, centre and path length,
-// pass by pass until a pass places nothing; a pass reads the images placed before it, and of several placed images
-// the nearest in position (image index) is taken, the lower one on a tie, so the order of the scene's pairs decides
-// nothing. numStill counts those images. A still pair stays no link (linkScale 0, not in numLinks), the local step
-// and the numbering of the segments are those of the links alone, and with no segment solved nothing is placed.
-SFM_API SequenceChain SolveSequenceChain(const Scene& scene, const std::vector<Point3>& rotations,
-	const SequenceNeighbours& neighbours, const std::vector<bool>* removed = nullptr);
 
 } // namespace SFM
 

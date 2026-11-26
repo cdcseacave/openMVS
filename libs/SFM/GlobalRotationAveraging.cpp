@@ -15,7 +15,7 @@
 #include "GlobalTranslationAveraging.h"
 #include "PoseLink.h"
 #include "RobustAveraging.h"
-#include "SequenceNeighbours.h"
+#include "SequenceChain.h"
 #include "StarInitializer.h"
 #include "../Math/DisjointSet.h"
 #include "../Math/LeastAbsoluteDeviationSolver.h"
@@ -618,26 +618,11 @@ unsigned GlobalRotationEstimator::FilterRelativeRotations(const std::vector<Poin
 
 namespace {
 
-// The translation stage of the contradiction cut: on the pairs the rotation stage kept, the scales
-// of the pairs, then the camera centres, then every pair whose baseline direction is more than
-// maxDirectionResidual degrees from the centres. The solves read the usable pairs with a measurable
-// baseline (a ray angle past kNearDuplicateRayAngle), weighted by composite weight times triplet
-// score; the scale equations are StarInitializer's (ComputePairScales), solved per component of the
-// pair-scale graph by RobustAverage (Geman-McClure at maxScaleResidual) around GlobalScaleEstimator;
-// the centres per component by GlobalTranslationEstimator reweighted towards the sum of norms (convex,
-// so no start decides); both are SolveScaleComponents, which the chain of a sequence shares. A pair of
-// a component is judged by its own solve, any other pair with a pose and a measurable baseline by the
-// largest solve that places both its images. Marks the removed pairs in `removed`; returns their number.
-// Appends every solve to `solves`, the largest first. With the chain of an image sequence (linkScale, per scene
-// pair: SequenceChain::linkScale; NULL without one) the solves are the same, the links among their pairs as any
-// other pair, but no link (a pair of positive scale) is removed: numProtected counts those past the bar.
+// The constants of the scale + centres solve (SolveScaleComponents)
 constexpr unsigned minScaleComponent = 10;  // pairs a component of the pair-scale graph needs to be solved
 constexpr unsigned numL1Rounds = 40;        // reweighting rounds of the centres
 constexpr REAL l1Floor = REAL(1e-3);        // the L1 weight's error floor, in median pair lengths
 constexpr float maxScaleResidual = 1.05f;   // the Geman-McClure scale of the pair scales (the same bar as the merge graph's)
-
-// one solved component of the cut: the images it places and their camera centres
-struct CentresSolve { std::vector<bool> placed; std::vector<Point3> centres; };
 
 // the angle in degrees between a pair's baseline direction and the offset of its two camera centres
 REAL DirectionAngle(const Point3& baseline, const Point3& centresOffset)
@@ -648,33 +633,39 @@ REAL DirectionAngle(const Point3& baseline, const Point3& centresOffset)
 	return R2D(ACOS(MINF(MAXF(cosAngle, REAL(-1)), REAL(1)))); // the clamp is rounding only
 }
 
-// One solved component of the pair-scale graph: its pairs (scene pair indices, ascending), their scales (indexed by
-// scene pair: C_2 - C_1 = scale * baseline), the offsets the centres were solved from, the camera centres (indexed by
-// image) with the residual of each offset, and the images it places
-struct ScaleComponentSolve {
-	std::vector<uint32_t> pairs;
-	std::vector<REAL> scales;
-	std::vector<TranslationPair> offsets;
-	std::vector<Point3> centres;
-	std::vector<REAL> centreResiduals;
-	std::vector<bool> placed;
-};
+} // namespace
 
-// The scale + centres solve of the translation stage, shared by the contradiction cut and the chain of a sequence: the
-// pair-scale equations of the given pairs (ComputePairScales), the components of their graph, largest first (by pairs,
-// ties to the lower root pair), and per component of at least minScaleComponent pairs the scales by RobustAverage
-// (Geman-McClure at maxScaleResidual) around GlobalScaleEstimator, then the centres from C_2 - C_1 = scale * baseline
-// (baselines: per scene pair, the world-frame baseline) weighted by weightOf(idxPair), by GlobalTranslationEstimator
-// reweighted towards the sum of norms. Calls onSolved(ScaleComponentSolve&) for every component solved, in that order
-// (a component whose scale or centres solve fails is skipped). Sets the number of components and of equations.
-template <typename WeightOf, typename OnSolved>
-void SolveScaleComponents(const Scene& scene, const IIndexArr& pairIndices, const std::vector<Point3>& baselines,
-	WeightOf weightOf, OnSolved onSolved, unsigned& numComponents, unsigned& numEquations)
+std::vector<Point3> SFM::ComputeWorldBaselines(const Scene& scene, const std::vector<Point3>& rotations, const std::vector<uint32_t>& componentOf)
+{
+	ASSERT(rotations.size() == scene.images.size() && componentOf.size() == scene.images.size());
+	std::vector<Point3> baselines(scene.pairs.size(), Point3::INF);
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
+		if (pair.relativePose.has_value() && componentOf[pair.ID1] != NO_ID && componentOf[pair.ID1] == componentOf[pair.ID2])
+			baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
+	}
+	return baselines;
+}
+bool SFM::HasBaseline(const Point3& baseline)
+{
+	return baseline != Point3::INF;
+}
+bool SFM::HasBaselineLength(const Point3& baseline)
+{
+	return HasBaseline(baseline) && norm(baseline) > ZEROTOLERANCE<REAL>();
+}
+bool SFM::HasBaselineDirection(const ImagePair& pair, const Point3& baseline)
+{
+	return HasBaselineLength(baseline) && pair.meanRayAngle >= D2R(kNearDuplicateRayAngle);
+}
+
+std::vector<ScaleComponentSolve> SFM::SolveScaleComponents(const Scene& scene, const std::vector<ScalePair>& equations,
+	const std::vector<Point3>& baselines, const std::vector<float>& weights, unsigned& numComponents)
 {
 	const uint32_t numPairs = (uint32_t)scene.pairs.size();
 	const uint32_t numImages = (uint32_t)scene.images.size();
+	ASSERT(baselines.size() == numPairs && weights.size() == numPairs);
 	// the components of the pair-scale graph, largest first (by pairs, ties to the lower pair)
-	const std::vector<ScalePair> equations = ComputePairScales(scene, pairIndices);
 	DisjointSet<uint32_t> sets(numPairs);
 	for (const ScalePair& equation : equations)
 		sets.Union(equation.idxA, equation.idxB);
@@ -698,9 +689,9 @@ void SolveScaleComponents(const Scene& scene, const IIndexArr& pairIndices, cons
 		return a->pairs.size() != b->pairs.size() ? a->pairs.size() > b->pairs.size() : a->root < b->root;
 	});
 	numComponents = (unsigned)components.size();
-	numEquations = (unsigned)equations.size();
 
 	// one solve per component
+	std::vector<ScaleComponentSolve> solves;
 	const REAL maxLogScaleResidual = LOGN((REAL)maxScaleResidual);
 	for (const Component* pComponent : components) {
 		if (pComponent->pairs.size() < minScaleComponent)
@@ -718,16 +709,17 @@ void SolveScaleComponents(const Scene& scene, const IIndexArr& pairIndices, cons
 			solve.scales, scaleResiduals))
 			continue;
 		// the centres: C_2 - C_1 = scale * baseline of every pair, towards the sum of norms
+		std::vector<TranslationPair> offsets;
 		std::vector<REAL> lengths;
 		for (const uint32_t idxPair : pComponent->pairs) {
 			const ImagePair& pair = scene.pairs[idxPair];
-			solve.offsets.emplace_back(pair.ID1, pair.ID2, baselines[idxPair] * solve.scales[idxPair], weightOf((IIndex)idxPair));
-			lengths.push_back(norm(solve.offsets.back().relativeTranslation));
+			offsets.emplace_back(pair.ID1, pair.ID2, baselines[idxPair] * solve.scales[idxPair], weights[idxPair]);
+			lengths.push_back(norm(offsets.back().relativeTranslation));
 		}
 		std::sort(lengths.begin(), lengths.end());
 		const REAL floorLength = l1Floor * lengths[lengths.size() / 2];
 		GlobalTranslationEstimator translationEstimator;
-		if (!RobustAverageWith(solve.offsets, numL1Rounds,
+		if (!RobustAverageWith(offsets, numL1Rounds,
 			[&](const std::vector<TranslationPair>& active, std::vector<Point3>& t) {
 				// the estimator's rows are scaled by the weight, the least squares' weight is its square
 				std::vector<TranslationPair> rows(active);
@@ -736,62 +728,58 @@ void SolveScaleComponents(const Scene& scene, const IIndexArr& pairIndices, cons
 				return translationEstimator.EstimateTranslations(rows, numImages, NO_ID, t);
 			},
 			[&](size_t i, const std::vector<Point3>& t) {
-				const TranslationPair& p = solve.offsets[i];
+				const TranslationPair& p = offsets[i];
 				return norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation);
 			},
 			[&](REAL r) { return (float)(REAL(1) / MAXF(r, floorLength)); },
 			solve.centres, solve.centreResiduals))
 			continue;
 		solve.placed.assign(numImages, false);
-		for (const TranslationPair& p : solve.offsets)
+		for (const TranslationPair& p : offsets)
 			solve.placed[p.idxA] = solve.placed[p.idxB] = true;
 		solve.pairs = pComponent->pairs;
-		onSolved(solve);
+		solves.push_back(std::move(solve));
 	}
+	return solves;
 }
 
-unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<Point3>& rotations,
-	const std::vector<uint32_t>& componentOf, const std::vector<float>& scores, float minPairWeight,
-	float maxDirectionResidual, std::vector<bool>& removed, std::vector<CentresSolve>& solves,
-	const std::vector<REAL>* linkScale, unsigned& numProtected)
+namespace {
+
+// The translation stage of the contradiction cut: on the pairs the earlier stages kept, the scales of the pairs,
+// then the camera centres (SolveScaleComponents), then every pair whose baseline direction is more than
+// maxDirectionResidual degrees from the centres. Judged are the kept pairs with a baseline direction
+// (HasBaselineDirection); the solves read the usable ones among them, weighted by composite weight times triplet
+// score. A pair of a component is judged by its own solve, any other by the largest solve that places both its
+// images. Marks the pairs it removes CUT, but no LINK: where the centres contradict a link of the sequence chain,
+// the centres are the ones in doubt. Fills `solves`, the largest first; returns the number of links past the bar.
+unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<Point3>& baselines, const std::vector<float>& scores,
+	float minPairWeight, float maxDirectionResidual, std::vector<PairState>& states, std::vector<ScaleComponentSolve>& solves)
 {
 	TD_TIMER_STARTD();
 	const uint32_t numPairs = (uint32_t)scene.pairs.size();
-	ASSERT(linkScale == NULL || linkScale->size() == numPairs);
-	numProtected = 0;
-	// the pairs judged, with their world-frame baseline (length: the pair's own, usually arbitrary)
-	std::vector<Point3> baselines(numPairs);
 	IIndexArr judged, solved;
+	std::vector<float> weights(numPairs, 0.f);
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
-		if (removed[idxPair] || !pair.relativePose.has_value() || !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) ||
-			componentOf[pair.ID1] == NO_ID || componentOf[pair.ID1] != componentOf[pair.ID2])
-			continue;
-		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
-		if (norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
+		if (IsRemoved(states[idxPair]) || !HasBaselineDirection(pair, baselines[idxPair]))
 			continue;
 		judged.push_back((IIndex)idxPair);
-		if (pair.ExceedsWeightBar(minPairWeight) && scores[idxPair] != 0.f)
+		if (pair.ExceedsWeightBar(minPairWeight) && scores[idxPair] != 0.f) {
 			solved.push_back((IIndex)idxPair);
+			weights[idxPair] = pair.GetCompositeWeight() * (scores[idxPair] < 0.f ? 1.f : scores[idxPair]);
+		}
 	}
-	const auto weightOf = [&](IIndex idxPair) {
-		return scene.pairs[idxPair].GetCompositeWeight() * (scores[idxPair] < 0.f ? 1.f : scores[idxPair]);
-	};
+	const std::vector<ScalePair> equations = ComputePairScales(scene, solved);
+	unsigned numScaleComponents;
+	solves = SolveScaleComponents(scene, equations, baselines, weights, numScaleComponents);
 
-	// one solve per component: the pair's angle against the centres, NaN where no solve judged it
+	// the pair's angle against the centres, NaN where no solve judged it: the component's own pairs by its solve, any
+	// other judged pair no solve has judged yet when both its images are placed
 	std::vector<REAL> angles(numPairs, std::numeric_limits<REAL>::quiet_NaN());
 	std::vector<bool> scaled(numPairs, false);
-	unsigned numComponents = 0, numScaleComponents, numEquations;
-	std::vector<REAL> centresMedianResidual;
-	SolveScaleComponents(scene, solved, baselines, weightOf, [&](ScaleComponentSolve& solve) {
-		++numComponents;
+	for (const ScaleComponentSolve& solve : solves) {
 		for (const uint32_t idxPair : solve.pairs)
 			scaled[idxPair] = true;
-		// the angles: the component's own pairs by this solve, any other judged pair no solve has judged
-		// yet when both its images are placed
-		std::vector<REAL> residualsSorted(solve.centreResiduals);
-		std::sort(residualsSorted.begin(), residualsSorted.end());
-		centresMedianResidual.push_back(residualsSorted[residualsSorted.size() / 2]);
 		for (const IIndex idxPair : judged) {
 			const ImagePair& pair = scene.pairs[idxPair];
 			const bool own = std::binary_search(solve.pairs.begin(), solve.pairs.end(), (uint32_t)idxPair);
@@ -802,28 +790,32 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 				continue;
 			angles[idxPair] = DirectionAngle(baselines[idxPair], centresOffset);
 		}
-		solves.push_back({std::move(solve.placed), std::move(solve.centres)});
-	}, numScaleComponents, numEquations);
-	unsigned numJudged = 0, numRemoved = 0;
+	}
+	unsigned numJudged = 0, numRemoved = 0, numProtected = 0;
 	for (const IIndex idxPair : judged) {
 		if (std::isnan(angles[idxPair]))
 			continue;
 		++numJudged;
 		if (angles[idxPair] <= maxDirectionResidual)
 			continue;
-		if (linkScale != NULL && (*linkScale)[idxPair] > 0) {
-			// a link of the chain is trusted: where the centres contradict it, they are the ones in doubt
+		if (states[idxPair] == PairState::LINK) {
 			++numProtected;
 			continue;
 		}
-		removed[idxPair] = true;
+		states[idxPair] = PairState::CUT;
 		++numRemoved;
+	}
+	REAL medianResidual = 0; // of the largest solve
+	if (!solves.empty()) {
+		std::vector<REAL> residuals(solves.front().centreResiduals);
+		std::nth_element(residuals.begin(), residuals.begin() + residuals.size() / 2, residuals.end());
+		medianResidual = residuals[residuals.size() / 2];
 	}
 	VERBOSE("Translation cut: removed %u/%u pairs whose baseline direction is more than %g degrees from the centres of %u of %u scale components "
 		"(%u pairs scaled by %u equations, median residual of the largest %.3g) (%s)",
-		numRemoved, numJudged, maxDirectionResidual, numComponents, numScaleComponents, (unsigned)solved.size(), numEquations,
-		centresMedianResidual.empty() ? REAL(0) : centresMedianResidual.front(), TD_TIMER_GET_FMT().c_str());
-	return numRemoved;
+		numRemoved, numJudged, maxDirectionResidual, (unsigned)solves.size(), numScaleComponents, (unsigned)solved.size(), (unsigned)equations.size(),
+		medianResidual, TD_TIMER_GET_FMT().c_str());
+	return numProtected;
 }
 
 // The bars of the repair of the contradiction cut (RepairContradictedPairs, below)
@@ -910,18 +902,15 @@ bool FitBaselineDirection(const Eigen::Matrix3d& R, const std::vector<Eigen::Vec
 // A repaired pair takes that pose (E, and F between pinholes), keeps its agreeing matches as its sparse and
 // dense segments, the other sparse ones becoming outliers and the other dense ones dropped, and has its ray
 // angle measured again; its weight is left to be recomputed. The pairs are independent, repaired in parallel.
-// `removed` marks the pairs the cut removed, all of them pairs with a pose whose two images one rotation
-// solve reached; `solves` are the centres solves of its translation stage, the largest first. `vetoed` (NULL:
-// none) marks the removed pairs the chain of an image sequence vetoed: they are not offered to the repair, which
-// would bring them back (a look-alike's matches agree on a direction, and along a corridor it is the centres'),
-// stay removed, and one under kNearDuplicateRayAngle joins no spot (its two images do not stand at one place).
-// Unmarks the repaired pairs in `removed`; returns their number.
+// Offered are the CUT pairs of `states`, all of them pairs with a pose whose two images one rotation solve
+// reached; `solves` are the solves of the translation stage, the largest first. A VETOED pair is not offered
+// (its matches agree on a direction, and along a corridor it is the centres'), vouches for no pair and joins no
+// spot (its two images do not stand at one place). Marks the repaired pairs KEPT; returns their number.
 unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotations,
-	const std::vector<CentresSolve>& solves, std::vector<bool>& removed, const std::vector<bool>* vetoed)
+	const std::vector<ScaleComponentSolve>& solves, std::vector<PairState>& states)
 {
 	TD_TIMER_STARTD();
-	ASSERT(removed.size() == scene.pairs.size() && rotations.size() == scene.images.size());
-	ASSERT(vetoed == NULL || vetoed->size() == removed.size());
+	ASSERT(states.size() == scene.pairs.size() && rotations.size() == scene.images.size());
 	const uint32_t numImages = (uint32_t)scene.images.size();
 	// the spot of every image (near-duplicate pairs join), and its neighbours over the kept pairs
 	DisjointSet<uint32_t> spots(numImages);
@@ -929,13 +918,13 @@ unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotati
 	IIndexArr candidates;
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
-		// a vetoed pair claims that two distant frames stand close: it makes no spot of them
-		if (pair.relativePose.has_value() && !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) && (vetoed == NULL || !(*vetoed)[idxPair]))
+		if (states[idxPair] == PairState::VETOED)
+			continue; // no spot, no candidate and no kept pair
+		if (pair.relativePose.has_value() && !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)))
 			spots.Union(pair.ID1, pair.ID2);
-		if (removed[idxPair]) {
+		if (states[idxPair] == PairState::CUT) {
 			ASSERT(pair.relativePose.has_value());
-			if (vetoed == NULL || !(*vetoed)[idxPair])
-				candidates.push_back((IIndex)idxPair);
+			candidates.push_back((IIndex)idxPair);
 		} else {
 			neighbours[pair.ID1].push_back(pair.ID2);
 			neighbours[pair.ID2].push_back(pair.ID1);
@@ -968,8 +957,8 @@ unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotati
 		if (!vouched)
 			continue;
 		// the largest solve that places both images
-		const CentresSolve* pSolve = NULL;
-		for (const CentresSolve& solve : solves)
+		const ScaleComponentSolve* pSolve = NULL;
+		for (const ScaleComponentSolve& solve : solves)
 			if (solve.placed[pair.ID1] && solve.placed[pair.ID2]) {
 				pSolve = &solve;
 				break;
@@ -1020,139 +1009,20 @@ unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotati
 		if (image1.pCamera->GetType() == CameraType::PINHOLE && image2.pCamera->GetType() == CameraType::PINHOLE)
 			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), image1.GetK(), image2.GetK());
 		pair.meanRayAngle = pair.ComputeMeanRayAngle(image1, image2);
-		removed[candidates[k]] = false;
+		states[candidates[k]] = PairState::KEPT;
 		++numRepaired;
 	}
 	VERBOSE("Contradiction cut: repaired %u of the %u removed pairs (%s)", numRepaired, (unsigned)candidates.size(), TD_TIMER_GET_FMT().c_str());
 	return numRepaired;
 }
 
-// The bars of the veto of the chain of an image sequence (ChainVetoes)
-constexpr REAL kVetoLocalSteps = 8;         // local steps a pair may be off the chain
-constexpr REAL kVetoPathShare = 0.2;        // share of the chain's path between its images a pair may be off the chain
-constexpr REAL kVetoShortDivisor = 3;       // a pair under the chain distance over this is short
-
-// the name of an image in the line of a vetoed pair, which is read token by token: its file name without directory
-// and extension, a white space in it replaced, and the image's index when it has no name
-String ChainImageName(const Scene& scene, IIndex idxImage)
-{
-	String name = Util::getFileName(scene.images[idxImage].fileName);
-	if (name.empty())
-		return String::FormatString("%u", idxImage);
-	std::replace_if(name.begin(), name.end(), [](char c) { return isspace((unsigned char)c) != 0; }, '_');
-	return name;
-}
-
-// what the veto of the chain did: the pairs it removed (per scene pair), how many it judged and removed, and the time
-// it took, formatted
-struct ChainVeto {
-	std::vector<bool> vetoed;
-	unsigned numJudged{0}, numVetoed{0};
-	String time;
-};
-
-// The veto of the chain of an image sequence, between the rotation and the translation stage of the cut: a pair that
-// contradicts the chain is removed before it votes on the centres. Judged is a pair not `removed` and no link of the
-// chain (no positive chain.linkScale), with a pose and a world baseline of some length, whose two images one segment
-// places (by its links or by standing still) and that shares at least one pair-scale equation with a link of that
-// segment (the equations of ComputePairScales over the links and those pairs; the ones between two links or two
-// candidates are dropped). A pair under kNearDuplicateRayAngle is judged like any other: the rule reads its length,
-// not its direction (two frames a period apart that see the same picture verify with nearly no baseline, and a pair
-// of length L far under the chain distance D is off the chain by at least D - L whatever its direction; a true
-// near-duplicate, whose images the chain puts at one place, is off by at most L + D). Each such equation carries the
-// link's solved scale to the pair; the median is the pair's scale, the multiplier of its baseline in the segment's
-// frame as a link's scale is of the link's, so its length and its offset there are the scale times its baseline's, to
-// compare with the offset of the chain's centres of its two images and the path between them (ChainVetoes).
-// `rotations` are the ones the chain was solved with. Marks the vetoed pairs in `removed` and in the returned mask,
-// and logs every vetoed pair at the ultimate level, with the number of equations its scale is the median of.
-ChainVeto VetoPairsByChain(const Scene& scene, const std::vector<Point3>& rotations, const SequenceChain& chain, std::vector<bool>& removed)
-{
-	TD_TIMER_STARTD();
-	const uint32_t numPairs = (uint32_t)scene.pairs.size();
-	ASSERT(removed.size() == numPairs && chain.linkScale.size() == numPairs && rotations.size() == scene.images.size());
-	ChainVeto veto;
-	veto.vetoed.assign(numPairs, false);
-	// the links and the candidates, in the order of the scene's pairs, the candidates with their world-frame baseline
-	std::vector<Point3> baselines(numPairs);
-	std::vector<bool> isCandidate(numPairs, false);
-	IIndexArr pairIndices;
-	unsigned numCandidates = 0;
-	FOREACH(idxPair, scene.pairs) {
-		const ImagePair& pair = scene.pairs[idxPair];
-		if (chain.linkScale[idxPair] > 0) {
-			ASSERT(!removed[idxPair] && pair.relativePose.has_value());
-			pairIndices.push_back((IIndex)idxPair);
-			continue;
-		}
-		if (removed[idxPair] || !pair.relativePose.has_value() ||
-			chain.segmentOf[pair.ID1] == NO_ID || chain.segmentOf[pair.ID1] != chain.segmentOf[pair.ID2])
-			continue;
-		ASSERT(rotations[pair.ID1] != Point3::INF); // a link or a still pair placed the image, and their images are rotated
-		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
-		if (norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
-			continue;
-		isCandidate[idxPair] = true;
-		pairIndices.push_back((IIndex)idxPair);
-		++numCandidates;
-	}
-	if (numCandidates == 0 || numCandidates == pairIndices.size()) {
-		veto.time = TD_TIMER_GET_FMT();
-		return veto;
-	}
-	// the scale each equation between a candidate and a link of its segment gives the candidate (the only
-	// equations formed): log s(idxB) - log s(idxA) = log scaleRatio, the residual of the scale solve (SolveScaleComponents)
-	std::vector<std::vector<REAL>> scalesOf(numPairs);
-	for (const ScalePair& equation : ComputePairScales(scene, pairIndices, &isCandidate)) {
-		const bool candidateA = isCandidate[equation.idxA];
-		ASSERT(candidateA != isCandidate[equation.idxB]);
-		const uint32_t idxCandidate = candidateA ? equation.idxA : equation.idxB;
-		const uint32_t idxLink = candidateA ? equation.idxB : equation.idxA;
-		// two pairs with an equation share an image, so the link lies in the candidate's segment
-		ASSERT(chain.linkScale[idxLink] > 0 && equation.scaleRatio > 0);
-		if (chain.segmentOf[scene.pairs[idxLink].ID1] != chain.segmentOf[scene.pairs[idxCandidate].ID1])
-			continue;
-		scalesOf[idxCandidate].push_back(candidateA ? chain.linkScale[idxLink] / equation.scaleRatio : chain.linkScale[idxLink] * equation.scaleRatio);
-	}
-	FOREACH(idxPair, scene.pairs) {
-		std::vector<REAL>& scales = scalesOf[idxPair];
-		if (scales.empty())
-			continue;
-		++veto.numJudged;
-		std::nth_element(scales.begin(), scales.begin() + scales.size() / 2, scales.end());
-		const REAL scale = scales[scales.size() / 2];
-		const ImagePair& pair = scene.pairs[idxPair];
-		const Point3 chainOffset = chain.centres[pair.ID2] - chain.centres[pair.ID1];
-		const REAL discrepancy = norm(baselines[idxPair] * scale - chainOffset);
-		const REAL pairLength = scale * norm(pair.relativePose->C);
-		const REAL chainDistance = norm(chainOffset);
-		const REAL path = ABS(chain.pathLength[pair.ID2] - chain.pathLength[pair.ID1]);
-		if (!ChainVetoes(discrepancy, pairLength, chainDistance, chain.localStep[chain.segmentOf[pair.ID1]], path))
-			continue;
-		DEBUG_ULTIMATE("Chain pair: %s %s length %.9g chain %.9g path %.9g discrepancy %.9g veto 1 equations %u",
-			ChainImageName(scene, pair.ID1).c_str(), ChainImageName(scene, pair.ID2).c_str(), pairLength, chainDistance, path, discrepancy,
-			(unsigned)scales.size());
-		removed[idxPair] = veto.vetoed[idxPair] = true;
-		++veto.numVetoed;
-	}
-	veto.time = TD_TIMER_GET_FMT();
-	return veto;
-}
-
 } // namespace
-/*----------------------------------------------------------------*/
-
-bool SFM::ChainVetoes(REAL discrepancy, REAL pairLength, REAL chainDistance, REAL localStep, REAL path)
-{
-	return discrepancy > MAXF(kVetoLocalSteps * localStep, kVetoPathShare * path) && pairLength < chainDistance / kVetoShortDivisor;
-}
 /*----------------------------------------------------------------*/
 
 unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
 	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair,
 	const SequenceNeighbours* neighbours, SequenceFilterStats* stats)
 {
-	if (stats != nullptr)
-		*stats = SequenceFilterStats();
 	ASSERT(scores.size() == scene.pairs.size());
 	ASSERT(maxDirectionResidual >= 0 && maxDirectionResidual <= 180);
 	ASSERT(!repair || maxDirectionResidual > 0); // the repair guards on the centres of the translation stage
@@ -1195,67 +1065,56 @@ unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>&
 		rotationPairs.swap(leftPairs);
 		++numComponents;
 	}
-	// judge every pair with a pose whose two images one solve reached
+	// judge every pair with a pose whose two images one solve reached: the pairs with a world baseline
+	const std::vector<Point3> baselines = ComputeWorldBaselines(scene, rotations, componentOf);
 	const REAL minCosAngle = COS(D2R(options.maxRelativeRotationAngle));
-	std::vector<bool> removed(scene.pairs.size(), false);
-	unsigned numJudged = 0, numRemoved = 0;
+	std::vector<PairState> states(scene.pairs.size(), PairState::KEPT);
+	unsigned numJudged = 0, numCut = 0;
 	float maxRemovedWeight = 0.f;
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
-		if (!pair.relativePose.has_value() || componentOf[pair.ID1] == NO_ID || componentOf[pair.ID1] != componentOf[pair.ID2])
+		if (!HasBaseline(baselines[idxPair]))
 			continue;
 		++numJudged;
 		const Matrix3x3 solvedR = RMatrix(rotations[pair.ID2]) * RMatrix(rotations[pair.ID1]).t();
 		if (ComputeAngle(pair.relativePose->R, solvedR) >= minCosAngle)
 			continue;
-		removed[idxPair] = true;
+		states[idxPair] = PairState::CUT;
 		maxRemovedWeight = MAXF(maxRemovedWeight, pair.GetCompositeWeight());
-		++numRemoved;
+		++numCut;
 	}
 	VERBOSE("Contradiction cut: removed %u/%u pairs more than %g degrees from the rotations of the weighted averaging of %u usable components (heaviest %.1f)",
-		numRemoved, numJudged, options.maxRelativeRotationAngle, numComponents, maxRemovedWeight);
+		numCut, numJudged, options.maxRelativeRotationAngle, numComponents, maxRemovedWeight);
+	SequenceFilterStats sequence;
 	unsigned numRepaired = 0;
 	if (maxDirectionResidual > 0) {
-		// the chain of an image sequence, solved from the neighbour pairs the rotation stage kept: the pairs that
-		// contradict it are vetoed before the translation stage, which then removes none of its links
-		SequenceChain chain;
-		ChainVeto veto;
+		// the chain of an image sequence marks its links and the pairs that contradict it before the translation
+		// stage, which then reads no vetoed pair and removes no link
+		String sequenceTime;
 		if (neighbours != nullptr) {
-			// a link joins two images of one component of the averaging: the rotations of two components share no
-			// frame, so a segment across them would place its images in two
-			std::vector<bool> noLink(removed);
-			FOREACH(idxPair, scene.pairs) {
-				const ImagePair& pair = scene.pairs[idxPair];
-				if (componentOf[pair.ID1] == NO_ID || componentOf[pair.ID1] != componentOf[pair.ID2])
-					noLink[idxPair] = true;
-			}
-			chain = SolveSequenceChain(scene, rotations, *neighbours, &noLink);
-			veto = VetoPairsByChain(scene, rotations, chain, removed);
-			numRemoved += veto.numVetoed;
+			TD_TIMER_START();
+			sequence = ApplySequenceChain(scene, baselines, *neighbours, states);
+			sequenceTime = TD_TIMER_GET_FMT();
 		}
-		std::vector<CentresSolve> solves;
-		unsigned numProtected;
-		numRemoved += RemoveTranslationContradictions(scene, rotations, componentOf, scores, minPairWeight, maxDirectionResidual, removed, solves,
-			neighbours != nullptr ? &chain.linkScale : NULL, numProtected);
-		if (neighbours != nullptr) {
-			VERBOSE("Sequence chain: %u segment(s) over %u links; veto removed %u of %u judged pairs; %u chain pairs protected (veto %s)",
-				chain.numSegments, chain.numLinks, veto.numVetoed, veto.numJudged, numProtected, veto.time.c_str());
-			if (stats != nullptr)
-				*stats = {chain.numSegments, chain.numLinks, veto.numJudged, veto.numVetoed, numProtected};
-		}
-		// the repair is offered the pairs the two stages removed, not the vetoed ones
-		if (repair && numRemoved > veto.numVetoed) {
-			numRepaired = RepairContradictedPairs(scene, rotations, solves, removed, neighbours != nullptr ? &veto.vetoed : NULL);
-			numRemoved -= numRepaired;
-		}
+		std::vector<ScaleComponentSolve> solves;
+		sequence.numProtected = RemoveTranslationContradictions(scene, baselines, scores, minPairWeight, maxDirectionResidual, states, solves);
+		if (neighbours != nullptr)
+			VERBOSE("Sequence chain: %u segment(s) over %u links; veto removed %u of %u judged pairs; %u chain pairs protected (%s)",
+				sequence.numSegments, sequence.numLinks, sequence.numVetoed, sequence.numJudged, sequence.numProtected, sequenceTime.c_str());
+		// the repair is offered the pairs the two stages cut
+		if (repair && std::find(states.begin(), states.end(), PairState::CUT) != states.end())
+			numRepaired = RepairContradictedPairs(scene, rotations, solves, states);
 	}
+	if (stats != nullptr)
+		*stats = sequence;
+	const unsigned numRemoved = (unsigned)std::count_if(states.begin(), states.end(), IsRemoved);
 	if (numRemoved == 0 && numRepaired == 0)
 		return 0;
 	// remove the scene pairs, compacting in one pass
 	const unsigned numPairs = scene.pairs.size();
 	unsigned numKept = 0;
 	for (unsigned idxPair = 0; idxPair < numPairs; ++idxPair) {
-		if (removed[idxPair])
+		if (IsRemoved(states[idxPair]))
 			continue;
 		if (numKept != idxPair)
 			scene.pairs[numKept] = std::move(scene.pairs[idxPair]);
@@ -1267,143 +1126,6 @@ unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>&
 	DEBUG("Filtered the view graph by contradiction with its %s averaging: %u pairs removed (%s)",
 		maxDirectionResidual > 0 ? "rotation and translation" : "rotation", numRemoved, TD_TIMER_GET_FMT().c_str());
 	return numRemoved;
-}
-/*----------------------------------------------------------------*/
-
-SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Point3>& rotations,
-	const SequenceNeighbours& neighbours, const std::vector<bool>* removed)
-{
-	TD_TIMER_STARTD();
-	const uint32_t numPairs = (uint32_t)scene.pairs.size();
-	const uint32_t numImages = (uint32_t)scene.images.size();
-	ASSERT(rotations.size() == numImages && (removed == nullptr || removed->size() == numPairs));
-	SequenceChain chain;
-	chain.segmentOf.assign(numImages, NO_ID);
-	chain.centres.assign(numImages, Point3::ZERO);
-	chain.pathLength.assign(numImages, REAL(0));
-	chain.linkScale.assign(numPairs, REAL(0));
-	// the links, with their world-frame baseline (length: the pair's own), and the still pairs: those that are no
-	// links only for having no baseline direction, as in the translation stage (a ray angle under the near-duplicate
-	// one, or a baseline of no length), the pairs of a frame standing still
-	std::vector<Point3> baselines(numPairs);
-	IIndexArr links, stillPairs;
-	FOREACH(idxPair, scene.pairs) {
-		const ImagePair& pair = scene.pairs[idxPair];
-		if ((removed != nullptr && (*removed)[idxPair]) || !pair.relativePose.has_value() || !pair.HasValidWeight() ||
-			!neighbours.AreNeighbours(pair.ID1, pair.ID2) ||
-			rotations[pair.ID1] == Point3::INF || rotations[pair.ID2] == Point3::INF)
-			continue;
-		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
-		if (!(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) || norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
-			stillPairs.push_back((IIndex)idxPair);
-		else
-			links.push_back((IIndex)idxPair);
-	}
-	if (links.empty()) {
-		VERBOSE("Sequence chain solve: no link among the neighbour pairs (%s)", TD_TIMER_GET_FMT().c_str());
-		return chain;
-	}
-
-	// one segment per solved component, the largest first: an image keeps the first segment that places it
-	std::vector<uint32_t> componentOf(numImages, NO_ID); // per image: the solved component it belongs to
-	uint32_t numOwning = 0; // the solved components that own an image
-	unsigned numComponents, numEquations;
-	SolveScaleComponents(scene, links, baselines, [&](IIndex idxPair) { return scene.pairs[idxPair].GetCompositeWeight(); },
-		[&](ScaleComponentSolve& solve) {
-			const uint32_t idxComponent = numOwning;
-			bool owns = false;
-			for (uint32_t i = 0; i < numImages; ++i) {
-				if (!solve.placed[i] || componentOf[i] != NO_ID)
-					continue;
-				componentOf[i] = idxComponent;
-				chain.centres[i] = solve.centres[i];
-				owns = true;
-			}
-			if (!owns)
-				return; // every image it places belongs to a larger segment: no segment of its own
-			++numOwning;
-			// a link keeps its scale only when this component owns both its images: its scale is then in the frame
-			// of its images' segment; a link touching a larger segment's image is in no single segment's frame
-			for (const uint32_t idxPair : solve.pairs) {
-				const ImagePair& pair = scene.pairs[idxPair];
-				if (componentOf[pair.ID1] != idxComponent || componentOf[pair.ID2] != idxComponent)
-					continue;
-				chain.linkScale[idxPair] = solve.scales[idxPair];
-				++chain.numLinks;
-			}
-		}, numComponents, numEquations);
-
-	// the segments numbered in the order of their first image, so they follow the sequence
-	std::vector<uint32_t> segmentOfComponent(numOwning, NO_ID);
-	for (uint32_t i = 0; i < numImages; ++i) {
-		if (componentOf[i] == NO_ID || segmentOfComponent[componentOf[i]] != NO_ID)
-			continue;
-		segmentOfComponent[componentOf[i]] = chain.numSegments++;
-	}
-	for (uint32_t i = 0; i < numImages; ++i)
-		if (componentOf[i] != NO_ID)
-			chain.segmentOf[i] = segmentOfComponent[componentOf[i]];
-
-	// the path along each segment through its placed images in order, and the median step
-	std::vector<uint32_t> lastOfSegment(chain.numSegments, NO_ID);
-	std::vector<std::vector<REAL>> stepsOfSegment(chain.numSegments);
-	for (uint32_t i = 0; i < numImages; ++i) {
-		const uint32_t segment = chain.segmentOf[i];
-		if (segment == NO_ID)
-			continue;
-		const uint32_t last = lastOfSegment[segment];
-		if (last != NO_ID) {
-			const REAL step = norm(chain.centres[i] - chain.centres[last]);
-			chain.pathLength[i] = chain.pathLength[last] + step;
-			stepsOfSegment[segment].push_back(step);
-		}
-		lastOfSegment[segment] = i;
-	}
-	chain.localStep.assign(chain.numSegments, REAL(0));
-	for (uint32_t segment = 0; segment < chain.numSegments; ++segment) {
-		std::vector<REAL>& steps = stepsOfSegment[segment];
-		if (steps.empty())
-			continue;
-		std::nth_element(steps.begin(), steps.begin() + steps.size() / 2, steps.end());
-		chain.localStep[segment] = steps[steps.size() / 2];
-	}
-	const unsigned numPlacedByLinks = (unsigned)std::count_if(chain.segmentOf.begin(), chain.segmentOf.end(), [](uint32_t s) { return s != NO_ID; });
-
-	// the frames standing still: an image no segment placed that a still pair joins to a placed image stands where
-	// that image stands, and takes its segment, centre and path length. Pass by pass until one places nothing, a
-	// pass reading only the images placed before it and an image taking, of the placed images its still pairs join
-	// it to, the nearest in position (the lower one on a tie), so the order of the scene's pairs decides nothing. No
-	// segment, no image placed: a frame standing still starts none, and the links' scales and the local step are
-	// those of the links alone
-	std::vector<uint32_t> sourceOf(numImages, NO_ID); // per image placed by standing still: the image it stands at
-	std::vector<uint32_t> placedNow;
-	do {
-		placedNow.clear();
-		for (const IIndex idxPair : stillPairs) {
-			const ImagePair& pair = scene.pairs[idxPair];
-			const bool placed1 = chain.segmentOf[pair.ID1] != NO_ID;
-			if (placed1 == (chain.segmentOf[pair.ID2] != NO_ID))
-				continue;
-			const uint32_t image = placed1 ? pair.ID2 : pair.ID1, source = placed1 ? pair.ID1 : pair.ID2;
-			const auto distanceTo = [image](uint32_t other) { return other > image ? other - image : image - other; };
-			uint32_t& best = sourceOf[image];
-			if (best == NO_ID)
-				placedNow.push_back(image);
-			else if (distanceTo(source) > distanceTo(best) || (distanceTo(source) == distanceTo(best) && source > best))
-				continue;
-			best = source;
-		}
-		for (const uint32_t image : placedNow) {
-			const uint32_t source = sourceOf[image];
-			chain.segmentOf[image] = chain.segmentOf[source];
-			chain.centres[image] = chain.centres[source];
-			chain.pathLength[image] = chain.pathLength[source];
-		}
-		chain.numStill += (unsigned)placedNow.size();
-	} while (!placedNow.empty());
-	VERBOSE("Sequence chain solve: %u segment(s) placing %u images by %u of %u links (%u scale components, %u equations) (%s), %u still image(s)",
-		chain.numSegments, numPlacedByLinks, chain.numLinks, (unsigned)links.size(), numComponents, numEquations, TD_TIMER_GET_FMT().c_str(), chain.numStill);
-	return chain;
 }
 /*----------------------------------------------------------------*/
 
