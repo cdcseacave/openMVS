@@ -9,6 +9,7 @@
 
 #include "Common.h"
 #include "GlobalRotationAveraging.h"
+#include "ContradictionCut.h"
 #include "Scene.h"
 #include "PairsWeighting.h"
 #include "GlobalScaleAveraging.h"

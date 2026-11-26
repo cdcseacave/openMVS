@@ -26,8 +26,6 @@ namespace SFM {
 // Forward declarations
 class SFM_API Scene;
 class SFM_API Image;
-class SFM_API ImagePair;
-struct SFM_API ScalePair;
 struct SFM_API PairsWeightingConfig;
 class SFM_API SequenceNeighbours;
 
@@ -187,47 +185,6 @@ private:
 	uint32_t fixedNodeId = NO_ID;
 };
 /*----------------------------------------------------------------*/
-
-// The contradiction cut (FilterPairsByContradiction, below). The declarations down to SolveScaleComponents are what
-// its stages share with the chain of an image sequence (SequenceChain.h).
-
-// The state of a scene pair in the cut
-enum class PairState : uint8_t {
-	KEPT,   // kept
-	LINK,   // kept, and a link of the sequence chain with a solved scale: the translation stage's verdict leaves it
-	CUT,    // removed by the rotation or the translation stage: what the repair is offered
-	VETOED  // removed by the sequence chain: never repaired, joins no spot, vouches for no pair
-};
-inline bool IsRemoved(PairState state) { return state == PairState::CUT || state == PairState::VETOED; }
-
-// The baseline of every scene pair in the world frame, at its pose's own length: RMatrix(rotations[ID1]).t() *
-// relativePose->C. Point3::INF for a pair without a pose or whose two images do not lie in one rotation component
-// (componentOf: per image, NO_ID where not rotated): no stage after the rotations reads such a pair.
-SFM_API std::vector<Point3> ComputeWorldBaselines(const Scene& scene, const std::vector<Point3>& rotations,
-	const std::vector<uint32_t>& componentOf);
-// What the stages ask of a pair's world baseline: is there one; has it a length; has it a direction (a length, and a
-// mean ray angle of at least kNearDuplicateRayAngle: under it the direction is noise)
-bool HasBaseline(const Point3& baseline);
-bool HasBaselineLength(const Point3& baseline);
-bool HasBaselineDirection(const ImagePair& pair, const Point3& baseline);
-
-// One solved component of the pair-scale graph (SolveScaleComponents)
-struct ScaleComponentSolve {
-	std::vector<uint32_t> pairs;       // its scene pairs, ascending
-	std::vector<REAL> scales;          // per scene pair: C_2 - C_1 = scale * baseline (valid for `pairs`)
-	std::vector<Point3> centres;       // per image: its camera centre (valid where `placed`)
-	std::vector<REAL> centreResiduals; // per pair of `pairs`: the distance of its scaled baseline from the centres' offset
-	std::vector<bool> placed;          // per image: an image of one of `pairs`
-};
-// The scale + centres solve of the translation stage, which the chain of a sequence runs on its links: the components
-// of the graph of the given pair-scale equations (ComputePairScales), largest first (by pairs, ties to the lower
-// pair), and per component of at least 10 pairs the scales by RobustAverage (Geman-McClure) around
-// GlobalScaleEstimator, then the centres from C_2 - C_1 = scale * baseline (baselines and weights: per scene pair) by
-// GlobalTranslationEstimator reweighted towards the sum of norms (convex, so no start decides). Returns the solved
-// components in that order (one whose scale or centres solve fails is left out); numComponents: all the components
-// of the graph.
-std::vector<ScaleComponentSolve> SolveScaleComponents(const Scene& scene, const std::vector<ScalePair>& equations,
-	const std::vector<Point3>& baselines, const std::vector<float>& weights, unsigned& numComponents);
 
 // What the chain of an image sequence did in the contradiction cut (FilterPairsByContradiction given the neighbours)
 struct SFM_API SequenceFilterStats {

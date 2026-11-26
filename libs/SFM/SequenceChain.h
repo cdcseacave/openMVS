@@ -11,12 +11,15 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "GlobalRotationAveraging.h"
+#include "ContradictionCut.h"
 
 
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace SFM {
+
+class SFM_API SequenceNeighbours;
+struct SFM_API SequenceFilterStats;
 
 // The chain of an image sequence in the contradiction cut (docs/design/ContradictionCut.md). Terms:
 //  - link: a scene pair of neighbours (SequenceNeighbours) that is kept, has a positive composite weight and a

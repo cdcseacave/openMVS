@@ -9,6 +9,7 @@
 #include "SequenceChain.h"
 #include "Scene.h"
 #include "SequenceNeighbours.h"
+#include "GlobalRotationAveraging.h"
 #include "GlobalScaleAveraging.h"
 #include "StarInitializer.h"
 
