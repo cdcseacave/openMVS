@@ -186,7 +186,8 @@ private:
 };
 /*----------------------------------------------------------------*/
 
-// What the chain of an image sequence did in the contradiction cut (FilterPairsByContradiction given the neighbours)
+// What the chain of an image sequence did in the contradiction cut (FilterPairsByContradiction given the neighbours;
+// the terms are SequenceChain.h's)
 struct SFM_API SequenceFilterStats {
 	unsigned numSegments{0};  // segments of the chain
 	unsigned numLinks{0};     // links of the chain
@@ -217,7 +218,7 @@ struct SFM_API SequenceFilterStats {
 //  - neighbours (nullptr: off; acts only with maxDirectionResidual above 0): the images are frames of a
 //    sequence. Between the two stages the chain of the kept neighbour pairs is solved and the pairs that
 //    contradict it are removed (ApplySequenceChain, SequenceChain.h); they are never offered to the
-//    repair. The translation stage then removes no link of the chain.
+//    repair. The translation stage then removes no link of the chain (a neighbour pair the chain solved).
 //  - stats (optional): what the chain did; all zero without it.
 // The pair weights are recomputed when anything was removed or repaired. Returns the number of removed
 // pairs, the vetoed ones among them.

@@ -1313,7 +1313,7 @@ bool SequenceChainTest()
 		TEST_CHECK(chain.centres[last] == chain.centres[last - 1] && chain.pathLength[last] == chain.pathLength[last - 1],
 			"the walk ending still: image %u is %g from the centre of image %u, its path %g against %g; expected exactly its centre and path",
 			last, norm(chain.centres[last] - chain.centres[last - 1]), last - 1, chain.pathLength[last], chain.pathLength[last - 1]);
-		TEST_CHECK(solveLine.find("Sequence chain solve: 1 segment(s) placing 39 images by 108 of 108 links") != String::npos && solveLine.find("), 1 still image(s)") != String::npos,
+		TEST_CHECK(solveLine.find("Sequence chain solve: 1 segment(s) placing 39 images by 108 links of 108 candidates") != String::npos && solveLine.find("), 1 still image(s) (") != String::npos,
 			"the walk ending still: the solve logged \"%s\", expected 39 images placed by 108 links and 1 still image(s)", solveLine.c_str());
 		unsigned numStillPairs = 0;
 		FOREACH(idxPair, scene.pairs) {
@@ -1676,17 +1676,16 @@ bool SequenceVetoTest()
 	const auto indexOf = [](const char* stem) { const char* number = strrchr(stem, '_'); return number == NULL ? NO_ID : (IIndex)atoi(number + 1); };
 	const auto parseVetoed = [&](const String& text, std::vector<VetoedPair>& vetoed) {
 		char stem1[64], stem2[64];
-		for (size_t pos = text.find("Chain pair: "); pos != String::npos; pos = text.find("Chain pair: ", pos + 1)) {
+		for (size_t pos = text.find("Vetoed pair: "); pos != String::npos; pos = text.find("Vetoed pair: ", pos + 1)) {
 			VetoedPair pair;
-			int veto;
-			if (sscanf(text.c_str() + pos, "Chain pair: %63s %63s length %lf chain %lf path %lf discrepancy %lf veto %d",
-				stem1, stem2, &pair.length, &pair.chain, &pair.path, &pair.discrepancy, &veto) != 7 || veto != 1)
+			if (sscanf(text.c_str() + pos, "Vetoed pair: %63s %63s length %lf chain %lf path %lf discrepancy %lf",
+				stem1, stem2, &pair.length, &pair.chain, &pair.path, &pair.discrepancy) != 6)
 				return false;
 			pair.a = indexOf(stem1);
 			pair.b = indexOf(stem2);
 			vetoed.push_back(pair);
 		}
-		return text.find("Chain centre: ") == String::npos;
+		return true;
 	};
 
 	// (2) the corridor with the neighbours: the look-alikes vetoed, nothing else removed
@@ -1702,14 +1701,14 @@ bool SequenceVetoTest()
 		TEST_CHECK(numLookAlikes == 19 + 9 && corridor.pairs.size() == numChainLinks + (56 + 55 + 54) + 27 + numLookAlikes, "the corridor holds %zu pairs, %u of them look-alikes", corridor.pairs.size(), numLookAlikes);
 		const SequenceNeighbours neighbours = noBreaks(numImages, overlap);
 		SequenceFilterStats stats;
-		LogCapture log;
+		LogCapture log(4); // the lines of the vetoed pairs
 		const unsigned removed = run(scene, maxDirectionResidual, false, &neighbours, &stats);
 		TEST_CHECK(stats.numSegments == 1 && stats.numLinks == numChainLinks, "the corridor: %u segment(s) over %u links, expected one over %u", stats.numSegments, stats.numLinks, numChainLinks);
 		TEST_CHECK(stats.numVetoed == numLookAlikes && stats.numJudged == numJudgedPairs && stats.numProtected == 0,
 			"the corridor: %u of %u judged pairs vetoed, %u links protected, expected the %u look-alikes of %u and none", stats.numVetoed, stats.numJudged, stats.numProtected, numLookAlikes, numJudgedPairs);
 		TEST_CHECK(removed == numLookAlikes && keptPairs(scene) == without(corridor.pairs, corridor.lookAlikes), "the corridor: %u pairs removed, expected exactly the %u look-alikes", removed, numLookAlikes);
-		const String report = String::FormatString("Sequence chain: 1 segment(s) over %u links; veto removed %u of %u judged pairs; 0 chain pairs protected", numChainLinks, numLookAlikes, numJudgedPairs);
-		TEST_CHECK(log.Contains(report), "the corridor: the cut did not report \"%s\"", report.c_str());
+		const String report = String::FormatString("Sequence chain veto: removed %u of %u judged pairs", numLookAlikes, numJudgedPairs);
+		TEST_CHECK(log.Contains(report) && !log.Contains("of the sequence chain it would have removed"), "the corridor: the cut did not report \"%s\", or reports a protected link", report.c_str());
 		// only the vetoed pairs are logged: a look-alike is one step long on a chain distance of 11 or 21 and that far
 		// less one step off the chain, a step being the line's chain distance over the true one. The true pairs are
 		// all judged (numJudged) and kept
@@ -1894,7 +1893,7 @@ bool SequenceVetoTest()
 		LogCapture log;
 		Scene sequence(2);
 		TEST_CHECK(sequence.Reconstruct(matchedPath, cfg) && sequence.status.nState.isSet(STATE::PAIRS_FILTERED), "the match-images-only run of the matched corridor as a sequence failed");
-		const String report = String::FormatString("Sequence chain: 2 segment(s) over %u links; veto removed %u of", 2 * ((numOut - 1) + (numOut - 2) + (numOut - 3)), 2 * numLookAlikes);
+		const String report = String::FormatString("Sequence chain solve: 2 segment(s) placing %u images by %u links of", numImages, 2 * ((numOut - 1) + (numOut - 2) + (numOut - 3)));
 		TEST_CHECK(log.Contains(report), "the view-graph filter with the option did not report \"%s\"", report.c_str());
 		TEST_CHECK(keptPairs(sequence) == without(corridor.pairs, corridor.lookAlikes), "the view-graph filter with the option keeps %u pairs, expected the %zu pairs that are no look-alikes",
 			(unsigned)sequence.pairs.size(), corridor.pairs.size() - corridor.lookAlikes.size());
@@ -2006,7 +2005,7 @@ bool SequenceVetoTest()
 		}
 		const SequenceNeighbours neighbours = noBreaks(numImages, overlap);
 		SequenceFilterStats stats;
-		LogCapture log;
+		LogCapture log(4); // the lines of the vetoed pairs
 		const unsigned removed = run(scene, maxDirectionResidual, false, &neighbours, &stats);
 		TEST_CHECK(stats.numSegments == 1 && stats.numLinks == numChainLinks && stats.numProtected == 0, "the near-duplicates: %u segment(s) over %u links, %u protected, expected one over %u", stats.numSegments, stats.numLinks, stats.numProtected, numChainLinks);
 		TEST_CHECK(stats.numVetoed == numLookAlikes + numNear && stats.numJudged == numJudgedPairs + numNear,
@@ -2118,13 +2117,13 @@ bool SequenceVetoTest()
 			"the corridor ending still holds %zu look-alikes, %u of them of the images %u-59, and %u pairs standing still, %u of them neighbours", corridor.lookAlikes.size(), numStillLookAlikes, firstStill, numStillPairs, numStillNeighbours);
 		const SequenceNeighbours neighbours = noBreaks(numImages, overlap);
 		SequenceFilterStats stats;
-		LogCapture log;
+		LogCapture log(4); // the lines of the vetoed pairs
 		const unsigned removed = run(scene, maxDirectionResidual, false, &neighbours, &stats);
 		TEST_CHECK(stats.numSegments == 1 && stats.numLinks == numChainLinks - numStillNeighbours && stats.numProtected == 0, "the corridor ending still: %u segment(s) over %u links, expected one over %u", stats.numSegments, stats.numLinks, numChainLinks - numStillNeighbours);
 		TEST_CHECK(stats.numVetoed == corridor.lookAlikes.size() && removed == corridor.lookAlikes.size() && keptPairs(scene) == without(corridor.pairs, corridor.lookAlikes),
 			"the corridor ending still: %u pairs vetoed and %u removed, expected exactly the %zu look-alikes, the %u of the images %u-59 among them", stats.numVetoed, removed, corridor.lookAlikes.size(), numStillLookAlikes, firstStill);
-		const String solved = String::FormatString("Sequence chain solve: 1 segment(s) placing %u images by %u of %u links", firstStill, stats.numLinks, stats.numLinks);
-		TEST_CHECK(log.Contains(solved) && log.Contains("), 3 still image(s)"), "the corridor ending still: the solve did not log \"%s\" and 3 still image(s)", solved.c_str());
+		const String solved = String::FormatString("Sequence chain solve: 1 segment(s) placing %u images by %u links of %u candidates", firstStill, stats.numLinks, stats.numLinks);
+		TEST_CHECK(log.Contains(solved) && log.Contains("), 3 still image(s) ("), "the corridor ending still: the solve did not log \"%s\" and 3 still image(s)", solved.c_str());
 		// the lines of the vetoed pairs: every look-alike one step long on its chain distance, an image placed by
 		// standing still at the place of image 56
 		std::vector<VetoedPair> vetoed;

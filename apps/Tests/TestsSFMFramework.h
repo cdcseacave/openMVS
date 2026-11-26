@@ -74,16 +74,16 @@ private:
 
 // ===============================================================================
 // Everything the log recorded while it was alive, so a test can assert on what the merge reported.
-// The verbosity is raised for its lifetime, the per-candidate gate reports being written at the
-// ultimate level.
+// The verbosity is set for its lifetime: 3 by default, the per-candidate gate reports being written
+// at the ultimate level; 4 for the lines written above it (one per vetoed pair of a sequence chain).
 // ===============================================================================
 struct LogCapture
 {
 	String text;
 	int verbosity;
 
-	LogCapture() : verbosity(g_nVerbosityLevel) {
-		g_nVerbosityLevel = 3;
+	explicit LogCapture(int level = 3) : verbosity(g_nVerbosityLevel) {
+		g_nVerbosityLevel = level;
 		GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogCapture::Record, this));
 	}
 	~LogCapture() {

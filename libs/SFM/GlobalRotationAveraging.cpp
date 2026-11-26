@@ -698,23 +698,26 @@ std::vector<ScaleComponentSolve> SFM::SolveScaleComponents(const Scene& scene, c
 		if (pComponent->pairs.size() < minScaleComponent)
 			break;
 		ScaleComponentSolve solve;
-		// the scales of the component's pairs
+		solve.pairs = pComponent->pairs;
+		// the scales of the component's pairs: solved per scene pair, kept for its own
 		GlobalScaleEstimator scaleEstimator;
-		std::vector<REAL> scaleResiduals;
+		std::vector<REAL> scales, scaleResiduals;
 		if (!RobustAverage(pComponent->equations, maxLogScaleResidual, kRobustRounds,
 			[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) { return scaleEstimator.EstimateScales(active, numPairs, NO_ID, s); },
 			[&](size_t i, const std::vector<REAL>& s) {
 				const ScalePair& p = pComponent->equations[i];
 				return LOGN(p.scaleRatio) - (LOGN(s[p.idxB]) - LOGN(s[p.idxA]));
 			},
-			solve.scales, scaleResiduals))
+			scales, scaleResiduals))
 			continue;
 		// the centres: C_2 - C_1 = scale * baseline of every pair, towards the sum of norms
 		std::vector<TranslationPair> offsets;
 		std::vector<REAL> lengths;
-		for (const uint32_t idxPair : pComponent->pairs) {
+		for (const uint32_t idxPair : solve.pairs) {
 			const ImagePair& pair = scene.pairs[idxPair];
-			offsets.emplace_back(pair.ID1, pair.ID2, baselines[idxPair] * solve.scales[idxPair], weights[idxPair]);
+			ASSERT(HasBaselineLength(baselines[idxPair]));
+			solve.scales.push_back(scales[idxPair]);
+			offsets.emplace_back(pair.ID1, pair.ID2, baselines[idxPair] * solve.scales.back(), weights[idxPair]);
 			lengths.push_back(norm(offsets.back().relativeTranslation));
 		}
 		std::sort(lengths.begin(), lengths.end());
@@ -738,7 +741,6 @@ std::vector<ScaleComponentSolve> SFM::SolveScaleComponents(const Scene& scene, c
 		solve.placed.assign(numImages, false);
 		for (const TranslationPair& p : offsets)
 			solve.placed[p.idxA] = solve.placed[p.idxB] = true;
-		solve.pairs = pComponent->pairs;
 		solves.push_back(std::move(solve));
 	}
 	return solves;
@@ -751,13 +753,15 @@ namespace {
 // maxDirectionResidual degrees from the centres. Judged are the kept pairs with a baseline direction
 // (HasBaselineDirection); the solves read the usable ones among them, weighted by composite weight times triplet
 // score. A pair of a component is judged by its own solve, any other by the largest solve that places both its
-// images. Marks the pairs it removes CUT, but no LINK: where the centres contradict a link of the sequence chain,
-// the centres are the ones in doubt. Fills `solves`, the largest first; returns the number of links past the bar.
+// images. Marks the pairs it removes CUT, but no LINK: where the centres contradict a link of the sequence chain
+// (SequenceChain.h), the centres are the ones in doubt. Fills `solves`, the largest first; returns the number of
+// links past the bar.
 unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<Point3>& baselines, const std::vector<float>& scores,
 	float minPairWeight, float maxDirectionResidual, std::vector<PairState>& states, std::vector<ScaleComponentSolve>& solves)
 {
 	TD_TIMER_STARTD();
 	const uint32_t numPairs = (uint32_t)scene.pairs.size();
+	ASSERT(baselines.size() == numPairs && scores.size() == numPairs && states.size() == numPairs);
 	IIndexArr judged, solved;
 	std::vector<float> weights(numPairs, 0.f);
 	FOREACH(idxPair, scene.pairs) {
@@ -816,6 +820,8 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 		"(%u pairs scaled by %u equations, median residual of the largest %.3g) (%s)",
 		numRemoved, numJudged, maxDirectionResidual, (unsigned)solves.size(), numScaleComponents, (unsigned)solved.size(), (unsigned)equations.size(),
 		medianResidual, TD_TIMER_GET_FMT().c_str());
+	if (numProtected != 0)
+		VERBOSE("Translation cut: kept %u link(s) of the sequence chain it would have removed", numProtected);
 	return numProtected;
 }
 
@@ -1091,17 +1097,10 @@ unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>&
 	if (maxDirectionResidual > 0) {
 		// the chain of an image sequence marks its links and the pairs that contradict it before the translation
 		// stage, which then reads no vetoed pair and removes no link
-		String sequenceTime;
-		if (neighbours != nullptr) {
-			TD_TIMER_START();
-			sequence = ApplySequenceChain(scene, baselines, *neighbours, states);
-			sequenceTime = TD_TIMER_GET_FMT();
-		}
+		if (neighbours != nullptr)
+			ApplySequenceChain(scene, baselines, *neighbours, states, sequence);
 		std::vector<ScaleComponentSolve> solves;
 		sequence.numProtected = RemoveTranslationContradictions(scene, baselines, scores, minPairWeight, maxDirectionResidual, states, solves);
-		if (neighbours != nullptr)
-			VERBOSE("Sequence chain: %u segment(s) over %u links; veto removed %u of %u judged pairs; %u chain pairs protected (%s)",
-				sequence.numSegments, sequence.numLinks, sequence.numVetoed, sequence.numJudged, sequence.numProtected, sequenceTime.c_str());
 		// the repair is offered the pairs the two stages cut
 		if (repair && std::find(states.begin(), states.end(), PairState::CUT) != states.end())
 			numRepaired = RepairContradictedPairs(scene, rotations, solves, states);

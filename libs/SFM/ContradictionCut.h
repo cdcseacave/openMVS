@@ -28,7 +28,7 @@ struct SFM_API ScalePair;
 // The state of a scene pair in the cut
 enum class PairState : uint8_t {
 	KEPT,   // kept
-	LINK,   // kept, and a link of the sequence chain with a solved scale: the translation stage's verdict leaves it
+	LINK,   // kept, and a link of the sequence chain (SequenceChain.h): the translation stage's verdict leaves it
 	CUT,    // removed by the rotation or the translation stage: what the repair is offered
 	VETOED  // removed by the sequence chain: never repaired, joins no spot, vouches for no pair
 };
@@ -48,15 +48,16 @@ bool HasBaselineDirection(const ImagePair& pair, const Point3& baseline);
 // One solved component of the pair-scale graph (SolveScaleComponents)
 struct ScaleComponentSolve {
 	std::vector<uint32_t> pairs;       // its scene pairs, ascending
-	std::vector<REAL> scales;          // per scene pair: C_2 - C_1 = scale * baseline (valid for `pairs`)
+	std::vector<REAL> scales;          // per pair of `pairs`: C_2 - C_1 = scale * baseline
 	std::vector<Point3> centres;       // per image: its camera centre (valid where `placed`)
 	std::vector<REAL> centreResiduals; // per pair of `pairs`: the distance of its scaled baseline from the centres' offset
 	std::vector<bool> placed;          // per image: an image of one of `pairs`
 };
-// The scale + centres solve of the translation stage, which the chain of a sequence runs on its links: the components
-// of the graph of the given pair-scale equations (ComputePairScales), largest first (by pairs, ties to the lower
-// pair), and per component of at least 10 pairs the scales by RobustAverage (Geman-McClure) around
-// GlobalScaleEstimator, then the centres from C_2 - C_1 = scale * baseline (baselines and weights: per scene pair) by
+// The scale + centres solve of the translation stage, which the chain of a sequence runs on its candidate links: the
+// components of the graph of the given pair-scale equations (ComputePairScales), largest first (by pairs, ties to the
+// lower pair), and per component of at least minScaleComponent pairs (GlobalRotationAveraging.cpp) the scales by
+// RobustAverage (Geman-McClure) around GlobalScaleEstimator, then the centres from C_2 - C_1 = scale * baseline
+// (baselines and weights: per scene pair; a pair of an equation has a baseline with a length) by
 // GlobalTranslationEstimator reweighted towards the sum of norms (convex, so no start decides). Returns the solved
 // components in that order (one whose scale or centres solve fails is left out); numComponents: all the components
 // of the graph.

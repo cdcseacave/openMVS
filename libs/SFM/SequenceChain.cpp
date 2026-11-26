@@ -34,20 +34,31 @@ constexpr REAL kVetoLocalSteps = 8;    // local steps a pair may be off the chai
 constexpr REAL kVetoPathShare = 0.2;   // share of the chain's path between its images a pair may be off the chain
 constexpr REAL kVetoShortDivisor = 3;  // a pair under the chain distance over this is short
 
-// Numbers the segments by their first image, so they follow the sequence, and computes the path along each through
-// its placed images in order, with its local step (the upper median of its steps)
-void ComputeChainPaths(SequenceChain& chain)
+// Numbers the segments by their first image, so they follow the sequence
+void NumberSegmentsByFirstImage(SequenceChain& chain)
 {
-	std::vector<uint32_t> numberOf(chain.numSegments, NO_ID), lastOf(chain.numSegments, NO_ID);
-	std::vector<std::vector<REAL>> stepsOf(chain.numSegments);
+	std::vector<uint32_t> numberOf(chain.numSegments, NO_ID);
 	uint32_t numNumbered = 0;
-	FOREACH(i, chain.segmentOf) {
-		uint32_t& segment = chain.segmentOf[i];
+	for (uint32_t& segment : chain.segmentOf) {
 		if (segment == NO_ID)
 			continue;
 		if (numberOf[segment] == NO_ID)
 			numberOf[segment] = numNumbered++;
 		segment = numberOf[segment];
+	}
+	ASSERT(numNumbered == chain.numSegments); // a segment owns an image
+}
+
+// Computes the path along each segment through its placed images in order, and its local step (the upper median of
+// the path's steps)
+void ComputeChainPaths(SequenceChain& chain)
+{
+	std::vector<uint32_t> lastOf(chain.numSegments, NO_ID);
+	std::vector<std::vector<REAL>> stepsOf(chain.numSegments);
+	FOREACH(i, chain.segmentOf) {
+		const uint32_t segment = chain.segmentOf[i];
+		if (segment == NO_ID)
+			continue;
 		const uint32_t last = lastOf[segment];
 		if (last != NO_ID) {
 			stepsOf[segment].push_back(norm(chain.centres[i] - chain.centres[last]));
@@ -108,42 +119,50 @@ String ChainImageName(const Scene& scene, IIndex idxImage)
 	return name;
 }
 
-// The veto (ApplySequenceChain): judges the candidates against the chain, marks the vetoed ones and counts both
+// The veto (ApplySequenceChain): judges against the chain the pairs that share an equation with a link, marks the
+// vetoed ones and counts both
 void VetoPairsByChain(const Scene& scene, const std::vector<Point3>& baselines, const SequenceChain& chain,
 	std::vector<PairState>& states, SequenceFilterStats& stats)
 {
-	// the links and the candidates, in the order of the scene's pairs
-	std::vector<bool> isLink(scene.pairs.size(), false);
+	TD_TIMER_STARTD();
+	const size_t numPairs = scene.pairs.size();
+	ASSERT(baselines.size() == numPairs && states.size() == numPairs && chain.linkScale.size() == numPairs);
+	ASSERT(chain.segmentOf.size() == scene.images.size());
+	// the links and the pairs to judge, in the order of the scene's pairs
+	std::vector<bool> isLink(numPairs, false);
 	IIndexArr pairIndices;
-	unsigned numCandidates = 0;
+	bool anyToJudge = false;
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
 		isLink[idxPair] = states[idxPair] == PairState::LINK;
-		const bool isCandidate = states[idxPair] == PairState::KEPT && HasBaselineLength(baselines[idxPair]) &&
+		// the rule reads a pair's length, not its direction: a pair under the near-duplicate ray angle is judged too
+		const bool toJudge = states[idxPair] == PairState::KEPT && HasBaselineLength(baselines[idxPair]) &&
 			chain.segmentOf[pair.ID1] != NO_ID && chain.segmentOf[pair.ID1] == chain.segmentOf[pair.ID2];
-		if (isLink[idxPair] || isCandidate)
+		if (isLink[idxPair] || toJudge)
 			pairIndices.push_back((IIndex)idxPair);
-		numCandidates += isCandidate;
+		anyToJudge = anyToJudge || toJudge;
 	}
-	if (numCandidates == 0)
-		return;
-	// the scale each equation with a link gives its candidate, sorted by candidate, then by scale:
-	// s[idxB] = s[idxA] * scaleRatio, the residual of the scale solve (SolveScaleComponents)
+	// the scale each equation with a link gives its other pair, sorted by pair, then by scale. An equation is the
+	// relation the scale solve fits (SolveScaleComponents): s[idxB] = s[idxA] * scaleRatio
 	std::vector<std::pair<uint32_t, REAL>> scales;
-	for (const ScalePair& equation : ComputePairScales(scene, pairIndices, &isLink)) {
-		const bool linkFirst = isLink[equation.idxA];
-		const uint32_t idxLink = linkFirst ? equation.idxA : equation.idxB;
-		const uint32_t idxCandidate = linkFirst ? equation.idxB : equation.idxA;
-		// two pairs with an equation share an image, and a link lies in the segment of its images
-		ASSERT(equation.scaleRatio > 0 && chain.segmentOf[scene.pairs[idxLink].ID1] == chain.segmentOf[scene.pairs[idxCandidate].ID1]);
-		scales.emplace_back(idxCandidate, linkFirst ? chain.linkScale[idxLink] * equation.scaleRatio : chain.linkScale[idxLink] / equation.scaleRatio);
+	if (anyToJudge) {
+		for (const ScalePair& equation : ComputePairScales(scene, pairIndices, &isLink)) {
+			const bool linkFirst = isLink[equation.idxA];
+			const uint32_t idxLink = linkFirst ? equation.idxA : equation.idxB;
+			const uint32_t idxJudged = linkFirst ? equation.idxB : equation.idxA;
+			// an equation joins a link, which has a scale, and a pair that is none; the two share an image, and a
+			// link lies in the segment of its images
+			ASSERT(isLink[equation.idxA] != isLink[equation.idxB] && chain.linkScale[idxLink] > 0 && equation.scaleRatio > 0);
+			ASSERT(chain.segmentOf[scene.pairs[idxLink].ID1] == chain.segmentOf[scene.pairs[idxJudged].ID1]);
+			scales.emplace_back(idxJudged, linkFirst ? chain.linkScale[idxLink] * equation.scaleRatio : chain.linkScale[idxLink] / equation.scaleRatio);
+		}
+		std::sort(scales.begin(), scales.end());
 	}
-	std::sort(scales.begin(), scales.end());
 	for (size_t begin = 0, end = 0; begin < scales.size(); begin = end) {
 		const uint32_t idxPair = scales[begin].first;
 		while (end < scales.size() && scales[end].first == idxPair)
 			++end;
-		// the candidate's scale is the median over its equations: its length and offset in the segment's frame
+		// the pair's scale is the median over its equations: its length and offset in the segment's frame
 		const REAL scale = scales[begin + (end - begin) / 2].second;
 		const ImagePair& pair = scene.pairs[idxPair];
 		const Point3 chainOffset = chain.centres[pair.ID2] - chain.centres[pair.ID1];
@@ -154,12 +173,14 @@ void VetoPairsByChain(const Scene& scene, const std::vector<Point3>& baselines, 
 		++stats.numJudged;
 		if (!ChainVetoes(discrepancy, pairLength, chainDistance, chain.localStep[chain.segmentOf[pair.ID1]], path))
 			continue;
-		DEBUG_ULTIMATE("Chain pair: %s %s length %.9g chain %.9g path %.9g discrepancy %.9g veto 1 equations %u",
+		// one line per vetoed pair only above verbosity 3: each line syncs the log to disk
+		DEBUG_LEVEL(3, "Vetoed pair: %s %s length %.9g chain %.9g path %.9g discrepancy %.9g equations %u",
 			ChainImageName(scene, pair.ID1).c_str(), ChainImageName(scene, pair.ID2).c_str(), pairLength, chainDistance, path, discrepancy,
 			(unsigned)(end - begin));
 		states[idxPair] = PairState::VETOED;
 		++stats.numVetoed;
 	}
+	VERBOSE("Sequence chain veto: removed %u of %u judged pairs (%s)", stats.numVetoed, stats.numJudged, TD_TIMER_GET_FMT().c_str());
 }
 
 } // namespace
@@ -177,8 +198,8 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 	chain.centres.assign(numImages, Point3::ZERO);
 	chain.pathLength.assign(numImages, REAL(0));
 	chain.linkScale.assign(numPairs, REAL(0));
-	// the links, with their weight, and the still pairs
-	IIndexArr links, stillPairs;
+	// the candidate links, with their weight, and the still pairs
+	IIndexArr candidateLinks, stillPairs;
 	std::vector<float> weights(numPairs, 0.f);
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
@@ -189,17 +210,17 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 			stillPairs.push_back((IIndex)idxPair);
 			continue;
 		}
-		links.push_back((IIndex)idxPair);
+		candidateLinks.push_back((IIndex)idxPair);
 		weights[idxPair] = pair.GetCompositeWeight();
 	}
-	if (links.empty()) {
+	if (candidateLinks.empty()) {
 		VERBOSE("Sequence chain solve: no link among the neighbour pairs (%s)", TD_TIMER_GET_FMT().c_str());
 		return chain;
 	}
 
 	// one segment per solved scale component, the largest first: an image belongs to the first that places it, and a
-	// link keeps its scale only when both its images belong to the component that solved it
-	const std::vector<ScalePair> equations = ComputePairScales(scene, links);
+	// candidate link is a link, with its solved scale, only when both its images belong to the component that solved it
+	const std::vector<ScalePair> equations = ComputePairScales(scene, candidateLinks);
 	unsigned numComponents;
 	for (const ScaleComponentSolve& solve : SolveScaleComponents(scene, equations, baselines, weights, numComponents)) {
 		const uint32_t segment = chain.numSegments;
@@ -214,20 +235,22 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 		if (!owns)
 			continue; // every image it places belongs to a larger component: no segment
 		++chain.numSegments;
-		for (const uint32_t idxPair : solve.pairs) {
+		FOREACH(k, solve.pairs) {
+			const uint32_t idxPair = solve.pairs[k];
 			const ImagePair& pair = scene.pairs[idxPair];
 			if (chain.segmentOf[pair.ID1] != segment || chain.segmentOf[pair.ID2] != segment)
 				continue;
-			chain.linkScale[idxPair] = solve.scales[idxPair];
+			chain.linkScale[idxPair] = solve.scales[k];
 			++chain.numLinks;
 		}
 	}
+	NumberSegmentsByFirstImage(chain);
 	ComputeChainPaths(chain);
 	const unsigned numPlacedByLinks = chain.NumPlaced();
 	PlaceStillImages(scene, stillPairs, chain);
-	VERBOSE("Sequence chain solve: %u segment(s) placing %u images by %u of %u links (%u scale components, %u equations) (%s), %u still image(s)",
-		chain.numSegments, numPlacedByLinks, chain.numLinks, (unsigned)links.size(), numComponents, (unsigned)equations.size(),
-		TD_TIMER_GET_FMT().c_str(), chain.numStill);
+	VERBOSE("Sequence chain solve: %u segment(s) placing %u images by %u links of %u candidates (%u scale components, %u equations), %u still image(s) (%s)",
+		chain.numSegments, numPlacedByLinks, chain.numLinks, (unsigned)candidateLinks.size(), numComponents, (unsigned)equations.size(),
+		chain.numStill, TD_TIMER_GET_FMT().c_str());
 	return chain;
 }
 /*----------------------------------------------------------------*/
@@ -237,18 +260,16 @@ bool SFM::ChainVetoes(REAL discrepancy, REAL pairLength, REAL chainDistance, REA
 	return discrepancy > MAXF(kVetoLocalSteps * localStep, kVetoPathShare * path) && pairLength < chainDistance / kVetoShortDivisor;
 }
 
-SequenceFilterStats SFM::ApplySequenceChain(const Scene& scene, const std::vector<Point3>& baselines,
-	const SequenceNeighbours& neighbours, std::vector<PairState>& states)
+void SFM::ApplySequenceChain(const Scene& scene, const std::vector<Point3>& baselines, const SequenceNeighbours& neighbours,
+	std::vector<PairState>& states, SequenceFilterStats& stats)
 {
 	const SequenceChain chain = SolveSequenceChain(scene, baselines, neighbours, states);
-	SequenceFilterStats stats;
 	stats.numSegments = chain.numSegments;
 	stats.numLinks = chain.numLinks;
 	FOREACH(idxPair, scene.pairs)
 		if (chain.linkScale[idxPair] > 0)
 			states[idxPair] = PairState::LINK;
 	VetoPairsByChain(scene, baselines, chain, states, stats);
-	return stats;
 }
 /*----------------------------------------------------------------*/
 

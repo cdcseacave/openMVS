@@ -33,7 +33,8 @@ class SFM_API Scene;
 // pairIdx1 < pairIdx2 (the indices are scene pair indices): log s(pairIdx1) - log s(pairIdx2)
 // = log of the ratio, s the scale that takes a pair's unit frame to the common one. The equations
 // come sorted by (pairIdx1, pairIdx2). With anchors (per scene pair), only the equations between an
-// anchor and a pair that is none are formed.
+// anchor and a pair that is none are formed; their ratios equal the plain call's up to rounding (the
+// order of summation may differ), not bit for bit.
 std::vector<ScalePair> SFM_API ComputePairScales(const Scene& scene, const IIndexArr& pairIndices, const std::vector<bool>* anchors = NULL);
 
 /**
