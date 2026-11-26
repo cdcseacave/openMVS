@@ -218,9 +218,10 @@ struct SFM_API SequenceFilterStats {
 //    and the chain of its verified neighbour pairs is trusted (SolveSequenceChain below, on the pairs the rotation
 //    stage kept, at the covisibility bar minLinkCovisibility; a link joins two images of one component of the
 //    averaging, whose rotations share a frame). Before the translation stage, the veto: a pair that is no link,
-//    with a pose, a world baseline of some length and a ray angle of at least kNearDuplicateRayAngle, whose two
-//    images one segment of the chain places and that shares a pair-scale equation (ComputePairScales) with a link
-//    of that segment, is judged. Its scale is the median, over those equations, of the link's scale carried
+//    with a pose and a world baseline of some length, whose two images one segment of the chain places and that
+//    shares a pair-scale equation (ComputePairScales) with a link of that segment, is judged, a pair under
+//    kNearDuplicateRayAngle of ray angle like any other (the veto reads a pair's length, which needs no baseline
+//    direction). Its scale is the median, over those equations, of the link's scale carried
 //    through the equation; the scale times its baseline is its offset in the segment's frame, and it is removed
 //    when ChainVetoes says so: far from where the chain puts its two images and short against their distance, the
 //    look-alike of a repetitive place, which claims that two distant frames stand close. A vetoed pair is not
@@ -248,8 +249,10 @@ SFM_API bool ChainVetoes(REAL discrepancy, REAL pairLength, REAL chainDistance, 
 struct SFM_API SequenceChain {
 	std::vector<uint32_t> segmentOf; // per image: its chain segment, NO_ID where the chain placed nothing
 	std::vector<Point3> centres;     // per image: its centre in its segment's frame (valid where segmentOf != NO_ID)
-	std::vector<REAL> pathLength;    // per image: the path along its segment from the segment's first placed image, through the placed images in order
-	std::vector<REAL> localStep;     // per segment: the median distance between adjacent placed images (0 for a segment of one image)
+	// per image: the path along its segment from the segment's first image, through the images its links place, in
+	// order; an image placed by standing still has the path of the image it stands at
+	std::vector<REAL> pathLength;
+	std::vector<REAL> localStep;     // per segment: the median distance between adjacent images its links place (0 for a segment of one image)
 	// per scene pair: a chain link's solved scale, the multiplier of its relative pose's baseline as the translation
 	// stage uses a pair's scale, so the link's offset in the segment's frame is its world baseline
 	// (RMatrix(rotations[ID1]).t() * relativePose->C, at the pose's own length) times this scale; 0 for every other
@@ -257,6 +260,7 @@ struct SFM_API SequenceChain {
 	// frame: a neighbour pair joining two segments, or solved by a component other than its images' segment, has 0
 	std::vector<REAL> linkScale;
 	unsigned numSegments{0}, numLinks{0};
+	unsigned numStill{0}; // the images no link places, placed by standing still where a placed neighbour stands
 };
 // The chain of a sequence: the scale + centres solve of the translation stage on the chain links alone. A link is a
 // scene pair with a relative pose whose images are neighbours, both rotated (rotations != Point3::INF), not `removed`,
@@ -267,6 +271,14 @@ struct SFM_API SequenceChain {
 // components place belongs to the larger one (a component whose every image a larger one holds is no segment);
 // numLinks counts the links of positive scale. The segments are numbered in the order of their first image, so they
 // follow the sequence.
+// Then the frames standing still. A still pair is a pair that is no link only for having no baseline direction: its
+// meanRayAngle is under kNearDuplicateRayAngle or its world baseline has no length, every other condition of a link
+// holding (neighbours, a pose, both images rotated, not `removed`, a positive weight, the covisibility bar). An image
+// no segment placed that a still pair joins to a placed image takes that image's segment, centre and path length,
+// pass by pass until a pass places nothing; a pass reads the images placed before it, and of several placed images
+// the nearest in position (image index) is taken, the lower one on a tie, so the order of the scene's pairs decides
+// nothing. numStill counts those images. A still pair stays no link (linkScale 0, not in numLinks), the local step
+// and the numbering of the segments are those of the links alone, and with no segment solved nothing is placed.
 SFM_API SequenceChain SolveSequenceChain(const Scene& scene, const std::vector<Point3>& rotations,
 	const SequenceNeighbours& neighbours, float minCovisibility, const std::vector<bool>* removed = nullptr);
 

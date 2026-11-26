@@ -179,9 +179,11 @@ GPS. Clustering is never involved.
   `matchSequenceOverlap` positions apart, no name break between) are added to the candidates of every mode
   (`AddNeighbourPairs`, in place of the `AddSequentialPairs` prior of VOCABULARY/RETRIEVAL) and `PreMatch` never
   removes one; the view-graph filter (`FilterViewGraph`) passes the same neighbours to the contradiction cut, which
-  solves the chain of the verified neighbour pairs (`SolveSequenceChain`), vetoes the pairs that contradict it
-  (`VetoPairsByChain`, `ChainVetoes`: off the chain by more than 8 local steps and 0.2 of the path, and under a
-  third of the chain distance long; never offered to the repair) and removes no chain link in its translation
+  solves the chain of the verified neighbour pairs (`SolveSequenceChain`; a frame standing still, which no link
+  places, stands where the placed neighbour a still pair joins it to stands, `SequenceChain::numStill`), vetoes the
+  pairs that contradict it (`VetoPairsByChain`, `ChainVetoes`: off the chain by more than 8 local steps and 0.2 of
+  the path, and under a third of the chain distance long; a pair under `kNearDuplicateRayAngle` is judged like any
+  other; never offered to the repair, where it makes no spot either) and removes no chain link in its translation
   stage (`docs/design/ContradictionCut.md`); `SequenceFilterStats` and one `Sequence chain:` log line report it
   (the solve logs its own `Sequence chain solve:` line), `-v 3` adds a `Chain pair:` line per judged pair (ending
   `equations N`) and a `Chain centre:` line per placed image. A failed VOCABULARY/RETRIEVAL selection ends `Match` with

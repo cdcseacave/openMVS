@@ -290,13 +290,15 @@ bool ContradictionCutTest();
 
 // The chain of an image sequence: the neighbour pairs alone place a walk of 40 cameras within 2% of its length, a name
 // break or a covisibility under the bar splits it, a frame standing still, a pair of weight 0 and every pair under the
-// near-duplicate ray angle are no links
+// near-duplicate ray angle are no links, and a frame no link places stands where the nearest placed neighbour a still
+// pair joins it to stands
 bool SequenceChainTest();
 
 // The chain of an image sequence in the contradiction cut: a pair that contradicts the chain and is short against it
-// is vetoed (the look-alikes of a periodic corridor, 11 and 21 frames apart with a baseline of one step), a true pair
-// and a revisit never, a vetoed pair is not offered to the repair, a chain link is not removed by the translation
-// stage, and without the neighbours, or with a chain too small to solve, the cut is unchanged
+// is vetoed (the look-alikes of a periodic corridor, 11 and 21 frames apart with a baseline of one step, and those 10
+// apart under the near-duplicate ray angle), a true pair and a revisit never, a vetoed pair is not offered to the
+// repair and makes no spot there, the pairs of a frame placed by standing still are judged, a chain link is not
+// removed by the translation stage, and without the neighbours, or with a chain too small to solve, the cut is unchanged
 bool SequenceVetoTest();
 
 // A matched scene is filtered once (the triplet filter, the contradiction cut and its repair), on load as on a fresh

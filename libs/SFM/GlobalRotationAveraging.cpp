@@ -914,7 +914,8 @@ bool FitBaselineDirection(const Eigen::Matrix3d& R, const std::vector<Eigen::Vec
 // solve reached; `solves` are the centres solves of its translation stage, the largest first. `vetoed` (NULL:
 // none) marks the removed pairs the chain of an image sequence vetoed: they are not offered to the repair, which
 // would bring them back (a look-alike's matches agree on a direction, and along a corridor it is the centres'),
-// and stay removed. Unmarks the repaired pairs in `removed`; returns their number.
+// stay removed, and one under kNearDuplicateRayAngle joins no spot (its two images do not stand at one place).
+// Unmarks the repaired pairs in `removed`; returns their number.
 unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotations,
 	const std::vector<CentresSolve>& solves, std::vector<bool>& removed, const std::vector<bool>* vetoed)
 {
@@ -928,7 +929,8 @@ unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotati
 	IIndexArr candidates;
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
-		if (pair.relativePose.has_value() && !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)))
+		// a vetoed pair claims that two distant frames stand close: it makes no spot of them
+		if (pair.relativePose.has_value() && !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) && (vetoed == NULL || !(*vetoed)[idxPair]))
 			spots.Union(pair.ID1, pair.ID2);
 		if (removed[idxPair]) {
 			ASSERT(pair.relativePose.has_value());
@@ -1051,15 +1053,18 @@ struct ChainVeto {
 
 // The veto of the chain of an image sequence, between the rotation and the translation stage of the cut: a pair that
 // contradicts the chain is removed before it votes on the centres. Judged is a pair not `removed` and no link of the
-// chain (no positive chain.linkScale), with a pose, a world baseline of some length and a ray angle of at least
-// kNearDuplicateRayAngle, whose two images one segment places and that shares at least one pair-scale equation with
-// a link of that segment (the equations of ComputePairScales over the links and those pairs; the ones between two
-// links or two candidates are dropped). Each such equation carries the link's solved scale to the pair; the median
-// is the pair's scale, the multiplier of its baseline in the segment's frame as a link's scale is of the link's, so
-// its length and its offset there are the scale times its baseline's, to compare with the offset of the chain's
-// centres of its two images and the path between them (ChainVetoes). `rotations` are the ones the chain was solved
-// with. Marks the vetoed pairs in `removed` and in the returned mask, and logs every judged pair at the ultimate
-// level, with the number of equations its scale is the median of.
+// chain (no positive chain.linkScale), with a pose and a world baseline of some length, whose two images one segment
+// places (by its links or by standing still) and that shares at least one pair-scale equation with a link of that
+// segment (the equations of ComputePairScales over the links and those pairs; the ones between two links or two
+// candidates are dropped). A pair under kNearDuplicateRayAngle is judged like any other: the rule reads its length,
+// not its direction (two frames a period apart that see the same picture verify with nearly no baseline, and a pair
+// of length L far under the chain distance D is off the chain by at least D - L whatever its direction; a true
+// near-duplicate, whose images the chain puts at one place, is off by at most L + D). Each such equation carries the
+// link's solved scale to the pair; the median is the pair's scale, the multiplier of its baseline in the segment's
+// frame as a link's scale is of the link's, so its length and its offset there are the scale times its baseline's, to
+// compare with the offset of the chain's centres of its two images and the path between them (ChainVetoes).
+// `rotations` are the ones the chain was solved with. Marks the vetoed pairs in `removed` and in the returned mask,
+// and logs every judged pair at the ultimate level, with the number of equations its scale is the median of.
 ChainVeto VetoPairsByChain(const Scene& scene, const std::vector<Point3>& rotations, const SequenceChain& chain, std::vector<bool>& removed)
 {
 	TD_TIMER_STARTD();
@@ -1079,10 +1084,10 @@ ChainVeto VetoPairsByChain(const Scene& scene, const std::vector<Point3>& rotati
 			pairIndices.push_back((IIndex)idxPair);
 			continue;
 		}
-		if (removed[idxPair] || !pair.relativePose.has_value() || !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) ||
+		if (removed[idxPair] || !pair.relativePose.has_value() ||
 			chain.segmentOf[pair.ID1] == NO_ID || chain.segmentOf[pair.ID1] != chain.segmentOf[pair.ID2])
 			continue;
-		ASSERT(rotations[pair.ID1] != Point3::INF); // a link placed the image, and a link's images are rotated
+		ASSERT(rotations[pair.ID1] != Point3::INF); // a link or a still pair placed the image, and their images are rotated
 		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
 		if (norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
 			continue;
@@ -1284,21 +1289,23 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 	chain.centres.assign(numImages, Point3::ZERO);
 	chain.pathLength.assign(numImages, REAL(0));
 	chain.linkScale.assign(numPairs, REAL(0));
-	// the links, with their world-frame baseline (length: the pair's own)
+	// the links, with their world-frame baseline (length: the pair's own), and the still pairs: those that are no
+	// links only for having no baseline direction, as in the translation stage (a ray angle under the near-duplicate
+	// one, or a baseline of no length), the pairs of a frame standing still
 	std::vector<Point3> baselines(numPairs);
-	IIndexArr links;
+	IIndexArr links, stillPairs;
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
 		if ((removed != nullptr && (*removed)[idxPair]) || !pair.relativePose.has_value() || !pair.HasValidWeight() ||
 			!neighbours.AreNeighbours(pair.ID1, pair.ID2) ||
 			rotations[pair.ID1] == Point3::INF || rotations[pair.ID2] == Point3::INF ||
-			!(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) ||
 			(pair.covisibility.has_value() && *pair.covisibility < minCovisibility))
 			continue;
 		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
-		if (norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
-			continue; // no baseline direction, as in the translation stage
-		links.push_back((IIndex)idxPair);
+		if (!(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) || norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
+			stillPairs.push_back((IIndex)idxPair);
+		else
+			links.push_back((IIndex)idxPair);
 	}
 	if (links.empty()) {
 		VERBOSE("Sequence chain solve: no link among the neighbour pairs (%s)", TD_TIMER_GET_FMT().c_str());
@@ -1368,9 +1375,42 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 		std::nth_element(steps.begin(), steps.begin() + steps.size() / 2, steps.end());
 		chain.localStep[segment] = steps[steps.size() / 2];
 	}
-	VERBOSE("Sequence chain solve: %u segment(s) placing %u images by %u of %u links (%u scale components, %u equations) (%s)",
-		chain.numSegments, (unsigned)std::count_if(chain.segmentOf.begin(), chain.segmentOf.end(), [](uint32_t s) { return s != NO_ID; }),
-		chain.numLinks, (unsigned)links.size(), numComponents, numEquations, TD_TIMER_GET_FMT().c_str());
+	const unsigned numPlacedByLinks = (unsigned)std::count_if(chain.segmentOf.begin(), chain.segmentOf.end(), [](uint32_t s) { return s != NO_ID; });
+
+	// the frames standing still: an image no segment placed that a still pair joins to a placed image stands where
+	// that image stands, and takes its segment, centre and path length. Pass by pass until one places nothing, a
+	// pass reading only the images placed before it and an image taking, of the placed images its still pairs join
+	// it to, the nearest in position (the lower one on a tie), so the order of the scene's pairs decides nothing. No
+	// segment, no image placed: a frame standing still starts none, and the links' scales and the local step are
+	// those of the links alone
+	std::vector<uint32_t> sourceOf(numImages, NO_ID); // per image placed by standing still: the image it stands at
+	std::vector<uint32_t> placedNow;
+	do {
+		placedNow.clear();
+		for (const IIndex idxPair : stillPairs) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			const bool placed1 = chain.segmentOf[pair.ID1] != NO_ID;
+			if (placed1 == (chain.segmentOf[pair.ID2] != NO_ID))
+				continue;
+			const uint32_t image = placed1 ? pair.ID2 : pair.ID1, source = placed1 ? pair.ID1 : pair.ID2;
+			const auto distanceTo = [image](uint32_t other) { return other > image ? other - image : image - other; };
+			uint32_t& best = sourceOf[image];
+			if (best == NO_ID)
+				placedNow.push_back(image);
+			else if (distanceTo(source) > distanceTo(best) || (distanceTo(source) == distanceTo(best) && source > best))
+				continue;
+			best = source;
+		}
+		for (const uint32_t image : placedNow) {
+			const uint32_t source = sourceOf[image];
+			chain.segmentOf[image] = chain.segmentOf[source];
+			chain.centres[image] = chain.centres[source];
+			chain.pathLength[image] = chain.pathLength[source];
+		}
+		chain.numStill += (unsigned)placedNow.size();
+	} while (!placedNow.empty());
+	VERBOSE("Sequence chain solve: %u segment(s) placing %u images by %u of %u links (%u scale components, %u equations) (%s), %u still image(s)",
+		chain.numSegments, numPlacedByLinks, chain.numLinks, (unsigned)links.size(), numComponents, numEquations, TD_TIMER_GET_FMT().c_str(), chain.numStill);
 	return chain;
 }
 /*----------------------------------------------------------------*/

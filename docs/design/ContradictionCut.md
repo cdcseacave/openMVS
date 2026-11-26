@@ -127,10 +127,28 @@ segment's frame; a neighbour pair joining two segments, or solved by a component
 images' segment, has 0, as every pair that is no link. A neighbour pair whose pose triangulates none
 of its matches has no pair-scale equation, so no scale: it is no link either.
 
+A frame standing still is placed where its neighbour stands. Where the camera stops (the end of a
+capture, for one) the neighbour pairs of a frame are all under the near-duplicate angle, so no link
+places it, and none of its pairs could be judged against the chain. A *still pair* is a pair that is
+no link only for having no baseline direction: its mean ray angle is under `kNearDuplicateRayAngle`
+or its world baseline has no length, and every other condition of a link holds (neighbours, a pose,
+both images rotated, not removed, a positive weight, the covisibility bar). After the segments, the
+paths and the local steps are computed, an image no segment placed that a still pair joins to a
+placed image takes that image's segment, centre and path length. This is repeated pass by pass until
+a pass places no image, each pass reading only the images placed before it; of several placed images
+an image takes the nearest in position (image index), the lower one on a tie, so the order of the
+scene's pairs decides nothing. A still pair stays no link: it has no scale, is not protected and is
+judged by the veto like any pair. The local step, the path and the numbering of the segments are
+those of the links alone, an image placed by standing still starts no segment (no segment solved:
+nothing placed), and `SequenceChain::numStill` counts those images.
+
 On a walk of 40 cameras 1 unit apart with exact relative poses (`SequenceChainTest`) the chain is
 one segment whose centres, after a scale and translation fit, are within 1e-7 of the truth; a name
 break or a covisibility of 0.3 across the middle splits it into two segments of 20; a neighbour
-pair of weight 0 is no link.
+pair of weight 0 is no link. When the walk ends with its last four cameras at one place, the last
+one, whose three neighbour pairs stand still, is placed at exactly the centre and path length of
+the one before it, the 108 links, the centres and the local step being those of the scene without
+its pairs; with seven at one place the last is placed by the second pass.
 
 ### The veto of the chain
 
@@ -140,11 +158,22 @@ camera centres, so step 5 does not see it; enough of them out-vote the true pair
 solve, which then contradicts true pairs. The chain knows how far apart the two frames are, so the
 pairs that contradict it are removed before the translation stage reads them (`VetoPairsByChain`).
 
-A pair is judged when it is not removed by the rotation stage and is no chain link, has a pose, a
-non-zero world baseline and a mean ray angle of at least `kNearDuplicateRayAngle`, both its images
-lie in one segment, and it shares at least one pair-scale equation (`ComputePairScales`, over the
-links and those pairs) with a link of that segment. A neighbour pair that is no link (a covisibility
-under the bar, for one) is judged like any other pair. Every other pair is left to the two stages.
+A pair is judged when it is not removed by the rotation stage and is no chain link, has a pose and a
+non-zero world baseline, both its images lie in one segment (placed by its links or by standing
+still), and it shares at least one pair-scale equation (`ComputePairScales`, over the links and
+those pairs) with a link of that segment. A neighbour pair that is no link (a covisibility under the
+bar or a still pair, for two) is judged like any other pair. Every other pair is left to the two
+stages.
+
+A pair under `kNearDuplicateRayAngle` is judged like any other, though the translation stage leaves
+it out because its baseline direction is noise. The strongest look-alikes are such pairs: two frames
+a period apart see the same picture and verify with nearly no baseline. The rule below needs no
+direction for them: a pair of length L far under the chain distance D is off the chain by at least
+D - L whatever its direction, and a true near-duplicate, whose two frames the chain puts at one
+place (D near 0), is off by at most L + D and is not short against D. The length comes from the
+scale equations, which read the matches with a ray angle over 0.5 degrees: a pair with fewer than
+15 of them in common with a link (two pictures that are the same exactly) has no equation and is
+not judged.
 
 Each equation with a link carries the link's solved scale to the pair (`s_pair = s_link * ratio`
 for `ScalePair(link, pair, ratio)`, `s_link / ratio` for `ScalePair(pair, link, ratio)`); the pair's
@@ -174,10 +203,11 @@ the centres are the ones in doubt.
 One log line reports the chain in the cut: `Sequence chain: S segment(s) over K links; veto removed
 V of J judged pairs; P chain pairs protected (veto <time>)`; `SequenceFilterStats` returns the same
 five numbers. The solve itself logs one line starting `Sequence chain solve:` (the segments, the
-images placed, the links and the scale equations, or that no neighbour pair is a link). At `-v 3`
+images the links place, the links and the scale equations, the time, and at its end `, N still
+image(s)`, the images placed by standing still; or that no neighbour pair is a link). At `-v 3`
 the cut also writes one line per judged pair, `Chain pair: <image> <image> length <L> chain
 <distance> path <path> discrepancy <d> veto <0|1> equations <N>` (N the pair-scale equations with
-links its scale is the median of), and one per placed image,
+links its scale is the median of), and one per placed image, one placed by standing still included,
 `Chain centre: <image> <segment> <x> <y> <z>`, an image named by its file name without directory
 and extension (a white space replaced by `_`, its index when it has no name).
 
@@ -189,7 +219,8 @@ refitted direction against that stage's camera centres: with the bar at 0 it doe
 (`FilterPairsByContradiction` asserts `repair` only with a bar above 0, and the scene passes
 `repair` only then). `RepairContradictedPairs` runs once, after both stages, on the pairs they
 removed, in parallel over those pairs. A pair the chain of an image sequence vetoed is not among
-them, and vouches for nothing.
+them, vouches for nothing and, when it is under the near-duplicate angle, makes no spot of its two
+images (step 4): it is vetoed for claiming that two distant frames stand close.
 
 For a removed pair the repair
 
@@ -254,10 +285,16 @@ raises `ValueError`, as the command line refuses it). The repair flag has no Pyt
 - Without the neighbours (`--image-sequence` off) no chain is solved and the cut is the two stages and
   the repair alone. With them and a bar of 0, or a chain too small to solve (under 10 links in every
   component), nothing is judged and nothing protected.
-- A vetoed pair is never repaired. A chain link is never removed by the translation stage (the
-  rotation stage runs before the chain and may remove a neighbour pair).
+- A vetoed pair is never repaired, vouches for no removed pair and joins no spot of the repair. A
+  chain link is never removed by the translation stage (the rotation stage runs before the chain and
+  may remove a neighbour pair).
 - A segment of the chain lies inside one rotation component, so a judged pair's rotations and its
   segment's centres share a frame.
+- An image placed by standing still has the segment, centre and path length of an image the links
+  of that segment place; the links' scales, the local step and the segments are the same with and
+  without the still pairs. A still pair has no scale and is not protected.
+- The translation stage reads nothing of the frames standing still: with the chain as without, it
+  leaves every pair under the near-duplicate angle out of its solve and its verdict.
 
 ## Validation
 
@@ -295,6 +332,27 @@ vetoed and no true pair is removed. On the 16-camera arc a neighbour pair whose 
 its matches supporting the flipped pose, is removed without the option and kept with it, the one
 protected link.
 
+Pairs under the near-duplicate angle, on the same corridor. Near-duplicate look-alikes (i, i+10) of
+the way out, the second frame a quarter of a step past the period or before it (a ray angle of 1.08
+to 1.11 degrees): all 20 are judged and vetoed, 0.25 steps long against a chain distance of 10
+steps, 9.75 and 10.25 off, with the 28 look-alikes and nothing else; without the option all 20 stay.
+65 true pairs, 4 to 6 apart or revisits, with the ray angle set to 1.5 degrees and their geometry
+untouched, are judged at their true length and kept. With the second frame at the period exactly no
+match has a ray angle, the 20 pairs have no scale equation, are not judged and stay. With the repair
+on, the vetoed near-duplicate look-alikes stay removed, and a look-alike two periods on that the
+rotation stage removed, which the repair would return if the vetoed (5,15) and (15,25) made its two
+images one spot, stays removed too. The corridor ending with its last six cameras at one place: 54
+to 56 are placed by their links and 57 to 59 by standing still, at the centre of 56; the 56
+look-alikes are vetoed, the 6 of the images 57 to 59 among them, the 9 true pairs of those images
+are judged at their true length, the 15 pairs among the six have no equation and are not judged,
+and no true pair is removed.
+
+The measurement these two rules answer, by the veto before them on a capture of 1086 panoramas of a
+shopping mall: it removed 1,933 of the 1,940 look-alike pairs it judged and none of 9,805 true
+pairs, and left unjudged 28 look-alikes under the near-duplicate angle (ray angles of 1.3 to 1.7
+degrees, 165 to 202 matches each) and 5 pairs of the last frame, where the capture ends standing
+still (its three neighbour pairs at 0.6 to 0.8 degrees).
+
 ## Rejected alternatives
 
 Repair:
@@ -329,7 +387,13 @@ Weighting:
 
 ## Open items
 
-- The veto and the protection of the chain are validated on synthetic scenes only (above).
+- The veto and the protection of the chain are validated on synthetic scenes only (above), the
+  judging of the pairs under the near-duplicate angle and the frames standing still among them.
+- A pair without a pair-scale equation with a link of its segment is not judged: fewer than 15
+  matches over 0.5 degrees of ray angle in common with a link (two pictures the same exactly).
+- A frame standing still is put exactly where its neighbour stands: a stretch of frames creeping
+  under the near-duplicate angle is placed at one point, or at its two ends when links place the
+  frames on both sides, and its pairs are judged against that.
 - A wrong neighbour link is trusted: it is protected, and the true pairs that disagree with a chain
   it bent can be vetoed; a vetoed pair is final (never repaired).
 - Protection does not depend on the link agreeing with the chain's own centres.
