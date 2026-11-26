@@ -64,7 +64,6 @@ unsigned importPosesMode;
 unsigned matchSequenceOverlap;
 bool imageSequence;
 unsigned sequenceMaxGap;
-float fSequenceMinCovisibility;
 unsigned maxPairsPerImage;
 bool matchVerificationFeedback;
 bool releaseDescriptors;
@@ -204,7 +203,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(defaults.matchCfg.maxPairsPerImage), "target pairs per image for vocabulary and pose-guided matching")
 		("image-sequence", boost::program_options::value(&OPT::imageSequence)->default_value(defaults.matchCfg.imageSequence), "the images, in import order, are frames of a possibly interrupted sequence: the neighbours of an image are the images at most --match-sequence-overlap positions away with no name break between (a change of directory or name prefix, a frame number that does not rise or rises by more than --sequence-max-gap times its usual step); the pairs of neighbours are always matched, and the view-graph filter trusts the chain they form: a pair that contradicts it is removed, a pair of the chain is not")
 		("sequence-max-gap", boost::program_options::value(&OPT::sequenceMaxGap)->default_value(defaults.matchCfg.sequenceMaxGap), "with --image-sequence: a frame number rising by more than this many times the median rise between consecutive frames of one name prefix is a break of the sequence; 0 = the rises make no break (names that are clock times, such as IMG_20261125_103059, rise by 41 or more at every minute rollover)")
-		("sequence-min-covisibility", boost::program_options::value(&OPT::fSequenceMinCovisibility)->default_value(defaults.matchCfg.sequenceMinCovisibility), "with --image-sequence: a pair of neighbours (at most --match-sequence-overlap positions apart with no name break between) carrying a covisibility below this [0,1] is no link of the sequence; 0, the default, is no bar: the dense matcher's own gate (--dense-min-covisibility) already refuses the pairs that do not show the same place and the true neighbour pairs score from that gate up, so set it above the gate only for a capture whose look-alike neighbour pairs pass the gate")
 		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(defaults.matchCfg.verificationFeedback), "hold back part of the matching budget and re-invest it in pairs suggested by the geometrically verified matches (vocabulary and pose-guided matching)")
 		("release-descriptors", boost::program_options::value(&OPT::releaseDescriptors)->default_value(defaults.matchCfg.releaseDescriptors), "release descriptors after matching to save memory")
 		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(defaults.matchImagesOnly), "match the image pairs and filter their view graph (triplet filter, contradiction cut and its repair), then save the scene without reconstruction; a reconstruction given that scene as source starts from it without matching or filtering again")
@@ -423,15 +421,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 				return false;
 			}
 	}
-	if (!OPT::imageSequence) {
-		for (const char* name: {"sequence-max-gap", "sequence-min-covisibility"})
-			if (given(name)) {
-				LOG("error: --%s given without --image-sequence (the sequence is not read, nothing uses it)", name);
-				return false;
-			}
-	}
-	if (!(OPT::fSequenceMinCovisibility >= 0.f && OPT::fSequenceMinCovisibility <= 1.f)) {
-		LOG("error: --sequence-min-covisibility is a covisibility score, it must be in [0,1] (got %g)", OPT::fSequenceMinCovisibility);
+	if (!OPT::imageSequence && given("sequence-max-gap")) {
+		LOG("error: --sequence-max-gap given without --image-sequence (the sequence is not read, nothing uses it)");
 		return false;
 	}
 	if (!(OPT::fDenseMinCovisibility >= 0.f && OPT::fDenseMinCovisibility <= 1.f)) {
@@ -563,7 +554,6 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchCfg.matchSequenceOverlap = OPT::matchSequenceOverlap;
 	cfg.matchCfg.imageSequence = OPT::imageSequence;
 	cfg.matchCfg.sequenceMaxGap = OPT::sequenceMaxGap;
-	cfg.matchCfg.sequenceMinCovisibility = OPT::fSequenceMinCovisibility;
 	cfg.matchCfg.maxPairsPerImage = OPT::maxPairsPerImage;
 	cfg.matchCfg.verificationFeedback = OPT::matchVerificationFeedback;
 	cfg.matchCfg.releaseDescriptors = OPT::releaseDescriptors;

@@ -774,7 +774,7 @@ void FilterViewGraph(Scene& scene, const ReconstructionConfig& config)
 	// without that stage (a bar of 0) there is nothing for it to act on
 	FilterPairsByContradiction(scene, scores, config.minPairWeight, config.maxPairDirectionResidual, config.matchCfg.weightingCfg,
 		config.repairContradictedPairs && config.maxPairDirectionResidual > 0.f,
-		sequenceNeighbours.has_value() ? &sequenceNeighbours.value() : nullptr, config.matchCfg.sequenceMinCovisibility);
+		sequenceNeighbours.has_value() ? &sequenceNeighbours.value() : nullptr);
 	scene.status.nState.set(Scene::Status::STATE::PAIRS_FILTERED);
 }
 

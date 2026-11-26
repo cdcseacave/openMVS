@@ -138,7 +138,7 @@ Every block states its contract with `ASSERT`; a call outside it is a bug in the
 | `TripletFilterTest` | the camera-triplet view-graph filter: scores, yield rule, both modes |
 | `RotationAveragingTest` | the rotation estimator on the 16-camera ring and its independence of the weight scale |
 | `ContradictionCutTest` | the contradiction cut: its rotation and translation stages on symmetric rings, roofs, bridges |
-| `SequenceChainTest` | the chain of an image sequence: the neighbour pairs place a walk, a break or the covisibility bar splits it, a frame standing still is placed at its neighbour |
+| `SequenceChainTest` | the chain of an image sequence: the neighbour pairs place a walk, a break or removed pairs split it, a frame standing still is placed at its neighbour |
 | `SequenceVetoTest` | the chain in the contradiction cut: the look-alikes of a periodic corridor vetoed (those under the near-duplicate angle too), no true pair, the repair, the protected links |
 | `FilteredSceneReloadTest` | a matched scene is filtered once, on load as on a fresh run |
 | `PairScalesTest` | the flat pair-scale build equals the node-map one |

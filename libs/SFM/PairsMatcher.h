@@ -73,7 +73,6 @@ struct SFM_API MatchConfig
 	unsigned matchSequenceOverlap = 3;  // Consecutive images each image is matched with: the whole candidate set of SEQUENTIAL mode, and a prior added to the VOCABULARY/RETRIEVAL candidates (0 = no prior); with imageSequence the neighbours' reach (0 = no neighbours)
 	bool imageSequence = false;            // --image-sequence: the images, in scene order, are frames of a (possibly interrupted) sequence; the neighbours are at most matchSequenceOverlap positions apart with no name break between (SequenceNeighbours)
 	unsigned sequenceMaxGap = 10;          // --sequence-max-gap: a frame number rising by more than this many median increases of its run is a break; 0 = no break by the rises (names that are clock times)
-	float sequenceMinCovisibility = 0.f;   // --sequence-min-covisibility: a neighbour pair carrying a covisibility below this is no chain link; 0 = off, the default: a dense matcher's own covisibility gate already refuses the pairs that do not show one place, and the true neighbour pairs score from that gate up
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
 	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled; above 0 the geometric verification refuses, see GeometricFilter)
 	float matchDistance;                // Absolute distance test threshold (set by DefaultsForFeatureType: 100 - AKAZE 486bit, 64 - ORB 256bit, FLT_MAX - SIFT)

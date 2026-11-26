@@ -289,7 +289,7 @@ bool RotationAveragingTest();
 bool ContradictionCutTest();
 
 // The chain of an image sequence: the neighbour pairs alone place a walk of 40 cameras within 2% of its length, a name
-// break or a covisibility under the bar splits it, a frame standing still, a pair of weight 0 and every pair under the
+// break or removed pairs split it, a frame standing still, a pair of weight 0 and every pair under the
 // near-duplicate ray angle are no links, and a frame no link places stands where the nearest placed neighbour a still
 // pair joins it to stands
 bool SequenceChainTest();

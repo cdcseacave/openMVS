@@ -216,8 +216,7 @@ struct SFM_API SequenceFilterStats {
 //    pose and its agreeing matches, and is not counted as removed.
 //  - neighbours (needs maxDirectionResidual above 0; nullptr: none of this): the images are frames of a sequence
 //    and the chain of its verified neighbour pairs is trusted (SolveSequenceChain below, on the pairs the rotation
-//    stage kept, at the covisibility bar minLinkCovisibility; a link joins two images of one component of the
-//    averaging, whose rotations share a frame). Before the translation stage, the veto: a pair that is no link,
+//    stage kept; a link joins two images of one component of the averaging, whose rotations share a frame). Before the translation stage, the veto: a pair that is no link,
 //    with a pose and a world baseline of some length, whose two images one segment of the chain places and that
 //    shares a pair-scale equation (ComputePairScales) with a link of that segment, is judged, a pair under
 //    kNearDuplicateRayAngle of ray angle like any other (the veto reads a pair's length, which needs no baseline
@@ -232,7 +231,7 @@ struct SFM_API SequenceFilterStats {
 // pairs, the vetoed ones among them.
 unsigned SFM_API FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
 	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair = false,
-	const SequenceNeighbours* neighbours = nullptr, float minLinkCovisibility = 0.f, SequenceFilterStats* stats = nullptr);
+	const SequenceNeighbours* neighbours = nullptr, SequenceFilterStats* stats = nullptr);
 
 // The rule of the chain's veto, every length in the frame of the pair's segment: discrepancy is the distance between
 // the pair's offset and the chain's (the offset of the centres of its two images), pairLength the length of the pair's
@@ -265,22 +264,21 @@ struct SFM_API SequenceChain {
 // The chain of a sequence: the scale + centres solve of the translation stage on the chain links alone. A link is a
 // scene pair with a relative pose whose images are neighbours, both rotated (rotations != Point3::INF), not `removed`,
 // with a positive composite weight (the centres solve skips a weightless pair, which would place its images nowhere),
-// a world baseline of some length, meanRayAngle >= kNearDuplicateRayAngle, and whose covisibility, when it carries
-// one, is >= minCovisibility (0 disables that test). Weights: the composite weight. One segment per solved
+// a world baseline of some length and meanRayAngle >= kNearDuplicateRayAngle. Weights: the composite weight. One segment per solved
 // component of the links' pair-scale graph (components under minScaleComponent links: unplaced); an image two
 // components place belongs to the larger one (a component whose every image a larger one holds is no segment);
 // numLinks counts the links of positive scale. The segments are numbered in the order of their first image, so they
 // follow the sequence.
 // Then the frames standing still. A still pair is a pair that is no link only for having no baseline direction: its
 // meanRayAngle is under kNearDuplicateRayAngle or its world baseline has no length, every other condition of a link
-// holding (neighbours, a pose, both images rotated, not `removed`, a positive weight, the covisibility bar). An image
+// holding (neighbours, a pose, both images rotated, not `removed`, a positive weight). An image
 // no segment placed that a still pair joins to a placed image takes that image's segment, centre and path length,
 // pass by pass until a pass places nothing; a pass reads the images placed before it, and of several placed images
 // the nearest in position (image index) is taken, the lower one on a tie, so the order of the scene's pairs decides
 // nothing. numStill counts those images. A still pair stays no link (linkScale 0, not in numLinks), the local step
 // and the numbering of the segments are those of the links alone, and with no segment solved nothing is placed.
 SFM_API SequenceChain SolveSequenceChain(const Scene& scene, const std::vector<Point3>& rotations,
-	const SequenceNeighbours& neighbours, float minCovisibility, const std::vector<bool>* removed = nullptr);
+	const SequenceNeighbours& neighbours, const std::vector<bool>* removed = nullptr);
 
 } // namespace SFM
 

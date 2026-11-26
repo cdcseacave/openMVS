@@ -173,7 +173,6 @@ image, matches descriptors, and verifies:
 | `--match-sequence-overlap` | 3 | images ahead matched by SEQUENTIAL; sequential prior of VOCABULARY and RETRIEVAL; with `--image-sequence` the farthest neighbours; 0 = no prior (and no neighbours) |
 | `--image-sequence` | off | the images in import order are frames of a possibly interrupted sequence, whose neighbour pairs every mode matches (see Sequence neighbours) and whose chain the contradiction cut trusts (`ContradictionCut.md`) |
 | `--sequence-max-gap` | 10 | with `--image-sequence`: a frame number rising by more than this many median rises of its run is a break; 0 = no break by the rises (names that are clock times); refused without `--image-sequence` |
-| `--sequence-min-covisibility` | 0 | with `--image-sequence`: a neighbour pair carrying a covisibility below this is no chain link; 0 = no bar, the default (the dense matcher's own gate already refuses the pairs that do not show one place, `ContradictionCut.md`); in [0,1], refused without `--image-sequence` |
 | `--vocab-max-pairs` | 50 | target pairs per image (VOCABULARY, RETRIEVAL, KNOWN_POSES) |
 | `--match-verification-feedback` | true | two-round matching, active when `--vocab-max-pairs >= 10` |
 | `maxDescriptorsPerImage` | 1000 SIFT/SIFTGPU, 2000 AKAZE/ORB | descriptors per image the vocabulary tree uses |

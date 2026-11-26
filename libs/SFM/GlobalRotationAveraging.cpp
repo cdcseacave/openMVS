@@ -1151,7 +1151,7 @@ bool SFM::ChainVetoes(REAL discrepancy, REAL pairLength, REAL chainDistance, REA
 
 unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
 	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair,
-	const SequenceNeighbours* neighbours, float minLinkCovisibility, SequenceFilterStats* stats)
+	const SequenceNeighbours* neighbours, SequenceFilterStats* stats)
 {
 	if (stats != nullptr)
 		*stats = SequenceFilterStats();
@@ -1231,7 +1231,7 @@ unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>&
 				if (componentOf[pair.ID1] == NO_ID || componentOf[pair.ID1] != componentOf[pair.ID2])
 					noLink[idxPair] = true;
 			}
-			chain = SolveSequenceChain(scene, rotations, *neighbours, minLinkCovisibility, &noLink);
+			chain = SolveSequenceChain(scene, rotations, *neighbours, &noLink);
 			FOREACH(idxImage, scene.images) {
 				if (chain.segmentOf[idxImage] != NO_ID)
 					DEBUG_ULTIMATE("Chain centre: %s %u %.9g %.9g %.9g", ChainImageName(scene, (IIndex)idxImage).c_str(), chain.segmentOf[idxImage],
@@ -1278,7 +1278,7 @@ unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>&
 /*----------------------------------------------------------------*/
 
 SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Point3>& rotations,
-	const SequenceNeighbours& neighbours, float minCovisibility, const std::vector<bool>* removed)
+	const SequenceNeighbours& neighbours, const std::vector<bool>* removed)
 {
 	TD_TIMER_STARTD();
 	const uint32_t numPairs = (uint32_t)scene.pairs.size();
@@ -1298,8 +1298,7 @@ SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Poin
 		const ImagePair& pair = scene.pairs[idxPair];
 		if ((removed != nullptr && (*removed)[idxPair]) || !pair.relativePose.has_value() || !pair.HasValidWeight() ||
 			!neighbours.AreNeighbours(pair.ID1, pair.ID2) ||
-			rotations[pair.ID1] == Point3::INF || rotations[pair.ID2] == Point3::INF ||
-			(pair.covisibility.has_value() && *pair.covisibility < minCovisibility))
+			rotations[pair.ID1] == Point3::INF || rotations[pair.ID2] == Point3::INF)
 			continue;
 		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
 		if (!(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) || norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())

@@ -905,7 +905,6 @@ bool SequenceForcedMatchTest()
 			(unsigned)off.size(), (unsigned)expectedOff.size());
 		MatchConfig unread = Config(mode, false);
 		unread.sequenceMaxGap = 1;
-		unread.sequenceMinCovisibility = 0.9f;
 		TEST_CHECK(Matched(unread, bFatal) == off && !bFatal, "%s: the sequence options changed the candidates with the option off", name);
 		// the halves share nothing, so the visual rankings cross the break at most by their connectivity bridge, where the
 		// prior crosses it six times: the option is seen not to add those
