@@ -1032,7 +1032,7 @@ constexpr REAL kVetoLocalSteps = 8;         // local steps a pair may be off the
 constexpr REAL kVetoPathShare = 0.2;        // share of the chain's path between its images a pair may be off the chain
 constexpr REAL kVetoShortDivisor = 3;       // a pair under the chain distance over this is short
 
-// the name of an image in the lines of the chain, which are read token by token: its file name without directory
+// the name of an image in the line of a vetoed pair, which is read token by token: its file name without directory
 // and extension, a white space in it replaced, and the image's index when it has no name
 String ChainImageName(const Scene& scene, IIndex idxImage)
 {
@@ -1064,7 +1064,7 @@ struct ChainVeto {
 // frame as a link's scale is of the link's, so its length and its offset there are the scale times its baseline's, to
 // compare with the offset of the chain's centres of its two images and the path between them (ChainVetoes).
 // `rotations` are the ones the chain was solved with. Marks the vetoed pairs in `removed` and in the returned mask,
-// and logs every judged pair at the ultimate level, with the number of equations its scale is the median of.
+// and logs every vetoed pair at the ultimate level, with the number of equations its scale is the median of.
 ChainVeto VetoPairsByChain(const Scene& scene, const std::vector<Point3>& rotations, const SequenceChain& chain, std::vector<bool>& removed)
 {
 	TD_TIMER_STARTD();
@@ -1099,13 +1099,12 @@ ChainVeto VetoPairsByChain(const Scene& scene, const std::vector<Point3>& rotati
 		veto.time = TD_TIMER_GET_FMT();
 		return veto;
 	}
-	// the scale each equation between a candidate and a link of its segment gives the candidate:
-	// log s(idxB) - log s(idxA) = log scaleRatio, the residual of the scale solve (SolveScaleComponents)
+	// the scale each equation between a candidate and a link of its segment gives the candidate (the only
+	// equations formed): log s(idxB) - log s(idxA) = log scaleRatio, the residual of the scale solve (SolveScaleComponents)
 	std::vector<std::vector<REAL>> scalesOf(numPairs);
-	for (const ScalePair& equation : ComputePairScales(scene, pairIndices)) {
+	for (const ScalePair& equation : ComputePairScales(scene, pairIndices, &isCandidate)) {
 		const bool candidateA = isCandidate[equation.idxA];
-		if (candidateA == isCandidate[equation.idxB])
-			continue; // two links, or two candidates
+		ASSERT(candidateA != isCandidate[equation.idxB]);
 		const uint32_t idxCandidate = candidateA ? equation.idxA : equation.idxB;
 		const uint32_t idxLink = candidateA ? equation.idxB : equation.idxA;
 		// two pairs with an equation share an image, so the link lies in the candidate's segment
@@ -1127,12 +1126,11 @@ ChainVeto VetoPairsByChain(const Scene& scene, const std::vector<Point3>& rotati
 		const REAL pairLength = scale * norm(pair.relativePose->C);
 		const REAL chainDistance = norm(chainOffset);
 		const REAL path = ABS(chain.pathLength[pair.ID2] - chain.pathLength[pair.ID1]);
-		const bool vetoes = ChainVetoes(discrepancy, pairLength, chainDistance, chain.localStep[chain.segmentOf[pair.ID1]], path);
-		DEBUG_ULTIMATE("Chain pair: %s %s length %.9g chain %.9g path %.9g discrepancy %.9g veto %d equations %u",
-			ChainImageName(scene, pair.ID1).c_str(), ChainImageName(scene, pair.ID2).c_str(), pairLength, chainDistance, path, discrepancy, vetoes ? 1 : 0,
-			(unsigned)scales.size());
-		if (!vetoes)
+		if (!ChainVetoes(discrepancy, pairLength, chainDistance, chain.localStep[chain.segmentOf[pair.ID1]], path))
 			continue;
+		DEBUG_ULTIMATE("Chain pair: %s %s length %.9g chain %.9g path %.9g discrepancy %.9g veto 1 equations %u",
+			ChainImageName(scene, pair.ID1).c_str(), ChainImageName(scene, pair.ID2).c_str(), pairLength, chainDistance, path, discrepancy,
+			(unsigned)scales.size());
 		removed[idxPair] = veto.vetoed[idxPair] = true;
 		++veto.numVetoed;
 	}
@@ -1232,11 +1230,6 @@ unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>&
 					noLink[idxPair] = true;
 			}
 			chain = SolveSequenceChain(scene, rotations, *neighbours, &noLink);
-			FOREACH(idxImage, scene.images) {
-				if (chain.segmentOf[idxImage] != NO_ID)
-					DEBUG_ULTIMATE("Chain centre: %s %u %.9g %.9g %.9g", ChainImageName(scene, (IIndex)idxImage).c_str(), chain.segmentOf[idxImage],
-						chain.centres[idxImage].x, chain.centres[idxImage].y, chain.centres[idxImage].z);
-			}
 			veto = VetoPairsByChain(scene, rotations, chain, removed);
 			numRemoved += veto.numVetoed;
 		}

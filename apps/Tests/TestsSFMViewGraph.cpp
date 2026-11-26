@@ -1456,8 +1456,8 @@ bool SequenceChainTest()
 // to the feature of its copy one (two) periods on: the right rotation and a baseline of one step between frames 11
 // and 21 apart. Neighbours 3 apart, the cut unscored:
 // (2) every look-alike is vetoed and nothing else is removed, the chain one segment of 174 links, every other pair
-//     judged; the lines of the judged pairs give each look-alike the length of one step against a chain distance of 11
-//     or 21, and each true pair its true length; a neighbour pair that is no link (its weight 0) is judged like any
+//     judged; the lines of the vetoed pairs, the only ones logged, give each look-alike the length of one step
+//     against a chain distance of 11 or 21; a neighbour pair that is no link (its weight 0) is judged like any
 //     other pair;
 // (3) without the neighbours the cut is the call as it was (the same kept pairs as the six-argument call, the stats
 //     zero), and keeps the look-alikes: their direction agrees with the centres;
@@ -1478,13 +1478,13 @@ bool SequenceChainTest()
 // (10) pairs under the near-duplicate ray angle are judged: the near-duplicate look-alikes (i, i + 10) of the way out
 //     (the second frame a quarter of a step past the period, or before it: the same picture a little to the side,
 //     as new features of the second image) are all vetoed, a quarter of a step long on a chain distance of 10, and
-//     stay without the neighbours; true pairs with the ray angle set under the angle are judged at their true length
-//     and kept; with the second frame at the period exactly no match has a ray angle, the pair has no scale
-//     equation and is not judged;
+//     stay without the neighbours; true pairs with the ray angle set under the angle are judged and kept; with the
+//     second frame at the period exactly no match has a ray angle, the pair has no scale equation and is not judged;
 // (11) with the repair on, the vetoed near-duplicate look-alikes stay removed and make no spot: a look-alike two
 //     periods on that the rotation stage removed, which they would vouch for as one spot, is not returned;
-// (12) the capture ends standing still (the last six cameras at one place): the three that no link places stand
-//     where the last placed one does, their look-alikes are vetoed like the others and no true pair is removed.
+// (12) the capture ends standing still (the last six cameras at one place): the three that no link places are placed
+//     by standing still, their look-alikes are vetoed like the others and no true pair is removed;
+// (13) ComputePairScales given anchors forms the equations of the plain call between an anchor and a pair that is none.
 bool SequenceVetoTest()
 {
 	TestScope scope("SequenceVetoTest");
@@ -1659,37 +1659,28 @@ bool SequenceVetoTest()
 	const auto isZero = [](const SequenceFilterStats& stats) {
 		return stats.numSegments == 0 && stats.numLinks == 0 && stats.numJudged == 0 && stats.numVetoed == 0 && stats.numProtected == 0;
 	};
-	// the lines the cut logs per judged pair and per placed image, as the measurements read them; the images are named
-	// by their index
-	struct JudgedPair { IIndex a, b; double length, chain, path, discrepancy; int veto; };
-	struct PlacedImage { unsigned segment; Point3 centre; };
+	// the lines the cut logs per vetoed pair, as the measurements read them; the images are named by their index
+	struct VetoedPair { IIndex a, b; double length, chain, path, discrepancy; };
 	const auto indexOf = [](const char* stem) { const char* number = strrchr(stem, '_'); return number == NULL ? NO_ID : (IIndex)atoi(number + 1); };
-	const auto parseLog = [&](const String& text, std::vector<JudgedPair>& judged, std::map<IIndex,PlacedImage>& placed) {
+	const auto parseVetoed = [&](const String& text, std::vector<VetoedPair>& vetoed) {
 		char stem1[64], stem2[64];
 		for (size_t pos = text.find("Chain pair: "); pos != String::npos; pos = text.find("Chain pair: ", pos + 1)) {
-			JudgedPair pair;
+			VetoedPair pair;
+			int veto;
 			if (sscanf(text.c_str() + pos, "Chain pair: %63s %63s length %lf chain %lf path %lf discrepancy %lf veto %d",
-				stem1, stem2, &pair.length, &pair.chain, &pair.path, &pair.discrepancy, &pair.veto) != 7)
+				stem1, stem2, &pair.length, &pair.chain, &pair.path, &pair.discrepancy, &veto) != 7 || veto != 1)
 				return false;
 			pair.a = indexOf(stem1);
 			pair.b = indexOf(stem2);
-			judged.push_back(pair);
+			vetoed.push_back(pair);
 		}
-		for (size_t pos = text.find("Chain centre: "); pos != String::npos; pos = text.find("Chain centre: ", pos + 1)) {
-			PlacedImage image;
-			double x, y, z;
-			if (sscanf(text.c_str() + pos, "Chain centre: %63s %u %lf %lf %lf", stem1, &image.segment, &x, &y, &z) != 5)
-				return false;
-			image.centre = Point3(x, y, z);
-			placed[indexOf(stem1)] = image;
-		}
-		return true;
+		return text.find("Chain centre: ") == String::npos;
 	};
 
 	// (2) the corridor with the neighbours: the look-alikes vetoed, nothing else removed
 	const unsigned numChainLinks = (numImages - 1) + (numImages - 2) + (numImages - 3);
 	struct Range { double lo{std::numeric_limits<double>::max()}, hi{std::numeric_limits<double>::lowest()}; void Add(double v) { lo = MINF(lo, v); hi = MAXF(hi, v); } };
-	Range lengthOne, lengthTwo, discrepancyOne, discrepancyTwo, trueLengthError, trueDiscrepancy, revisitDiscrepancy;
+	Range lengthOne, lengthTwo, discrepancyOne, discrepancyTwo;
 	unsigned numLookAlikes = 0, numJudgedPairs = 0;
 	{
 		Scene scene;
@@ -1707,38 +1698,21 @@ bool SequenceVetoTest()
 		TEST_CHECK(removed == numLookAlikes && keptPairs(scene) == without(corridor.pairs, corridor.lookAlikes), "the corridor: %u pairs removed, expected exactly the %u look-alikes", removed, numLookAlikes);
 		const String report = String::FormatString("Sequence chain: 1 segment(s) over %u links; veto removed %u of %u judged pairs; 0 chain pairs protected", numChainLinks, numLookAlikes, numJudgedPairs);
 		TEST_CHECK(log.Contains(report), "the corridor: the cut did not report \"%s\"", report.c_str());
-		// the lines of the judged pairs and of the centres: in steps of the chain's frame, a look-alike is one step
-		// long on a chain distance of 11 or 21, a true pair has its true length and no discrepancy
-		std::vector<JudgedPair> judged;
-		std::map<IIndex,PlacedImage> placed;
-		TEST_CHECK(parseLog(log.text, judged, placed), "the corridor: a line of a judged pair or of a centre does not read");
-		TEST_CHECK(judged.size() == numJudgedPairs && placed.size() == numImages, "the corridor: %zu lines of judged pairs and %zu of centres, expected %u and %u", judged.size(), placed.size(), numJudgedPairs, numImages);
-		const REAL step = norm(placed[numOut - 1].centre - placed[0].centre) / REAL(numOut - 1);
-		TEST_CHECK(step > 0, "the corridor: the centres of the way out do not move");
-		for (const JudgedPair& pair : judged) {
-			TEST_CHECK(pair.a < pair.b && corridor.pairs.count({pair.a, pair.b}), "the corridor: the line of a judged pair names (%u,%u)", pair.a, pair.b);
+		// only the vetoed pairs are logged: a look-alike is one step long on a chain distance of 11 or 21 and that far
+		// less one step off the chain, a step being the line's chain distance over the true one. The true pairs are
+		// all judged (numJudged) and kept
+		std::vector<VetoedPair> vetoed;
+		TEST_CHECK(parseVetoed(log.text, vetoed) && vetoed.size() == numLookAlikes, "the corridor: %zu lines of vetoed pairs read, expected the %u look-alikes and no line of a centre", vetoed.size(), numLookAlikes);
+		for (const VetoedPair& pair : vetoed) {
+			TEST_CHECK(pair.a < pair.b && corridor.lookAlikes.count({pair.a, pair.b}), "the corridor: the line of a vetoed pair names (%u,%u), no look-alike", pair.a, pair.b);
 			const REAL trueDistance = norm(positionOf(pair.b) - positionOf(pair.a));
-			const REAL chainDistance = norm(placed[pair.b].centre - placed[pair.a].centre);
+			const REAL step = pair.chain / trueDistance;
 			const REAL length = pair.length / step, discrepancy = pair.discrepancy / step;
-			TEST_CHECK(ABS(pair.chain - chainDistance) <= tolerance * step && ABS(pair.chain / step - trueDistance) <= tolerance * trueDistance,
-				"the corridor: the pair (%u,%u) has the chain distance %g steps, its centres %g, the truth %g", pair.a, pair.b, pair.chain / step, chainDistance / step, trueDistance);
-			if (corridor.lookAlikes.count({pair.a, pair.b})) {
-				const bool onePeriod = pair.b - pair.a == period + 1;
-				(onePeriod ? lengthOne : lengthTwo).Add(length);
-				(onePeriod ? discrepancyOne : discrepancyTwo).Add(discrepancy);
-				TEST_CHECK(pair.veto == 1 && ABS(length - 1) <= tolerance && ABS(discrepancy - (trueDistance - 1)) <= tolerance * trueDistance &&
-					ABS(pair.path / step - trueDistance) <= tolerance * trueDistance,
-					"the corridor: the look-alike (%u,%u) has veto %d, length %g steps, discrepancy %g and path %g, expected 1, 1, %g and %g", pair.a, pair.b, pair.veto, length, discrepancy, pair.path / step, trueDistance - 1, trueDistance);
-				continue;
-			}
-			const bool revisit = pair.a + pair.b == numImages - 1;
-			trueLengthError.Add(ABS(length - trueDistance) / trueDistance);
-			(revisit ? revisitDiscrepancy : trueDiscrepancy).Add(discrepancy);
-			// the path runs through the turn, a step of 2
-			const REAL truePath = REAL(pair.b - pair.a) + (pair.a < numOut && pair.b >= numOut ? 1 : 0);
-			TEST_CHECK(pair.veto == 0 && ABS(length - trueDistance) <= tolerance * trueDistance && discrepancy <= tolerance * MAXF(trueDistance, REAL(1)) &&
-				ABS(pair.path / step - truePath) <= tolerance * truePath,
-				"the corridor: the true pair (%u,%u) has veto %d, length %g steps, discrepancy %g and path %g, expected 0, %g, 0 and %g", pair.a, pair.b, pair.veto, length, discrepancy, pair.path / step, trueDistance, truePath);
+			const bool onePeriod = pair.b - pair.a == period + 1;
+			(onePeriod ? lengthOne : lengthTwo).Add(length);
+			(onePeriod ? discrepancyOne : discrepancyTwo).Add(discrepancy);
+			TEST_CHECK(ABS(length - 1) <= tolerance && ABS(discrepancy - (trueDistance - 1)) <= tolerance * trueDistance && ABS(pair.path / step - trueDistance) <= tolerance * trueDistance,
+				"the corridor: the look-alike (%u,%u) has length %g steps, discrepancy %g and path %g, expected 1, %g and %g", pair.a, pair.b, length, discrepancy, pair.path / step, trueDistance - 1, trueDistance);
 		}
 	}
 	{
@@ -1974,7 +1948,7 @@ bool SequenceVetoTest()
 	// untouched) are judged at their true length and kept
 	constexpr REAL nearOffset = REAL(0.25);
 	const auto lowAngle = [&](const ImagePair& pair) { return pair.ID2 - pair.ID1 > overlap && pair.ID1 % 3 == 0; };
-	Range nearAngle, nearLength, nearDiscrepancy, lowLengthError;
+	Range nearAngle, nearLength, nearDiscrepancy;
 	unsigned numNear = 0, numLow = 0;
 	{
 		Scene scene, plain;
@@ -2017,32 +1991,29 @@ bool SequenceVetoTest()
 			"the near-duplicates: %u of %u judged pairs vetoed, expected the %u look-alikes and the %u near-duplicate look-alikes of %u", stats.numVetoed, stats.numJudged, numLookAlikes, numNear, numJudgedPairs + numNear);
 		TEST_CHECK(removed == numLookAlikes + numNear && keptPairs(scene) == without(without(corridor.pairs, corridor.lookAlikes), corridor.nearDuplicates),
 			"the near-duplicates: %u pairs removed, expected exactly the %u look-alikes and the %u near-duplicate look-alikes", removed, numLookAlikes, numNear);
-		std::vector<JudgedPair> judged;
-		std::map<IIndex,PlacedImage> placed;
-		TEST_CHECK(parseLog(log.text, judged, placed) && judged.size() == numJudgedPairs + numNear && placed.size() == numImages, "the near-duplicates: %zu lines of judged pairs and %zu of centres", judged.size(), placed.size());
-		const REAL step = norm(placed[numOut - 1].centre - placed[0].centre) / REAL(numOut - 1);
-		unsigned numNearLines = 0, numLowLines = 0;
-		for (const JudgedPair& pair : judged) {
+		// every pair that is no link is judged (numJudged), the true pairs under the angle among them, and they are
+		// kept; the lines of the vetoed pairs: a near-duplicate look-alike is a quarter of a step long on a chain
+		// distance of 10, its second image that far past the period or before it
+		std::vector<VetoedPair> vetoed;
+		TEST_CHECK(parseVetoed(log.text, vetoed) && vetoed.size() == numLookAlikes + numNear, "the near-duplicates: %zu lines of vetoed pairs read, expected %u", vetoed.size(), numLookAlikes + numNear);
+		unsigned numNearLines = 0;
+		for (const VetoedPair& pair : vetoed) {
 			const PairIds ids(pair.a, pair.b);
+			if (!corridor.nearDuplicates.count(ids)) {
+				TEST_CHECK(corridor.lookAlikes.count(ids), "the near-duplicates: the line of a vetoed pair names (%u,%u), no look-alike", pair.a, pair.b);
+				continue;
+			}
 			const REAL trueDistance = norm(positionOf(pair.b) - positionOf(pair.a));
+			const REAL step = pair.chain / trueDistance;
 			const REAL length = pair.length / step, discrepancy = pair.discrepancy / step;
-			if (corridor.nearDuplicates.count(ids)) {
-				// the second image stands a quarter of a step past the period, or before it: its offset is that far from the chain's
-				const REAL off = trueDistance - (pair.a % 2 == 0 ? nearOffset : -nearOffset);
-				++numNearLines;
-				nearLength.Add(length);
-				nearDiscrepancy.Add(discrepancy);
-				TEST_CHECK(pair.veto == 1 && ABS(length - nearOffset) <= tolerance * nearOffset && ABS(pair.chain / step - trueDistance) <= tolerance * trueDistance && ABS(discrepancy - off) <= tolerance * trueDistance,
-					"the near-duplicate look-alike (%u,%u) has veto %d, length %g steps, chain distance %g and discrepancy %g, expected 1, %g, %g and %g", pair.a, pair.b, pair.veto, length, pair.chain / step, discrepancy, nearOffset, trueDistance, off);
-			} else if (low.count(ids)) {
-				++numLowLines;
-				lowLengthError.Add(ABS(length - trueDistance) / trueDistance);
-				TEST_CHECK(pair.veto == 0 && ABS(length - trueDistance) <= tolerance * trueDistance && discrepancy <= tolerance * MAXF(trueDistance, REAL(1)),
-					"the true pair (%u,%u) under the near-duplicate angle has veto %d, length %g steps and discrepancy %g, expected 0, %g and 0", pair.a, pair.b, pair.veto, length, discrepancy, trueDistance);
-			} else
-				TEST_CHECK(pair.veto == (corridor.lookAlikes.count(ids) ? 1 : 0), "the near-duplicates: the pair (%u,%u) has veto %d", pair.a, pair.b, pair.veto);
+			const REAL off = trueDistance - (pair.a % 2 == 0 ? nearOffset : -nearOffset);
+			++numNearLines;
+			nearLength.Add(length);
+			nearDiscrepancy.Add(discrepancy);
+			TEST_CHECK(ABS(length - nearOffset) <= tolerance * nearOffset && ABS(discrepancy - off) <= tolerance * trueDistance,
+				"the near-duplicate look-alike (%u,%u) has length %g steps and discrepancy %g, expected %g and %g", pair.a, pair.b, length, discrepancy, nearOffset, off);
 		}
-		TEST_CHECK(numNearLines == numNear && numLowLines == numLow, "the near-duplicates: %u lines of near-duplicate look-alikes and %u of true pairs under the angle, expected %u and %u", numNearLines, numLowLines, numNear, numLow);
+		TEST_CHECK(numNearLines == numNear, "the near-duplicates: %u lines of near-duplicate look-alikes, expected %u", numNearLines, numNear);
 	}
 	{
 		// the same picture exactly (the second image at the period): no match has a ray angle, so the pair has no scale
@@ -2132,51 +2103,59 @@ bool SequenceVetoTest()
 			"the corridor ending still: %u pairs vetoed and %u removed, expected exactly the %zu look-alikes, the %u of the images %u-59 among them", stats.numVetoed, removed, corridor.lookAlikes.size(), numStillLookAlikes, firstStill);
 		const String solved = String::FormatString("Sequence chain solve: 1 segment(s) placing %u images by %u of %u links", firstStill, stats.numLinks, stats.numLinks);
 		TEST_CHECK(log.Contains(solved) && log.Contains("), 3 still image(s)"), "the corridor ending still: the solve did not log \"%s\" and 3 still image(s)", solved.c_str());
-		std::vector<JudgedPair> judged;
-		std::map<IIndex,PlacedImage> placed;
-		TEST_CHECK(parseLog(log.text, judged, placed) && judged.size() == stats.numJudged && placed.size() == numImages, "the corridor ending still: %zu lines of judged pairs (%u judged) and %zu of centres, expected every image placed", judged.size(), stats.numJudged, placed.size());
-		for (IIndex i = firstStill; i < numImages; ++i)
-			TEST_CHECK(placed[i].segment == placed[firstStill - 1].segment && placed[i].centre == placed[firstStill - 1].centre, "the corridor ending still: image %u is %g from the centre of image %u", i, norm(placed[i].centre - placed[firstStill - 1].centre), firstStill - 1);
-		const REAL step = norm(placed[numOut - 1].centre - placed[0].centre) / REAL(numOut - 1);
-		unsigned numVetoLines = 0, numStillVetoLines = 0, numStillTrueLines = 0, numStillPairLines = 0;
-		for (const JudgedPair& pair : judged) {
-			const PairIds ids(pair.a, pair.b);
+		// the lines of the vetoed pairs: every look-alike one step long on its chain distance, an image placed by
+		// standing still at the place of image 56
+		std::vector<VetoedPair> vetoed;
+		TEST_CHECK(parseVetoed(log.text, vetoed) && vetoed.size() == corridor.lookAlikes.size(), "the corridor ending still: %zu lines of vetoed pairs read, expected %zu", vetoed.size(), corridor.lookAlikes.size());
+		unsigned numStillVetoLines = 0;
+		for (const VetoedPair& pair : vetoed) {
 			const REAL trueDistance = norm(placeOf(pair.b, stillFrom) - placeOf(pair.a, stillFrom));
-			const REAL length = pair.length / step;
-			if (corridor.lookAlikes.count(ids)) {
-				++numVetoLines;
-				numStillVetoLines += pair.b >= firstStill;
-				TEST_CHECK(pair.veto == 1 && ABS(length - 1) <= tolerance && ABS(pair.chain / step - trueDistance) <= tolerance * trueDistance,
-					"the corridor ending still: the look-alike (%u,%u) has veto %d, length %g steps and chain distance %g, expected 1, 1 and %g", pair.a, pair.b, pair.veto, length, pair.chain / step, trueDistance);
-				continue;
-			}
-			if (pair.a >= stillFrom) {
-				// a pair among the frames standing still, were it judged: nothing to veto
-				++numStillPairLines;
-				TEST_CHECK(pair.veto == 0, "the corridor ending still: the pair (%u,%u) standing still is vetoed", pair.a, pair.b);
-				continue;
-			}
-			numStillTrueLines += pair.b >= firstStill;
-			TEST_CHECK(pair.veto == 0 && ABS(length - trueDistance) <= tolerance * trueDistance && ABS(pair.chain / step - trueDistance) <= tolerance * trueDistance,
-				"the corridor ending still: the true pair (%u,%u) has veto %d, length %g steps and chain distance %g, expected 0, %g and %g", pair.a, pair.b, pair.veto, length, pair.chain / step, trueDistance, trueDistance);
+			numStillVetoLines += pair.b >= firstStill;
+			TEST_CHECK(corridor.lookAlikes.count({pair.a, pair.b}) && ABS(pair.length * trueDistance / pair.chain - 1) <= tolerance,
+				"the corridor ending still: the vetoed pair (%u,%u) is %g steps long on a chain distance of %g, expected a look-alike of 1 step", pair.a, pair.b, pair.length * trueDistance / pair.chain, trueDistance);
 		}
 		numStillJudged = stats.numJudged;
-		TEST_CHECK(numVetoLines == corridor.lookAlikes.size() && numStillVetoLines == numStillLookAlikes,
-			"the corridor ending still: %u look-alikes judged, %u of them of the images %u-59; expected %zu and %u", numVetoLines, numStillVetoLines, firstStill, corridor.lookAlikes.size(), numStillLookAlikes);
-		// every pair that is no link is judged but the pairs among the six, which triangulate nothing; the images
-		// 57-59 have 9 true pairs with the frames before the place (3, 2 and 1 up to 6 before them, and a revisit each)
-		TEST_CHECK(stats.numJudged == corridor.pairs.size() - stats.numLinks - numStillPairs && numStillPairLines == 0 && numStillTrueLines == 9,
-			"the corridor ending still: %u pairs judged, %u of them among the frames standing still and %u true pairs of the images %u-59; expected %zu, 0 and 9", stats.numJudged, numStillPairLines, numStillTrueLines, firstStill,
-			corridor.pairs.size() - stats.numLinks - numStillPairs);
+		TEST_CHECK(numStillVetoLines == numStillLookAlikes, "the corridor ending still: %u look-alikes of the images %u-59 vetoed, expected %u", numStillVetoLines, firstStill, numStillLookAlikes);
+		// every pair that is no link is judged but the pairs among the six, which triangulate nothing: the true pairs
+		// of the images 57-59 with the frames before the place (3, 2 and 1 up to 6 before them, and a revisit each) among them
+		TEST_CHECK(stats.numJudged == corridor.pairs.size() - stats.numLinks - numStillPairs,
+			"the corridor ending still: %u pairs judged, expected %zu", stats.numJudged, corridor.pairs.size() - stats.numLinks - numStillPairs);
+	}
+
+	// (13) ComputePairScales given anchors (the links, as the veto calls it) forms exactly the equations of the plain
+	// call that join an anchor and a pair that is none
+	unsigned numAnchored = 0;
+	{
+		Scene scene;
+		buildCorridor(scene, numImages, false);
+		IIndexArr all;
+		std::vector<bool> anchors(scene.pairs.size());
+		FOREACH(idxPair, scene.pairs) {
+			all.push_back((IIndex)idxPair);
+			anchors[idxPair] = scene.pairs[idxPair].ID2 - scene.pairs[idxPair].ID1 <= overlap;
+		}
+		const std::vector<ScalePair> plain = ComputePairScales(scene, all), anchored = ComputePairScales(scene, all, &anchors);
+		std::vector<ScalePair> expected;
+		for (const ScalePair& equation : plain)
+			if (anchors[equation.idxA] != anchors[equation.idxB])
+				expected.push_back(equation);
+		bool same = anchored.size() == expected.size();
+		for (size_t i = 0; same && i < anchored.size(); ++i)
+			same = anchored[i].idxA == expected[i].idxA && anchored[i].idxB == expected[i].idxB &&
+				ABS(anchored[i].scaleRatio / expected[i].scaleRatio - 1) <= 1e-9 && anchored[i].weight == expected[i].weight;
+		numAnchored = (unsigned)anchored.size();
+		TEST_CHECK(same && !expected.empty() && expected.size() < plain.size(), "ComputePairScales with anchors: %zu equations, expected the %zu of the plain call's %zu that join an anchor and a pair that is none",
+			anchored.size(), expected.size(), plain.size());
 	}
 	return scope.Pass("the corridor: %u look-alikes vetoed of %u judged pairs (length %.4g-%.4g and %.4g-%.4g steps on 11 and 21, discrepancy %.4g-%.4g and %.4g-%.4g), "
-		"the true pairs' length within %.3g%%, their discrepancy under %.3g steps (the revisits' %.3g); the repair, the break, the abstentions, two rotation components; "
+		"the true pairs judged and kept; the repair, the break, the abstentions, two rotation components; "
 		"the view-graph filter (without the option %u of %u look-alikes kept and %u true pairs removed, with it none of either); the arc: the flipped link protected (%u supporting matches); "
-		"under the near-duplicate angle: %u near-duplicate look-alikes (ray angle %.3g-%.3g degrees) vetoed at a length of %.4g-%.4g steps on 10, %.4g-%.4g off, %u true pairs judged and kept, their length within %.3g%%, "
-		"the repair makes no spot of a vetoed pair; the corridor ending still: 3 images placed by standing still, their %u look-alikes vetoed, %u pairs judged",
+		"under the near-duplicate angle: %u near-duplicate look-alikes (ray angle %.3g-%.3g degrees) vetoed at a length of %.4g-%.4g steps on 10, %.4g-%.4g off, %u true pairs judged and kept, "
+		"the repair makes no spot of a vetoed pair; the corridor ending still: 3 images placed by standing still, their %u look-alikes vetoed, %u pairs judged; "
+		"%u pair-scale equations with anchors",
 		numLookAlikes, numJudgedPairs, lengthOne.lo, lengthOne.hi, lengthTwo.lo, lengthTwo.hi, discrepancyOne.lo, discrepancyOne.hi, discrepancyTwo.lo, discrepancyTwo.hi,
-		REAL(100) * trueLengthError.hi, trueDiscrepancy.hi, revisitDiscrepancy.hi, numKeptLookAlikes, 2 * numLookAlikes, numLostTruePairs, numSupporting,
-		numNear, nearAngle.lo, nearAngle.hi, nearLength.lo, nearLength.hi, nearDiscrepancy.lo, nearDiscrepancy.hi, numLow, REAL(100) * lowLengthError.hi, numStillLookAlikes, numStillJudged);
+		numKeptLookAlikes, 2 * numLookAlikes, numLostTruePairs, numSupporting,
+		numNear, nearAngle.lo, nearAngle.hi, nearLength.lo, nearLength.hi, nearDiscrepancy.lo, nearDiscrepancy.hi, numLow, numStillLookAlikes, numStillJudged, numAnchored);
 }
 
 // A matched scene goes through the view-graph filters (the triplet filter, the contradiction cut and its repair)

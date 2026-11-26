@@ -157,7 +157,8 @@ pairs that contradict it are removed before the translation stage reads them (`V
 A pair is judged when it is not removed by the rotation stage and is no chain link, has a pose and a
 non-zero world baseline, both its images lie in one segment (placed by its links or by standing
 still), and it shares at least one pair-scale equation (`ComputePairScales`, over the links and
-those pairs) with a link of that segment. A neighbour pair that is no link (a still pair, or one of weight
+those pairs, formed only between a link and a pair that is none: the `anchors` of `ComputePairScales`)
+with a link of that segment. A neighbour pair that is no link (a still pair, or one of weight
 0) is judged like any other pair. Every other pair is left to the two
 stages.
 
@@ -201,11 +202,11 @@ V of J judged pairs; P chain pairs protected (veto <time>)`; `SequenceFilterStat
 five numbers. The solve itself logs one line starting `Sequence chain solve:` (the segments, the
 images the links place, the links and the scale equations, the time, and at its end `, N still
 image(s)`, the images placed by standing still; or that no neighbour pair is a link). At `-v 3`
-the cut also writes one line per judged pair, `Chain pair: <image> <image> length <L> chain
-<distance> path <path> discrepancy <d> veto <0|1> equations <N>` (N the pair-scale equations with
-links its scale is the median of), and one per placed image, one placed by standing still included,
-`Chain centre: <image> <segment> <x> <y> <z>`, an image named by its file name without directory
-and extension (a white space replaced by `_`, its index when it has no name).
+the cut also writes one line per vetoed pair, `Chain pair: <image> <image> length <L> chain
+<distance> path <path> discrepancy <d> veto 1 equations <N>` (N the pair-scale equations with
+links its scale is the median of), an image named by its file name without directory and extension
+(a white space replaced by `_`, its index when it has no name). A pair judged and kept has no line:
+the log syncs every line to disk, and a capture has thousands of judged pairs.
 
 ## The repair
 

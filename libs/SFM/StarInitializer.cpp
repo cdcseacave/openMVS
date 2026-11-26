@@ -135,8 +135,9 @@ IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr&
 	return bestView;
 }
 
-std::vector<ScalePair> SFM::ComputePairScales(const Scene& scene, const IIndexArr& pairIndices)
+std::vector<ScalePair> SFM::ComputePairScales(const Scene& scene, const IIndexArr& pairIndices, const std::vector<bool>* anchors)
 {
+	ASSERT(anchors == NULL || anchors->size() == scene.pairs.size());
 	// 1. Triangulate the matches of each pair in its unit frame (in parallel): the distances of every
 	// point that passes the checks from the pair's two cameras, with its feature in each view
 	struct PairPoint { uint32_t feature1, feature2; double dist1, dist2; };
@@ -222,10 +223,12 @@ std::vector<ScalePair> SFM::ComputePairScales(const Scene& scene, const IIndexAr
 			for (; i < dists.size() && (features.empty() || dists[i].feature == features.front()->feature); ++i)
 				if (features.empty() || features.back()->pair != dists[i].pair)
 					features.push_back(&dists[i]);
-			// S_1 / S_2 = dist_2 / dist_1 for every two pairs that triangulated the feature (pair 1 < pair 2)
+			// S_1 / S_2 = dist_2 / dist_1 for every two pairs that triangulated the feature (pair 1 < pair 2),
+			// with anchors only for an anchor and a pair that is none
 			for (size_t a = 0; a + 1 < features.size(); ++a)
 				for (size_t b = a + 1; b < features.size(); ++b)
-					ratios.push_back({features[a]->pair, features[b]->pair, features[b]->dist / features[a]->dist});
+					if (anchors == NULL || (*anchors)[features[a]->pair] != (*anchors)[features[b]->pair])
+						ratios.push_back({features[a]->pair, features[b]->pair, features[b]->dist / features[a]->dist});
 		}
 		std::sort(ratios.begin(), ratios.end(), [](const Ratio& a, const Ratio& b) {
 			return a.pair1 != b.pair1 ? a.pair1 < b.pair1 : a.pair2 < b.pair2;

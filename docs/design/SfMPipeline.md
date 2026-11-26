@@ -79,7 +79,7 @@ With `--image-sequence` the cut is given the neighbours of the sequence (`Sequen
 `--match-sequence-overlap` and `--sequence-max-gap`, the ones the matcher forced): it vetoes the pairs that
 contradict the chain of the neighbour pairs and removes none of its links (`ContradictionCut.md`). The step then logs the number of name breaks it found (`Image sequence: N name
 break(s) among M images`, a reload included), and warns when the cut cannot use the option: its translation stage off
-(`--max-pair-direction-residual 0`) or `--match-sequence-overlap 0`. A `-v 3` run that did the matching saves the matched scene as
+(`--max-pair-direction-residual 0`) or `--match-sequence-overlap 0`. A `-v 4` run that did the matching saves the matched scene as
 `scene_matched.sfm` in the working folder right before this step (`MATCHED` without `PAIRS_FILTERED`): the filters run
 once on a scene's pairs, so that file, not `scene_pre_reconstruction.sfm` (saved after them), is the one to give back
 as source to run the filters with other options. A scene that came in matched is not saved again; a failed save is a
@@ -200,7 +200,7 @@ The state flags (`Scene::Status::STATE`) and what they decide:
 | Flag | Value | Set by | Effect when set on a loaded scene |
 |---|---|---|---|
 | `FEATURES_EXTRACTED` | 1 | `ExtractFeatures` | feature extraction is skipped ("features already extracted"); `--detector-type`, `--max-features-per-cell`, `--min-features-per-cell`, `--siftgpu-*`, `--spherical-bottom-band` are not read for this scene |
-| `MATCHED` | 2 | `MatchPairs`, so `scene_matched.sfm` (a `-v 3` run's scene before the view-graph filters) | pair selection and matching are skipped; `--match-mode`, `--vocab-max-pairs`, `--match-sequence-overlap` (except with `--image-sequence`, where the view-graph filter reads it as the neighbours' reach), `--match-verification-feedback`, `--dense-*` (`--roma2-model` for RoMa2 only) matching options, `--dense-matcher` are not read (but a missing model path is still refused, see the table above); missing relative poses are computed and the lens fit, focal calibration and planar twin switch run again; without `PAIRS_FILTERED`, stages 6 and 7 run (once) |
+| `MATCHED` | 2 | `MatchPairs`, so `scene_matched.sfm` (a `-v 4` run's scene before the view-graph filters) | pair selection and matching are skipped; `--match-mode`, `--vocab-max-pairs`, `--match-sequence-overlap` (except with `--image-sequence`, where the view-graph filter reads it as the neighbours' reach), `--match-verification-feedback`, `--dense-*` (`--roma2-model` for RoMa2 only) matching options, `--dense-matcher` are not read (but a missing model path is still refused, see the table above); missing relative poses are computed and the lens fit, focal calibration and planar twin switch run again; without `PAIRS_FILTERED`, stages 6 and 7 run (once) |
 | `CALIBRATED` | 4 | the end of the solver, after `Reconstruct` filters and triangulates | `Reconstruct` returns false at once; see the table above |
 | `GEO_ALIGN` | 8 | `AlignToGPS` | GPS-prior refinement runs only when this is set and `--gps-position-weight` is positive |
 | `GLOBAL_DESCRIPTORS` | 16 | `ComputeGlobalDescriptors` | RETRIEVAL does not describe the images again, unless the stored descriptors have the size of another dense matcher |

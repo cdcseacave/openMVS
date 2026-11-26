@@ -32,8 +32,9 @@ class SFM_API Scene;
 // common points, as ScalePair(pairIdx2, pairIdx1, mean ratio, sqrt(points kept)) with
 // pairIdx1 < pairIdx2 (the indices are scene pair indices): log s(pairIdx1) - log s(pairIdx2)
 // = log of the ratio, s the scale that takes a pair's unit frame to the common one. The equations
-// come sorted by (pairIdx1, pairIdx2).
-std::vector<ScalePair> SFM_API ComputePairScales(const Scene& scene, const IIndexArr& pairIndices);
+// come sorted by (pairIdx1, pairIdx2). With anchors (per scene pair), only the equations between an
+// anchor and a pair that is none are formed.
+std::vector<ScalePair> SFM_API ComputePairScales(const Scene& scene, const IIndexArr& pairIndices, const std::vector<bool>* anchors = NULL);
 
 /**
  * @brief Configuration for star initialization

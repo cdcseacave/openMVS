@@ -20,7 +20,7 @@ Located in `data/` (path compiled as `_DATA_PATH`):
 - `scene.mvs` — binary MVS scene for pipeline testing
 - `images/` — the four bundled photographs (`00000.jpg`, `00001.heic`, `00002.heic`, `00003.jpg`) of the SFM real-images tests
 - `exif_samples/`, `roma2/` — the fixtures of the metadata and RoMa2 preprocessing tests
-- the other files (`*.ply`, `depth*`, `reconstruct_test.*`, `scene_matched.sfm`, `scene_pre_reconstruction.sfm`) are outputs of test runs, not committed
+- the other files (`*.ply`, `depth*`, `reconstruct_test.*`, `scene_pre_reconstruction.sfm`) are outputs of test runs, not committed
 
 ## Running
 

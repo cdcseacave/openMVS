@@ -185,8 +185,8 @@ GPS. Clustering is never involved.
   the path, and under a third of the chain distance long; a pair under `kNearDuplicateRayAngle` is judged like any
   other; never offered to the repair, where it makes no spot either) and removes no chain link in its translation
   stage (`docs/design/ContradictionCut.md`); `SequenceFilterStats` and one `Sequence chain:` log line report it
-  (the solve logs its own `Sequence chain solve:` line), `-v 3` adds a `Chain pair:` line per judged pair (ending
-  `equations N`) and a `Chain centre:` line per placed image. A failed VOCABULARY/RETRIEVAL selection ends `Match` with
+  (the solve logs its own `Sequence chain solve:` line), `-v 3` adds a `Chain pair:` line per vetoed pair (ending
+  `equations N`). A failed VOCABULARY/RETRIEVAL selection ends `Match` with
   the option as without it; `FilterViewGraph` logs the name breaks and warns when the cut cannot use the option, and
   a `PAIRS_FILTERED` scene given the option warns that its filters ran already
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
@@ -377,7 +377,7 @@ instead of the images folder**. No code change needed:
 - A normal `-v 3` run writes `scene_pre_reconstruction.sfm` to the working folder (the
   matched and filtered scene, carrying the `FEATURES_EXTRACTED` + `MATCHED` + `PAIRS_FILTERED`
   state flags); a `--match-images-only` run saves the same scene as its output.
-- A `-v 3` run that did the matching also writes `scene_matched.sfm`, the matched scene before the
+- A `-v 4` run that did the matching also writes `scene_matched.sfm`, the matched scene before the
   view-graph filters (`MATCHED` without `PAIRS_FILTERED`): given as source it is filtered (once) with
   the run's view-graph options (`--filter-triplets`, `--max-pair-direction-residual`,
   `--image-sequence`, ...), which a `PAIRS_FILTERED` scene no longer reads. A scene that came in

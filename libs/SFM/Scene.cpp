@@ -856,7 +856,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		VERBOSE("The scene's %u pairs are matched and filtered already: the reconstruction starts from them", pairs.size());
 		if (cfg.matchCfg.imageSequence)
 			VERBOSE("warning: --image-sequence does not apply to this scene: its view-graph filters ran already, so the sequence's chain veto and protection do not act; "
-				"give back the scene before the filters (scene_matched.sfm of a -v 3 run) to run them with the option");
+				"give back the scene before the filters (scene_matched.sfm of a -v 4 run) to run them with the option");
 		WeighAndExportPairs(*this, cfg);
 	} else {
 		// Extract image features
@@ -871,10 +871,10 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 			return false;
 
 		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 2 && !matchedBefore) {
-			// Save the scene this run matched, before the view-graph filters, for debugging: the filters run
-			// once on a scene's pairs, so only this scene can be given back to run them with other options
-			// (a scene that came in matched is that file already)
+		if (VERBOSITY_LEVEL > 3 && !matchedBefore) {
+			// Save the scene this run matched, before the view-graph filters, for debugging (-v 4: the file
+			// holds every match): the filters run once on a scene's pairs, so only this scene can be given
+			// back to run them with other options (a scene loaded already matched is not saved again)
 			if (!Save(MAKE_PATH("scene_matched.sfm"), cfg.importCfg.archiveType))
 				VERBOSE("warning: failed to save the matched scene 'scene_matched.sfm' (the run continues)");
 		}
