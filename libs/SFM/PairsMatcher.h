@@ -71,7 +71,7 @@ struct SFM_API MatchConfig
 	unsigned maxPairsPerImage = 50;     // Target pairs per image (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	bool verificationFeedback = true;   // Two-round matching: hold back part of the pair budget and re-invest it in pairs suggested by the geometrically verified matches (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	unsigned matchSequenceOverlap = 3;  // Consecutive images each image is matched with: the whole candidate set of SEQUENTIAL mode, and a prior added to the VOCABULARY/RETRIEVAL candidates (0 = no prior); in a sequence run (IsImageSequence), the farthest two neighbours may be (0 = no neighbours)
-	bool imageSequence = false;         // --image-sequence: the images, in scene order, are frames of a possibly interrupted sequence (IsImageSequence)
+	bool imageSequence = false;         // --image-sequence: the images, in scene order, are frames of a possibly interrupted sequence, in any match mode (IsImageSequence)
 	unsigned sequenceMaxGap = 10;       // --sequence-max-gap: ComputeNameBreaks' maxGap in a sequence run; 0 = a jump of the frame number never breaks
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
 	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled; above 0 the geometric verification refuses, see GeometricFilter)
@@ -129,10 +129,11 @@ struct SFM_API MatchConfig
 	// Pairs weighting parameters
 	PairsWeightingConfig weightingCfg;
 
-	// Does this run read the scene's images as a sequence? Its neighbour pairs (SequenceNeighbours) are then always
-	// matched, in every match mode, and the contradiction cut trusts the chain they form. Nothing else decides it.
+	// Does this run read the scene's images as a sequence: imageSequence, or the SEQUENTIAL mode, which is one by
+	// itself? Its neighbour pairs (SequenceNeighbours) are then always matched, in every match mode, and the
+	// contradiction cut trusts the chain they form. Nothing else decides it.
 	inline bool IsImageSequence() const {
-		return imageSequence;
+		return imageSequence || mode == SEQUENTIAL;
 	}
 
 	inline bool IsMatchesFilterOn() const {

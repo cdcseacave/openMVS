@@ -764,9 +764,9 @@ void FilterViewGraph(Scene& scene, const ReconstructionConfig& config)
 			sequence->NumBreaks(), scene.images.size(), sequence->Overlap(), config.matchCfg.sequenceMaxGap);
 		// the chain is solved, and its veto and protection act, only in the translation stage and on neighbours
 		if (config.maxPairDirectionResidual <= 0.f)
-			VERBOSE("warning: --image-sequence does nothing in the contradiction cut: its translation stage is off (--max-pair-direction-residual 0), so the sequence's chain is neither solved nor trusted");
+			VERBOSE("warning: the image sequence (--image-sequence or --match-mode 2) does nothing in the contradiction cut: its translation stage is off (--max-pair-direction-residual 0), so the sequence's chain is neither solved nor trusted");
 		else if (sequence->Overlap() == 0)
-			VERBOSE("warning: --image-sequence does nothing in the contradiction cut: --match-sequence-overlap 0 leaves no neighbours, so the sequence has no chain");
+			VERBOSE("warning: the image sequence (--image-sequence or --match-mode 2) does nothing in the contradiction cut: --match-sequence-overlap 0 leaves no neighbours, so the sequence has no chain");
 	}
 	// the repair confirms a refitted direction against the centres of the translation stage, so
 	// without that stage (a bar of 0) there is nothing for it to act on
@@ -853,7 +853,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		// its pairs are only weighed with this configuration and exported
 		VERBOSE("The scene's %u pairs are matched and filtered already: the reconstruction starts from them", pairs.size());
 		if (cfg.matchCfg.IsImageSequence())
-			VERBOSE("warning: --image-sequence does not apply to this scene: its view-graph filters ran already, so the sequence's chain veto and protection do not act; "
+			VERBOSE("warning: the image sequence (--image-sequence or --match-mode 2) does not apply to this scene: its view-graph filters ran already, so the sequence's chain veto and protection do not act; "
 				"give back the scene before the filters (scene_matched.sfm of a -v 4 run) to run them with the option");
 		WeighAndExportPairs(*this, cfg);
 	} else {

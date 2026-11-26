@@ -1479,8 +1479,9 @@ bool SequenceChainTest()
 // (6) the veto abstains: 5 cameras (9 links, under the pairs a scale component needs), a bar of 0 (no translation
 //     stage), overlap 0, and scenes of no image and of one give the result of the cut without the neighbours;
 // (7) a segment does not span two components of the rotation averaging (their rotations share no frame);
-// (8) the view-graph filter of a matched scene reads the option: Scene::Reconstruct with imageSequence set vetoes the
-//     look-alikes of the saved corridor, the names of its images making the break at the turn, and keeps them without.
+// (8) the view-graph filter of a matched scene reads the option: Scene::Reconstruct with imageSequence set, or in the
+//     SEQUENTIAL match mode, vetoes the look-alikes of the saved corridor, the names of its images making the break at
+//     the turn, and keeps them without.
 // On the arc of ContradictionCutTest (6): (9) a neighbour pair with a flipped baseline that its matches support (new
 // features of its second image, where a camera at the mirrored centre sees the points) is removed without the
 // neighbours and kept with them, the one protected link; flipped with its true matches it triangulates nothing, has
@@ -1897,6 +1898,13 @@ bool SequenceVetoTest()
 		TEST_CHECK(log.Contains(report), "the view-graph filter with the option did not report \"%s\"", report.c_str());
 		TEST_CHECK(keptPairs(sequence) == without(corridor.pairs, corridor.lookAlikes), "the view-graph filter with the option keeps %u pairs, expected the %zu pairs that are no look-alikes",
 			(unsigned)sequence.pairs.size(), corridor.pairs.size() - corridor.lookAlikes.size());
+		// the SEQUENTIAL match mode is a sequence run by itself: the same filter without the option
+		cfg.matchCfg.imageSequence = false;
+		cfg.matchCfg.mode = MatchConfig::SEQUENTIAL;
+		Scene sequential(2);
+		TEST_CHECK(sequential.Reconstruct(matchedPath, cfg) && sequential.status.nState.isSet(STATE::PAIRS_FILTERED), "the match-images-only run of the matched corridor in the sequential mode failed");
+		TEST_CHECK(log.Count(report.c_str()) == 2 && keptPairs(sequential) == keptPairs(sequence), "the view-graph filter in the sequential mode keeps %u pairs, expected the %u it keeps with the option",
+			(unsigned)sequential.pairs.size(), (unsigned)sequence.pairs.size());
 	}
 
 	// (9) the protection, on the arc of ContradictionCutTest (6): the neighbour pair (7,8) with its baseline flipped

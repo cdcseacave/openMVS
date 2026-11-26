@@ -75,7 +75,7 @@ matching, for a fresh scene and for a resumed one not yet at `PAIRS_FILTERED`. T
 pairs CSV is written, then the triplet filter, then the contradiction cut; the scene keeps the seed views and reaches
 `PAIRS_FILTERED`. The triplet filter removes nothing by default: it scores the pairs, and the scores weigh the
 contradiction cut and select the seed views. With `--filter-triplets 0` the contradiction cut still runs, unweighted.
-With `--image-sequence` the cut is given the neighbours of the sequence (`SequenceNeighbours` at
+With `--image-sequence`, or in the sequential match mode (`MatchConfig::IsImageSequence()`), the cut is given the neighbours of the sequence (`SequenceNeighbours` at
 `--match-sequence-overlap` and `--sequence-max-gap`, the ones the matcher forced): it vetoes the pairs that
 contradict the chain of the neighbour pairs and removes none of its links (`ContradictionCut.md`). The step then logs the number of name breaks it found (`Image sequence: N name
 break(s) among M images`, a reload included), and warns when the cut cannot use the option: its translation stage off
@@ -85,7 +85,7 @@ once on a scene's pairs, so that file, not `scene_pre_reconstruction.sfm` (saved
 as source to run the filters with other options. A scene that came in matched is not saved again; a failed save is a
 warning and the run continues.
 A scene loaded at `PAIRS_FILTERED` skips stages 2 to 7: its pairs are weighed with the run's configuration and the pairs
-CSV describes them (`WeighAndExportPairs`), nothing is matched or filtered again; with `--image-sequence` a warning says
+CSV describes them (`WeighAndExportPairs`), nothing is matched or filtered again; in a sequence run a warning says
 that the chain's veto and protection do not act on it (`scene_matched.sfm` is the scene to give back). `--match-images-only` returns after
 this step; it first resolves an automatic `frames.json` camera-axes convention when known poses were imported, so the
 saved scene carries resolved poses. The scene it saves is the one a reconstruction starts from.
@@ -200,7 +200,7 @@ The state flags (`Scene::Status::STATE`) and what they decide:
 | Flag | Value | Set by | Effect when set on a loaded scene |
 |---|---|---|---|
 | `FEATURES_EXTRACTED` | 1 | `ExtractFeatures` | feature extraction is skipped ("features already extracted"); `--detector-type`, `--max-features-per-cell`, `--min-features-per-cell`, `--siftgpu-*`, `--spherical-bottom-band` are not read for this scene |
-| `MATCHED` | 2 | `MatchPairs`, so `scene_matched.sfm` (a `-v 4` run's scene before the view-graph filters) | pair selection and matching are skipped; `--match-mode`, `--vocab-max-pairs`, `--match-sequence-overlap` (except with `--image-sequence`, where the view-graph filter reads it as the neighbours' reach), `--match-verification-feedback`, `--dense-*` (`--roma2-model` for RoMa2 only) matching options, `--dense-matcher` are not read (but a missing model path is still refused, see the table above); missing relative poses are computed and the lens fit, focal calibration and planar twin switch run again; without `PAIRS_FILTERED`, stages 6 and 7 run (once) |
+| `MATCHED` | 2 | `MatchPairs`, so `scene_matched.sfm` (a `-v 4` run's scene before the view-graph filters) | pair selection and matching are skipped; `--match-mode`, `--vocab-max-pairs`, `--match-sequence-overlap` (except in a sequence run, `--image-sequence` or `--match-mode 2` given again, where the view-graph filter reads `--match-mode` to decide it and the overlap as the neighbours' reach), `--match-verification-feedback`, `--dense-*` (`--roma2-model` for RoMa2 only) matching options, `--dense-matcher` are not read (but a missing model path is still refused, see the table above); missing relative poses are computed and the lens fit, focal calibration and planar twin switch run again; without `PAIRS_FILTERED`, stages 6 and 7 run (once) |
 | `CALIBRATED` | 4 | the end of the solver, after `Reconstruct` filters and triangulates | `Reconstruct` returns false at once; see the table above |
 | `GEO_ALIGN` | 8 | `AlignToGPS` | GPS-prior refinement runs only when this is set and `--gps-position-weight` is positive |
 | `GLOBAL_DESCRIPTORS` | 16 | `ComputeGlobalDescriptors` | RETRIEVAL does not describe the images again, unless the stored descriptors have the size of another dense matcher |

@@ -5,7 +5,7 @@ pair whose relative rotation is not the one a robust global averaging of the pai
 baseline direction is not the one the camera centres those pairs place give. It exists because
 repeated structure and look-alike views fabricate pairs that pass two-view verification yet cannot
 be placed consistently with the rest of the graph. A repair step brings back a removed pair whose
-own matches support a corrected relative pose. With `--image-sequence` the chain of the verified
+own matches support a corrected relative pose. With `--image-sequence` (always on with `--match-mode 2`) the chain of the verified
 neighbour pairs is trusted: a pair that contradicts it is vetoed, and none of its links is removed.
 `FilterPairsByContradiction`, `RepairContradictedPairs` (`GlobalRotationAveraging.h/cpp`); the chain is
 `SolveSequenceChain` and `ApplySequenceChain` (`SequenceChain.h/cpp`). The stages share one state per
@@ -100,7 +100,8 @@ veto runs before step 1 and the verdict of step 5 spares the chain links (below)
 
 ### The chain of an image sequence
 
-With `--image-sequence` (`PairSelection.md`) the images are frames of a possibly interrupted
+With `--image-sequence` or the sequential match mode (`MatchConfig::IsImageSequence()`,
+`PairSelection.md`) the images are frames of a possibly interrupted
 sequence, and the neighbour pairs alone (at most the sequence overlap apart, no name break between,
 `SequenceNeighbours`) place the camera centres along it: `SolveSequenceChain` runs the scale and
 centres solve of steps 3 and 4 on the chain links, weighted by composite weight alone. It runs
@@ -265,7 +266,7 @@ One log line reports the pairs repaired of those removed and the seconds.
 | `GlobalRotationEstimatorOptions::maxNumL1Iterations`, `maxNumIrlsIterations` | none | 5, 100 | solver rounds |
 | repair constants (`GlobalRotationAveraging.cpp`) | none | 1 degree, 200 rounds, 8 matches, 80%, 20 degrees | epipolar band, RANSAC rounds, minimum matches, minimum agreeing share, maximum angle to the centres |
 | translation constants | none | 10 pairs, 40 rounds, 0.001, 1.05 | smallest solved component, reweighting rounds, L1 floor, scale bar |
-| `MatchConfig::imageSequence` | `--image-sequence B` | false | the chain of the neighbour pairs is solved, the pairs that contradict it vetoed, its links protected (needs the bar above 0) |
+| `MatchConfig::imageSequence` | `--image-sequence B` | false (on with `--match-mode 2`) | the chain of the neighbour pairs is solved, the pairs that contradict it vetoed, its links protected (needs the bar above 0) |
 | `MatchConfig::matchSequenceOverlap`, `sequenceMaxGap` | `--match-sequence-overlap N`, `--sequence-max-gap N` | 3, 10 | the neighbours (`PairSelection.md`) |
 | veto constants (`SequenceChain.cpp`) | none | 8 steps, 0.2, 3 | tolerance in local steps, tolerance as a share of the path, the chain distance over this is the length a vetoed pair stays under |
 
@@ -282,7 +283,7 @@ raises `ValueError`, as the command line refuses it). The repair flag has no Pyt
 - The pair order of the scene is kept; removal compacts the pair array in one pass and the weights
   are recomputed after it.
 - The repair modifies only pairs the stages removed, and unmarks them as removed.
-- Without the neighbours (`--image-sequence` off) no chain is solved and the cut is the two stages and
+- Without the neighbours (no sequence run) no chain is solved and the cut is the two stages and
   the repair alone. With them and a bar of 0, or a chain too small to solve (under 10 links in every
   component), nothing is judged and nothing protected.
 - A vetoed pair is never repaired, vouches for no removed pair and joins no spot of the repair. A

@@ -199,10 +199,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description matching("Pair selection and matching options");
 	matching.add_options()
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value((int)defaults.matchCfg.mode), "match mode: -1=SKIP (no matching: only for a saved .sfm scene that already holds matches),0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
-		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(defaults.matchCfg.matchSequenceOverlap), "consecutive images each image is matched with: the whole candidate set of the sequential mode, and a prior added to the vocabulary and retrieval candidates (0 = no prior); with --image-sequence the reach of the neighbours, in every mode and in the view-graph filter (0 = no neighbours)")
+		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(defaults.matchCfg.matchSequenceOverlap), "images ahead each image is matched with: all the candidates of the sequential mode, and extra candidates added to the vocabulary and retrieval modes (0 = none); for an image sequence (--image-sequence), how many positions apart two images may be to be neighbours, in every mode (0 = no neighbours)")
 		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(defaults.matchCfg.maxPairsPerImage), "target pairs per image for vocabulary and pose-guided matching")
-		("image-sequence", boost::program_options::value(&OPT::imageSequence)->default_value(defaults.matchCfg.imageSequence), "the images, in import order, are frames of a possibly interrupted sequence: the neighbours of an image are the images at most --match-sequence-overlap positions away with no name break between (a change of directory or name prefix, a frame number that does not rise or rises by more than --sequence-max-gap times its usual step); the pairs of neighbours are always matched, and the view-graph filter trusts the chain they form: a pair that contradicts it is removed, a pair of the chain is not")
-		("sequence-max-gap", boost::program_options::value(&OPT::sequenceMaxGap)->default_value(defaults.matchCfg.sequenceMaxGap), "with --image-sequence: a frame number rising by more than this many times the median rise between consecutive frames of one name prefix is a break of the sequence; 0 = the rises make no break (names that are clock times, such as IMG_20261125_103059, rise by 41 or more at every minute rollover)")
+		("image-sequence", boost::program_options::value(&OPT::imageSequence)->default_value(defaults.matchCfg.imageSequence), "the images, in import order, are frames of one capture that may be interrupted (several takes, a stop and restart); always on with --match-mode 2. Images at most --match-sequence-overlap positions apart are neighbours unless the file names break the sequence between them (see --sequence-max-gap). Neighbour pairs are always matched, in every match mode, and the contradiction cut trusts the camera path they form: it removes the pairs that contradict it (look-alikes of a repetitive place) and keeps the neighbour pairs (needs --max-pair-direction-residual above 0)")
+		("sequence-max-gap", boost::program_options::value(&OPT::sequenceMaxGap)->default_value(defaults.matchCfg.sequenceMaxGap), "for an image sequence (--image-sequence or --match-mode 2) whose file names end in a frame number: a jump of more than this many times the usual step (the median step among names with the same prefix) breaks the sequence; a change of directory or prefix, or a number that does not increase, always breaks it. 0 = jumps never break (for names that are timestamps, e.g. IMG_20261125_103059)")
 		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(defaults.matchCfg.verificationFeedback), "hold back part of the matching budget and re-invest it in pairs suggested by the geometrically verified matches (vocabulary and pose-guided matching)")
 		("release-descriptors", boost::program_options::value(&OPT::releaseDescriptors)->default_value(defaults.matchCfg.releaseDescriptors), "release descriptors after matching to save memory")
 		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(defaults.matchImagesOnly), "match the image pairs and filter their view graph (triplet filter, contradiction cut and its repair), then save the scene without reconstruction; a reconstruction given that scene as source starts from it without matching or filtering again")
@@ -421,9 +421,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 				return false;
 			}
 	}
-	if (!OPT::imageSequence && given("sequence-max-gap")) {
-		LOG("error: --sequence-max-gap given without --image-sequence (the sequence is not read, nothing uses it)");
-		return false;
+	{
+		MatchConfig matchCfg;
+		matchCfg.mode = static_cast<MatchConfig::MatchMode>(OPT::matchMode);
+		matchCfg.imageSequence = OPT::imageSequence;
+		if (!matchCfg.IsImageSequence() && given("sequence-max-gap")) {
+			LOG("error: --sequence-max-gap given without --image-sequence or --match-mode 2 (the images are not read as a sequence, nothing uses it)");
+			return false;
+		}
 	}
 	if (!(OPT::fDenseMinCovisibility >= 0.f && OPT::fDenseMinCovisibility <= 1.f)) {
 		LOG("error: --dense-min-covisibility is a covisibility score, it must be in [0,1] (got %g)", OPT::fDenseMinCovisibility);

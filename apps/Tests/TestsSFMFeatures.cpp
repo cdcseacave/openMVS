@@ -534,7 +534,19 @@ bool SequenceNeighboursTest()
 		MatchConfig cfg;
 		cfg.matchSequenceOverlap = 2;
 		cfg.sequenceMaxGap = 10;
-		TEST_CHECK(!cfg.IsImageSequence() && !SequenceNeighbours::FromConfig(scene, cfg).has_value(), "the default configuration is a sequence run");
+		// without the option only the SEQUENTIAL mode is a sequence run, with the same neighbours as with it
+		for (const MatchConfig::MatchMode mode : {MatchConfig::SKIP, MatchConfig::EXHAUSTIVE, MatchConfig::VOCABULARY, MatchConfig::SEQUENTIAL,
+			MatchConfig::KNOWN_POSES, MatchConfig::RETRIEVAL})
+		{
+			cfg.mode = mode;
+			const std::optional<SequenceNeighbours> ofMode = SequenceNeighbours::FromConfig(scene, cfg);
+			TEST_CHECK(cfg.IsImageSequence() == (mode == MatchConfig::SEQUENTIAL) && ofMode.has_value() == cfg.IsImageSequence(),
+				"match mode %d without the option: a sequence run %d, neighbours %d", (int)mode, (int)cfg.IsImageSequence(), (int)ofMode.has_value());
+			if (ofMode.has_value())
+				TEST_CHECK(ofMode->NumBreaks() == 2 && ofMode->Overlap() == 2 && ofMode->AreNeighbours(0, 1) && !ofMode->AreNeighbours(1, 2),
+					"the SEQUENTIAL mode's neighbours are not those of the option");
+		}
+		cfg.mode = MatchConfig::VOCABULARY;
 		cfg.imageSequence = true;
 		const std::optional<SequenceNeighbours> neighbours = SequenceNeighbours::FromConfig(scene, cfg);
 		TEST_CHECK(cfg.IsImageSequence() && neighbours.has_value(), "no neighbours with the option");
@@ -737,7 +749,7 @@ static void BuildInterruptedSequenceScene(Scene& scene)
 // missing ones (none across the name break), the pre-match filter never removes one (one the scene already holds verified
 // leaves the list, held once), and every match mode attempts all of them while adding nothing else, and none after a
 // selection that failed; with the option off every mode's candidates are today's (the sequential prior of the retrieval
-// modes included, which does cross the break)
+// modes included, which does cross the break), and the SEQUENTIAL mode is a sequence run without the option
 bool SequenceForcedMatchTest()
 {
 	TestScope scope("SequenceForcedMatchTest");
@@ -924,6 +936,15 @@ bool SequenceForcedMatchTest()
 		MatchConfig unread = Config(mode, false);
 		unread.sequenceMaxGap = 1;
 		TEST_CHECK(Matched(unread, bFatal) == off && !bFatal, "%s: the sequence options changed the candidates with the option off", name);
+		// the SEQUENTIAL mode is a sequence run by itself: without the option it matches what it matches with it and
+		// adds the neighbour pairs its candidates lack (none), which no other mode does
+		{
+			LogCapture log;
+			Matched(Config(mode, false), bFatal);
+			const bool sequenceRun = log.Contains("Image sequence: 0 neighbour pairs added");
+			TEST_CHECK(sequenceRun == (mode == MatchConfig::SEQUENTIAL) && (!sequenceRun || off == on), "%s without the option: %s as a sequence, %u pairs attempted against %u with the option",
+				name, sequenceRun ? "matched" : "not matched", (unsigned)off.size(), (unsigned)on.size());
+		}
 		// the halves share nothing, so the visual rankings cross the break at most by their connectivity bridge, where the
 		// prior crosses it six times: the option is seen not to add those
 		if (withPrior)

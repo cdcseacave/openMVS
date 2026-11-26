@@ -89,13 +89,17 @@ leave out a share of the truly overlapping consecutive pairs, exactly the ones t
 together end to end. `AddSequentialPairs` adds, unconditionally, for every image its next `--match-sequence-overlap`
 neighbours in import order (`k = 1..overlap`, no wrap-around), skipping pairs already present; 0 turns it off. It is
 added before the snapshot the feedback round attempts against, so the feedback round never re-proposes them. It does not
-apply to the other modes, nor with `--image-sequence`, where the neighbour pairs take its place (the prior would also add
-the pairs across a name break).
+apply to the other modes, nor in a sequence run (`--image-sequence`), where the neighbour pairs take its place (the prior
+would also add the pairs across a name break), nor to a selection that ranked no pair.
 
 ### Sequence neighbours
 
 `--image-sequence` declares that the images, in import order, are frames of a sequence that may be interrupted
-(several takes, a capture stopped and resumed). Two images are neighbours (`SequenceNeighbours::AreNeighbours`) when
+(several takes, a capture stopped and resumed); the SEQUENTIAL mode (`--match-mode 2`) declares it by itself. One
+predicate decides that a run is a sequence run, `MatchConfig::IsImageSequence()`, and one factory builds its
+neighbours, `SequenceNeighbours::FromConfig` (none for any other run): the matcher and the view-graph filter both
+call it. Nothing is stored in the scene: a matched scene given back to be filtered is a sequence run when the option
+or the mode is given again. Two images are neighbours (`SequenceNeighbours::AreNeighbours`) when
 they are at most `--match-sequence-overlap` positions apart and no name break lies between them. A name is the
 directory and the stem of the file name (the extension is ignored); its number is the trailing decimal digits of the
 stem (none, or more than 19 digits: no number; nanosecond-epoch stems are 19 digits) and its prefix is the rest.
@@ -108,17 +112,17 @@ rules still apply: the switch for names that are clock times (`IMG_20261125_1030
 by 41 or more against a median of 1, and would otherwise be a break at the default gap. A name without a number makes
 no break with either neighbour. The definition is shared by everything that reads the capture as a sequence.
 
-With the option the neighbour pairs are always matched. In every mode that matches (all but SKIP), `Match` appends the
+In a sequence run the neighbour pairs are always matched. In every mode that matches (all but SKIP), `Match` appends the
 neighbour pairs the mode did not pick (`AddNeighbourPairs`) before the snapshot the feedback round attempts against, in
 place of the sequential prior of VOCABULARY and RETRIEVAL; the other candidates of a mode are unchanged (SEQUENTIAL keeps
-its wrap-around pairs, which are no neighbours, and normally lacks none). The pre-match filter (`PreMatch`) never removes a
+its own candidates, the pairs across a name break and its wrap-around pairs among them, and lacks no neighbour pair). The pre-match filter (`PreMatch`) never removes a
 neighbour pair, though it may still store the geometry it found for one; a neighbour pair the scene already holds verified
 leaves the list like any other, being already matched. A VOCABULARY or RETRIEVAL selection that failed (the vocabulary
-tree did not build, a global descriptor is missing: `EnsureGlobalDescriptorsIndex`) ends the stage with the option as
-without it: the error is logged, `Match` returns 0 and no neighbour pair is matched alone. Only a selection that ran and
+tree did not build, a global descriptor is missing: `EnsureGlobalDescriptorsIndex`) ends the stage in a sequence run as
+in any other: the error is logged, `Match` returns 0 and no neighbour pair is matched alone. Only a selection that ran and
 legitimately returned no pair leaves the neighbour pairs to be matched alone, and `Match` stops when there are none
 either. A neighbour pair goes through the normal matching and verification and
-is stored only if it verifies. Without the option nothing of this runs: every mode's candidates are those described above.
+is stored only if it verifies. In any other run nothing of this happens: every mode's candidates are those described above.
 
 The view-graph filter reads the same neighbours: the contradiction cut solves the chain of the verified neighbour pairs,
 vetoes the pairs that contradict it and removes none of its links (`ContradictionCut.md`, "The chain of an image
@@ -170,9 +174,9 @@ image, matches descriptors, and verifies:
 | parameter | default | effect |
 |---|---|---|
 | `--match-mode` | 1 (3 when poses were imported and the option is not given) | the mode |
-| `--match-sequence-overlap` | 3 | images ahead matched by SEQUENTIAL; sequential prior of VOCABULARY and RETRIEVAL; with `--image-sequence` the farthest neighbours; 0 = no prior (and no neighbours) |
-| `--image-sequence` | off | the images in import order are frames of a possibly interrupted sequence, whose neighbour pairs every mode matches (see Sequence neighbours) and whose chain the contradiction cut trusts (`ContradictionCut.md`) |
-| `--sequence-max-gap` | 10 | with `--image-sequence`: a frame number rising by more than this many median rises of its run is a break; 0 = no break by the rises (names that are clock times); refused without `--image-sequence` |
+| `--match-sequence-overlap` | 3 | images ahead matched by SEQUENTIAL; sequential prior of VOCABULARY and RETRIEVAL; in a sequence run the farthest neighbours; 0 = no prior (and no neighbours) |
+| `--image-sequence` | off (always on with `--match-mode 2`) | the images in import order are frames of a possibly interrupted sequence, whose neighbour pairs every mode matches (see Sequence neighbours) and whose chain the contradiction cut trusts (`ContradictionCut.md`) |
+| `--sequence-max-gap` | 10 | in a sequence run: a frame number rising by more than this many median rises of its run is a break; 0 = no break by the rises (names that are clock times); refused without `--image-sequence` or `--match-mode 2` |
 | `--vocab-max-pairs` | 50 | target pairs per image (VOCABULARY, RETRIEVAL, KNOWN_POSES) |
 | `--match-verification-feedback` | true | two-round matching, active when `--vocab-max-pairs >= 10` |
 | `maxDescriptorsPerImage` | 1000 SIFT/SIFTGPU, 2000 AKAZE/ORB | descriptors per image the vocabulary tree uses |
@@ -187,8 +191,8 @@ image, matches descriptors, and verifies:
 - Candidates are unordered pairs listed once (`MakePairIdx` puts the smaller index first); the dense one pass relies on it.
 - A requested backend never degrades silently into another ranking.
 - The feedback round proposes only pairs not attempted in round 1, including pairs the dense verdict rejected.
-- With `--image-sequence` every neighbour pair is attempted in every mode that matches, and none across a name break is
-  added by the option.
+- In a sequence run (`--image-sequence`, or the SEQUENTIAL mode) every neighbour pair is attempted in every mode that
+  matches, and none across a name break is added for being consecutive.
 - Round 2 is never run when the feedback budget is spent, when fewer than 3 images are eligible, or when no verified pair
   exists; KNOWN_POSES that fell back to exhaustive matching skips it.
 

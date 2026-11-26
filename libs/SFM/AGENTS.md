@@ -175,7 +175,7 @@ GPS. Clustering is never involved.
   propagates each verified pair to its endpoints' top-5 retrieval candidates; the images with the
   weakest verified connectivity refill any leftover budget (2 pairs/image) from their next
   best-ranked first-round candidates
-- **Image sequence** (`--image-sequence`, `SequenceNeighbours.h`, `SequenceChain.h`): the neighbour pairs (at most
+- **Image sequence** (`--image-sequence` or the SEQUENTIAL mode: `MatchConfig::IsImageSequence()`; `SequenceNeighbours.h`, `SequenceChain.h`): the neighbour pairs (at most
   `matchSequenceOverlap` positions apart, no name break between) are added to the candidates of every mode
   (`AddNeighbourPairs`, in place of the `AddSequentialPairs` prior of VOCABULARY/RETRIEVAL) and `PreMatch` never
   removes one (the neighbours are `SequenceNeighbours::FromConfig`'s, a `PairsMatcher` member); the view-graph filter
