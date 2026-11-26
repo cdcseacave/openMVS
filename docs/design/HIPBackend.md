@@ -81,7 +81,7 @@ GPUs of the build machine); the configure stops on an empty list or an entry tha
 
 | Check | Result |
 |---|---|
-| CUDA depth-maps, this code vs. the kernel before the shim (Windows, RelWithDebInfo) | byte-identical: `apps/Tests/data` 4/4 `.dmap`, ETH3D office (level 1, max 3072) 24/24 `.dmap` and the fused cloud (6 030 734 points) |
+| CUDA depth-maps, this code vs. the kernel without the shim (Windows, RelWithDebInfo) | byte-identical: ETH3D pipes (level 1, max 3072) 14/14 `.dmap` and the fused cloud, Holo360D Outdoor_004 (spherical, 40 panoramas) 40/40 `.dmap` and the fused cloud |
 | CUDA configure with `OpenMVS_USE_HIP` off | same cache, flags and projects; `ConfigLocal.h` gains `/* #undef _USE_HIP */` |
 | Debug `Tests 0/1/2` (CUDA, `_HEADLESS_DEBUG`) | exit 0, no `[ASSERT]` |
 | HIP build, Linux, ROCm 7.13 (user-space wheels), gfx1100;gfx1201, Release | every library and app compiles and links; the GPU sources warn only on ignored `[[nodiscard]]` `hipError_t` returns |
@@ -101,7 +101,7 @@ GPUs of the build machine); the configure stops on an empty list or an entry tha
 ## 5. Open items
 
 - Runtime validation on an AMD GPU (no hardware here): `Tests 0/1/2`, `apps/Tests/data` and ETH3D office
-  against the CUDA numbers above; until then the shuffle block scan and the ballot of the refine kernels, the
+  against the CUDA F-scores of `PatchMatchSmoothness.md`; until then the shuffle block scan and the ballot of the refine kernels, the
   textures and the gfx check are compiled, not run.
 - The SfM with SiftGPU (GLSL) in a HIP build is not run yet (the compile check ran with `OpenMVS_USE_SIFTGPU=OFF`).
 - A user-space ROCm (Python wheels) puts its libraries outside the loader path: `LD_LIBRARY_PATH` must name
