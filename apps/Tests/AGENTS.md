@@ -93,8 +93,8 @@ Every block states its contract with `ASSERT`; a call outside it is a bug in the
 | `BuildTracksConflictTest` | the track builder on a component holding one image twice: cut versus veto, merge distance |
 | `RetrievalTest` | global-descriptor retrieval: cosine ranking, the RETRIEVAL match mode, VOCABULARY against it, the `.sfm` round trip |
 | `PairSelectionTest` | how a candidate pair is made or pruned: known poses, sequential prior and mode, pre-match threshold |
-| `SequenceNeighboursTest` | the name breaks of an image sequence (directory, prefix, falling or jumping frame numbers) and the neighbours they leave |
-| `SequenceForcedMatchTest` | `--image-sequence`: the neighbour pairs are matched in every match mode, none across a break, nothing changes with the option off, and the SEQUENTIAL mode is a sequence run by itself |
+| `SequenceNeighboursTest` | the name breaks of an image sequence (directory, prefix, falling or jumping frame numbers, names without a number, 19 and 20 digits, the median rise per prefix, a gap of 0) and the neighbours they leave |
+| `SequenceForcedMatchTest` | a sequence run: the neighbour pairs appended once, kept by `PreMatch`, attempted by every match mode with nothing added across a name break; a failed selection still ends matching; the option off changes no mode's candidates; the SEQUENTIAL mode is a sequence run by itself |
 | `MatchOutcomeSignalsTest` | `Scene::MatchPairs()` fails on an empty view graph; the fatal-round signal is not "nothing stored" |
 | `SphericalBottomBandTest` | the bottom band of equirectangular feature extraction |
 | `DetectorConfigTest` | `FeatureTypeFromString` words and the shared default detector with its thresholds |
@@ -138,8 +138,8 @@ Every block states its contract with `ASSERT`; a call outside it is a bug in the
 | `TripletFilterTest` | the camera-triplet view-graph filter: scores, yield rule, both modes |
 | `RotationAveragingTest` | the rotation estimator on the 16-camera ring and its independence of the weight scale |
 | `ContradictionCutTest` | the contradiction cut: its rotation and translation stages on symmetric rings, roofs, bridges |
-| `SequenceChainTest` | the chain of an image sequence: the neighbour pairs place a walk, a break or removed pairs split it, a frame standing still is placed at its neighbour |
-| `SequenceVetoTest` | the chain in the contradiction cut: the look-alikes of a periodic corridor vetoed (those under the near-duplicate angle too), no true pair, the repair, the protected links; `ComputePairScales` with anchors |
+| `SequenceChainTest` | `SolveSequenceChain` on a walk: one segment near the truth, split by a name break or removed pairs; no link without weight, baseline direction or rotation; a shared image to the larger scale component; still images at the nearest placed image |
+| `SequenceVetoTest` | the chain in the contradiction cut: the `ChainVetoes` rule; on a periodic corridor exactly the look-alikes vetoed (near-duplicate ones and those of still images included), with a break at the turn and through the view-graph filter; vetoed pairs never repaired; the protected link; the pairs closing a loop judged and kept; `ComputePairScales` with anchors |
 | `FilteredSceneReloadTest` | a matched scene is filtered once, on load as on a fresh run |
 | `PairScalesTest` | the flat pair-scale build equals the node-map one |
 | `ScaleAveragingTest` | the scale estimator solves each connected component with its own gauge |

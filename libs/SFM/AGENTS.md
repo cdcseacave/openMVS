@@ -175,21 +175,14 @@ GPS. Clustering is never involved.
   propagates each verified pair to its endpoints' top-5 retrieval candidates; the images with the
   weakest verified connectivity refill any leftover budget (2 pairs/image) from their next
   best-ranked first-round candidates
-- **Image sequence** (`--image-sequence` or the SEQUENTIAL mode: `MatchConfig::IsImageSequence()`; `SequenceNeighbours.h`, `SequenceChain.h`): the neighbour pairs (at most
-  `matchSequenceOverlap` positions apart, no name break between) are added to the candidates of every mode
-  (`AddNeighbourPairs`, in place of the `AddSequentialPairs` prior of VOCABULARY/RETRIEVAL) and `PreMatch` never
-  removes one (the neighbours are `SequenceNeighbours::FromConfig`'s, a `PairsMatcher` member); the view-graph filter
-  (`FilterViewGraph`) passes the same neighbours to the contradiction cut, which between its two stages
-  (`ApplySequenceChain`) solves the chain of the verified neighbour pairs (`SolveSequenceChain`; a frame standing still, which no link
-  places, stands where the placed neighbour a still pair joins it to stands, `SequenceChain::numStill`), vetoes the
-  pairs that contradict it (`ChainVetoes`: off the chain by more than 8 local steps and 0.2 of
-  the path, and under a third of the chain distance long; a pair under `kNearDuplicateRayAngle` is judged like any
-  other; never offered to the repair, where it makes no spot either) and removes no chain link in its translation
-  stage (`docs/design/ContradictionCut.md`); `SequenceFilterStats` and one `Sequence chain:` log line report it
-  (the solve logs its own `Sequence chain solve:` line), `-v 3` adds a `Chain pair:` line per vetoed pair (ending
-  `equations N`). A failed VOCABULARY/RETRIEVAL selection ends `Match` with
-  the option as without it; `FilterViewGraph` logs the name breaks and warns when the cut cannot use the option, and
-  a `PAIRS_FILTERED` scene given the option warns that its filters ran already
+- **Image sequence** (`MatchConfig::IsImageSequence()`: `--image-sequence` or the SEQUENTIAL mode):
+  `SequenceNeighbours::FromConfig` (`SequenceNeighbours.h`) gives the neighbours to the matcher, which
+  adds their pairs to every mode (`AddNeighbourPairs`, kept by `PreMatch`), and to `FilterViewGraph`; the
+  cut (`FilterPairsByContradiction`, `GlobalRotationAveraging.h`) runs `ApplySequenceChain`
+  (`SequenceChain.h`: `SolveSequenceChain`, `ChainVetoes`), which vetoes the pairs that contradict
+  their chain and protects its links; the cut's internal shared declarations (`PairState`,
+  `ComputeWorldBaselines`, `SolveScaleComponents`) are in `ContradictionCut.h`, outside `libs/SFM.h`.
+  Rules, constants and log lines: `docs/design/PairSelection.md`, `docs/design/ContradictionCut.md`
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
 - **ROMAv2 one-pass dense matching** (`MatchDense.h`, `DenseWarp.h` helpers, `--dense-match`): the
   bidirectional dense warps are computed in-process (no external files) and, when enabled, ARE the
@@ -378,11 +371,9 @@ instead of the images folder**. No code change needed:
 - A normal `-v 3` run writes `scene_pre_reconstruction.sfm` to the working folder (the
   matched and filtered scene, carrying the `FEATURES_EXTRACTED` + `MATCHED` + `PAIRS_FILTERED`
   state flags); a `--match-images-only` run saves the same scene as its output.
-- A `-v 4` run that did the matching also writes `scene_matched.sfm`, the matched scene before the
-  view-graph filters (`MATCHED` without `PAIRS_FILTERED`): given as source it is filtered (once) with
-  the run's view-graph options (`--filter-triplets`, `--max-pair-direction-residual`,
-  `--image-sequence`, ...), which a `PAIRS_FILTERED` scene no longer reads. A scene that came in
-  matched is not saved again.
+- A `-v 4` run that matched also writes `scene_matched.sfm`, the scene before the view-graph filters
+  (`MATCHED` without `PAIRS_FILTERED`): the one to give back to filter with other options
+  (`docs/design/SfMPipeline.md`).
 - **Rename it first** (e.g. to `matches.sfm`) so the new run cannot overwrite it.
 - Feed it as the source: `CreateStructure matches.sfm -o scene.sfm -v 3`. `Scene::Import`
   detects the single `.sfm` and `Load`s it; on the `PAIRS_FILTERED` flag `Reconstruct` skips

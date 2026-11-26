@@ -101,10 +101,11 @@ variable. `DenseMatcher::ExpectedRetrievalSize` reads the descriptor size from t
   (`x2 = R*x1 + s*t`, `s > 0` unknown; the convention of `ImagePair::relativePose`).
 
 The pair callback of the warp pass tests presence, never the model's name. A pair with a covisibility below
-`minCovisibility` is dropped before the verdict (logged as `ROMA2 covisibility gate: N of M warped pairs below B`).
-The two outputs of a stored pair go into `ImagePair::covisibility` and `ImagePair::posePrior`; both are serialized
-with the pair (a presence flag each, `ImagePair.h`) and neither is geometry (no `Reset` clears them). `--export-pairs-csv` appends the columns `Covisibility`,
-`PriorQw..PriorQz`, `PriorTx..PriorTz` only when some pair has a covisibility.
+`minCovisibility` is dropped before the verdict (logged as `ROMA2 covisibility gate: N of M warped pairs below B`), a
+neighbour pair of an image sequence (`PairSelection.md`, "Sequence neighbours") like any other. The two outputs of a
+stored pair go into `ImagePair::covisibility` and `ImagePair::posePrior`; both are serialized with the pair (a presence
+flag each, `ImagePair.h`) and neither is geometry (no `Reset` clears them). `--export-pairs-csv` appends the columns
+`Covisibility`, `PriorQw..PriorQz`, `PriorTx..PriorTz` only when some pair has a covisibility.
 
 ## The models
 
