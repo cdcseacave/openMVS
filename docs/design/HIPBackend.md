@@ -74,7 +74,11 @@ toolkit, SiftGPU-CUDA or Ceres-CUDA is requested), enables the `HIP` language, f
 are `CMAKE_HIP_ARCHITECTURES` (ex. `gfx1100;gfx1201`), no default is hard-coded (left unset, CMake takes the
 GPUs of the build machine); the configure stops on an empty list or an entry that is not a gfx target ID
 (`native`, `all`, generic targets), as the device check could match no GPU against it. The list reaches
-`UtilCUDA.cpp` as `_HIP_ARCHS`. With the option off the CUDA configure is the one it was: the generated
+`UtilCUDA.cpp` as `_HIP_ARCHS`. A Debug build compiles the device code at `-O1` (`-Xarch_device -O1`
+appended to `CMAKE_HIP_FLAGS_DEBUG`) and the host code as configured: at `-O0`, the HIP Debug default
+since CMake 4, ROCm 7.2 keeps the gfx8/9 branch of the device library's block reduction behind
+`__syncthreads_or` (`SceneRefineCUDA.cu`), whose wavefront-shift DPP no gfx10+ target can encode, and the
+compile fails; ROCm 7.13 compiles `-O0`. With the option off the CUDA configure is the one it was: the generated
 `ConfigLocal.h` differs by the `/* #undef _USE_HIP */` line only.
 
 ## 3. Validation
@@ -85,7 +89,10 @@ GPUs of the build machine); the configure stops on an empty list or an entry tha
 | CUDA configure with `OpenMVS_USE_HIP` off | same cache, flags and projects; `ConfigLocal.h` gains `/* #undef _USE_HIP */` |
 | Debug `Tests 0/1/2` (CUDA, `_HEADLESS_DEBUG`) | exit 0, no `[ASSERT]` |
 | HIP build, Linux, ROCm 7.13 (user-space wheels), gfx1100;gfx1201, Release | every library and app compiles and links; the GPU sources warn only on ignored `[[nodiscard]]` `hipError_t` returns |
+| HIP Debug build (host `-g -O0`), ROCm 7.2 (clang 22) and 7.13 (clang 23), gfx1100;gfx1201 | the three `.cu` files compile; without the device `-O1`, ROCm 7.2 rejects `SceneRefineCUDA.cu` |
 | HIP build without an AMD GPU | `DensifyPointCloud` reports no device and densifies on the CPU |
+| Radeon RX 9070 (gfx1201, wave32), ROCm 7.2, Release and Debug | `Tests 0/1/2` exit 0, no `[ASSERT]`; the GPU refinement ends at 1.0001x the CPU's RMS; `apps/Tests/data` bit-identical over two runs; SfM with SiftGPU (GLSL) and CPU matching runs |
+| ETH3D office, the ETH3D undistorted COLMAP model (level 1, max 3072), RX 9070 vs. CUDA | 5 017 279 vs. 5 015 629 points (+0.03 %), 42 820 392 vs. 42 771 224 depths fused; CUDA scores F@2cm 0.5881, F@5cm 0.6851; the RX 9070 densifies in 100 s, its CPU run in 338 s |
 
 ## 4. Rejected alternatives
 
@@ -93,16 +100,16 @@ GPUs of the build machine); the configure stops on an empty list or an entry tha
   redefines reserved names.
 - A HIP hand port of the kernels, Metal style: a third copy of ~2600 kernel lines on hardware we do not own.
 - A shared-memory (Hillis-Steele) block scan replacing the shuffle scan: the shuffle scan is correct on 32-lane
-  wavefronts (ROCm lowers `__shfl_up` to `ds_bpermute`), the other is slower.
+  wavefronts (ROCm lowers `__shfl_up` to `ds_bpermute` at every optimization level), the other is slower.
+- Replacing `__syncthreads_or` to compile the device code at `-O0`: the defect is in ROCm 7.2 (7.13 compiles
+  it), and the device code keeps its `ASSERT`s at `-O1`.
 - `hip::device` linked like `hip::host`: its compile options make every host `.cpp` a HIP source.
 - Rejecting a PatchMatch patch with a sample outside the image instead of clamping the texture: changes the
   NVIDIA result (ETH3D F -0.0001..-0.0013, kernel +40 %).
 
 ## 5. Open items
 
-- Runtime validation on an AMD GPU (no hardware here): `Tests 0/1/2`, `apps/Tests/data` and ETH3D office
-  against the CUDA F-scores of `PatchMatchSmoothness.md`; until then the shuffle block scan and the ballot of the refine kernels, the
-  textures and the gfx check are compiled, not run.
-- The SfM with SiftGPU (GLSL) in a HIP build is not run yet (the compile check ran with `OpenMVS_USE_SIFTGPU=OFF`).
+- The F-score of the RX 9070 office cloud (its point count matches CUDA's).
+- A wave64 GPU (Instinct, GCN) is not run: the densify path and the refinement's CPU fallback there.
 - A user-space ROCm (Python wheels) puts its libraries outside the loader path: `LD_LIBRARY_PATH` must name
   `<root>/lib` to run the binaries.

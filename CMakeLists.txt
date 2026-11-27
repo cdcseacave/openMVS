@@ -315,6 +315,10 @@ if(OpenMVS_USE_HIP)
 	endforeach()
 	SET(CMAKE_HIP_STANDARD 17)
 	SET(CMAKE_HIP_STANDARD_REQUIRED ON)
+	# the device code of a Debug build is compiled at -O1, the host code as configured: at -O0 (the
+	# CMake 4 HIP Debug default) ROCm 7.2 keeps the gfx8/9 branch of the device library's block
+	# reduction behind __syncthreads_or, whose wavefront-shift DPP no gfx10+ target can encode
+	STRING(APPEND CMAKE_HIP_FLAGS_DEBUG " -Xarch_device -O1")
 	find_exported_dependency(hip CONFIG REQUIRED)
 	find_exported_dependency(hiprand CONFIG REQUIRED)
 	# hip::host only: hip::device carries "-x hip --offload-arch" as compile options of every
