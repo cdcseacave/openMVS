@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Export RoMa v2 (https://github.com/Parskatt/RoMaV2) to ONNX for OpenMVS's in-process ROMA2 matcher.
 
-Two static fp32 graphs per preset (layout: polyml
-romav2/{graphs,export}.py):
+Two static fp32 graphs per preset:
   roma_<setting>_descriptor_fp32.onnx    image[1,3,S,S] (RGB planar, [0,1]) -> layers[1,2,S/16,S/16,1024]
                                          (norm(block 11), norm(block 17)),
                                          value_facets[1,2,S/16,S/16,1024] (v_proj of blocks 15 and 20,
@@ -11,32 +10,24 @@ romav2/{graphs,export}.py):
                                          graphs.py _facets_retrieval -- on device)
   roma_<setting>_match_coarse_fp32.onnx  (descriptors_A, descriptors_B) -> warp[1,S/4,S/4,2],
                                          confidence[1,S/4,S/4,1] (A->B), warp_BA[1,S/4,S/4,2],
-                                         confidence_BA[1,S/4,S/4,1] (B->A, from the same bidirectional=True
-                                         matcher pass -- the dead img_A/img_B inputs are dropped)
+                                         confidence_BA[1,S/4,S/4,1] (B->A, from one bidirectional=True
+                                         matcher pass)
 
 `S` is the square input resolution --setting traces for: turbo 320, fast 512, base 640. The graphs are fp32,
 static shape, batch 1; precision is a property of the graph, and the runtime decides the rest (ORT runs the
 fp32 graph with TF32 on CUDA).
 
-Two stages, because the DINOv3 descriptor is per image while matching is per pair: a scene matches each
-image against several others, so exporting the descriptor separately lets the caller run it once per image
-and reuse the result.
+Three steps: `onnx` traces a stage; `check` runs the traced graph under onnxruntime and judges it against
+the eager fp32 model; `manifest` writes the roma_<setting>.json the C++ loader binds against, with a sha256
+per file.
 
-Three steps, and none of them optional. `onnx` traces a stage; `check` runs the traced graph under
-onnxruntime and judges it against the eager fp32 model — on cosine for the descriptor, on where the pair
-graph claims a correspondence for the matcher (see check_correspondences); `manifest` writes the
-roma_<setting>.json the C++ loader binds against, with a sha256 per file. Those checksums are
-provenance -- `export.py check` and whoever copies a model directory around verify them; the C++
-loader (`RoMa2Manifest::Load`) never reads them, so a truncated .onnx.data still surfaces at scene
-time as an opaque ONNX Runtime load failure, and `export.py check` is what attributes it.
+Example usage:
+  uv run --project ~/RoMaV2 --with 'onnxruntime-gpu==1.23.2' \\
+      python scripts/python/roma2/export.py onnx --stage descriptor --setting base --out-dir <dir>
+  ... python scripts/python/roma2/export.py check --onnx <dir>/roma_base_descriptor_fp32.onnx
+  ... python scripts/python/roma2/export.py manifest --out-dir <dir> --setting base
 
-Run inside polyml's export project env:
-  cd ~/polyml/romav2 && uv run --with 'onnxruntime-gpu==1.23.2' \\
-      python ~/openMVS/scripts/python/roma2/export.py onnx --stage descriptor --setting base --out-dir <dir>
-  ... --with 'onnxruntime-gpu==1.23.2' python .../export.py check --onnx <dir>/roma_base_descriptor_fp32.onnx
-  ... python .../export.py manifest --out-dir <dir> --setting base
-
-export.sh runs the whole sequence for the three presets, which is what a shipped model directory is.
+export.sh runs the whole sequence for the three presets.
 """
 import argparse
 import hashlib
@@ -51,32 +42,21 @@ import numpy as np
 
 SETTINGS = {"turbo": 320, "fast": 512, "base": 640}   # model.H_lr after apply_setting
 
-DEFAULT_CHECKPOINT = "~/.cache/torch/hub/checkpoints/romav2.0.1.pt"   # == Polycam/romav2 mirror's romav2.0.1.pt
-DEFAULT_ROMA2_REPO = "~/polyml/romav2"                # the vendored RoMaV2; ~/RoMaV2 (upstream) also works
+DEFAULT_CHECKPOINT = "~/.cache/torch/hub/checkpoints/romav2.0.1.pt"
+DEFAULT_ROMA2_REPO = "~/RoMaV2"
 
 STAGE_IO = {
     "descriptor": (["image"], ["layers", "value_facets", "retrieval"]),
     "match": (["descriptors_A", "descriptors_B"], ["warp", "confidence", "warp_BA", "confidence_BA"]),
 }
 
-FORMAT_VERSION = 1    # roma_<setting>.json's schema version, read by RoMa2Manifest::Load. Describes a
-                      # bidirectional match_coarse graph -- warp_BA/confidence_BA (B->A) join warp/
-                      # confidence (A->B), both from one bidirectional=True matcher pass, its dead
-                      # img_A/img_B inputs (never read by the coarse head; see graphs.MatchWrap's
-                      # docstring) dropped -- and a descriptor graph whose io.descriptor.outputs.retrieval
-                      # is the FACETS recipe pooled on device (graphs.py _facets_retrieval). The loader
-                      # rejects any other format_version, naming the version it saw.
+FORMAT_VERSION = 1    # roma_<setting>.json's schema version, read by RoMa2Manifest::Load
 
 WARMUP_RUNS = 10      # discarded before timing: the first executions carry allocation and clock ramp
 
-# What the manifest publishes about the two retrieval recipes graphs.pool_retrieval implements and the C++
-# PoolRetrievalDescriptor reproduces, so that neither side carries a constant the other could change under
-# it. The dimensions are not here: they are read off the graph, which cannot be wrong about its own width.
-# FACETS_POWER itself is graphs.FACETS_POWER, imported where it's used (write_manifest) rather than
-# redefined here: it is also what the traced graph bakes in (graphs._facets_retrieval), so a second copy
-# here would be exactly the drifting constant this comment says neither side may carry.
-GEM_P = 3             # the GeM exponent, pool_retrieval's .pow(3) ... .pow(1 / 3)
-LAYERS_SLICE = 1      # the layer the shipped GeM recipe pools: slice 1 of layers, i.e. block 17
+# Manifest metadata for the retrieval pooling recipes implemented in graphs.py.
+GEM_P = 3
+LAYERS_SLICE = 1
 
 # CUDA first with CPU behind it, which is what the C++ runtime does; TF32 on, which is ORT's own default and
 # the mode the shipped graphs are measured in. A graph that only agrees with eager in fp32 would be a graph
@@ -146,10 +126,10 @@ def package_version(name):
 
 
 def export_onnx(args):
-    from graphs import FACET_BLOCKS, REFINER_NOT_EXPORTED, trace_to_onnx   # torch only enters here
+    from graphs import FACET_BLOCKS, trace_to_onnx   # torch only enters here
 
-    if args.with_refiner or (args.stage == "match" and not args.coarse):
-        raise NotImplementedError(REFINER_NOT_EXPORTED)
+    if args.stage == "match" and not args.coarse:
+        raise SystemExit("FAILED: --stage match only exports the coarse head (pass --coarse)")
     inputs, outputs = STAGE_IO[args.stage]
     out = onnx_path(args.out_dir, args.setting, args.stage, args.coarse, "fp32")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -185,10 +165,6 @@ def export_onnx(args):
 def check_onnx(args):
     """Run the graph under onnxruntime on its reference inputs and compare against the eager fp32 outputs.
 
-    polyml export.py:274-357 with an ORT session in place of the TensorRT execution context, and the same
-    judging: a runtime is not shippable until its numbers have been looked at, because a graph that loads
-    and computes nothing looks exactly like one that works until something reads its output.
-
     Two references exist for every graph. The one `onnx` writes beside it is from the random tensors it
     traced with — enough to catch a graph computing nothing, and all the descriptor needs. The pair stage
     is also checked against a photographic reference (parity.py), because a warp has structure to get wrong
@@ -222,12 +198,8 @@ def check_onnx(args):
         produced[name] = host
         expected_path = reference / f"out_{name}.npy"
         if not expected_path.is_file():
-            # exactly the situation this task creates: a reference directory traced before the graph
-            # gained `retrieval`, checked against a graph that now emits it -- name the stale directory
-            # rather than a bare FileNotFoundError, same as the "which half is missing" case below
-            raise SystemExit(f"FAILED: {reference} has no '{expected_path.name}': this looks like a "
-                             f"reference directory traced before this graph gained a '{name}' output; "
-                             f"rebuild it (parity.py or export.py onnx) before checking against it")
+            raise SystemExit(f"FAILED: {reference} has no '{expected_path.name}'; "
+                             f"rebuild the reference (parity.py or export.py onnx) before checking against it")
         expected = np.load(expected_path).astype(np.float64)
         actual = host.astype(np.float64)
         cosine = float(expected.ravel() @ actual.ravel()
@@ -258,8 +230,6 @@ def check_onnx(args):
 
         for recipe, output in (("facets", "value_facets"), ("layers", "layers")):
             if output not in produced:
-                # A layers-only descriptor graph (Polycam's) is a legitimate file, but not one openMVS's
-                # retrieval pass can be judged on, and the caller has to be told which half is missing.
                 raise SystemExit(f"FAILED: this graph has no '{output}' output, so the pooled {recipe} "
                                  f"descriptor cannot be judged; it emits {sorted(produced)}")
             got = pool_retrieval(produced[output], recipe)
@@ -271,13 +241,9 @@ def check_onnx(args):
                 raise SystemExit(f"FAILED: pooled {recipe} descriptor cosine {cosine:.6f} is below "
                                  f"--min-cosine {args.min_cosine}")
         if "retrieval" in produced:
-            # the graph pools FACETS on device (graphs.py _facets_retrieval), so this is judged directly
-            # against PoolRetrievalDescriptor's own Python reference rather than against a second pooling
-            # of value_facets -- what a retrieval-only pass actually ships to openMVS, at the tight bound
-            # this parity gate sets rather than the raw-tensor --min-cosine above.
             want = pool_retrieval(np.load(reference / "out_value_facets.npy"), "facets")
             got = produced["retrieval"].astype(np.float64).reshape(-1)
-            got = got / np.linalg.norm(got)   # defensive: the graph already emits a unit vector
+            got = got / np.linalg.norm(got)
             cosine = float(got @ want)
             print(f"retrieval (on-device FACETS pooling): cosine {cosine:.8f}  max abs err "
                   f"{np.abs(got - want).max():.2e}", flush=True)
@@ -514,13 +480,8 @@ def main():
     po.add_argument("--stage", default="descriptor", choices=list(STAGE_IO),
                     help="descriptor: the per-image DINOv3 layers and value facets; match: the per-pair warp")
     po.add_argument("--coarse", action="store_true",
-                    help="match only: stop at the matcher head's quarter-resolution grid instead of the refiners")
-    po.add_argument("--with-refiner", action="store_true",
-                    help="not exported: the refiner cascade needs romav2's local_corr CUDA extension, the "
-                         "VGG19-BN fine-feature weights and grid_sample. The flag exists so asking for it "
-                         "says why, and so --stage match can grow the branch without renaming anything")
-    # The remaining romav2 settings add bidirectional matching and a second high-resolution stage, neither of
-    # which the exported graphs reproduce — they would trace a quietly wrong model.
+                    help="match only: export the matcher head's quarter-resolution bidirectional grid")
+    # The remaining romav2 settings add a second high-resolution stage not reproduced by this export.
     po.add_argument("--setting", default="base", choices=list(SETTINGS),
                     help="square input resolution romav2 traces for: "
                          + ", ".join(f"{name} {size}" for name, size in SETTINGS.items()))
@@ -536,9 +497,7 @@ def main():
     po.add_argument("--exporter", default="dynamo", choices=["dynamo", "torchscript"],
                     help="torchscript is the fallback if the dynamo capture drops the hook-captured facets")
     po.add_argument("--rope-cache", action="store_true",
-                    help="memoise the RoPE sin/cos per (H, W) instead of recomputing them per block, which "
-                         "lets the exporter fold them into one shared constant pair. Off by default: it "
-                         "saves 0.9 MB of 978 MB at turbo and moves value_facets by ~3e-6 relative")
+                    help="memoise the RoPE sin/cos per (H, W) instead of recomputing them per block")
 
     pk = sub.add_parser("check", help="compare a graph under onnxruntime against the eager fp32 reference")
     pk.add_argument("--onnx", required=True)
@@ -546,19 +505,12 @@ def main():
     pk.add_argument("--provider", default="cuda", choices=list(PROVIDERS),
                     help="cuda falls back to CPU per node, as the runtime does; cpu is the tolerance floor "
                          "every non-CUDA platform sees")
-    # The descriptor has no confidence to condition on, so it is judged by cosine. polyml's floor on a real
-    # pair is 0.9991 at turbo for a bf16 engine, and a bound at 0.999 would sit inside the spread between
-    # builds; an fp32 ONNX sits far inside it.
     pk.add_argument("--min-cosine", type=float, default=0.998,
                     help="descriptor only: fail below this, on the raw outputs and on the pooled "
                          "descriptors, or on any non-finite output")
-    # A gate tighter than --min-cosine: judges the graph's on-device retrieval output
-    # directly against PoolRetrievalDescriptor's Python reference (pool_retrieval).
     pk.add_argument("--retrieval-min-cosine", type=float, default=0.99999,
                     help="descriptor only: fail if the graph's own 'retrieval' output falls below this "
                          "cosine against pool_retrieval('facets') of the reference value_facets")
-    # polyml's bounds, which carry roughly 4x margin over what its bf16 engines measure: warp p99 reaches
-    # 0.35 px on the coarse stage there, and agreement stays above 99.88%.
     pk.add_argument("--max-warp-error", type=float, default=2.0,
                     help="pair stages: fail if the warp's p99 error in matched cells exceeds this, in pixels")
     pk.add_argument("--min-agreement", type=float, default=99.5,

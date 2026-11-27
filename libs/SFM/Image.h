@@ -32,26 +32,16 @@ public:
 	// Pixel data (loaded on demand)
 	cv::Mat pixels;        // image pixels (can be empty if not loaded)
 
-	// Feature data
-	// keypoints holds the described keypoints first -- the detector's own detections, one
-	// descriptor row each -- and, past that prefix, the dense keypoints: warp samples
-	// appended by the dense supplementation pass, which carry no descriptor. So
-	// keypoints.size() >= NumDescribedKeypoints() == descriptors.rows, and there is no separate
-	// keypoint structure: a keypoint index alone says which kind it is (IsDenseKeypoint).
-	std::vector<cv::KeyPoint> keypoints;  // described keypoints, then the appended dense ones
+	// Feature data: described keypoints come first (one descriptor row each), followed by
+	// descriptor-less dense warp keypoints (IsDenseKeypoint).
+	std::vector<cv::KeyPoint> keypoints;  // described keypoints, then appended dense ones
 	cv::Mat descriptors;                  // feature descriptors (one row per described keypoint)
-	// Where the described prefix ends; NO_ID until a dense keypoint is appended, which is the
-	// same statement as "every keypoint is described".
-	// Stored and serialized rather than derived from descriptors.rows, because the descriptors are
-	// released before PairsMatcher::FilterRedundantKeypoints runs (that filter cannot remap
-	// descriptor rows, which is why it only runs there) and long before bundle adjustment: a
-	// boundary derived from them would report every keypoint as dense in exactly the two places
-	// that need it. Read it through NumDescribedKeypoints()/IsDenseKeypoint(), never directly.
+	// End of the described prefix (NO_ID until dense keypoints are appended). Stored explicitly
+	// because descriptors are released before FilterRedundantKeypoints and bundle adjustment;
+	// read via NumDescribedKeypoints()/IsDenseKeypoint().
 	uint32_t numDescribedKeypoints = NO_ID;
 
 	// Optional 1xD CV_32F L2-normalized global retrieval descriptor of the whole image
-	// (pooled features from the dense matcher's describe graph); empty unless the
-	// dense retrieval pass ran, in which case it ranks the candidate pairs
 	cv::Mat globalDescriptor;
 
 	// Additional metadata

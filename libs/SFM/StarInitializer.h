@@ -48,7 +48,6 @@ struct SFM_API StarInitConfig
 	float maxReprojError{6.f};      // Maximum reprojection error (pixels)
 	float minAngleThreshold{1.f};   // Minimum triangulation angle (degrees) of the star's first triangulation; the later passes raise it by 0.5 and 1
 	float evidenceMinAngle{1.5f};   // Ray angle a pair's inlier must reach to count as star evidence (degrees): the reconstruction's minAngleThreshold, which Scene sets it from
-	bool globalRotations{false};    // Use global rotation averaging to initialize rotations (optional)
 
 	// Refine the focal length in the star's own bundle adjustment (step 7 of Initialize()); the
 	// distortion is left to the resection's global bundle adjustments once the model is large

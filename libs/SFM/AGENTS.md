@@ -74,8 +74,7 @@ settles each component holding one image twice on its own links (`TrackConflictC
 (fewest triangles, then the lighter pair) on the path between the two keypoints is cut until every
 piece is a track (`cut`, default), or the union is vetoed in pair order (`cut` false, and always for
 a component above `maxComponentSize`, 5000); two keypoints of one image within `mergeDistance`
-(3 px) are one feature, the one with more links stands for the image. On alameda the veto keeps the
-wrong keypoint in 22% of the judgeable conflicts, the cut in 17%.
+(3 px) are one feature, the one with more links stands for the image.
 
 ### ImagePair (`ImagePair.h`)
 ```cpp
@@ -184,8 +183,8 @@ GPS. Clustering is never involved.
   `ComputeWorldBaselines`, `SolveScaleComponents`) are in `ContradictionCut.h`, outside `libs/SFM.h`.
   Rules, constants and log lines: `docs/design/PairSelection.md`, `docs/design/ContradictionCut.md`
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
-- **ROMAv2 one-pass dense matching** (`MatchDense.h`, `DenseWarp.h` helpers, `--dense-match`): the
-  bidirectional dense warps are computed in-process (no external files) and, when enabled, ARE the
+- **Dense one-pass matching** (`MatchDense.h`, `DenseWarp.h`, `DenseMatcher.h`, `RoMa2Matcher.h`, `FlexGlueMatcher.h`, `--dense-matcher roma2|flexglue`, `--dense-match`): the
+  bidirectional dense warps are computed in-process via ONNX Runtime and, when enabled, ARE the
   matching round - `JudgePairDense` admits a pair on the smaller of the two inlier areas one fitted
   geometry explains (`--dense-min-overlap`), `TrackKeypointsByWarp` + `MatchFeaturesGuided` select
   its sparse matches in an epipolar band centred on each warp prediction, `AssemblePairDense` fills the rest
@@ -244,7 +243,7 @@ One definition each, shared by every caller:
 
 ### Scene Clustering (`SceneCluster.h`)
 Aggregative clustering on covisibility graph for hierarchical reconstruction.
-- Bottom-up: merge highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 150), never past the ceiling itself
+- Bottom-up: merge highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 200), never past the ceiling itself
 - `maxOverCapacity` (20): extra images allowed over the ceiling when absorbing a small cluster
 - Refinement (six passes): local search, merge small clusters, balance load across clusters, split disconnected components, split thin-waisted clusters, merge away any cluster the merge could not register against (`IsStrongSeam`); a cluster still under the floor (not a standalone community) goes to the pool
 - `Partition()` returns a `ScenePartition`: the clusters that become blocks and the pool (images in no block)
@@ -358,7 +357,7 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
 
 ## Build & Dependencies
 - **Required**: Common, Math, IO, Ceres Solver, PoseLib, TinyEXIF
-- **Optional**: SiftGPU (CUDA/OpenGL)
+- **Optional**: SiftGPU (CUDA/OpenGL), ONNX Runtime (in-process RoMa v2 / FlexGlue dense matchers)
 - **Inherited**: Eigen3, OpenCV, Boost
 - **Precompiled header**: `Common.h`
 

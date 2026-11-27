@@ -40,8 +40,6 @@ class SFM_API Scene;
 	* @param reprojThreshold Reprojection error threshold (pixels)
 	* @param minAngleThreshold Minimum angle between rays (degrees)
 	* @param minInliers Minimum number of inlier views
-	* @param denseReprojErrorFactor Multiple of reprojThreshold a dense (warp-sampled) observation is
-	*                               held to, the less precise measurement (1 = the same threshold)
 	* @return number of inliers if triangulation successful, 0 on failure (the track then holds no inliers)
 	*/
 SFM_API unsigned TriangulateDLT(
@@ -49,8 +47,7 @@ SFM_API unsigned TriangulateDLT(
 	const ImageArr& images,
 	float reprojThreshold = 4.f,
 	float minAngleThreshold = 2.f,
-	unsigned minInliers = Track::MIN_VIEWS,
-	float denseReprojErrorFactor = 1.f);
+	unsigned minInliers = Track::MIN_VIEWS);
 
 /**
 	* @brief Robust triangulation using the skew-symmetric formulation ([d]_x * (R * Pw + t) = 0).
@@ -62,8 +59,6 @@ SFM_API unsigned TriangulateDLT(
 	* @param reprojThreshold Reprojection error threshold (pixels).
 	* @param minAngleThreshold Minimum triangulation angle threshold (degrees).
 	* @param minInliers Minimum number of inlier observations.
-	* @param denseReprojErrorFactor Multiple of reprojThreshold a dense (warp-sampled) observation is
-	*                               held to, the less precise measurement (1 = the same threshold)
 	* @return The number of inliers or 0 on failure (the track then holds no inliers).
 	*/
 SFM_API unsigned TriangulateSkewLLS(
@@ -71,8 +66,7 @@ SFM_API unsigned TriangulateSkewLLS(
 	const ImageArr& images,
 	float reprojThreshold = 4.f,
 	float minAngleThreshold = 2.f,
-	unsigned minInliers = Track::MIN_VIEWS,
-	float denseReprojErrorFactor = 1.f);
+	unsigned minInliers = Track::MIN_VIEWS);
 
 /**
 	* @brief Triangulate all tracks in scene. A track seen by fewer than two posed images is left out;
@@ -81,16 +75,13 @@ SFM_API unsigned TriangulateSkewLLS(
 	* @param outliersOnly If true, triangulate only tracks with outlier observations
 	* @param reprojThreshold Reprojection error threshold
 	* @param minAngleThreshold Minimum angle between rays (degrees)
-	* @param denseReprojErrorFactor Multiple of reprojThreshold a dense (warp-sampled) observation is
-	*                               held to, the less precise measurement (1 = the same threshold)
 	* @return number of inlier tracks
 	*/
 SFM_API unsigned TriangulateTracks(
 	Scene& scene,
 	bool outliersOnly = false,
 	float reprojThreshold = 4.f,
-	float minAngleThreshold = 2.f,
-	float denseReprojErrorFactor = 1.f);
+	float minAngleThreshold = 2.f);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

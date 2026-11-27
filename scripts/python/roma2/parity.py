@@ -15,17 +15,14 @@ size), then runs the eager model in fp32 — the same ground truth `export.py on
 npy layout `check` reads. Unlike that traced reference, the pair stage here is fed the descriptor stage's
 real output rather than random tensors of the right shape.
 
-What openMVS adds to polyml's parity.py, all of it for the C++ side (RoMa2OnnxParityTest reads
-this directory, and its always-on tests read --fixtures):
-  source_A.png / source_B.png   the decoded RGB8 sources, losslessly, so the C++ preprocessing test starts
-                                from the same pixels rather than from its own JPEG decoder's
-  pooled_facets_{A,B}.npy       [2 * C] and [C]: the FACETS/LAYERS pooling recipes (graphs.py's
-  pooled_layers_{A,B}.npy       pool_retrieval) compute for both images of the pair
-  retrieval_{A,B}.npy           [2 * C]: the graph's own on-device FACETS pooling (_facets_retrieval) of
-                                the same forward pass -- this parity gate judges this against
-                                pooled_facets_{A,B}.npy, at a tighter bound than export.py check's default
-  parity.json                   what the directory holds and the bounds it is judged under
-  --fixtures DIR                the one model-free fixture the always-on C++ tests use, as raw fp32
+Additional files written for OpenMVS's C++ parity and preprocessing tests (RoMa2OnnxParityTest and
+RoMa2PreprocessTest):
+  source_A.png / source_B.png   losslessly decoded RGB8 sources so C++ starts from identical pixels
+  pooled_facets_{A,B}.npy       [2 * C] and [C]: FACETS/LAYERS retrieval pooling reference vectors
+  pooled_layers_{A,B}.npy
+  retrieval_{A,B}.npy           [2 * C]: the descriptor graph's on-device FACETS pooling output
+  parity.json                   manifest of shapes and tolerances
+  --fixtures DIR                model-free raw fp32 preprocessing fixture for always-on C++ tests
 """
 import argparse
 import json
@@ -56,19 +53,9 @@ def resize(image, size):
 
 
 def write_fixtures(directory, decoded_A):
-    """The one always-on C++ fixture: pins the host-side preprocessing without a model.
+    """Write the model-free preprocessing fixture (raw little-endian fp32) for RoMa2PreprocessTest.
 
-    Raw little-endian fp32, not npy, because the test that reads it runs on every build and should
-    not need a header parser to do it. (This used to also write a seeded-random pooling fixture for
-    PoolRetrievalDescriptor's own unit test; that C++ function is gone -- the graph pools retrieval
-    on device now -- and task 1b deleted both the test and its fixtures, so this only writes what
-    RoMa2PreprocessTest still reads.)
-
-    Computed on the CPU, deliberately, unlike everything else here. These bytes are committed and are then
-    the expected value for every build on every machine, so they must be a property of the recipe and not
-    of whichever GPU happened to regenerate them: torch's own CUDA and CPU bicubic differ by ~2e-7 on this
-    crop, which is small but is a hardware fingerprint, and a fixture nobody without an A100 can reproduce
-    is not a fixture.
+    Computed on CPU so the committed bytes are independent of GPU implementation details.
     """
     from PIL import Image
 
@@ -103,11 +90,11 @@ def main():
     if args.coarse and args.stage != "match":
         ap.error("--coarse only applies to --stage match")
 
-    from graphs import (FACET_BLOCKS, REFINER_NOT_EXPORTED, DescriptorWrap, MatchWrap, build_model,
+    from graphs import (FACET_BLOCKS, DescriptorWrap, MatchWrap, build_model,
                         pool_retrieval, save_reference)
 
     if args.stage == "match" and not args.coarse:
-        raise NotImplementedError(REFINER_NOT_EXPORTED)
+        ap.error("--stage match only exports the coarse head (pass --coarse)")
 
     model = build_model(args.setting, args.checkpoint, args.roma2_repo)
     img_A, decoded_A = load_image(args.img_a, model.H_lr)
@@ -119,20 +106,14 @@ def main():
         if args.stage == "descriptor":
             inputs, eager = (img_A,), descriptors_A
         else:
-            # The real descriptors, not tensors of the right shape: this is the reference that exists
-            # because random inputs give the matcher head nothing to find. No img_A/img_B: they are not
-            # part of the traced coarse graph's inputs (dead -- see graphs.MatchWrap's docstring), and
-            # MatchWrap.forward's own img_A/img_B parameters default to None for the coarse path.
             inputs = (descriptors_A[0], descriptors_B[0])
-            eager = MatchWrap(model, args.coarse).eval()(*inputs)
+            eager = MatchWrap(model).eval()(*inputs)
     eager_tensors = (eager,) if isinstance(eager, torch.Tensor) else tuple(eager)
 
     directory = Path(save_reference(args.out_dir, input_names, inputs, output_names, eager_tensors))
     for name, tensor in zip(output_names, eager_tensors):
         print(f"{name}: {tuple(tensor.shape)} absmax {tensor.abs().max().item():.3f}", flush=True)
 
-    # The additions the C++ parity test reads. The pooled descriptors come from the same two forward passes
-    # the stage above ran, so nothing here can disagree with what was written beside it.
     from PIL import Image
 
     pooled, retrieval_vectors = {}, {}
@@ -143,8 +124,6 @@ def main():
             np.save(directory / f"pooled_{recipe}_{side}.npy", vector)
             pooled[f"{recipe}_{side}"] = vector
             print(f"pooled_{recipe}_{side}: [{vector.size}] norm {np.linalg.norm(vector):.6f}", flush=True)
-        # the graph's own on-device FACETS pooling (_facets_retrieval), on this same real forward pass --
-        # judged by this parity gate against pooled_facets_{side} (the CPU PoolRetrievalDescriptor reference)
         vector = retrieval.detach().cpu().numpy().reshape(-1)
         np.save(directory / f"retrieval_{side}.npy", vector)
         retrieval_vectors[side] = vector
@@ -163,9 +142,6 @@ def main():
                   | {f"out_{name}": list(tensor.shape) for name, tensor in zip(output_names, eager_tensors)}
                   | {f"pooled_{name}": [vector.size] for name, vector in pooled.items()}
                   | {f"retrieval_{side}": [vector.size] for side, vector in retrieval_vectors.items()},
-        # polyml's, the bounds export.py check defaults to and the ones the C++ test judges under.
-        # retrieval_min_cosine is a gate (export.py check's --retrieval-min-cosine default),
-        # judging retrieval_{A,B}.npy against pooled_facets_{A,B}.npy -- tighter than min_cosine above.
         "bounds": {"min_cosine": 0.998, "max_warp_error_px": 2.0, "min_agreement_percent": 99.5,
                    "retrieval_min_cosine": 0.99999},
     }, indent=2) + "\n")

@@ -414,6 +414,9 @@ bool PoolResectionTest();
 
 // TestsSFMBundleAdjustment.cpp --------------------------------
 
+// Analytic vs automatic-differentiation Jacobian check for PinholeReprojectionErrorAnalytic.
+bool PinholeReprojectionJacobianTest();
+
 // The weights a bundle adjustment gives dense observations: ComputeObservationSigmas reads the bulk of a scene's described
 // and dense displacements (a median), EstimateDenseObservationWeight returns 1/k^2 of their ratio (clamped to 1, floored,
 // the configured constant when the dense sample is absent or too small), and the per-image scaling and the ceiling each at
@@ -446,9 +449,8 @@ bool PoseUncertaintyTest();
 // its cap triangulates the tracks without a point again
 bool RepeatedFullAdjustmentTest();
 
-// The track filter and the triangulation on the arc: a dense observation is held to its own multiple of the reprojection
-// bar, a track with a single posed view (the star's reference at the origin, default position) is not judged, and a track
-// of two posed views never triangulated holds the improbable default position and is rejected
+// Track filtering and triangulation on the arc: unified reprojection bar for described and dense observations,
+// single-view track at the origin unjudged, never-triangulated track rejected.
 bool FilterTracksTest();
 
 // A triangulation that fails (TriangulateSkewLLS, TriangulateDLT, and so TriangulateTracks), for the minimum angle

@@ -74,7 +74,6 @@ struct SFM_API MatchConfig
 	bool imageSequence = false;         // --image-sequence: the images, in scene order, are frames of a possibly interrupted sequence, in any match mode (IsImageSequence)
 	unsigned sequenceMaxGap = 10;       // --sequence-max-gap: ComputeNameBreaks' maxGap in a sequence run; 0 = a jump of the frame number never breaks
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
-	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled; above 0 the geometric verification refuses, see GeometricFilter)
 	float matchDistance;                // Absolute distance test threshold (set by DefaultsForFeatureType: 100 - AKAZE 486bit, 64 - ORB 256bit, FLT_MAX - SIFT)
 	// Lowe's ratio test threshold (set by DefaultsForFeatureType: 0.9 - AKAZE/ORB, 0.8 - SIFT). The two matching paths range it over
 	// different quantities, so the same constant is not the same strictness: PairsMatcher::MatchFeatures
@@ -118,11 +117,9 @@ struct SFM_API MatchConfig
 	static constexpr float lensFitLossScale = 1.f;
 	// constant: the median error must fall this fraction below the poses' own refinement at the starting lens for the lens to be kept
 	static constexpr float lensFitMinErrorDrop = 0.10f;
-	// constant: the focal check takes a camera's focal from the fit with the focal free when that fit's median
-	// error falls this fraction below the fit with it held: an accurate focal's free fit lowers the median at
-	// most 0.7% on eleven real captures, a wrong one's at least 16% (most by 32-71%)
+	// constant: median error must fall this fraction below the fixed-focal fit to accept a free-focal move
 	static constexpr float lensFitFocalMinErrorDrop = 0.10f;
-	// constant: pose re-estimations through the fitted lens at most, each followed by the joint fit again, stopping at the first that replaces no pose: where the first joint fit falls far short of a strong lens each round turns a few more pairs right (synthetic, 164 px at the corner: up to 5 rounds over 100 scenes); pairs that hide the lens may replace poses in every round
+	// constant: maximum pose re-estimation + joint lens fit rounds, stopping once no pose is replaced
 	static constexpr unsigned lensFitRounds = 10;
 	bool useCUDA = true; // use CUDA for SiftMatchGPU if available (otherwise OpenGL)
 
@@ -197,6 +194,14 @@ public:
 		const Image& img1,
 		const Image& img2,
 		ImagePair& pair);
+
+	// Run k-NN descriptor matching using the thread's matcher, converting quantized descriptors to CV_32F when needed
+	void KnnMatch(
+		const cv::Mat& queryDesc,
+		const cv::Mat& trainDesc,
+		std::vector<std::vector<cv::DMatch>>& knnMatches,
+		int k,
+		unsigned threadIdx = 0);
 
 	// Feature matching with ratio test and cross-check
 	void MatchFeatures(
@@ -355,7 +360,7 @@ public:
 	void FilterRedundantKeypoints();
 
 	// Export image pairs to a CSV file
-	static bool ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, float minYield, const PairsWeightingConfig& weighting);
+	static bool ExportPairsCSV(const Scene& scene, const String& fileName, float minYield, const PairsWeightingConfig& weighting);
 
 private:
 	// Counters accumulated by the matching rounds

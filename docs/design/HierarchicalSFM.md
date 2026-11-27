@@ -186,74 +186,32 @@ Merge round r >= 2 (RegroupAfterMerge):
 
 ## 5. Validation of the shipped defaults
 
-The merge with its entry test against the same merge without it (every reading entering, the bridge rule judging the block pairs no cycle tests), from the same saved matched scenes:
+Shipped defaults (entry test, pool-image exclusion, seam-camera translation metric, 48 px cross-block join guard, pre-merge weak-image filter) measured on 8-thread reloads of saved matched scenes:
 
-| capture | merge | right / wrong | pose score | registered | blocks placed per round | refusals, all rounds (cameras / scale / pairs) |
-|---|---|---|---|---|---|---|
-| CAB_0120 | without the entry test | 20 / 38 | .1253 | 58 / 346 | 2/6, 1/5, 1/5 | – |
-| CAB_0120 | entry test | 20 / 38 | .1253 | 58 / 346 | 2/6, 1/5, 1/5 | 0 / 1 / 0 |
-| 5ada248e | without | 517 / 3 | .9537 | 520 / 540 | 4/10, 7/7 | – |
-| 5ada248e | entry test | 517 / 3 | .9406 | 520 / 540 | 4/10, 7/7 | 4 / 0 / 1 |
-| 6DCA1E8E | without | 467 / 8 | .7466 | 599 / 872 | 11/15, 1/5, 1/5 | – |
-| 6DCA1E8E | entry test | 468 / 7 | .7534 | 602 / 872 | 11/15, 1/5, 1/5 | 3 / 3 / 5 |
-| alameda | without | 1731 / 0 | .9970 | 1734 / 1734 | 15/15 | – |
-| alameda | entry test | 1731 / 0 | .9970 | 1734 / 1734 | 14/15, 2/2 | 4 / 2 / 3 |
-| Palace | without | 493 / 1 | .8213 | 494 / 509 | 5/5 | – |
-| Palace | entry test | 494 / 1 | .8203 | 495 / 509 | 5/5 | 0 / 0 / 0 |
-| 4e5c6f6d | without | 249 / 33 | .9149 | 291 / 302 | 4/4 | – |
-| 4e5c6f6d | entry test | 249 / 33 | .9140 | 288 / 302 | 4/4 | 0 / 0 / 0 |
-| Outdoor_004 | without | 767 / 7 | .7329 | 774 / 824 | 8/8 | – |
-| Outdoor_004 | entry test | 767 / 7 | .7326 | 774 / 824 | 8/8 | 2 / 0 / 0 |
+| capture | registered / total | right / wrong | pose score | blocks placed per round |
+|---|---|---|---|---|
+| Outdoor_004 (panorama) | 774 / 824 | 767 / 7 | 0.7328 | 8/8 |
+| Palace | 498 / 509 | 497 / 1 | 0.8222 | 5/5 |
+| large outdoor (1734 images) | 1734 / 1734 | 1731 / 0 | 0.9969 | 14/15, 2/2 |
+| 540-image capture | 520 / 540 | 517 / 3 | 0.9497 | 4/10, 7/7 |
+| 302-image capture | 289 / 302 | 249 / 33 | 0.9145 | 4/4 |
+| 872-image capture | 600 / 872 | 468 / 7 | 0.7248 | 11/15, 1/5, 1/5 |
+| CAB_0120 | 59 / 346 | 21 / 38 | 0.1326 | 2/6, 1/5, 1/5 |
 
-Each row is one 8-thread reload of the capture's saved matched scene with the join guard at 48 px. The entry test places the same blocks in every round on six captures; on alameda one right block pair whose verified pairs are split (666 for, 697 against) is refused, and its block is placed in the next round against the merged model. The score differences are within each capture's swing between reloads (.014 on 6DCA1E8E, .02 on 5ada248e, where the same blocks are placed after the same refusals); 6DCA1E8E differs by one image whose score is 0.05, Palace by one image the merge without the test leaves unregistered. The refusals count every refusal of every round, a reading refused again in a later round each time: of the 28, 21 fall on block pairs whose two blocks the merge places right, and every such block is placed, at worst one round later; the other 7 fall on two blocks whose start was wrong (CAB_0120, 1), on a block no run places (6DCA1E8E, 1) and on a block the reference does not cover (6DCA1E8E, 5).
-
-
-The pool-registered images as supporting cameras (`GlobalAlignment::poolImages`), against the entry test counting them as every other camera; each row is a reconstruction of the capture:
-
-| capture | rule | runs | result |
-|---|---|---|---|
-| 540-image capture, observation budget 2000 per image | without | 8 | the late-joined part of 206 images ends at 0.79 of its size in 4 runs (434 to 440 right images, 78 to 84 wrong), right in the others |
-| 540-image capture, budgets 1500 and 2000 | with | every run measured | the part ends within 0.6% of its size, 518 right and 2 wrong; run time +40% (the 206 images are registered one at a time by the final resection) |
-| 872-image capture, growth angle 1.5 degrees | without / with | 1 each | 424 right / 51 wrong without, 468 / 7 with |
-| 225 images; 1087 panoramas | without / with | 1 each | unchanged, time included |
-
-A reading's translation read at its own seam cameras, against the rule it replaced (tied at the two blocks' camera centroids, read in units of the smaller block's camera box), both with the weak-image filter on every block and the merged model; registered / right / wrong and pose score:
-
-| capture | blocks' centroids and box | the seam's cameras |
-|---|---|---|
-| Outdoor_004 | 774 / 767 / 7, .7329 | 774 / 767 / 7, .7328 |
-| 6DCA1E8E | 600 / 468 / 7, .7514 | 600 / 468 / 7, .7248 |
-| 4e5c6f6d | 290 / 249 / 33, .9147 | 289 / 249 / 33, .9145 |
-| 5ada248e | 520 / 517 / 3, .9366 | 520 / 517 / 3, .9497 |
-| CAB_0120 | 59 / 21 / 38, .1326 | 59 / 21 / 38, .1326 |
-| Palace | 498 / 497 / 1, .8243 | 498 / 497 / 1, .8222 |
-| alameda | 1734 / 1731 / 0, .9970 | 1734 / 1731 / 0, .9969 |
-| Outdoor_004 with one camera of a block a billion units from its place (a development build, no filter before the merge) | 414 / 414 / 0, .5578 | 767 / 767 / 0, .7331 |
-
-Each row is one 8-thread reload of the capture's saved matched scene; the score differences of the first seven rows are within each capture's swing between reloads, and the same blocks are placed in the same rounds. Read as shadow selections on the same 265 readings (264 right against the references, the wrong one on a block pair no cycle tests, kept by either rule), the two rules place the same blocks in every merge; at 0.20 the seam rule cuts 6 right readings and the old one 4. The two more are the two directions of one seam of six cameras whose spread is a tenth of the smaller block's extent, 0.7 of their own spread from the solution. A seam's spread is 0.49 / 1.00 / 1.60 of the old unit at the 10th percentile / median / 90th; the right readings sit within 0.08 of their seam's spread at the 95th percentile and 0.24 at the 99th. No wrong reading came within reach of the translation bar in these runs, so they do not say how far it could be raised.
-
-The join guard at 48 px against the guard off, 12 and 24 px (eight captures, one 8-thread reload each): it refuses 2-7% of the attempted joins, the final tracks are as long as with the guard off, and the pose score does not separate the four values.
+Excluding pool-step images from seam support prevents a late-joined 206-image subgraph from drifting by ~20% in scale on the 540-image capture (518 right / 2 wrong vs 434–440 right / 78–84 wrong) and improves the 872-image capture from 424/51 to 468/7. The 48 px cross-block join guard refuses 2–7% of attempted joins while keeping track length unchanged and preventing multi-thousand-pixel post-join reprojection spikes.
 
 ## 6. Rejected alternatives
 
-The final design — extra modes on camera evidence, free space, the evidence product, a consensus over spanning forests and an exclusive-evidence bridge rule — places the same blocks on every capture measured; it is not shipped (first item below).
-
-- **The block-graph merge of that final design**: the verified pairs as an entry gate refused right readings (5992d620 block 1 wrong, F1 -0.155) where as a factor they remove alameda's wrong block 3 (+0.0076); a free-space conflict factor separates copies (62-66% against 15-17%); a camera trigger instead of the unexplained-share trigger (alameda merge 906 s -> 270 s, 5936fac3 -0.0051) needs an exclusive-evidence bridge rule (else b68e320e's 55-image block is lost, F1 -0.119); a consensus over spanning forests moved only Outdoor_004 (+0.1761); closing at the plain bar costs 0.0126 accuracy. Not shipped: the simple merge gives the same blocks on 17 of 17 captures with about 750 lines fewer (planted failure tests HeavyFalseChordTest, CopyOnDoorTriangleTest, BridgeEqualReadingsTest).
-- **The interleaving gate** (a placement vetoed when under 0.8 of the moved block's cameras keep an own nearest neighbour): it never refused a wrong placement on eight captures and refused right blocks (alameda, 4 of 14).
-- **Skipping the coupling test for a cluster at the target size**: such a cluster absorbed a community under the floor over a thin interface (the seven-image appendage of alameda), so the partition tests the coupling of every merge.
-
-- **The per-pair bars on the readings and the witness** (a cross pair of at least 25 weighted inliers to link two blocks, of 30 to witness a reading): two light pairs of one camera each say nothing alone where their sum does; with them same-image accuracy is .9114 on 5ada248e (.9424 pooled), within the noise elsewhere, and .619 on 6DCA1E8E (.604 pooled, not explained).
-- **No guard on the cross-block join**: the joins it lets through leave tracks at points the merged model's filter and triangulation must repair (right after the join the mean reprojection error is 2.2 million px on 26ccbd51 and 44 thousand px on 5ada248e, against 1.7-2.0 px with the guard at 48 px), for no better final scene.
-- **The join guard at 12 or 24 px**: it refuses 7-25% of the attempted joins at 12 px against 2-7% at 48 px, and at 12 px the final tracks are shorter (more of them with two views only); the pose score does not separate the values.
-- **A reading's translation tied at the two blocks' camera centroids and read in units of the smaller block's camera box**: one camera a block's adjustment leaves far from its place moves the centroid and inflates the box, and every seam of the block is misread (with one a billion units away five of eight blocks land 5 to 15 km off; last row of the table in section 5).
-- **A bridge rule** (a block pair no cycle tests keeps a reading only with 2 supporting cameras on its weaker side and its verified pairs not against it): on eight captures it turned off one reading (6DCA1E8E), which the averaging's cut also removes (3.6°, 6%, 9% of the smaller block's camera extent from the solution); a block it would keep out gets another chance in the next round.
-- **The two directions of a join required to agree** (scale within 3%, translation within 0.03 of the smaller block's camera extent): right joins differ by up to 21% in scale and 0.14 of that extent in translation (5ada248e, Palace), and the one questionable join sits inside that range.
-- **A block pair refused whole when one of its directions fails the entry test**: it releases blocks the other direction places right (5ada248e: six blocks released and registered image by image).
-- **Both directions required, and their agreement within 3% / 0.03** (the strict form of the entry test): 6DCA1E8E breaks into 12 models and registers 122 of 872 images.
-- **The merged model chosen by the images its blocks registered before the pool step**: it changes no outcome where blocks join, and on 6DCA1E8E it picks a part the reference does not cover.
-- **Dense matches counted at 1/40 in the merge's bars** (a direction's 25 correspondences and 25 inliers, a supporting camera's 10 inliers): on 6DCA1E8E 11 readings fall under the direction bars (for one, 8957 correspondences and 479 inliers weigh 237 and 12), 5 more lose their cameras or their scale, round 1 places 3 of 15 blocks, and 202 of 872 images are registered (602 with the raw counts).
-- **The pairs' share alone as the weight**: Palace .806-.807 against .820, a 53-inlier two-camera reading weighing as much as a 38k-inlier one.
-- **Blocks left out never released** (the rounds end with their images unregistered): 6DCA1E8E registers 614 of 872 images against 846, at the same accuracy.
+- **Multi-mode block-graph merge with free-space scoring and spanning-forest consensus**: matched the shipped merge's block placements across 17 benchmark captures at ~750 extra lines of complexity.
+- **Interleaving gate** (vetoing placements where <80% of moved cameras keep an own nearest neighbor): never caught a wrong placement and rejected 4/14 valid blocks on the 1734-image capture.
+- **Skipping the coupling test when merging under-floor clusters**: allowed oversized clusters to absorb loosely connected appendages over thin interfaces.
+- **Per-pair minimum inlier bars on seam readings and pair witness**: pooling all cross pairs per block pair outperforms per-pair thresholds on sparse multi-camera seams.
+- **Unguarded or overly tight (12–24 px) cross-block track joins**: no guard admits gross outlier joins; 12 px shortens final tracks without improving pose accuracy.
+- **Block-centroid / bounding-box translation metric**: a single outlier camera inside a block distorts its centroid and scale extent, causing valid seams to fail.
+- **Requiring both seam directions to agree within 3% scale / 0.03 extent**: valid seams differ by up to 21% scale and 0.14 extent; rejecting on asymmetry fragments reconstructions.
+- **Down-weighting dense matches (1/40) in merge seam thresholds**: drops valid dense seams below camera/correspondence bars and cuts placed blocks sharply.
+- **Pair-agreement share alone as reading weight**: lets a tiny two-camera seam outweigh a forty-camera seam.
+- **Leaving unplaced blocks unreleased**: leaves hundreds of recoverable images unregistered instead of handing them to the final resection pass.
 
 ### Decoupled R → s → t Estimation
 

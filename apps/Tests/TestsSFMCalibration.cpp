@@ -1003,13 +1003,9 @@ static bool LensStageErrors(const Scene& scene, const std::unordered_map<PairIdx
 		rotation.push_back(RotationErrorDeg(pair.relativePose->R, truePose.R));
 		direction.push_back(R2D(ACOS(CLAMP(normalized(pair.relativePose->GetT()).dot(normalized(truePose.GetT())), REAL(-1), REAL(1)))));
 	}
-	const auto Median = [](std::vector<REAL>& values) {
-		std::nth_element(values.begin(), values.begin() + values.size()/2, values.end());
-		return values[values.size()/2];
-	};
 	worstRotation = *std::max_element(rotation.begin(), rotation.end());
-	medianRotation = Median(rotation);
-	medianDirection = Median(direction);
+	medianRotation = SFM::Median(rotation);
+	medianDirection = SFM::Median(direction);
 	return true;
 }
 

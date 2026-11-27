@@ -151,9 +151,7 @@ public:
 				}
 
 				// Setup pair
-				ImagePair pair(pairIDs.i, pairIDs.j);
-				if (existingFound) pair = std::move(existingPair);
-				else { pair.ID1 = pairIDs.i; pair.ID2 = pairIDs.j; }
+				ImagePair pair = existingFound ? std::move(existingPair) : ImagePair(pairIDs.i, pairIDs.j);
 				pair.matches.clear();
 
 				const Image& img1 = scene.images[pair.ID1];
@@ -314,6 +312,26 @@ PairsMatcher::PairsMatcher(Scene& _scene, const MatchConfig& _config)
 PairsMatcher::~PairsMatcher() = default;
 
 
+void PairsMatcher::KnnMatch(
+	const cv::Mat& queryDesc,
+	const cv::Mat& trainDesc,
+	std::vector<std::vector<cv::DMatch>>& knnMatches,
+	int k,
+	unsigned threadIdx)
+{
+	ASSERT(threadIdx < matchers.size());
+	ASSERT(!config.crossCheck || k == 1);
+	cv::DescriptorMatcher& matcher = *matchers[threadIdx];
+	if (config.descriptorsAreBinary) {
+		matcher.knnMatch(queryDesc, trainDesc, knnMatches, k);
+	} else {
+		cv::Mat queryF, trainF;
+		queryDesc.convertTo(queryF, CV_32F);
+		trainDesc.convertTo(trainF, CV_32F);
+		matcher.knnMatch(queryF, trainF, knnMatches, k);
+	}
+}
+
 void PairsMatcher::MatchFeatures(
 	const cv::Mat& desc1,
 	const cv::Mat& desc2,
@@ -323,27 +341,18 @@ void PairsMatcher::MatchFeatures(
 	matches.clear();
 	if (desc1.rows < (int)config.minMatches || desc2.rows < (int)config.minMatches)
 		return;
-	// Reuse pre-initialized matcher for this thread
 	ASSERT(threadIdx < matchers.size());
-	cv::Ptr<cv::DescriptorMatcher>& matcher = matchers[threadIdx];
 	if (config.crossCheck) {
 		// BF matching (supports cross-check)
 		std::vector<cv::DMatch> bfMatches;
-		matcher->match(desc1, desc2, bfMatches);
+		matchers[threadIdx]->match(desc1, desc2, bfMatches);
 		matches.reserve(bfMatches.size());
 		for (const auto& m : bfMatches)
 			matches.emplace_back(m);
 	} else {
 		// BF/FLANN KNN matching with Lowe's ratio test
 		std::vector<std::vector<cv::DMatch>> knnMatches;
-		if (config.descriptorsAreBinary) {
-			matcher->knnMatch(desc1, desc2, knnMatches, 2);
-		} else {
-			cv::Mat desc1f, desc2f;
-			desc1.convertTo(desc1f, CV_32F);
-			desc2.convertTo(desc2f, CV_32F);
-			matcher->knnMatch(desc1f, desc2f, knnMatches, 2);
-		}
+		KnnMatch(desc1, desc2, knnMatches, 2, threadIdx);
 		for (const auto& m : knnMatches)
 			if (m.size() == 2 && m[0].distance < config.matchDistance && m[0].distance < config.matchRatio * m[1].distance)
 				matches.push_back(m[0]);
@@ -378,7 +387,9 @@ bool PairsMatcher::GeometricFilter(
 	ImagePair& pair,
 	float maxEpipolarError) const
 {
-	// Start with no outliers; we'll partition after RANSAC
+	// Preserve any prior geometry (e.g. from PreMatch) to guide RANSAC before clearing pair state
+	const std::optional<Pose3D> initPose = pair.relativePose;
+	const std::optional<Matrix3x3> initF = pair.F;
 	pair.ResetInlierMatches();
 	pair.ResetGeometry();
 	if (pair.matches.size() < 8) {
@@ -386,41 +397,20 @@ bool PairsMatcher::GeometricFilter(
 		return false;
 	}
 	ASSERT(img1.HasCamera() && img2.HasCamera());
-	// minFeatureDistance drops matches while building the estimator's point list (FetchPoints), so the
-	// inlier mask RANSAC hands back is shorter than pair.matches and PartitionMatchesByMask's
-	// mask.size() == matches.size() precondition no longer holds: in a Release build that mispartitions
-	// inliers silently. Nothing in this build sets the option (it is 0 everywhere, and no CLI reaches
-	// it), so this refuses an unsupported input by name instead of leaving the trap armed -- a dense
-	// sample of thousands of correspondences, many of them genuinely close together, would spring it
-	// far more readily than the descriptor path ever did.
-	if (config.minFeatureDistance > 0.f) {
-		VERBOSE("error: minFeatureDistance (%g px) is not supported by the geometric verification: "
-			"skipping matches there desynchronises the RANSAC inlier mask from the match list", config.minFeatureDistance);
-		pair.InvalidateMatches();
-		return false;
-	}
 
-	// Configure RANSAC options.
-	// PoseLib master: RelativePoseOptions wraps RansacOptions + BundleOptions and
-	// holds the inlier threshold (max_error) directly; the estimate_* free functions
-	// take no separate BundleOptions parameter.
 	poselib::RelativePoseOptions opt;
-	opt.max_error = maxEpipolarError; // reprojection error threshold, the caller's (config.maxEpipolarError through the three-argument form)
-	opt.ransac.min_iterations = 100; // min iterations
-	opt.ransac.max_iterations = 10000; // max iterations
+	opt.max_error = maxEpipolarError;
+	opt.ransac.min_iterations = 100;
+	opt.ransac.max_iterations = 10000;
 	std::vector<char> inliers;
 
-	// Lambda to fetch matched points from the pair
 	const auto FetchPoints = [&]() {
-		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
 		std::vector<poselib::Point2D> pts1, pts2;
 		pts1.reserve(pair.matches.size());
 		pts2.reserve(pair.matches.size());
 		for (const auto& m : pair.matches) {
 			const cv::Point2f& pt1 = img1.keypoints[m.queryIdx].pt;
 			const cv::Point2f& pt2 = img2.keypoints[m.trainIdx].pt;
-			if (minFeatureDistanceSq > 0 && normSq(pt1 - pt2) < minFeatureDistanceSq)
-				continue; // skip matches that are too close
 			pts1.emplace_back(pt1.x, pt1.y);
 			pts2.emplace_back(pt2.x, pt2.y);
 		}
@@ -436,20 +426,14 @@ bool PairsMatcher::GeometricFilter(
 		size_t numInliers) -> bool
 	{
 		ASSERT(numInliers >= config.minMatches);
-		// Partition matches into inliers and outliers
 		pair.PartitionMatchesByMask(inliersMask, (int)numInliers);
-		// Fill relative pose
 		Pose3D& rel = pair.relativePose.emplace();
 		rel.R = pl_pose.R();
 		rel.SetT(pl_pose.t);
-		// Compose E matrix from relative pose
 		pair.E = ImagePair::ComposeEssentialMatrix(rel);
-		if (pK1 && pK2 && !pair.F.has_value()) {
-			// Compose F matrix from E and K matrices
+		if (pK1 && pK2 && !pair.F.has_value())
 			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), *pK1, *pK2);
-		}
 		if (config.IsMatchesFilterOn()) {
-			// Further filter matches based on triangulation angle, reprojection error, epipole proximity
 			const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, config.minTriangulationAngle, config.reprojThreshold, config.epipoleFilterThreshold);
 			if (numFilteredInliers < config.minMatches) {
 				pair.InvalidateMatches();
@@ -459,18 +443,15 @@ bool PairsMatcher::GeometricFilter(
 		return true;
 	};
 
-	// Dispatch on the one named branch decision (SelectGeometryBranch), so that a caller recording
-	// which geometry ran reads the same predicate the estimator obeys.
 	const GeometryBranch branch = SelectGeometryBranch(config, img1, img2);
 
 	// Shared-focal estimator: uncalibrated scenario where both images use the same unknown focal
 	if (branch == GeometryBranch::SHARED_FOCAL) {
 		const Camera& cam = *img1.pCamera;
 		KMatrix K = cam.GetK();
-		const Point2 pp(K(0,2), K(1,2)); // Principal point
+		const Point2 pp(K(0,2), K(1,2));
 		const auto [pts1, pts2] = FetchPoints();
 
-		// Use shared-focal relative pose estimator
 		poselib::ImagePair plImagePair;
 		opt.real_focal_check = true;
 		poselib::RansacStats stats = poselib::estimate_shared_focal_relative_pose(
@@ -480,54 +461,29 @@ bool PairsMatcher::GeometricFilter(
 			return false;
 		}
 
-		// Extract estimated focal length
 		const double estimatedFocal = plImagePair.camera1.focal();
 		DEBUG_ULTIMATE("GeometricFilter: shared-focal estimator succeeded with %zu inliers, f=%.2f",
 			stats.num_inliers, estimatedFocal);
 
-		// Build K matrix with estimated focal
 		K(0,0) = K(1,1) = estimatedFocal;
-		// Finalize with shared-focal pose
 		return FinalizeRelative(plImagePair.pose, &K, &K, inliers, stats.num_inliers);
 	}
 
-	// Calibrated branch: both cameras trust their intrinsics, so estimate the relative pose
+	// Calibrated branch: both cameras trust their intrinsics, so estimate relative pose on unit bearings
 	if (branch == GeometryBranch::ESSENTIAL) {
 		const Camera& cam1 = *img1.pCamera;
 		const Camera& cam2 = *img2.pCamera;
 		const KMatrix K1 = cam1.GetK();
 		const KMatrix K2 = cam2.GetK();
 
-		// Unified bearing-vector relative pose path: works for any central camera
-		// model. Convert the pixel-space Sampson threshold to an angular threshold
-		// by averaging the per-camera angular equivalents (the Sampson-on-sphere
-		// residual is measured in radians, so the average is a valid combined
-		// threshold for a stereo pair with possibly different pixel resolutions):
-		//   angle_k = cam_k.PixelErrorToAngular(pixel_threshold)
-		//   angle   = 0.5 * (angle_1 + angle_2)
-		// For pinhole this reduces to 0.5/focal_1 + 0.5/focal_2 in the small-angle
-		// limit (previous hand-rolled scaling). The bearing estimator interprets
-		// opt.max_error as an angle in radians (converted internally to sin(angle),
-		// the unit of its unit-norm symmetric Sampson residual).
-		const REAL pxErr = opt.max_error;
-		const REAL angle1 = cam1.PixelErrorToAngular(pxErr);
-		const REAL angle2 = cam2.PixelErrorToAngular(pxErr);
-		opt.max_error = 0.5 * (angle1 + angle2);
-
-		// Extract matched keypoints and convert directly to 3D unit bearing vectors
+		opt.max_error = (double)PairPixelErrorToAngular(cam1, cam2, (REAL)opt.max_error);
 		const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2, true);
 
 		poselib::CameraPose plPose;
-		if (pair.relativePose.has_value()) {
-			// Initialize with existing pose (from PreMatch) to guide RANSAC
-			plPose = poselib::CameraPose(pair.relativePose->R, pair.relativePose->GetT());
+		if (initPose.has_value()) {
+			plPose = poselib::CameraPose(initPose->R, initPose->GetT());
 			opt.ransac.score_initial_model = true;
 		}
-		// Cheirality check stays at its default (enabled) — it's bearing-native and
-		// works for both pinhole and spherical back-hemisphere features. Without it,
-		// the four (R, ±t), (R', ±t) decompositions of the essential matrix all have
-		// identical Sampson scores and RANSAC picks whichever one the 5-point solver
-		// returned first.
 		poselib::RansacStats stats = poselib::estimate_relative_pose_bearings(
 			bearings1, bearings2,
 			opt,
@@ -537,24 +493,16 @@ bool PairsMatcher::GeometricFilter(
 			pair.InvalidateMatches();
 			return false;
 		}
-		// F is only geometrically meaningful when BOTH cameras are pinhole —
-		// SphericalCamera::GetK() returns IDENTITY, so composing F from a mixed
-		// pair yields garbage. Pass null Ks unless both sides are pinhole; the
-		// downstream consumers that rely on F (e.g. MatchGeometric descriptor
-		// filtering, ViewGraphCalibrator) check pair.F.has_value() and take
-		// the bearing/E path when F is absent.
+		// F is only geometrically meaningful when both cameras are pinhole
 		const bool bothPinhole(cam1.GetType() == CameraType::PINHOLE && cam2.GetType() == CameraType::PINHOLE);
-		const KMatrix *pK1 = bothPinhole ? &K1 : nullptr;
-		const KMatrix *pK2 = bothPinhole ? &K2 : nullptr;
-		return FinalizeRelative(plPose, pK1, pK2, inliers, stats.num_inliers);
+		return FinalizeRelative(plPose, bothPinhole ? &K1 : nullptr, bothPinhole ? &K2 : nullptr, inliers, stats.num_inliers);
 	}
 
 	// Uncalibrated branch: estimate fundamental matrix
 	const auto [pts1, pts2] = FetchPoints();
 	Eigen::Matrix3d F;
-	if (pair.F.has_value()) {
-		// Initialize with existing fundamental matrix (from PreMatch) to guide RANSAC
-		F = pair.F.value();
+	if (initF.has_value()) {
+		F = initF.value();
 		opt.ransac.score_initial_model = true;
 	}
 	poselib::RansacStats stats = poselib::estimate_fundamental(pts1, pts2, opt, &F, &inliers);
@@ -563,12 +511,8 @@ bool PairsMatcher::GeometricFilter(
 		return false;
 	}
 	pair.PartitionMatchesByMask(inliers, (int)stats.num_inliers);
-
-	// Update F on the pair
 	pair.F = F.cast<REAL>();
 
-	// Decompose F into E and relative pose if intrinsics are trusted
-	// note: if intrinsics are not accurate, the decomposition will result in very few filtered inliers
 	if (config.forceFundamentalDecomposition || (img1.TrustIntrinsics() && img2.TrustIntrinsics()))
 		return DecomposeFundamentalToPose(img1, img2, pair);
 	return true;
@@ -588,10 +532,8 @@ bool PairsMatcher::RefineRelativePose(
 	const Camera& cam1 = *img1.pCamera;
 	const Camera& cam2 = *img2.pCamera;
 	const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2, true);
-	// the loss of the estimator's own polish (estimate_relative_pose_bearings): its tolerance is the
-	// angular equivalent of the pixel bar GeometricFilter verifies with, as a unit-norm Sampson residual
 	poselib::BundleOptions bundle;
-	bundle.loss_scale = std::sin(0.5 * (cam1.PixelErrorToAngular(config.maxEpipolarError) + cam2.PixelErrorToAngular(config.maxEpipolarError)));
+	bundle.loss_scale = std::sin((double)PairPixelErrorToAngular(cam1, cam2, (REAL)config.maxEpipolarError));
 	poselib::CameraPose pose(pair.relativePose->R, pair.relativePose->GetT());
 	poselib::refine_relpose_bearing(bearings1, bearings2, &pose, bundle, weights);
 	Pose3D& rel = pair.relativePose.value();
@@ -610,7 +552,6 @@ bool PairsMatcher::DecomposeFundamentalToPose(const Image& img1, const Image& im
 	ASSERT(pair.ID2 == img2.ID);
 	ASSERT(img1.HasCamera() && img2.HasCamera());
 	ASSERT(pair.F.has_value());
-	// E from F and the two cameras' K, then the pose its matches put in front of both cameras
 	pair.E = ImagePair::DecomposeFundamentalMatrix(pair.F.value(), img1.GetK(), img2.GetK());
 	const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2);
 	if (ImagePair::RecoverPose(pair.E.value(), bearings1, bearings2, pair.relativePose.emplace()) < config.minMatches) {
@@ -619,7 +560,6 @@ bool PairsMatcher::DecomposeFundamentalToPose(const Image& img1, const Image& im
 		return false;
 	}
 	if (config.IsMatchesFilterOn()) {
-		// Apply strict outlier filtering (cheirality, angle, epipole)
 		const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, config.minTriangulationAngle, config.reprojThreshold, config.epipoleFilterThreshold);
 		if (numFilteredInliers < config.minMatches) {
 			pair.InvalidateMatches();
@@ -627,15 +567,6 @@ bool PairsMatcher::DecomposeFundamentalToPose(const Image& img1, const Image& im
 		}
 	}
 	return true;
-}
-
-// Whether a pair was matched by the dense one pass: it carries a dense segment, or either image
-// carries dense keypoints. The one pass is their only producer, and a scene it matched holds no
-// descriptor-matched pair (there is no union of the two), so such a pair is re-verified the way it
-// was assembled; a pair whose fill drew nothing in a scene of descriptor pairs cannot exist.
-static bool IsDenseMatchedPair(const ImagePair& pair, const Image& img1, const Image& img2)
-{
-	return pair.GetNumDenseInliers() > 0 || img1.HasDenseKeypoints() || img2.HasDenseKeypoints();
 }
 
 unsigned PairsMatcher::ComputeRelativePoses(bool onlyTrustedIntrinsics, bool onlyComputeIfMissing, const std::unordered_set<CameraPtr>& updatedCameras)
@@ -658,13 +589,7 @@ unsigned PairsMatcher::ComputeRelativePoses(bool onlyTrustedIntrinsics, bool onl
 			return;
 		if (!updatedCameras.empty() && updatedCameras.count(img1.pCamera) == 0 && updatedCameras.count(img2.pCamera) == 0)
 			return;
-		// Recompute relative pose with the new intrinsics: a pair the dense one pass matched through
-		// the fit and classification it was assembled with, which keep its sparse and dense segments
-		// apart (GeometricFilter over all its matches holds the dense samples to the descriptor
-		// estimator at full weight, keeps one that fails as an outlier, and without the strict filter
-		// folds the dense segment into the sparse one); every other pair through the estimator it was
-		// verified with, its outliers rejoining
-		if (IsDenseMatchedPair(pair, img1, img2))
+		if (pair.IsDense(img1, img2))
 			ReverifyPairDense(*this, img1, img2, denseCfg, pair);
 		else
 			GeometricFilter(img1, img2, pair);
@@ -1307,6 +1232,15 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 			return a.score > b.score || (a.score == b.score && a.idx < b.idx);
 		});
 	};
+	const auto TrimCandidates = [](CLISTDEF0(ScoredCandidate)& candidates, IIndex keepCount) {
+		const auto cmp = [](const ScoredCandidate& a, const ScoredCandidate& b) {
+			return a.score > b.score || (a.score == b.score && a.idx < b.idx);
+		};
+		if (candidates.size() > keepCount) {
+			std::nth_element(candidates.begin(), candidates.begin() + keepCount, candidates.end(), cmp);
+			candidates.Resize(keepCount);
+		}
+	};
 	if (poseGuided) {
 		// close the triangles of the verified graph: two images sharing verified neighbors
 		// most likely overlap too, no matter how the pose-based score ranks them (the strongest
@@ -1340,8 +1274,6 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 		// enough past the first-round candidate lists to always offer unattempted pairs
 		if (proposals.size() < budget) {
 			const IIndex refillDepth = MINF(config.maxPairsPerImage*4/3 + 8, nEligible - 1);
-			// bound the per-image candidate list (see CollectKnownPosePairs): compacting to
-			// the current top ranking on overflow is exact and keeps the memory O(N*depth)
 			const IIndex maxCandidates = MAXF(IIndex(16), refillDepth*4);
 			scene.threadPool.detach_loop(0u, nEligible, [&](IIndex a) {
 				const Image& imgA = scene.images[posedImages[a]];
@@ -1355,14 +1287,11 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 					if (s.IsGated())
 						continue;
 					candidates.push_back({posedImages[b], (float)s.score});
-					if (candidates.size() >= maxCandidates) {
-						SortCandidates(candidates);
-						candidates.Resize(refillDepth);
-					}
+					if (candidates.size() >= maxCandidates)
+						TrimCandidates(candidates, refillDepth);
 				}
+				TrimCandidates(candidates, refillDepth);
 				SortCandidates(candidates);
-				if (candidates.size() > refillDepth)
-					candidates.Resize(refillDepth);
 			});
 			scene.threadPool.wait();
 		}
@@ -1524,7 +1453,7 @@ void PairsMatcher::OptimizePairsOrder(PairIdxArr& pairsToMatch)
 
 void PairsMatcher::FilterRedundantKeypoints()
 {
-	TD_TIMER_STARTD();
+	TD_TIMER_START();
 	const IIndex numImages = scene.images.size();
 	std::vector<Unsigned32Arr> remaps(numImages);
 	const auto IsDuplicate = [](const cv::KeyPoint& ka, const cv::KeyPoint& kb) {
@@ -1976,7 +1905,7 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
 		// always a pool thread: this lambda only ever runs through detach_loop below
 		const std::optional<size_t> poolIdx = BS::this_thread::get_index();
 		ASSERT(poolIdx && *poolIdx < matchers.size());
-		const unsigned threadIdx = poolIdx ? (unsigned)*poolIdx : 0u;
+		const unsigned threadIdx = (unsigned)*poolIdx;
 		std::vector<DMatch> matches;
 		MatchFeatures(desc1, desc2, matches, threadIdx);
 		if (matches.size() < config.preMatchThreshold) {
@@ -2170,22 +2099,15 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		break;
 	}
 	case MatchConfig::VOCABULARY: {
-		// Build vocabulary candidates from the tree retrieval ranking; a selection that failed (no tree:
-		// EnsureVocabularyTree logged the error) ends the stage, one that ranked no pair is left to the
-		// check after the consecutive pairs
-		EnsureVocabularyTree();
+		pairsToMatch = CollectVocabularyPairs(retrievalTopK);
 		if (!vocabularyTree)
 			return 0;
-		pairsToMatch = CollectVocabularyPairs(retrievalTopK);
 		break;
 	}
 	case MatchConfig::RETRIEVAL: {
-		// Build candidates from the global-descriptor retrieval alone: no vocabulary tree, no
-		// fallback (see CollectRetrievalPairs / EnsureGlobalDescriptorsIndex); a selection that
-		// failed (a missing descriptor: the index logged the error, naming the image) ends the stage
-		if (!EnsureGlobalDescriptorsIndex())
-			return 0;
 		pairsToMatch = CollectRetrievalPairs(retrievalTopK);
+		if (!globalDescriptors || !globalDescriptors->IsValid())
+			return 0;
 		break;
 	}
 	case MatchConfig::KNOWN_POSES: {
@@ -2264,26 +2186,15 @@ unsigned PairsMatcher::Match(bool& bFatal)
 			stats.densePairs += numStored;
 			return true;
 		}
-		// Pre-match the pairs if requested: the tree is already built by construction whenever
-		// one exists to pre-match with (VOCABULARY, or KNOWN_POSES with unposed images); RETRIEVAL
-		// never builds one, so pre-matching stays unreachable there regardless of this setting.
-		if (vocabularyTree) {
-			if (config.preMatchThreshold > 0)
-				PreMatch(pairs);
-			// Clear descriptors cache
-			vocabularyTree->ClearDescriptorsCache();
-		}
+		if (vocabularyTree && config.preMatchThreshold > 0)
+			PreMatch(pairs);
 		// Reorder pairs to minimize GPU transfers and improve load balancing
 		OptimizePairsOrder(pairs);
 		if (!MatchPairsBatch(pairs, progressCaption, stats))
 			return false;
 		return true;
 	};
-	// Snapshot the candidate list before the round runs: PreMatch prunes rejected pairs from
-	// it in place (and they are not stored in scene.pairs either), so the feedback round must
-	// see the original list or it re-proposes exactly the pairs pre-matching already rejected.
-	// The one pass leaves the list alone, but it too drops the pairs its verdict rejected without
-	// storing them, so the snapshot is what keeps the feedback round from proposing those again
+	// Snapshot the candidate list before the round runs so verification feedback does not re-propose rejected pairs
 	PairIdxArr attemptedPairs;
 	if (verificationFeedback)
 		attemptedPairs = pairsToMatch;
@@ -2292,10 +2203,7 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		return 0;
 	}
 
-	// Second round: spend the held-back pair budget on the pairs suggested by the
-	// geometrically verified matches of the first round.
-	// Its failure has to be reported as such: round 1 already stored pairs, so neither the count
-	// returned below nor an empty view graph downstream can show that the graph is truncated
+	// Second round: spend the held-back pair budget on pairs suggested by verified round-1 matches
 	if (verificationFeedback) {
 		PairIdxArr feedbackPairs = CollectVerificationFeedbackPairs(attemptedPairs);
 		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs"))) {
@@ -2303,11 +2211,10 @@ unsigned PairsMatcher::Match(bool& bFatal)
 			return 0;
 		}
 	}
+	if (vocabularyTree)
+		vocabularyTree->ClearDescriptorsCache();
 	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
 
-	// the two round shapes count different things, so each closes with the counters it actually
-	// filled: the descriptor rounds their created/updated pairs and match totals, the one pass the
-	// pairs it stored (its own summary line above already reports what each of them cost)
 	if (denseMatcher && denseCfg.useMatching) {
 		DEBUG("Images matched: %u dense pairs stored (%u total from %u exhaustive) in %s",
 			stats.densePairs, scene.pairs.size(), numExhaustivePairs, TD_TIMER_GET_FMT().c_str());
@@ -2323,16 +2230,13 @@ unsigned PairsMatcher::Match(bool& bFatal)
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
-		// Log pairs statistics:
-		//  - number of valid pairs per image
-		//  - number of matches and inliers per pair
 		MeanStdMinMax<unsigned,REAL> pairsPerImage;
 		MeanStdMinMax<unsigned,REAL> matchesPerPair;
 		MeanStdMinMax<unsigned,REAL> inliersPerPair;
 		MeanStdMinMax<unsigned,REAL> filteredInliersPerPair;
 		IIndexArr imagePairCounts(scene.images.size());
 		imagePairCounts.Memset(0);
-		unsigned nMatches = 0, nInliers = 0, nFilteredInliers = 0;
+		size_t nMatches = 0, nInliers = 0, nFilteredInliers = 0;
 		for (const ImagePair& pair : scene.pairs) {
 			if (!pair.HasMatches())
 				continue;
@@ -2349,16 +2253,16 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		VERBOSE("Pairs per image: mean %.2f, std %.2f, range [%u, %u]",
 				pairsPerImage.GetMean(), pairsPerImage.GetStdDev(),
 				pairsPerImage.GetMin(), pairsPerImage.GetMax());
-		VERBOSE("Matches per pair: mean %.2f, std %.2f, range [%u, %u], total %u",
+		VERBOSE("Matches per pair: mean %.2f, std %.2f, range [%u, %u], total %zu",
 				matchesPerPair.GetMean(), matchesPerPair.GetStdDev(),
 				matchesPerPair.GetMin(), matchesPerPair.GetMax(), nMatches);
 		if (nInliers > 0) {
-			VERBOSE("Inliers per pair: mean %.2f, std %.2f, range [%u, %u], total %u",
+			VERBOSE("Inliers per pair: mean %.2f, std %.2f, range [%u, %u], total %zu",
 					inliersPerPair.GetMean(), inliersPerPair.GetStdDev(),
 					inliersPerPair.GetMin(), inliersPerPair.GetMax(), nInliers);
 		}
 		if (nFilteredInliers > 0) {
-			VERBOSE("Filtered inliers per pair: mean %.2f, std %.2f, range [%u, %u], total %u",
+			VERBOSE("Filtered inliers per pair: mean %.2f, std %.2f, range [%u, %u], total %zu",
 					filteredInliersPerPair.GetMean(), filteredInliersPerPair.GetStdDev(),
 					filteredInliersPerPair.GetMin(), filteredInliersPerPair.GetMax(), nFilteredInliers);
 		}
@@ -2366,23 +2270,17 @@ unsigned PairsMatcher::Match(bool& bFatal)
 	#endif
 
 	if (config.releaseDescriptors) {
-		// Release descriptors to save memory
 		for (Image& img : scene.images)
 			img.descriptors.release();
-
-		// Filter redundant keypoints to avoid artificial track breaks
-		// (only if descriptors are released as the filter can not process descriptors)
 		FilterRedundantKeypoints();
 	}
 
-	// Compute pair weights
 	ComputePairsWeights(scene, config.weightingCfg);
-
 	return scene.pairs.size();
 }
 
 
-bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, float minYield, const PairsWeightingConfig& weighting)
+bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minYield, const PairsWeightingConfig& weighting)
 {
 	std::ofstream ofs(fileName);
 	if (!ofs.is_open()) {

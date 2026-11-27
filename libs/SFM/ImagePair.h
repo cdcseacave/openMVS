@@ -132,19 +132,9 @@ public:
 	float weightSpatial;      // Intrinsic: geometric spread/conditioning (0-1)
 	float weightConnectivity; // Extrinsic: local connectivity strength (0-1)
 	float weightTriplet;      // Extrinsic: cycle consistency support (0-1)
-	// The pair's INLIER EVIDENCE as everything that ranks the view graph reads it (through
-	// GetNumWeightedInliers): its sparse inliers plus its dense supplement scaled to the matcher's
-	// frame target, sparse + frameInliers/matchesPerFrame * dense. Written by ComputePairsWeights,
-	// the one pass that holds the view graph's own dense scale
-	// (PairsWeightingConfig::denseFrameInliers and ::denseMatchesPerFrame); -1 until it has run, and
-	// the accessor then answers with the sparse count -- which is the pre-supplement answer, and is
-	// what every consumer running before the weighting pass (the matcher's own replace and skip
-	// tests) has always used. Cleared by every writer that changes the partition it summarises -- the
-	// four reset paths below, AppendDenseMatches, and FilterRedundantKeypoints' recount -- so a stale
-	// value can never be read as a fresh one.
-	// Stored rather than computed on the fly because GetCompositeWeight() and its ~15 callers have
-	// no access to a configuration, and a second hard-coded copy of the weight would be a second
-	// answer to a question that must have one.
+	// Effective inlier evidence: sparse + (denseFrameInliers / denseMatchesPerFrame) * dense,
+	// written by ComputePairsWeights (-1 until weighted, falling back to sparse count). Cleared
+	// whenever the match partition changes.
 	float weightedInliers;
 
 public:
@@ -236,43 +226,26 @@ public:
 	}
 	// Number of dense (warp) supplement matches, the second segment of `matches`
 	unsigned GetNumDenseInliers() const {
-		// The partition must describe ranges of `matches` that exist. Asserted at the READER rather
-		// than only at the writers that maintain it, because the four union consumers (BuildTracks
-		// steps 2 and 4, both GlobalAlignment union-finds) evaluate `matches[i]` for
-		// i < GetNumTrackFormingMatches() and only look at the DMatch's contents on the next line:
-		// an over-long dense count is an out-of-bounds read that happens before any of their own
-		// bounds tests can see it. There are eight writers of the two counts today, and this catches
-		// a ninth that grows one or shrinks `matches` without pairing the two.
 		ASSERT(numDenseInliers >= 0 && (numFilteredInliers < 0 ? numDenseInliers == 0 :
 			(size_t)numFilteredInliers + (size_t)numDenseInliers <= matches.size()));
 		return (unsigned)numDenseInliers;
 	}
-	// The TRACK-FORMING set: the sparse inliers plus the dense supplement, i.e. the leading
-	// `matches` prefix BuildTracks unions. Everything past it are matches the strict filter
-	// deliberately rejected and must never form a track. Inherits both accessors' assertions.
+	// Track-forming prefix (sparse inliers + dense supplement) unioned by BuildTracks
 	unsigned GetNumTrackFormingMatches() const { return GetNumFilteredInliers() + GetNumDenseInliers(); }
-	// THE PAIR'S INLIER EVIDENCE, and the one notion of it: sparse + w * dense, rounded, with w the
-	// dense observation weight (see `weightedInliers`). Everything that ranks or gates the view graph
-	// on "how much correspondence evidence does this pair have" reads this -- the composite weight,
-	// the connectivity normalisation, the triplet edge strength, the star initializer's degree and
-	// candidate ranking, the calibrator's trust bars, the matcher's own replace and skip tests -- so
-	// that a dense-only pair (no sparse inliers at all) is a first-class member of the graph rather
-	// than a zero. The sparse count itself stays available for the two things that genuinely mean
-	// "descriptor evidence": the diagnostics that report it, and the estimation bars that predate any
-	// supplement.
-	// Before the weighting pass has run it answers with the sparse count, which is what it always was.
+	// Effective inlier evidence: sparse + w * dense (rounded), or sparse count before weighting
 	unsigned GetNumWeightedInliers() const {
 		return weightedInliers >= 0.f ? ROUND2INT<unsigned>(weightedInliers) : GetNumFilteredInliers();
 	}
+	// True if this pair carries dense matches or either endpoint image has dense keypoints
+	bool IsDense(const Image& img1, const Image& img2) const;
+	// Relative rotation R_from_to (x_to = R * x_from) for an oriented pair endpoint order
+	inline Matrix3x3 GetRelativeRotation(IIndex from, IIndex to) const {
+		ASSERT(relativePose.has_value());
+		ASSERT((from == ID1 && to == ID2) || (from == ID2 && to == ID1));
+		return from == ID1 ? Matrix3x3(relativePose->R) : Matrix3x3(relativePose->R.t());
+	}
 
-	// Debug-only invariant check on the `matches` partition: no match in the sparse segment
-	// [0, GetNumFilteredInliers()) may have a dense (warp) endpoint, since a descriptor match
-	// is described at both ends on every path that produces one and the keypoint filter's
-	// described-wins rule never moves a described keypoint onto a dense one. Compiled out of release
-	// builds. Deliberately ONE-DIRECTIONAL: the converse is false by design, because
-	// FilterRedundantKeypoints' step 3 maintains the dense segment by position and leaves a
-	// supplement match whose *both* endpoints collapsed onto described survivors inside it, while
-	// FilterMatches classifies that same shape as sparse.
+	// Debug-only check that [0, GetNumFilteredInliers()) contains only described keypoints
 	void CheckSparseSegmentIsDescribed(const Image& img1, const Image& img2) const;
 
 	// Compute composite weight from components:
@@ -377,6 +350,25 @@ public:
 	// not the pair is partitioned.
 	unsigned CheckEpipolarInliers(const Image& img1, const Image& img2, float threshold = 3.f, int forceEpipolarType = -1,
 		cv::InputOutputArray inlierMask = cv::noArray()) const;
+
+	// True when both images are pinhole and at least one lacks trusted intrinsics (use F instead of E)
+	static bool UseFundamentalForPair(const Image& img1, const Image& img2);
+
+	// Triangulate and verify a single match under a relative pose (cheirality, angular reprojection,
+	// minimum parallax angle, and optional epipole exclusion). Returns true and writes X, cosAngle on pass.
+	static bool TriangulateVerifiedMatch(
+		const Pose3D& relPose,
+		const Camera& cam1,
+		const Camera& cam2,
+		const Point2f& pt1,
+		const Point2f& pt2,
+		REAL cosReprojAngle,
+		REAL maxCosAngle,
+		Point3& X,
+		REAL& cosAngle,
+		REAL epipoleCosAngle = REAL(2),
+		const Point3& epipoleDir1 = Point3::ZERO,
+		const Point3& epipoleDir2 = Point3::ZERO);
 
 	// static functions for composing the essential matrix from relative pose and vice-versa
 	static Matrix3x3 ComposeEssentialMatrix(const Pose3D& pose);

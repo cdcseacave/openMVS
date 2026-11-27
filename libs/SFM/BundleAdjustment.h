@@ -143,7 +143,17 @@ struct SFM_API BAConfig
 	unsigned numThreads = 0;         // Number of threads (0 = auto)
 	double functionTolerance = 1e-6; // Convergence tolerance
 
-	// enable all intrinsic refinement flags
+	// Disable all intrinsic refinement flags
+	void ClearIntrinsicRefinement() {
+		refineFocalLength = false;
+		refineFocalLengthAspectRatio = false;
+		refinePrincipalPoint = false;
+		refineRadialDistortion12 = false;
+		refineTangentialDistortion = false;
+		refineRadialDistortion456 = false;
+		refineRadialDistortion3 = false;
+	}
+	// Enable main intrinsic refinement flags (focal length + k1, k2)
 	void RefineMainIntrinsics() {
 		refineFocalLength = true;
 		refineRadialDistortion12 = true;
@@ -379,11 +389,6 @@ SFM_API double EstimateDenseObservationWeight(const Scene& scene, const BAConfig
 // params[7] = { qw, qx, qy, qz, Cx, Cy, Cz }
 SFM_API void Pose3DToQuaternionAndCenter(const Pose3D& pose, double* params);
 SFM_API void QuaternionAndCenterToPose3D(const double* params, Pose3D& pose);
-/*----------------------------------------------------------------*/
-
-
-// Test PinholeReprojectionErrorAnalytic Jacobians against the auto-diff functor (BAPinholeReprojectionJacobianTest)
-SFM_API bool PinholeReprojectionJacobianTest();
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

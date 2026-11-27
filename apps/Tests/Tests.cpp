@@ -248,9 +248,6 @@ bool UnitTests()
 
 // test OpenMVS functionality
 
-
-
-
 // one entry of the table of SFM tests that main() walks in order
 #define SFM_TEST(name) {#name, SFM::name}
 
@@ -370,7 +367,7 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(SceneBlocksInsertTest),
 				SFM_TEST(PoolResectionTest),
 				// TestsSFMBundleAdjustment.cpp: bundle adjustment, filtering and triangulation
-				{"PinholeReprojectionJacobianTest", SFM::PinholeReprojectionJacobianTest}, // defined in the library
+				SFM_TEST(PinholeReprojectionJacobianTest),
 				SFM_TEST(BADenseWeightTest),
 				SFM_TEST(BAIntrinsicFlagsTest),
 				SFM_TEST(ReconstructSphericalSyntheticTest),

@@ -860,43 +860,43 @@ bool ResectionLinkChecksTest()
 	// true rotation; RIGHT_POSE: and within 1% of the arc's extent of its true centre; RIGHT_SHAPE: RIGHT_ROTATION, and every
 	// registered image is within 1 degree and 1% of the extent of its true pose after the best similarity (PoseErrors);
 	// WRONG: it registers more than 15 degrees off its true rotation
-	enum Expect { REFUSED, REGISTERED, RIGHT_ROTATION, RIGHT_POSE, RIGHT_SHAPE, WRONG };
+	enum class Expect { Refused, Registered, RightRotation, RightPose, RightShape, Wrong };
 	struct Case {
 		const char* name; std::function<ArcScene()> scene; const ResectionConfig& config; Expect expect; const char* why;
 		bool single = false;         // RegisterImage(4) alone, not the resection's loop
 		const char* logged = NULL;   // a line the log must hold
 	};
 	const Case cases[] = {
-		{"decoy, defaults", Decoy, defaults, REFUSED, "20 of 100 inliers is under the 25% minimum share and far under the 100 that would waive it"},
-		{"decoy, every rule off", Decoy, allOff, WRONG, "with the share, the composed rotation, the link direction and the link rotation off, the decoy pose is accepted, so the rules are what keeps it out"},
-		{"decoy, share off", Decoy, ratioOff, REFUSED, "the pose is 40 degrees from the rotation its strongest pair composes, and its 20% share does not earn it the benefit of the doubt"},
-		{"decoy, share and direction off", Decoy, ratioAndDirectionOff, REFUSED, "with every direction check off the composed-rotation check still refuses it"},
-		{"quorum", [&] { return Quorum(true); }, quorumOnly, RIGHT_SHAPE, "two of three pairs agree with the pose and overrule the strongest pair, to the displaced image 3"},
-		{"false witness alone", [&] { return Quorum(false); }, defaults, REFUSED, "the pair to the displaced image 3 is the only witness left"},
-		{"1 of 3 turned", [&] { return Turned(1, 20); }, direction5, RIGHT_ROTATION, "the two agreeing pairs outweigh the turned one: a single misplaced neighbour cannot refuse a right pose"},
-		{"2 of 3 turned", [&] { return Turned(2, 20); }, direction5, REFUSED, "the links that contradict the direction outweigh the one that agrees"},
-		{"2 of 3 turned, direction off", [&] { return Turned(2, 20); }, direction0, RIGHT_ROTATION, "the direction check is what refused the case above"},
-		{"2 of 3 turned, 1-degree rays", [&] { return Turned(2, 1); }, direction5, RIGHT_ROTATION, "near-duplicate pairs fix no direction: they are judged on the rotation alone"},
-		{"2 of 3 turned, 4-degree rays", [&] { return Turned(2, 4); }, direction5, REFUSED, "4-degree rays would forgive 51 degrees, but the model places images 3 and 2 10 and 20 degrees of parallax from the pose and the larger angle sets the tolerance (27 and 14 degrees)"},
-		{"turned 400 against 150+150", [&] { return Turned(1, 20, {400, 150, 150}); }, defaults, REFUSED, "weighed in weighted inliers, not links: the 400 that contradict outweigh the 300 that agree, which a count of links would have outvoted two to one"},
-		{"turned 335 against 150+150", [&] { return Turned(1, 20, {335, 150, 150}); }, defaults, RIGHT_ROTATION, "the pose's own 40 inliers vote for it: 335 outweighs the 300 links that agree but not the 340 with the pose"},
-		{"turned 345 against 150+150", [&] { return Turned(1, 20, {345, 150, 150}); }, defaults, REFUSED, "345 outweighs the 340 of the agreeing links and the pose together"},
-		{"parallax 1: close in the model only", [&] { return Parallax({{5, 400, {5, 40}}, {3, 100, {20}}}); }, direction3, RIGHT_POSE, "the heaviest link, to image 5, is a pair of 5-degree rays turned 40 degrees (its own tolerance, 31, would refuse), but the model sees images 4 and 5 under 2 degrees of parallax: it abstains and the right link to image 3 vouches"},
-		{"parallax 2: the model tightens", [&] { return Parallax({{3, 400, {4}}}, 1, &lifted); }, direction3, REFUSED, "the lifted pose is 25 degrees off its only link's direction; the pair's 4-degree rays forgive 36.9, but the model places the pose 10 degrees of parallax from image 3 and the larger angle holds it to 16.7"},
-		{"parallax 3: close in both", [&] { return Parallax({{5, 400, {1}}, {3, 100, {20, 40}}}); }, direction3, RIGHT_POSE, "the pair to image 5 is a near-duplicate the model also sees under 2 degrees, so it agrees and its 400 outweigh the 100 of the turned pair to image 3"},
-		{"parallax 4: direction off", [&] { return Parallax({{3, 400, {4}}}, 1, &lifted); }, direction0, REGISTERED, "maxLinkDirectionError 0 turns every direction check off and the lifted pose of case 2 is accepted"},
-		{"parallax 5: a small angle forgives", [&] { return Parallax({{5, 400, {4, 20}}, {3, 100, {20}}}, 4); }, direction3, RIGHT_POSE, "image 5 4 degrees along: both the pair's rays and the model's parallax are about 4 degrees, which forgives 36.9, so the link turned 20 degrees agrees"},
-		{"parallax 6: the pair tightens", [&] { return Parallax({{5, 400, {80, 2.6}}}, 3); }, direction3, REFUSED, "the pair's 80-degree rays hold the direction to 2.15 degrees, whatever the model's 3 degrees of parallax or the plain 3 would forgive"},
-		{"rotation: heavy link off", [&] { return Rotated({{3, 800, {0, 0, 13}}, {2, 100}, {1, 100}}); }, defaults, REFUSED, "the link of 800 of the 1000 weighted inliers predicts a rotation 13 degrees off: weighted mean 10.4 over the 8-degree bar (an unweighted 4.3 would accept), while the quorum and the composed rotation pass it",
+		{"decoy, defaults", Decoy, defaults, Expect::Refused, "20 of 100 inliers is under the 25% minimum share and far under the 100 that would waive it"},
+		{"decoy, every rule off", Decoy, allOff, Expect::Wrong, "with the share, the composed rotation, the link direction and the link rotation off, the decoy pose is accepted, so the rules are what keeps it out"},
+		{"decoy, share off", Decoy, ratioOff, Expect::Refused, "the pose is 40 degrees from the rotation its strongest pair composes, and its 20% share does not earn it the benefit of the doubt"},
+		{"decoy, share and direction off", Decoy, ratioAndDirectionOff, Expect::Refused, "with every direction check off the composed-rotation check still refuses it"},
+		{"quorum", [&] { return Quorum(true); }, quorumOnly, Expect::RightShape, "two of three pairs agree with the pose and overrule the strongest pair, to the displaced image 3"},
+		{"false witness alone", [&] { return Quorum(false); }, defaults, Expect::Refused, "the pair to the displaced image 3 is the only witness left"},
+		{"1 of 3 turned", [&] { return Turned(1, 20); }, direction5, Expect::RightRotation, "the two agreeing pairs outweigh the turned one: a single misplaced neighbour cannot refuse a right pose"},
+		{"2 of 3 turned", [&] { return Turned(2, 20); }, direction5, Expect::Refused, "the links that contradict the direction outweigh the one that agrees"},
+		{"2 of 3 turned, direction off", [&] { return Turned(2, 20); }, direction0, Expect::RightRotation, "the direction check is what refused the case above"},
+		{"2 of 3 turned, 1-degree rays", [&] { return Turned(2, 1); }, direction5, Expect::RightRotation, "near-duplicate pairs fix no direction: they are judged on the rotation alone"},
+		{"2 of 3 turned, 4-degree rays", [&] { return Turned(2, 4); }, direction5, Expect::Refused, "4-degree rays would forgive 51 degrees, but the model places images 3 and 2 10 and 20 degrees of parallax from the pose and the larger angle sets the tolerance (27 and 14 degrees)"},
+		{"turned 400 against 150+150", [&] { return Turned(1, 20, {400, 150, 150}); }, defaults, Expect::Refused, "weighed in weighted inliers, not links: the 400 that contradict outweigh the 300 that agree, which a count of links would have outvoted two to one"},
+		{"turned 335 against 150+150", [&] { return Turned(1, 20, {335, 150, 150}); }, defaults, Expect::RightRotation, "the pose's own 40 inliers vote for it: 335 outweighs the 300 links that agree but not the 340 with the pose"},
+		{"turned 345 against 150+150", [&] { return Turned(1, 20, {345, 150, 150}); }, defaults, Expect::Refused, "345 outweighs the 340 of the agreeing links and the pose together"},
+		{"parallax 1: close in the model only", [&] { return Parallax({{5, 400, {5, 40}}, {3, 100, {20}}}); }, direction3, Expect::RightPose, "the heaviest link, to image 5, is a pair of 5-degree rays turned 40 degrees (its own tolerance, 31, would refuse), but the model sees images 4 and 5 under 2 degrees of parallax: it abstains and the right link to image 3 vouches"},
+		{"parallax 2: the model tightens", [&] { return Parallax({{3, 400, {4}}}, 1, &lifted); }, direction3, Expect::Refused, "the lifted pose is 25 degrees off its only link's direction; the pair's 4-degree rays forgive 36.9, but the model places the pose 10 degrees of parallax from image 3 and the larger angle holds it to 16.7"},
+		{"parallax 3: close in both", [&] { return Parallax({{5, 400, {1}}, {3, 100, {20, 40}}}); }, direction3, Expect::RightPose, "the pair to image 5 is a near-duplicate the model also sees under 2 degrees, so it agrees and its 400 outweigh the 100 of the turned pair to image 3"},
+		{"parallax 4: direction off", [&] { return Parallax({{3, 400, {4}}}, 1, &lifted); }, direction0, Expect::Registered, "maxLinkDirectionError 0 turns every direction check off and the lifted pose of case 2 is accepted"},
+		{"parallax 5: a small angle forgives", [&] { return Parallax({{5, 400, {4, 20}}, {3, 100, {20}}}, 4); }, direction3, Expect::RightPose, "image 5 4 degrees along: both the pair's rays and the model's parallax are about 4 degrees, which forgives 36.9, so the link turned 20 degrees agrees"},
+		{"parallax 6: the pair tightens", [&] { return Parallax({{5, 400, {80, 2.6}}}, 3); }, direction3, Expect::Refused, "the pair's 80-degree rays hold the direction to 2.15 degrees, whatever the model's 3 degrees of parallax or the plain 3 would forgive"},
+		{"rotation: heavy link off", [&] { return Rotated({{3, 800, {0, 0, 13}}, {2, 100}, {1, 100}}); }, defaults, Expect::Refused, "the link of 800 of the 1000 weighted inliers predicts a rotation 13 degrees off: weighted mean 10.4 over the 8-degree bar (an unweighted 4.3 would accept), while the quorum and the composed rotation pass it",
 			false, "away from the rotations its 3 links predict"},
-		{"rotation: check off", [&] { return Rotated({{3, 800, {0, 0, 13}}, {2, 100}, {1, 100}}); }, linkRotationOff, REGISTERED, "maxLinkRotationDisagreement 0 turns the check off: it is what refused the case above"},
-		{"rotation: light links off", [&] { return Rotated({{3, 800}, {2, 100, {0, 0, 13}}, {1, 100, {0, 0, 13}}}); }, defaults, REGISTERED, "the weighted mean is 2.6 degrees (an unweighted 8.7 would refuse)"},
-		{"rotation: no registered link", [&] { return Rotated({{5, 800, {0, 0, 30}}}); }, defaults, REGISTERED, "an image whose only pair is to the unregistered image 5 is not judged (the loop does not try it: RegisterImage alone)",
+		{"rotation: check off", [&] { return Rotated({{3, 800, {0, 0, 13}}, {2, 100}, {1, 100}}); }, linkRotationOff, Expect::Registered, "maxLinkRotationDisagreement 0 turns the check off: it is what refused the case above"},
+		{"rotation: light links off", [&] { return Rotated({{3, 800}, {2, 100, {0, 0, 13}}, {1, 100, {0, 0, 13}}}); }, defaults, Expect::Registered, "the weighted mean is 2.6 degrees (an unweighted 8.7 would refuse)"},
+		{"rotation: no registered link", [&] { return Rotated({{5, 800, {0, 0, 30}}}); }, defaults, Expect::Registered, "an image whose only pair is to the unregistered image 5 is not judged (the loop does not try it: RegisterImage alone)",
 			true},
 	};
 	const auto Describe = [](Expect e) {
-		return e == REFUSED ? "refused" : e == REGISTERED ? "registered" : e == RIGHT_ROTATION ? "registered at its true rotation" :
-			e == RIGHT_POSE ? "registered at its true pose" : e == RIGHT_SHAPE ? "registered, the model its true shape" :
+		return e == Expect::Refused ? "refused" : e == Expect::Registered ? "registered" : e == Expect::RightRotation ? "registered at its true rotation" :
+			e == Expect::RightPose ? "registered at its true pose" : e == Expect::RightShape ? "registered, the model its true shape" :
 			"registered more than 15 degrees off";
 	};
 	for (const Case& c : cases) {
@@ -914,10 +914,10 @@ bool ResectionLinkChecksTest()
 		const double rotErr = registered ? RotationErrorDeg(img.R, arc.truth[4].R) : 0.0;
 		const REAL centreErr = registered ? norm(img.C - arc.truth[4].C) : REAL(0);
 		const PoseError shape = PoseErrors(arc.scene, arc.truth);
-		const bool met = c.expect == REFUSED ? !registered : c.expect == REGISTERED ? registered :
-			c.expect == RIGHT_ROTATION ? registered && rotErr <= 1.0 :
-			c.expect == RIGHT_POSE ? registered && rotErr <= 1.0 && centreErr <= 0.01 * ArcScene::EXTENT :
-			c.expect == RIGHT_SHAPE ? registered && rotErr <= 1.0 && shape.rotationMax <= 1.0 && shape.positionMax <= 0.01 : registered && rotErr > 15.0;
+		const bool met = c.expect == Expect::Refused ? !registered : c.expect == Expect::Registered ? registered :
+			c.expect == Expect::RightRotation ? registered && rotErr <= 1.0 :
+			c.expect == Expect::RightPose ? registered && rotErr <= 1.0 && centreErr <= 0.01 * ArcScene::EXTENT :
+			c.expect == Expect::RightShape ? registered && rotErr <= 1.0 && shape.rotationMax <= 1.0 && shape.positionMax <= 0.01 : registered && rotErr > 15.0;
 		TEST_CHECK(met, "%s: image 4 %s (%.2f deg and %.4f units off its true pose; the model %.2f deg and %.4f of its extent "
 			"off the truth after the best similarity), expected %s: %s", c.name, registered ? "registered" : "was refused", rotErr,
 			centreErr, shape.rotationMax, shape.positionMax, Describe(c.expect), c.why);
@@ -1286,7 +1286,7 @@ bool ResectionFullAdjustmentTest()
 			FilterTracks(arc.scene, FINE_BAR, config.minAngleThreshold, ResectionConfig::multDepthNear, ResectionConfig::multDepthFar);
 			for (size_t t = firstBad; t < arc.scene.tracks.size(); ++t)
 				TEST_CHECK(!arc.scene.tracks[t].IsInlier(), "%s, and a track of image 5 is valid at %g px, so the scene does not pose the problem", c.what, FINE_BAR);
-			const RemovedImages removed = FilterWeaklyConnectedImages(arc.scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f);
+			const RemovedImages removed = FilterWeaklyConnectedImages(arc.scene, 5, 0.15f, 1.5f, 2);
 			TEST_CHECK((removed.all.size() == 1 && removed.all[0] == 4) == c.removed && removed.contradicting.empty(), "%s was expected, but the filter removed %u images "
 				"(the first %d, %u contradicting), so the scene does not pose the problem", c.what, removed.all.size(), removed.all.empty() ? -1 : (int)removed.all[0],
 				removed.contradicting.size());
@@ -1501,7 +1501,7 @@ bool ContradictingImagesTest()
 		arc.Pair(a, b, 100, {0, 0, 0, true});
 	arc.Triangulate();
 	static_cast<Pose3D&>(arc.scene.images[5]) = ArcScene::Pose(5 * ArcScene::STEP + CONTRADICTION_DISPLACEMENT);
-	const RemovedImages removed = FilterWeaklyConnectedImages(arc.scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f);
+	const RemovedImages removed = FilterWeaklyConnectedImages(arc.scene, 5, 0.15f, 1.5f, 2);
 	String valid;
 	FOREACH(imgIdx, arc.scene.images)
 		if (arc.scene.images[imgIdx].IsValid())

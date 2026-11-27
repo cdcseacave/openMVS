@@ -335,7 +335,7 @@ Output: Calibrated poses + sparse point cloud
 
 - **Resection** (`Resection.h`, `PoseLink.h`): tries next the image whose links to registered images weigh most, among every image holding `minCorrespondences` (15) 2D-3D correspondences and at least one link (a verified pair with a relative pose to a registered image; an image without one waits), one registration per round (the list is read again after each), and at a stall runs the full bundle adjustment and tries again when images were registered since the last one or removed by the weak-image filter right before the resection; accepts a pose only when its inliers are a large share of the correspondences (or reach an absolute count regardless of share), its rotation agrees with the quorum of the image's verified pairs to already-registered neighbours, not just the single strongest one, and the quorum links that contradict its baseline direction do not outweigh the ones that agree: each link held to `atan(tan(5°)/a)`, `a` the larger of the pair's ray angle and the model's parallax of the two cameras, a link both see under 2 degrees agreeing and one only one of them does abstaining (`--max-link-direction-error`, 5; 0 = no direction check); and the mean angle between its rotation and the rotations EVERY link to a registered image predicts, weighted by the pair weights, does not exceed `maxLinkRotationDisagreement` (8 degrees, no flag; 0 = off; also when the quorum is contested, an image with no link not judged).
 
-- **Global Alignment** (`GlobalAlignment.h`): the blocks are the nodes of a graph and every block pair the cross pairs join (all its cross pairs read together) an edge holding its readings, one per direction (`--cluster-alignment 1`, generalized-camera PnP with scale over all the cameras of the direction; a direction of one camera gives no reading) or one 3D-3D similarity (`--cluster-alignment 0`, weaker: it placed alameda's block 5 wrong and 1c65aab4's blocks 2 of 4 where the default places them). A reading enters the block graph only with two supporting cameras on its weaker side, an observed scale and the verified image pairs across it not against it, and weighs those cameras times the share of the pairs' inlier weight it reproduces. Every component of the kept readings is averaged robustly and every reading the averaged poses leave past 5 degrees, a scale ratio of 1.20 or 0.20 of the pair's camera footprint is cut, until the kept set settles. The component of the most images is the model (from the second round on, the one holding the merged model); the correspondences of its heavy cross pairs within 12 px join their tracks first, every other cross match then on the duplicate-image and length guards and, for a match of a connecting pair, a reprojection guard (`maxJoinReprojError`, 48 px), and `AdjustMergedScene` filters at that loose bar and adjusts once. The merge runs in rounds (`SceneBlocks::MergeInRounds`): an unplaced block is kept whole and read again against the merged model after a pool step, until nothing changes, then released to the final pass's resection. Known limits: a non-rigid block can be placed wrong, and two planted scenes no capture produces (a heavy wrong chord no verified pair refuses, a block pair no cycle tests whose two readings weigh alike) and a light false pair lending a reading a camera are not caught; see `docs/design/HierarchicalSFM.md`.
+- **Global Alignment** (`GlobalAlignment.h`): the blocks are the nodes of a graph and every block pair the cross pairs join (all its cross pairs read together) an edge holding its readings, one per direction (`--cluster-alignment 1`, generalized-camera PnP with scale over all the cameras of the direction; a direction of one camera gives no reading) or one 3D-3D similarity (`--cluster-alignment 0`). A reading enters the block graph only with two supporting cameras on its weaker side, an observed scale and the verified image pairs across it not against it, and weighs those cameras times the share of the pairs' inlier weight it reproduces. Every component of the kept readings is averaged robustly and every reading the averaged poses leave past 5 degrees, a scale ratio of 1.20 or 0.20 of the pair's camera footprint is cut, until the kept set settles. The component of the most images is the model (from the second round on, the one holding the merged model); the correspondences of its heavy cross pairs within 12 px join their tracks first, every other cross match then on the duplicate-image and length guards and, for a match of a connecting pair, a reprojection guard (`maxJoinReprojError`, 48 px), and `AdjustMergedScene` filters at that loose bar and adjusts once. The merge runs in rounds (`SceneBlocks::MergeInRounds`): an unplaced block is kept whole and read again against the merged model after a pool step, until nothing changes, then released to the final pass's resection. See `docs/design/HierarchicalSFM.md`.
 
 - **Bundle Adjustment** (`BundleAdjustment.h`, `BundleAdjustmentCostFunctions.h`): Uses Ceres Solver. **Local BA** optimizes a window of cameras + their points with fixed intrinsics (fast, used during resection). **Full/Global BA** refines the main-set intrinsics (focal, k1, k2) by default, `--refine-intrinsics 2` and `minRefineExtIntrs` opening the rest, and adds a robustified relative-pose residual per verified pair (`--ba-pair-sigma`, default 1°) that holds a joint straight where the tracks joining it are few or two-view only. GPS constraints can be added when EXIF GPS data is available.
 
@@ -630,15 +630,17 @@ libs/SFM/
 │ # Feature pipeline
 ├── FeaturesExtractor.h/cpp             # AKAZE/ORB/SIFT/SiftGPU extraction
 ├── VocabularyTree.h/cpp                # Visual vocabulary for retrieval
-├── GlobalDescriptors.h/cpp             # RoMa v2 global-descriptor pooling + cosine retrieval index
+├── GlobalDescriptors.h/cpp             # Cosine retrieval index over global descriptors
+├── SequenceNeighbours.h/cpp            # Ordered-sequence neighbour rules and name breaks
+├── SequenceChain.h/cpp                 # Sequence camera chain and look-alike veto
 ├── PairsMatcher.h/cpp                  # Matching strategies
 ├── MatchGeometric.h/cpp                # RANSAC geometric verification
 ├── OnnxRuntime.h/cpp                   # ONNX Runtime session/tensor wrapper (CUDA/CoreML/DML/CPU)
 ├── RoMa2Matcher.h/cpp                  # RoMa v2 ONNX graphs: describe + coarse-match sessions
 ├── DenseMatcher.h/cpp                  # Dense matcher interface (RoMa v2 or FlexGlue)
 ├── FlexGlueMatcher.h/cpp               # FlexGlue ONNX graphs: describe + match sessions
-├── MatchDense.h/cpp                    # In-process RoMa v2 describe pass, dense-matching pass, config
-├── DenseWarp.h/cpp                     # RoMa v2 warp coordinates, keypoint tracking, warp draws, dense append
+├── MatchDense.h/cpp                    # Dense describe pass, one-pass dense matching, planar twin switch
+├── DenseWarp.h/cpp                     # Warp coordinates, keypoint tracking, warp draws, dense append
 ├── PairsWeighting.h/cpp                # Composite pair quality scores
 ├── ViewGraphTriplets.h/cpp             # Camera-triplet view-graph scoring (removes nothing by default, --triplet-cut cuts)
 │
@@ -658,7 +660,8 @@ libs/SFM/
 ├── SceneCluster.h/cpp                  # Aggregative scene clustering (the partition)
 ├── SceneBlocks.h/cpp                   # The blocks and the pool: extraction, pool resection
 ├── GlobalAlignment.h/cpp               # Block pair readings, block-graph averaging, merging
-├── GlobalRotationAveraging.h/cpp       # SO(3) rotation averaging; the view graph's contradiction cut
+├── GlobalRotationAveraging.h/cpp       # SO(3) rotation averaging
+├── ContradictionCut.h/cpp              # View-graph contradiction cut and pair repair
 ├── RobustAveraging.h                   # Robust (Geman-McClure) averaging shared by the global estimators
 ├── GlobalScaleAveraging.h/cpp          # Log-space scale averaging
 ├── GlobalTranslationAveraging.h/cpp    # Linear translation solving
@@ -694,3 +697,4 @@ The camera models the SfM cameras wrap (`Pinhole`, `BrownDistortion`, `Spherical
 - **Eigen3** (inherited): Linear algebra
 - **Boost** (inherited): Serialization
 - **SiftGPU** (optional): GPU-accelerated SIFT
+- **ONNX Runtime** (optional): In-process RoMa v2 and FlexGlue dense matching and retrieval

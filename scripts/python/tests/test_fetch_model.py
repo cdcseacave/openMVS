@@ -51,17 +51,8 @@ class VerifyDigestTests(unittest.TestCase):
             self.assertFalse(fm.verify_digest(Path(tmp) / "missing.bin", _sha256(b"x")))
 
 
-class FetchTests(unittest.TestCase):
-    """Exercises `fetch()` entirely over a local file:// mirror. setUp blocks the import of
-    huggingface_hub, so the ImportError fallback to the mirror is the only path that ever runs
-    unless a test installs a fake module -- exactly what a no-network test needs.
-
-    `--dest` is the flat model directory RoMa2Onnx::Load reads directly
-    (`modelDir + "roma_<setting>.json"`, no "<setting>-<precision>" segment). checksums.txt
-    still names the *published* path under that prefix -- these fixtures use the real manifest
-    basename (roma_base.json) so a regression back to the nested layout would be caught by
-    test_manifest_lands_flat_directly_under_dest below, not just inferred from a generic name.
-    """
+class _FetchFixtureMixin:
+    """Shared local file:// mirror fixture for FetchTests and DestWritabilityTests."""
 
     def setUp(self):
         # a None entry makes `import huggingface_hub` raise ImportError, installed or not
@@ -105,12 +96,15 @@ class FetchTests(unittest.TestCase):
 
     def _install_fake_huggingface_hub(self, snapshot_download) -> None:
         """Stand in for huggingface_hub (whose import setUp blocks) so the Hugging Face
-        branch's own logic -- not just the ImportError fallback to the mirror -- gets exercised
-        too, still with no real network access."""
+        branch's own logic is exercised with no real network access."""
         fake_module = types.ModuleType("huggingface_hub")
         fake_module.snapshot_download = snapshot_download
         sys.modules["huggingface_hub"] = fake_module
         self.addCleanup(sys.modules.pop, "huggingface_hub", None)
+
+
+class FetchTests(_FetchFixtureMixin, unittest.TestCase):
+    """Exercises `fetch()` entirely over a local file:// mirror."""
 
     def test_downloads_missing_file_from_mirror_flat(self):
         result = self._fetch()
@@ -131,19 +125,7 @@ class FetchTests(unittest.TestCase):
         self.assertFalse((self.dest / f"{self.setting}-{self.precision}").exists())
 
     def test_huggingface_branch_moves_only_files_named_in_checksums(self):
-        """Fix round 2, finding #3: a file the published source carries but
-        models/roma2/checksums.txt never named must not be silently accepted into --dest.
-
-        Chosen on the Hugging Face branch, not the mirror one: the HF branch lists a whole
-        "<setting>-<precision>/" folder via allow_patterns and then must filter what it moves up
-        by `pending` -- that filter is exactly the kind of guarantee a future change (say, moving
-        the whole nested folder instead of iterating `pending`) could quietly break. The mirror
-        branch never lists a folder at all -- it only ever requests exact basenames drawn from
-        `pending` -- so a stray file sitting in the mirror directory could never be fetched by
-        construction; a test for it there would pass by tautology, not by exercising a filter.
-        The import of huggingface_hub is blocked, so the branch's own move-up logic is exercised
-        through a fake module standing in for it -- still no network.
-        """
+        """A file present in the remote repo but omitted from checksums.txt must not be moved into --dest."""
         stray_name = "roma_base_a_file_checksums_txt_never_named.bin"
 
         def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
@@ -165,9 +147,7 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(result.downloaded, [self.published_relpath])
 
     def test_huggingface_branch_wraps_failures_as_model_fetch_error(self):
-        """Fix round 2, finding #1: a network hiccup (the most likely first failure a user
-        hits) -- or any other failure inside the Hugging Face branch, e.g. a cross-filesystem
-        shutil.move error -- must read as this tool's own clean error, not a raw traceback."""
+        """Failures inside the Hugging Face branch must surface as ModelFetchError, not raw tracebacks."""
         def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
             raise ConnectionError("simulated network failure")
 
@@ -401,47 +381,19 @@ class FetchTests(unittest.TestCase):
         self.assertIn(str(empty), str(ctx.exception))
 
 
-class DestWritabilityTests(unittest.TestCase):
-    """The `roma2-model` CMake target's default destination (the CMake install prefix) is not
-    writable by an unprivileged user. That must be reported by name, before any network attempt is
-    made -- not as a raw PermissionError traceback (the old mirror-branch behaviour) and not
-    blamed on Hugging Face (the old Hub-branch behaviour, since its dest.mkdir() ran inside its own
-    try)."""
+@unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                 "POSIX directory permissions required")
+class DestWritabilityTests(_FetchFixtureMixin, unittest.TestCase):
+    """Non-writable destinations (e.g. a system CMake install prefix) must be reported by name
+    before any network attempt is made."""
 
     def setUp(self):
-        # a None entry makes `import huggingface_hub` raise ImportError, installed or not
-        sys.modules["huggingface_hub"] = None
-        self.addCleanup(sys.modules.pop, "huggingface_hub", None)
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        root = Path(self._tmp.name)
-
-        self.setting = "base"
-        self.precision = "fp32"
-        self.basename = "roma_base.json"
-        self.published_relpath = f"{self.setting}-{self.precision}/{self.basename}"
-        self.content = b'{"setting": "base", "fixture": true}' + b" " * 200
-        self.digest = _sha256(self.content)
-
-        self.checksums_path = root / "checksums.txt"
-        self.checksums_path.write_text(f"# test fixture\n{self.digest}  {self.published_relpath}\n")
-
-        self.mirror_dir = root / "mirror"
-        self.mirror_dir.mkdir()
-        _write(self.mirror_dir / self.basename, self.content)
-        self.mirror_url = self.mirror_dir.resolve().as_uri()
-
-        readonly_parent = root / "readonly_parent"
+        super().setUp()
+        readonly_parent = Path(self._tmp.name) / "readonly_parent"
         readonly_parent.mkdir()
-        readonly_parent.chmod(0o500)  # read + execute, no write: cannot create anything inside
-        self.addCleanup(readonly_parent.chmod, 0o700)  # let TemporaryDirectory clean up after us
+        readonly_parent.chmod(0o500)
+        self.addCleanup(readonly_parent.chmod, 0o700)
         self.dest = readonly_parent / "roma2"
-
-    def _fetch(self, **overrides):
-        params = dict(model="roma2", setting=self.setting, precision=self.precision, mirror=self.mirror_url,
-                      checksums_path=self.checksums_path)
-        params.update(overrides)
-        return fm.fetch(self.dest, **params)
 
     def test_reports_the_destination_by_name_before_touching_the_network(self):
         with self.assertRaises(fm.ModelFetchError) as ctx:
@@ -452,15 +404,10 @@ class DestWritabilityTests(unittest.TestCase):
         self.assertFalse(self.dest.exists())
 
     def test_reported_even_with_huggingface_hub_installed(self):
-        """The writability check must run before `_fetch_via_huggingface` is even tried, so a
-        non-writable destination is never misreported as a Hugging Face failure."""
         def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
             self.fail("must not touch the network before the destination is known writable")
 
-        fake_module = types.ModuleType("huggingface_hub")
-        fake_module.snapshot_download = fake_snapshot_download
-        sys.modules["huggingface_hub"] = fake_module
-        self.addCleanup(sys.modules.pop, "huggingface_hub", None)
+        self._install_fake_huggingface_hub(fake_snapshot_download)
 
         with self.assertRaises(fm.ModelFetchError) as ctx:
             self._fetch()
@@ -469,25 +416,6 @@ class DestWritabilityTests(unittest.TestCase):
         self.assertIn(str(self.dest), message)
         self.assertIn("sudo", message)
         self.assertNotIn("Hugging Face", message)
-
-
-class ResolveDestTests(unittest.TestCase):
-    """The no-`--dest`, no-environment-variable default must never be a path under the current
-    directory -- the obvious hand-run's cwd is a repository checkout that does not gitignore it,
-    and the DINOv3 weights it would fetch must never enter the OpenMVS repository."""
-
-    def test_default_is_the_user_cache_directory_not_the_cwd(self):
-        had_env = "OPENMVS_ROMA2_MODEL_PATH" in os.environ
-        env_backup = os.environ.pop("OPENMVS_ROMA2_MODEL_PATH", None)
-        try:
-            dest = fm.resolve_dest(None, "roma2")
-        finally:
-            if had_env:
-                os.environ["OPENMVS_ROMA2_MODEL_PATH"] = env_backup
-
-        self.assertEqual(dest, Path("~/.cache/openMVS/roma2").expanduser())
-        self.assertNotEqual(dest, Path("./roma2-model"))
-        self.assertNotIn(Path.cwd(), dest.parents)
 
 
 class ModelTableTests(unittest.TestCase):

@@ -56,6 +56,7 @@ bool RobustAverageWith(const std::vector<Pair>& pairs, unsigned maxRounds, Solve
 		// every pair's weight for the next round comes from its initial weight and this solution
 		REAL maxChange = 0;
 		for (size_t i = 0; i < pairs.size(); ++i) {
+			ASSERT(pairs[i].weight > 0.f);
 			const REAL r = residuals[i] = ABS(residual(i, solution));
 			const float w = pairs[i].weight * factor(r);
 			maxChange = MAXF(maxChange, REAL(ABS(w - weighted[i].weight)) / pairs[i].weight);
@@ -75,6 +76,29 @@ bool RobustAverage(const std::vector<Pair>& pairs, REAL sigma, unsigned maxRound
 	const REAL sigma2 = sigma * sigma;
 	return RobustAverageWith(pairs, maxRounds, solve, residual,
 		[sigma2](REAL r) { return (float)SQUARE(sigma2 / (sigma2 + r * r)); }, solution, residuals);
+}
+
+// Deterministic gauge-node selector for pairwise graphs whose pairs carry {idxA, idxB, weight}.
+// Returns preferred if it appears in pairs, otherwise the node with largest incident weight (ties by lower index).
+template <typename Pair>
+uint32_t SelectGaugeNode(const std::vector<Pair>& pairs, uint32_t preferred = NO_ID)
+{
+	std::unordered_map<uint32_t, double> nodeWeights;
+	for (const Pair& p : pairs) {
+		nodeWeights[p.idxA] += p.weight;
+		nodeWeights[p.idxB] += p.weight;
+	}
+	if (preferred != NO_ID && nodeWeights.count(preferred))
+		return preferred;
+	uint32_t bestNode = NO_ID;
+	double maxWeight = -1.0;
+	for (const auto& kv : nodeWeights) {
+		if (kv.second > maxWeight || (kv.second == maxWeight && kv.first < bestNode)) {
+			maxWeight = kv.second;
+			bestNode = kv.first;
+		}
+	}
+	return bestNode;
 }
 /*----------------------------------------------------------------*/
 

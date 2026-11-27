@@ -397,10 +397,10 @@ bool SeamGraphSelectionTest()
 	}
 	// 9. readings turned about their own seams, far from the frames' origins
 	{
-		constexpr REAL TURN_DEG = 3, FAR = 50 * PlantedSeamGraph::kExtent, MAX_RESIDUAL = 0.05;
+		constexpr REAL TURN_DEG = 3, FAR_OFFSET = 50 * PlantedSeamGraph::kExtent, MAX_RESIDUAL = 0.05;
 		PlantedSeamGraph graph(3, 9311);
 		const std::pair<uint32_t, uint32_t> seams[] = {{0, 1}, {1, 2}, {0, 2}};
-		const Point3 centres[] = {Point3(FAR, 10, 0), Point3(FAR - 10, -5, 5), Point3(FAR + 5, 0, -10)};
+		const Point3 centres[] = {Point3(FAR_OFFSET, 10, 0), Point3(FAR_OFFSET - 10, -5, 5), Point3(FAR_OFFSET + 5, 0, -10)};
 		for (int i = 0; i < 3; ++i)
 			graph.Add(seams[i].first, seams[i].second, TRIANGLE_CAMERAS, TURN_DEG, 0, &centres[i]);
 		graph.Select();
@@ -408,7 +408,7 @@ bool SeamGraphSelectionTest()
 			const SeamCandidate& c = graph.candidates[i];
 			TEST_CHECK(graph.IsOn(i) && c.residualTranslation <= MAX_RESIDUAL, "far seams: the reading (%u, %u), turned by %.0f deg about "
 				"its seam %.0f spreads from the origin, is %s with %.2f deg and %.3f of its spread from the solution (on, within %.2f expected)",
-				c.sceneA, c.sceneB, TURN_DEG, FAR / PlantedSeamGraph::kExtent, graph.IsOn(i) ? "on" : "off", c.residualRotation, c.residualTranslation, MAX_RESIDUAL);
+				c.sceneA, c.sceneB, TURN_DEG, FAR_OFFSET / PlantedSeamGraph::kExtent, graph.IsOn(i) ? "on" : "off", c.residualRotation, c.residualTranslation, MAX_RESIDUAL);
 		}
 	}
 	return scope.Pass("the selection keeps the true readings of a 16-block graph and cuts the false chord and the rival, weighs readings "

@@ -44,61 +44,6 @@ using namespace SFM;
 
 DEFINE_LOG_NAME(lt, _T("ROMA2   "));
 
-namespace {
-
-// Fetch a required manifest member, naming the file and the missing key on failure
-const nlohmann::json* JsonMember(const nlohmann::json& node, const char* key, const String& fileName)
-{
-	const auto it = node.find(key);
-	if (it == node.end()) {
-		VERBOSE("error: RoMa2 manifest '%s' has no '%s' key", fileName.c_str(), key);
-		return NULL;
-	}
-	return &(*it);
-}
-
-// Read a required manifest member of the given type, naming a key that is missing or ill-typed
-template <typename TYPE>
-bool ReadJson(const nlohmann::json& node, const char* key, const String& fileName, TYPE& value)
-{
-	const nlohmann::json* const member = JsonMember(node, key, fileName);
-	if (member == NULL)
-		return false;
-	try {
-		value = member->get<TYPE>();
-	} catch (const nlohmann::json::exception& e) {
-		VERBOSE("error: RoMa2 manifest '%s' key '%s' has the wrong type (%s)", fileName.c_str(), key, e.what());
-		return false;
-	}
-	return true;
-}
-
-// Read a required manifest string member (SEACAVE::String is not a type nlohmann converts to)
-bool ReadJsonString(const nlohmann::json& node, const char* key, const String& fileName, String& value)
-{
-	std::string text;
-	if (!ReadJson(node, key, fileName, text))
-		return false;
-	value = text;
-	return true;
-}
-
-// Check a declared graph I/O shape against the one derived from the manifest's own sizes:
-// a disagreement means the manifest does not describe the graphs sitting next to it
-bool ExpectManifestShape(const nlohmann::json& node, const char* key, const String& fileName, const std::vector<int64_t>& expected)
-{
-	std::vector<int64_t> shape;
-	if (!ReadJson(node, key, fileName, shape))
-		return false;
-	if (shape != expected) {
-		VERBOSE("error: RoMa2 manifest '%s' declares a shape for '%s' that disagrees with its own sizes", fileName.c_str(), key);
-		return false;
-	}
-	return true;
-}
-
-} // namespace
-
 bool RoMa2Manifest::Load(const String& fileName)
 {
 	std::ifstream stream(fileName.c_str());
@@ -111,96 +56,75 @@ bool RoMa2Manifest::Load(const String& fileName)
 		VERBOSE("error: failed to parse RoMa2 manifest '%s'", fileName.c_str());
 		return false;
 	}
-	int formatVersion = 0;
-	String model;
-	if (!ReadJson(data, "format_version", fileName, formatVersion) ||
-		!ReadJsonString(data, "model", fileName, model))
-		return false;
-	// format_version 1 is the RoMa2 manifest format this build reads: a bidirectional coarse-match
-	// graph that returns warp/confidence AND warp_BA/confidence_BA from one Run (bidirectional=True
-	// shares the correlation volume between both heads, so a second Run with the descriptors swapped
-	// would not be the same computation), plus a descriptor graph whose third output `retrieval` is
-	// the FACETS recipe pooled on device.
-	if (formatVersion != 1 || model != "roma2") {
-		VERBOSE("error: RoMa2 manifest '%s' is version %d of model '%s', expected version 1 of 'roma2'",
-			fileName.c_str(), formatVersion, model.c_str());
-		return false;
-	}
-	if (!ReadJsonString(data, "setting", fileName, setting) ||
-		!ReadJson(data, "image_size", fileName, imageSize) ||
-		!ReadJson(data, "patch", fileName, patch) ||
-		!ReadJson(data, "layers", fileName, layers) ||
-		!ReadJson(data, "descriptor_layers_shape", fileName, layersShape) ||
-		!ReadJson(data, "warp_size", fileName, warpSize) ||
-		!ReadJson(data, "confidence_channels", fileName, confidenceChannels) ||
-		!ReadJson(data, "value_facet_blocks", fileName, valueFacetBlocks) ||
-		!ReadJson(data, "value_facets_shape", fileName, facetsShape) ||
-		!ReadJson(data, "opset", fileName, opset))
-		return false;
-	if (imageSize <= 0 || patch <= 0 || warpSize <= 0 || confidenceChannels <= 0) {
-		VERBOSE("error: RoMa2 manifest '%s' has a non-positive image_size/patch/warp_size/confidence_channels", fileName.c_str());
-		return false;
-	}
-	// the retrieval recipe: the graph pools it end to end on device (GeM p=3 -> concat -> signed
-	// power -> L2, per the export's FACETS_POWER) and hands it back as the `retrieval` output, so
-	// this build only needs the recipe's declared dimension, to size and validate that tensor
-	const nlohmann::json* const recipes = JsonMember(data, "retrieval_recipes", fileName);
-	const nlohmann::json* const facetsRecipe = (recipes != NULL ? JsonMember(*recipes, "facets", fileName) : NULL);
-	if (facetsRecipe == NULL || !ReadJson(*facetsRecipe, "dim", fileName, facetsDim))
-		return false;
-	const nlohmann::json* const files = JsonMember(data, "files", fileName);
-	if (files == NULL ||
-		!ReadJsonString(*files, "descriptor", fileName, descriptorFile) ||
-		!ReadJsonString(*files, "descriptor_data", fileName, descriptorData) ||
-		!ReadJsonString(*files, "match_coarse", fileName, matchFile) ||
-		!ReadJsonString(*files, "match_coarse_data", fileName, matchData))
-		return false;
-	// the declared graph I/O must agree with the shapes derived from image_size and warp_size:
-	// the C++ loader checks the graphs against these same derived shapes
-	const int64_t S(imageSize), cells(warpSize);
-	const std::vector<int64_t> imageShape{1, 3, S, S};
-	const nlohmann::json* const io = JsonMember(data, "io", fileName);
-	const nlohmann::json* const ioDescriptor = (io != NULL ? JsonMember(*io, "descriptor", fileName) : NULL);
-	const nlohmann::json* const ioMatch = (io != NULL ? JsonMember(*io, "match_coarse", fileName) : NULL);
-	if (ioDescriptor == NULL || ioMatch == NULL)
-		return false;
-	const nlohmann::json* const descriptorInputs = JsonMember(*ioDescriptor, "inputs", fileName);
-	const nlohmann::json* const descriptorOutputs = JsonMember(*ioDescriptor, "outputs", fileName);
-	const nlohmann::json* const matchInputs = JsonMember(*ioMatch, "inputs", fileName);
-	const nlohmann::json* const matchOutputs = JsonMember(*ioMatch, "outputs", fileName);
-	if (descriptorInputs == NULL || descriptorOutputs == NULL || matchInputs == NULL || matchOutputs == NULL)
-		return false;
-	if (!ExpectManifestShape(*descriptorInputs, "image", fileName, imageShape) ||
-		!ExpectManifestShape(*descriptorOutputs, "layers", fileName, layersShape) ||
-		!ExpectManifestShape(*descriptorOutputs, "value_facets", fileName, facetsShape) ||
-		!ExpectManifestShape(*matchInputs, "descriptors_A", fileName, layersShape) ||
-		!ExpectManifestShape(*matchInputs, "descriptors_B", fileName, layersShape) ||
-		!ExpectManifestShape(*matchOutputs, "warp", fileName, {1, cells, cells, 2}) ||
-		!ExpectManifestShape(*matchOutputs, "confidence", fileName, {1, cells, cells, (int64_t)confidenceChannels}) ||
-		!ExpectManifestShape(*matchOutputs, "warp_BA", fileName, {1, cells, cells, 2}) ||
-		!ExpectManifestShape(*matchOutputs, "confidence_BA", fileName, {1, cells, cells, (int64_t)confidenceChannels}))
-		return false;
-	// img_A/img_B are dropped from the traced match_coarse graph now that the coarse head is proven
-	// dead to them (graphs.py's MatchWrap docstring); the ONE tolerated variation is an export whose
-	// trace could not be made without them, which still lists them here -- so they are checked only
-	// when this manifest declares them, never required, and the decision comes from what the export
-	// actually produced, not from a compatibility flag
-	if (matchInputs->find("img_A") != matchInputs->end() && !ExpectManifestShape(*matchInputs, "img_A", fileName, imageShape))
-		return false;
-	if (matchInputs->find("img_B") != matchInputs->end() && !ExpectManifestShape(*matchInputs, "img_B", fileName, imageShape))
-		return false;
-	// the third descriptor output, `retrieval`: the FACETS recipe computed end to end on device, so a
-	// retrieval-only pass reads back facetsDim host floats instead of the whole value_facets tensor.
-	// Required, not format-version-gated: a manifest that does not declare it is an unsupported model,
-	// not a legacy one, and this is exactly the check that says so, naming the model directory (via
-	// fileName) and the missing 'retrieval' key (JsonMember's own error text, from ReadJson below).
-	// Read straight off the JSON rather than through ExpectManifestShape (which would discard the read
-	// value and hand back a hand-built {1, facetsDim} instead): retrievalShape's value must come from what
-	// the manifest actually declares, or IsSupportedManifest's own re-check of it below is tautological.
-	if (!ReadJson(*descriptorOutputs, "retrieval", fileName, retrievalShape))
-		return false;
-	if (retrievalShape != std::vector<int64_t>{1, (int64_t)facetsDim}) {
-		VERBOSE("error: RoMa2 manifest '%s' declares a shape for '%s' that disagrees with its own sizes", fileName.c_str(), "retrieval");
+	const char* key = "";
+	try {
+		key = "format_version"; const int formatVersion = data.at(key).get<int>();
+		key = "model"; const std::string model = data.at(key).get<std::string>();
+		if (formatVersion != 1 || model != "roma2") {
+			VERBOSE("error: RoMa2 manifest '%s' is version %d of model '%s', expected version 1 of 'roma2'",
+				fileName.c_str(), formatVersion, model.c_str());
+			return false;
+		}
+		key = "setting"; setting = data.at(key).get<std::string>();
+		key = "image_size"; imageSize = data.at(key).get<int>();
+		key = "patch"; patch = data.at(key).get<int>();
+		key = "layers"; (void)data.at(key).get<std::vector<int>>();
+		key = "descriptor_layers_shape"; layersShape = data.at(key).get<std::vector<int64_t>>();
+		key = "warp_size"; warpSize = data.at(key).get<int>();
+		key = "confidence_channels"; confidenceChannels = data.at(key).get<int>();
+		key = "value_facet_blocks"; (void)data.at(key).get<std::vector<int>>();
+		key = "value_facets_shape"; facetsShape = data.at(key).get<std::vector<int64_t>>();
+		key = "opset"; (void)data.at(key).get<int>();
+		if (imageSize <= 0 || patch <= 0 || warpSize <= 0 || confidenceChannels <= 0) {
+			VERBOSE("error: RoMa2 manifest '%s' has a non-positive image_size/patch/warp_size/confidence_channels", fileName.c_str());
+			return false;
+		}
+		key = "retrieval_recipes"; facetsDim = data.at(key).at("facets").at("dim").get<unsigned>();
+		key = "files";
+		const nlohmann::json& files = data.at(key);
+		descriptorFile = files.at("descriptor").get<std::string>();
+		descriptorData = files.at("descriptor_data").get<std::string>();
+		matchFile = files.at("match_coarse").get<std::string>();
+		matchData = files.at("match_coarse_data").get<std::string>();
+
+		const int64_t S(imageSize), cells(warpSize);
+		const std::vector<int64_t> imageShape{1, 3, S, S};
+		key = "io";
+		const nlohmann::json& io = data.at(key);
+		const nlohmann::json& descIn = io.at("descriptor").at("inputs");
+		const nlohmann::json& descOut = io.at("descriptor").at("outputs");
+		const nlohmann::json& matchIn = io.at("match_coarse").at("inputs");
+		const nlohmann::json& matchOut = io.at("match_coarse").at("outputs");
+		const auto CheckShape = [&](const nlohmann::json& node, const char* name, const std::vector<int64_t>& expected) {
+			key = name;
+			if (node.at(name).get<std::vector<int64_t>>() != expected) {
+				VERBOSE("error: RoMa2 manifest '%s' declares a shape for '%s' that disagrees with its own sizes", fileName.c_str(), name);
+				return false;
+			}
+			return true;
+		};
+		if (!CheckShape(descIn, "image", imageShape) ||
+			!CheckShape(descOut, "layers", layersShape) ||
+			!CheckShape(descOut, "value_facets", facetsShape) ||
+			!CheckShape(matchIn, "descriptors_A", layersShape) ||
+			!CheckShape(matchIn, "descriptors_B", layersShape) ||
+			!CheckShape(matchOut, "warp", {1, cells, cells, 2}) ||
+			!CheckShape(matchOut, "confidence", {1, cells, cells, (int64_t)confidenceChannels}) ||
+			!CheckShape(matchOut, "warp_BA", {1, cells, cells, 2}) ||
+			!CheckShape(matchOut, "confidence_BA", {1, cells, cells, (int64_t)confidenceChannels}))
+			return false;
+		if (matchIn.contains("img_A") && !CheckShape(matchIn, "img_A", imageShape))
+			return false;
+		if (matchIn.contains("img_B") && !CheckShape(matchIn, "img_B", imageShape))
+			return false;
+		key = "retrieval";
+		retrievalShape = descOut.at(key).get<std::vector<int64_t>>();
+		if (retrievalShape != std::vector<int64_t>{1, (int64_t)facetsDim}) {
+			VERBOSE("error: RoMa2 manifest '%s' declares a shape for 'retrieval' that disagrees with its own sizes", fileName.c_str());
+			return false;
+		}
+	} catch (const nlohmann::json::exception& e) {
+		VERBOSE("error: RoMa2 manifest '%s' key '%s' missing or invalid (%s)", fileName.c_str(), key, e.what());
 		return false;
 	}
 	return true;
@@ -211,8 +135,7 @@ bool RoMa2Manifest::Load(const String& fileName)
 
 namespace {
 
-// Keys cubic convolution kernel, A=-0.5: torch's ANTIALIASED bicubic coefficient (not the
-// -0.75 of its plain bicubic path, which resamples ~2e-3 differently)
+// Keys cubic convolution kernel (A = -0.5, matching PyTorch antialiased bicubic)
 inline float CubicFilter(float x)
 {
 	constexpr float kA = -0.5f;
@@ -224,14 +147,10 @@ inline float CubicFilter(float x)
 	return 0.f;
 }
 
-// Per-output-sample resampling taps for one axis: the source range each output sample reads
-// and the normalized cubic weights over it. Mirrors torch's antialiased weight computation
-// (aten/src/ATen/native/UpSample.h): the filter support widens with the downsampling ratio,
-// which is what antialias=true buys over a plain cubic.
 struct AxisWeights {
-	std::vector<int> start, count; // per output sample: first source index read, tap count
-	std::vector<float> weights;    // maxTaps-strided, count[i] valid entries per output sample
-	int maxTaps;                   // weights stride: the widest tap count over all output samples
+	std::vector<int> start, count;
+	std::vector<float> weights;
+	int maxTaps;
 };
 
 AxisWeights ComputeAxisWeights(int in, int out)
@@ -252,13 +171,33 @@ AxisWeights ComputeAxisWeights(int in, int out)
 		float sum = 0.f;
 		for (int t = 0; t < count; ++t)
 			sum += (taps[t] = CubicFilter((t + start - center + 0.5f) * invScale));
-		if (sum != 0.f)
+		if (sum != 0.f) {
+			const float invSum = 1.f / sum;
 			for (int t = 0; t < count; ++t)
-				taps[t] /= sum;
+				taps[t] *= invSum;
+		}
 		w.start[i] = start;
 		w.count[i] = count;
 	}
 	return w;
+}
+
+bool IsSupportedManifest(const RoMa2Manifest& manifest, const String& setting)
+{
+	return manifest.setting == setting && manifest.patch == 16 && manifest.confidenceChannels == 1 &&
+		manifest.layersShape.size() == 5 && manifest.facetsShape == manifest.layersShape &&
+		manifest.layersShape[0] == 1 && manifest.layersShape[1] == 2 &&
+		manifest.layersShape[2] == manifest.imageSize / manifest.patch &&
+		manifest.layersShape[3] == manifest.layersShape[2] &&
+		manifest.facetsDim == (unsigned)(manifest.layersShape[1] * manifest.layersShape[4]);
+}
+
+void SigmoidInto(const OrtTensor& logitHost, Image32F& confidence)
+{
+	const float* pLogit(logitHost.HostData());
+	float* pConfidence(confidence.ptr<float>());
+	for (int i = 0, n = confidence.rows * confidence.cols; i < n; ++i)
+		pConfidence[i] = 1.f / (1.f + std::exp(-pLogit[i]));
 }
 
 } // namespace
@@ -266,8 +205,9 @@ AxisWeights ComputeAxisWeights(int in, int out)
 void SFM::PreprocessImageRoMa2(const Image8U3& bgr, int size, std::vector<float>& planarRgb)
 {
 	ASSERT(!bgr.empty() && size > 0);
+	constexpr float kInv255 = 1.f / 255.f;
 	const AxisWeights wx = ComputeAxisWeights(bgr.cols, size), wy = ComputeAxisWeights(bgr.rows, size);
-	// horizontal pass: rows x size x 3 (RGB), scaled to [0,1]; NO clamping (bicubic overshoot is in the reference too)
+	// Horizontal pass: rows x size x 3 (RGB), scaled to [0,1] without clamping
 	std::vector<float> tmp((size_t)bgr.rows * size * 3);
 	for (int y = 0; y < bgr.rows; ++y) {
 		const Pixel8U* row = bgr.ptr<Pixel8U>(y);
@@ -275,97 +215,64 @@ void SFM::PreprocessImageRoMa2(const Image8U3& bgr, int size, std::vector<float>
 		for (int x = 0; x < size; ++x, dst += 3) {
 			float r = 0, g = 0, b = 0;
 			const float* taps = &wx.weights[(size_t)x * wx.maxTaps];
+			const Pixel8U* src = row + wx.start[x];
 			for (int t = 0; t < wx.count[x]; ++t) {
-				const Pixel8U& p = row[wx.start[x] + t];
-				r += taps[t] * p.r; g += taps[t] * p.g; b += taps[t] * p.b;
+				const float wt = taps[t];
+				r += wt * src[t].r;
+				g += wt * src[t].g;
+				b += wt * src[t].b;
 			}
-			dst[0] = r / 255.f; dst[1] = g / 255.f; dst[2] = b / 255.f;
+			dst[0] = r * kInv255;
+			dst[1] = g * kInv255;
+			dst[2] = b * kInv255;
 		}
 	}
-	// vertical pass straight into planar R, G, B
-	planarRgb.assign((size_t)3 * size * size, 0.f);
+	// Vertical pass directly into planar R, G, B
+	const size_t plane = (size_t)size * size;
+	planarRgb.assign(3 * plane, 0.f);
 	for (int y = 0; y < size; ++y) {
+		float* dstR = &planarRgb[(size_t)y * size];
+		float* dstG = dstR + plane;
+		float* dstB = dstG + plane;
 		const float* taps = &wy.weights[(size_t)y * wy.maxTaps];
 		for (int t = 0; t < wy.count[y]; ++t) {
 			const float* src = &tmp[(size_t)(wy.start[y] + t) * size * 3];
 			const float wt = taps[t];
-			for (int x = 0; x < size; ++x, src += 3)
-				for (int c = 0; c < 3; ++c)
-					planarRgb[((size_t)c * size + y) * size + x] += wt * src[c];
+			for (int x = 0; x < size; ++x, src += 3) {
+				dstR[x] += wt * src[0];
+				dstG[x] += wt * src[1];
+				dstB[x] += wt * src[2];
+			}
 		}
 	}
 }
 /*----------------------------------------------------------------*/
 
-namespace {
-
-// The subset of manifests this build can run: the descriptor grid, the pooled retrieval
-// dimensions and the confidence layout the C++ derives from the shapes must all agree with
-// what the manifest declares, or the tensors allocated here would not describe the graphs
-bool IsSupportedManifest(const RoMa2Manifest& manifest, const String& setting)
+void RoMa2Onnx::Reset()
 {
-	return manifest.setting == setting && manifest.patch == 16 && manifest.confidenceChannels == 1 &&
-		manifest.layersShape.size() == 5 && manifest.facetsShape == manifest.layersShape &&
-		manifest.layersShape[0] == 1 && manifest.layersShape[1] == 2 &&
-		manifest.layersShape[2] == manifest.imageSize/manifest.patch &&
-		manifest.layersShape[3] == manifest.layersShape[2] &&
-		manifest.facetsDim == (unsigned)(manifest.layersShape[1]*manifest.layersShape[4]);
-	// retrievalShape is not re-checked here: Load() already rejects any manifest where it declares
-	// something other than {1, facetsDim} (R16) -- a second check of the same fact, reachable only
-	// after Load() has already enforced it, can never be false and is worse than no check at all.
+	// Release tensors before sessions that own their device arenas
+	image = OrtTensor();
+	facetsScratch = OrtTensor();
+	facetsHost = OrtTensor();
+	retrievalHost = OrtTensor();
+	dummyImage = OrtTensor();
+	warpHost = OrtTensor();
+	confidenceHost = OrtTensor();
+	warpBAHost = OrtTensor();
+	confidenceBAHost = OrtTensor();
+	match.Unload();
+	descriptor.Unload();
+	modelDir.clear();
+	manifest = RoMa2Manifest();
+	bMatchFailed = false;
 }
 
-// The graph emits the raw overlap logit for both directions; MatchCoarse applies the sigmoid on
-// readback (polycpp matcher.cpp:484-494 GatherOverlap), once per direction, into an Image32F
-// already sized to match logitHost
-void SigmoidInto(const OrtTensor& logitHost, Image32F& confidence)
-{
-	const float* pLogit(logitHost.HostData());
-	float* pConfidence(confidence.ptr<float>());
-	for (int i = 0, n = confidence.rows*confidence.cols; i < n; ++i)
-		pConfidence[i] = 1.f/(1.f + std::exp(-pLogit[i]));
-}
-
-} // namespace
-
-// The two ONNX Runtime sessions are declared first and every OrtTensor after them: members
-// are destroyed in the reverse of their declaration order, so the tensors -- some of which
-// are allocated from a session's device arena -- are released before the session that owns
-// that arena, which is the lifetime rule OrtTensor documents.
-struct RoMa2Onnx::Impl
-{
-	OnnxModel descriptor;        // image -> (layers, value_facets)
-	OnnxModel match;             // (descriptors_A, descriptors_B[, img_A, img_B]) -> (warp, confidence, warp_BA, confidence_BA)
-	OrtTensor image;             // host input of the descriptor graph, copied H2D by ORT inside Run
-	OrtTensor facetsScratch;     // matching pass: value_facets stays on the device, never read back
-	OrtTensor facetsHost;        // allocated lazily (Describe): no production caller reads value_facets
-	                             // back any more, only the parity test's independent check of that tensor
-	OrtTensor retrievalHost;     // every Describe() call binds `retrieval` here; ORT copies it out
-	OrtTensor dummyImage;        // the coarse graph's dead img_A/img_B input, allocated when the loaded
-	                             // match graph's own input metadata still declares them (EnsureMatch's
-	                             // match.InputShape("img_A") check, not the manifest's io.match_coarse)
-	OrtTensor warpHost;          // host output: ORT copies the A->B warp D2H inside Run
-	OrtTensor confidenceHost;    // host output: the raw A->B overlap logit
-	OrtTensor warpBAHost;        // host output: the B->A warp, same Run, same correlation volume
-	OrtTensor confidenceBAHost;  // host output: the raw B->A overlap logit
-	String modelDir;
-	RoMa2Manifest manifest;
-	bool bMatchFailed = false; // a failed match-graph load is remembered, not retried per pair
-
-	// Load the manifest and the descriptor graph; the caller resets the whole Impl on failure
-	bool LoadDescriptor(const String& _modelDir, const String& setting, const String& providerName);
-	// Load the coarse-match graph on the first pair, on the provider the descriptor session got
-	bool EnsureMatch();
-};
-
-bool RoMa2Onnx::Impl::EnsureMatch()
+bool RoMa2Onnx::EnsureMatch()
 {
 	if (bMatchFailed)
 		return false;
 	if (match.IsLoaded())
 		return true;
-	// the same provider (and device ID) as the descriptor session, so a descriptor tensor left
-	// in its device arena is bindable as an input here
 	OnnxModel::Options options;
 	options.provider = descriptor.Provider();
 	const int64_t cells(manifest.warpSize);
@@ -375,21 +282,13 @@ bool RoMa2Onnx::Impl::EnsureMatch()
 		!match.ExpectOutputShape("warp", {1, cells, cells, 2}) ||
 		!match.ExpectOutputShape("confidence", {1, cells, cells, 1}) ||
 		!match.ExpectOutputShape("warp_BA", {1, cells, cells, 2}) ||
-		!match.ExpectOutputShape("confidence_BA", {1, cells, cells, 1}) ||
-		match.Provider() != descriptor.Provider()) {
+		!match.ExpectOutputShape("confidence_BA", {1, cells, cells, 1})) {
 		VERBOSE("error: can not load the RoMa2 coarse-match graph '%s'", manifest.matchFile.c_str());
-		match.Unload(); // a graph that got loaded but was rejected must not keep its ~0.46 GB resident
+		match.Unload();
 		bMatchFailed = true;
 		return false;
 	}
-	// img_A/img_B are in the graph contract (polyml MatchWrap) but dead on the coarse graph
-	// (dpt.py:127-138 ignores them), so the export drops them; the ONE tolerated variation is an
-	// export whose trace could not be made without them (RoMa2Manifest::Load already checked their
-	// shape when the manifest lists them), in which case one shared host tensor is bound to both,
-	// zero-filled by construction and copied H2D by ORT inside Run -- the coarse graph provably
-	// ignores it today, and a zero image keeps the outputs deterministic should that ever be what is
-	// loaded. No tensor here lives in the match session's arena, which is what makes the Unload()
-	// calls on the failure paths safe.
+	ASSERT(match.Provider() == descriptor.Provider());
 	if (match.InputShape("img_A") != NULL) {
 		const int64_t S(manifest.imageSize);
 		dummyImage = OrtTensor::Host({1, 3, S, S});
@@ -408,48 +307,49 @@ bool RoMa2Onnx::Impl::EnsureMatch()
 	return true;
 }
 
-bool RoMa2Onnx::IsAvailable()
+bool RoMa2Onnx::Load(const String& _modelDir, const String& setting, const String& providerName)
 {
-	return true;
-}
-
-bool RoMa2Onnx::Impl::LoadDescriptor(const String& _modelDir, const String& setting, const String& providerName)
-{
+	Reset();
 	modelDir = _modelDir;
 	Util::ensureFolderSlash(modelDir);
-	if (!manifest.Load(modelDir + "roma_" + setting + ".json"))
-		return false;
-	if (!IsSupportedManifest(manifest, setting)) {
-		VERBOSE("error: unsupported RoMa2 manifest for setting '%s'", setting.c_str());
+	if (!manifest.Load(modelDir + "roma_" + setting + ".json")) {
+		Reset();
 		return false;
 	}
-	for (const String& file : {manifest.descriptorFile, manifest.descriptorData, manifest.matchFile, manifest.matchData})
+	if (!IsSupportedManifest(manifest, setting)) {
+		VERBOSE("error: unsupported RoMa2 manifest for setting '%s'", setting.c_str());
+		Reset();
+		return false;
+	}
+	for (const String& file : {manifest.descriptorFile, manifest.descriptorData, manifest.matchFile, manifest.matchData}) {
 		if (!file.empty() && !File::isFile(modelDir + file)) {
 			VERBOSE("error: RoMa2 model file '%s' missing", file.c_str());
+			Reset();
 			return false;
 		}
+	}
 	OnnxModel::Options options;
 	options.provider = OnnxProviderFromString(providerName);
-	if (!descriptor.Load(modelDir + manifest.descriptorFile, options))
+	if (!descriptor.Load(modelDir + manifest.descriptorFile, options)) {
+		Reset();
 		return false;
+	}
 	if (descriptor.Provider() == OnnxProvider::CPU)
 		VERBOSE("warning: RoMa2 running on the CPU execution provider (seconds per image)");
 	const int64_t S(manifest.imageSize);
 	if (!descriptor.ExpectInputShape("image", {1, 3, S, S}) ||
 		!descriptor.ExpectOutputShape("layers", manifest.layersShape) ||
 		!descriptor.ExpectOutputShape("value_facets", manifest.facetsShape) ||
-		!descriptor.ExpectOutputShape("retrieval", manifest.retrievalShape))
+		!descriptor.ExpectOutputShape("retrieval", manifest.retrievalShape)) {
+		Reset();
 		return false;
+	}
 	image = OrtTensor::Host({1, 3, S, S});
 	facetsScratch = descriptor.MakeDeviceTensor(manifest.facetsShape);
-	// facetsHost (the raw value_facets readback, ~13 MB at base) is NOT allocated here: no
-	// production caller ever asks for it, only the parity test, so Describe() allocates it lazily
-	// on the first call that does -- a session nothing ever reads it back for never carries it.
-	// the graph's own on-device retrieval pooling, always read back (facetsDim host floats, small
-	// enough that every Describe() call pays for it, unlike the whole value_facets tensor above)
 	retrievalHost = OrtTensor::Host(manifest.retrievalShape);
 	if (!image.IsValid() || !facetsScratch.IsValid() || !retrievalHost.IsValid()) {
 		VERBOSE("error: can not allocate the RoMa2 descriptor tensors");
+		Reset();
 		return false;
 	}
 	DEBUG("RoMa2 model '%s' ready on %s: %dx%d images, %ux%u descriptor grid, %dx%d warp cells",
@@ -458,90 +358,73 @@ bool RoMa2Onnx::Impl::LoadDescriptor(const String& _modelDir, const String& sett
 	return true;
 }
 
-bool RoMa2Onnx::Load(const String& modelDir, const String& setting, const String& providerName)
-{
-	impl.reset(new Impl); // a reload starts clean, releasing the tensors before their sessions
-	if (impl->LoadDescriptor(modelDir, setting, providerName))
-		return true;
-	// after ANY failure the object is left unloaded, the invariant OnnxModel::Load keeps too:
-	// IsLoaded() must never report true while the tensors Describe() writes into are missing.
-	// Resetting the whole Impl also frees a descriptor session that did come up before a later
-	// check rejected it, and does so in the tensors-before-sessions order the member layout gives.
-	impl.reset(new Impl);
-	return false;
-}
-
-bool RoMa2Onnx::IsLoaded() const
-{
-	return impl->descriptor.IsLoaded();
-}
-
 String RoMa2Onnx::ProviderName() const
 {
-	return OnnxProviderName(impl->descriptor.Provider());
+	return OnnxProviderName(descriptor.Provider());
+}
+
+unsigned RoMa2Onnx::NumPatches() const
+{
+	return manifest.layersShape.size() == 5 ? (unsigned)(manifest.layersShape[2] * manifest.layersShape[3]) : 0u;
 }
 
 OrtTensor RoMa2Onnx::MakeLayers()
 {
 	if (!IsLoaded())
-		return OrtTensor(); // an invalid tensor, not an empty-shape allocation
-	return impl->descriptor.MakeDeviceTensor(impl->manifest.layersShape);
+		return OrtTensor();
+	return descriptor.MakeDeviceTensor(manifest.layersShape);
 }
 
 bool RoMa2Onnx::Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut, std::vector<float>& retrievalOut)
 {
-	ASSERT(IsLoaded() && layersOut.Shape() == impl->manifest.layersShape);
-	if (facetsOut != NULL && !impl->facetsHost.IsValid()) {
-		// lazily allocated on the first call that actually wants the raw value_facets readback
-		// (single-threaded per instance, so no race with a concurrent Describe() call)
-		impl->facetsHost = OrtTensor::Host(impl->manifest.facetsShape);
-		if (!impl->facetsHost.IsValid())
+	ASSERT(IsLoaded() && planarRgb != NULL && layersOut.IsValid() && layersOut.Shape() == manifest.layersShape);
+	if (facetsOut != NULL && !facetsHost.IsValid()) {
+		facetsHost = OrtTensor::Host(manifest.facetsShape);
+		if (!facetsHost.IsValid())
 			return false;
 	}
-	memcpy(impl->image.HostData(), planarRgb, sizeof(float)*3*(size_t)ImageSize()*ImageSize());
-	impl->descriptor.ClearBindings();
-	if (!impl->descriptor.BindInput("image", impl->image) ||
-		!impl->descriptor.BindOutput("layers", layersOut) ||
-		!impl->descriptor.BindOutput("value_facets", facetsOut != NULL ? impl->facetsHost : impl->facetsScratch) ||
-		!impl->descriptor.BindOutput("retrieval", impl->retrievalHost))
-		return false;
-	if (!impl->descriptor.Run())
+	memcpy(image.HostData(), planarRgb, sizeof(float) * 3 * (size_t)ImageSize() * ImageSize());
+	descriptor.ClearBindings();
+	if (!descriptor.BindInput("image", image) ||
+		!descriptor.BindOutput("layers", layersOut) ||
+		!descriptor.BindOutput("value_facets", facetsOut != NULL ? facetsHost : facetsScratch) ||
+		!descriptor.BindOutput("retrieval", retrievalHost) ||
+		!descriptor.Run())
 		return false;
 	if (facetsOut != NULL)
-		facetsOut->assign(impl->facetsHost.HostData(), impl->facetsHost.HostData()+impl->facetsHost.NumElements());
-	retrievalOut.assign(impl->retrievalHost.HostData(), impl->retrievalHost.HostData()+impl->retrievalHost.NumElements());
+		facetsOut->assign(facetsHost.HostData(), facetsHost.HostData() + facetsHost.NumElements());
+	retrievalOut.assign(retrievalHost.HostData(), retrievalHost.HostData() + retrievalHost.NumElements());
 	return true;
 }
 
 bool RoMa2Onnx::MatchCoarse(const OrtTensor& layersA, const OrtTensor& layersB,
 	Image32F2& warpAB, Image32F& confidenceAB, Image32F2& warpBA, Image32F& confidenceBA)
 {
-	ASSERT(IsLoaded());
-	if (!impl->EnsureMatch())
+	ASSERT(IsLoaded() && layersA.IsValid() && layersB.IsValid());
+	if (!EnsureMatch())
 		return false;
 	const int cells(WarpSize());
-	impl->match.ClearBindings();
-	if (!impl->match.BindInput("descriptors_A", layersA) ||
-		!impl->match.BindInput("descriptors_B", layersB) ||
-		!impl->match.BindOutput("warp", impl->warpHost) ||           // host outputs: ORT copies D2H in Run()
-		!impl->match.BindOutput("confidence", impl->confidenceHost) ||
-		!impl->match.BindOutput("warp_BA", impl->warpBAHost) ||
-		!impl->match.BindOutput("confidence_BA", impl->confidenceBAHost))
+	match.ClearBindings();
+	if (!match.BindInput("descriptors_A", layersA) ||
+		!match.BindInput("descriptors_B", layersB) ||
+		!match.BindOutput("warp", warpHost) ||
+		!match.BindOutput("confidence", confidenceHost) ||
+		!match.BindOutput("warp_BA", warpBAHost) ||
+		!match.BindOutput("confidence_BA", confidenceBAHost))
 		return false;
-	if (impl->dummyImage.IsValid() &&
-		(!impl->match.BindInput("img_A", impl->dummyImage) || !impl->match.BindInput("img_B", impl->dummyImage)))
+	if (dummyImage.IsValid() &&
+		(!match.BindInput("img_A", dummyImage) || !match.BindInput("img_B", dummyImage)))
 		return false;
-	if (!impl->match.Run())
+	if (!match.Run())
 		return false;
 	warpAB.create(cells, cells);
 	confidenceAB.create(cells, cells);
 	warpBA.create(cells, cells);
 	confidenceBA.create(cells, cells);
-	// Point2f{x,y} == the graph's [...,0:2], for both directions
-	memcpy(warpAB.data, impl->warpHost.HostData(), (size_t)cells*cells*sizeof(Point2f));
-	memcpy(warpBA.data, impl->warpBAHost.HostData(), (size_t)cells*cells*sizeof(Point2f));
-	SigmoidInto(impl->confidenceHost, confidenceAB);
-	SigmoidInto(impl->confidenceBAHost, confidenceBA);
+	memcpy(warpAB.data, warpHost.HostData(), (size_t)cells * cells * sizeof(Point2f));
+	memcpy(warpBA.data, warpBAHost.HostData(), (size_t)cells * cells * sizeof(Point2f));
+	SigmoidInto(confidenceHost, confidenceAB);
+	SigmoidInto(confidenceBAHost, confidenceBA);
 	return true;
 }
 
@@ -552,90 +435,12 @@ void RoMa2Onnx::Preprocess(const Image8U3& bgr, std::vector<float>& planarRgb) c
 
 bool RoMa2Onnx::MatchPair(const OrtTensor& layersA, const OrtTensor& layersB, const PairInput&, PairOutput& out)
 {
+	out.covisibility.reset();
+	out.pose.reset();
 	return MatchCoarse(layersA, layersB, out.ab.warp, out.ab.confidence, out.ba.warp, out.ba.confidence);
 }
 
-#else // _USE_ONNXRUNTIME
-
-// Inert stand-in for builds without ONNX Runtime: no graph can ever be loaded, so the manifest
-// stays empty and the two run calls are unreachable
-struct RoMa2Onnx::Impl
-{
-	RoMa2Manifest manifest;
-};
-
-bool RoMa2Onnx::IsAvailable()
-{
-	return false;
-}
-
-bool RoMa2Onnx::Load(const String&, const String&, const String&)
-{
-	VERBOSE("error: ROMA2 model requested but this build has no ONNX Runtime support");
-	return false;
-}
-
-bool RoMa2Onnx::IsLoaded() const
-{
-	return false;
-}
-
-String RoMa2Onnx::ProviderName() const
-{
-	return String();
-}
-
-OrtTensor RoMa2Onnx::MakeLayers()
-{
-	return OrtTensor();
-}
-
-bool RoMa2Onnx::Describe(const float*, OrtTensor&, std::vector<float>*, std::vector<float>&)
-{
-	ASSERT(false); // unreachable: Load() always fails, so no caller ever gets a loaded model
-	return false;
-}
-
-bool RoMa2Onnx::MatchCoarse(const OrtTensor&, const OrtTensor&, Image32F2&, Image32F&, Image32F2&, Image32F&)
-{
-	ASSERT(false); // unreachable: Load() always fails, so no caller ever gets a loaded model
-	return false;
-}
-
-void RoMa2Onnx::Preprocess(const Image8U3&, std::vector<float>&) const
-{
-	ASSERT(false); // unreachable: Load() always fails, so no caller ever gets a loaded model
-}
-
-bool RoMa2Onnx::MatchPair(const OrtTensor&, const OrtTensor&, const PairInput&, PairOutput&)
-{
-	ASSERT(false); // unreachable: Load() always fails, so no caller ever gets a loaded model
-	return false;
-}
-
 #endif // _USE_ONNXRUNTIME
-
-// the accessors that only read the manifest, shared by both builds (the out-of-line destructor
-// is what lets the header hold a unique_ptr to the incomplete Impl)
-RoMa2Onnx::RoMa2Onnx()
-	: impl(new Impl)
-{
-}
-
-RoMa2Onnx::~RoMa2Onnx()
-{
-}
-
-const RoMa2Manifest& RoMa2Onnx::Manifest() const
-{
-	return impl->manifest;
-}
-
-unsigned RoMa2Onnx::NumPatches() const
-{
-	const std::vector<int64_t>& shape = LayersShape();
-	return (shape.size() == 5 ? (unsigned)(shape[2]*shape[3]) : 0u);
-}
 
 #pragma pop_macro("VERBOSE")
 /*----------------------------------------------------------------*/

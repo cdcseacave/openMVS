@@ -115,7 +115,7 @@ class SFM_API OnnxModel
 public:
 	struct Options {
 		OnnxProvider provider = OnnxProvider::AUTO;
-		int deviceID = 0;
+		int deviceID = -1;      // -1 = use active CUDA device (or 0)
 		size_t gpuMemLimit = 0; // 0 = no limit (SIZE_MAX)
 		bool bTF32 = true;      // allow TF32 on the CUDA provider
 		int numIntraOpThreads = 0; // 0 = ORT default
@@ -125,7 +125,7 @@ public:
 	OnnxModel(const OnnxModel&) = delete;
 	OnnxModel& operator=(const OnnxModel&) = delete;
 	OnnxModel(OnnxModel&&) = default;
-	OnnxModel& operator=(OnnxModel&&) = default;
+	OnnxModel& operator=(OnnxModel&&) = delete;
 	~OnnxModel() = default;
 
 	// Load the model, trying providers in preference order for AUTO, or only the one
@@ -163,18 +163,11 @@ public:
 	bool BindOutput(const String& name, OrtTensor& tensor);       // host tensor => ORT copies device->host in Run()
 	bool Run();
 
-	// Release the session and everything derived from it, returning to the not-loaded state.
-	// Used on any failure path once the session itself has already been constructed, so
-	// IsLoaded() reliably reports false after a failed Load(). Callers that need to drop a
-	// loaded model must call this rather than move-assign an empty OnnxModel over it: member-wise
-	// assignment would release the session before the binding and the device allocator that were
-	// created from it, while this tears them down in the required reverse order.
+	// Release the session and its dependent binding/allocator in reverse order.
 	void Unload();
 
 private:
-	Options options;
 	OnnxProvider provider = OnnxProvider::CPU;
-	Ort::SessionOptions sessionOptions{nullptr};
 	Ort::Session session{nullptr};
 	Ort::IoBinding binding{nullptr};
 	std::unique_ptr<Ort::Allocator> deviceAllocator; // set only when IsOnDevice()

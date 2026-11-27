@@ -30,7 +30,11 @@ cd make
 OPENMVS_ROMA2_MODEL_PATH=<roma2 model folder> OPENMVS_FLEXGLUE_MODEL_PATH=<flexglue bundle folder> ctest -C Release --output-on-failure
 ctest -C Debug --output-on-failure      # the checked build: slow, about an hour
 ```
-Without a model variable the half of `DenseMatcherReconstructTest` that needs it reports itself skipped, and `RoMa2OnnxParityTest` is skipped unless the model folder holds the reference dumps; `OPENMVS_ROMA2_PROVIDER` (`auto|cuda|coreml|dml|cpu`) and `OPENMVS_ROMA2_SETTING` (`turbo|fast|base`) narrow what the RoMa2 tests run. A Debug build of this tree defines `_HEADLESS_DEBUG` (see the root AGENTS.md): a passing Debug run has no `[ASSERT]` on stderr and no `ASSERTION FAILED` in `make/Testing/Temporary/LastTest.log`. There is no test filter: to run one test, call the binary (`Tests 1`) with a local, uncommitted edit of the table.
+Or run directly:
+```bash
+Tests <suite> [verbosity] [forceCPU]    # suite 0/1/2; verbosity > 0 writes Tests-*.log in the current directory
+```
+Without a model variable the half of `DenseMatcherReconstructTest` that needs it reports itself skipped, and `RoMa2OnnxParityTest` is skipped unless the model folder holds the reference dumps; `OPENMVS_ROMA2_PROVIDER` (`auto|cuda|coreml|dml|cpu`) and `OPENMVS_ROMA2_SETTING` (`turbo|fast|base`) narrow what the RoMa2 tests run. A Debug build of this tree defines `_HEADLESS_DEBUG` (see the root AGENTS.md): capture stderr (`2> err.txt`); a passing Debug run has no `[ASSERT]` on stderr and no `ASSERTION FAILED` in `make/Testing/Temporary/LastTest.log`. There is no test filter: to run one test, call the binary (`Tests 1`) with a local, uncommitted edit of the table.
 
 ## Unit Tests (`Tests.cpp`, `UnitTests()`)
 
@@ -176,7 +180,7 @@ Every block states its contract with `ASSERT`; a call outside it is a bug in the
 
 | Test | Covers |
 |------|--------|
-| `PinholeReprojectionJacobianTest` | analytical against automatic Jacobian of the pinhole residual (defined in the library) |
+| `PinholeReprojectionJacobianTest` | analytical against automatic Jacobian of the pinhole residual |
 | `BADenseWeightTest` | the weights a bundle adjustment gives dense observations |
 | `BAIntrinsicFlagsTest` | `SetBAIntrinsicFlags` and `ResectionConfig::DeriveBAConfigs` |
 | `ReconstructSphericalSyntheticTest` | full-sphere reconstruction, equirectangular convention and handedness |
@@ -289,12 +293,7 @@ between `UndistortedK`, the SfM `UndistortMaps::Init`, the map cache and the loa
 standalone spherical `.dmap` loaded by `Scene::LoadDMAP` keeps the SPHERICAL model and its points at
 the stored range.
 
-## Running
-
-```
-Tests <suite> [verbosity] [forceCPU]   # suite 0/1/2; verbosity > 0 writes Tests-*.log in the current directory
-```
-Debug builds define `_HEADLESS_DEBUG`: capture stderr (`2> err.txt`), a failed `ASSERT` prints `[ASSERT]` there.
+## Tool modes
 
 Tool modes (argv[1] is not a number; an unknown mode prints the usage). They always
 write `Tests-*.log` in the current directory; the result tables go to the log and, for most modes, stdout:

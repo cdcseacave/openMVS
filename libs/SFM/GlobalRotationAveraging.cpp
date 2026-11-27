@@ -9,20 +9,10 @@
 
 #include "Common.h"
 #include "GlobalRotationAveraging.h"
-#include "ContradictionCut.h"
-#include "Scene.h"
-#include "PairsWeighting.h"
-#include "GlobalScaleAveraging.h"
-#include "GlobalTranslationAveraging.h"
 #include "PoseLink.h"
-#include "RobustAveraging.h"
-#include "SequenceChain.h"
-#include "StarInitializer.h"
+#include "Scene.h"
 #include "../Math/DisjointSet.h"
 #include "../Math/LeastAbsoluteDeviationSolver.h"
-#include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/connected_components.hpp>
-#include <boost/graph/kruskal_min_spanning_tree.hpp>
 #ifdef _USE_SUITESPARSE
 #include <Eigen/CholmodSupport>
 #else
@@ -43,39 +33,12 @@ using namespace SFM;
 
 DEFINE_LOG_NAME(lt, _T("GlbRotAg"));
 
-namespace {
-
-// Compute relative angle error with normalization
-double RelAngleError(double angle12, double angle1, double angle2)
-{
-    double est = (angle2 - angle1) - angle12;
-	while (est >= M_PI)
-		est -= TWO_PI;
-	while (est < -M_PI)
-		est += TWO_PI;
-
-	// Inject random noise if the angle is too close to the boundary to break
-	// possible balance at local minima
-	if (est > M_PI - 0.01 || est < -M_PI + 0.01) {
-		const double noise = (rand() % 1000) / 1000.0 * 0.01;
-		if (est < 0)
-			est += noise;
-		else
-			est -= noise;
-	}
-	return est;
-}
-
-} // namespace
-/*----------------------------------------------------------------*/
-
 
 // Estimate rotations for all images in the scene
 bool GlobalRotationEstimator::EstimateRotations(Scene& scene, unsigned* pNumFilteredPairs)
 {
 	TD_TIMER_STARTD();
 
-	// Convert ImagePairs to RotationPairs
 	std::vector<RotationPair> rotationPairs;
 	rotationPairs.reserve(scene.pairs.size());
 	for (const ImagePair& pair : scene.pairs) {
@@ -89,7 +52,6 @@ bool GlobalRotationEstimator::EstimateRotations(Scene& scene, unsigned* pNumFilt
 		return false;
 	}
 
-	// Initialize rotations from scene if requested
 	std::vector<Point3> globalRotations;
 	if (options.skipInitialization) {
 		globalRotations.reserve(scene.images.size());
@@ -97,20 +59,17 @@ bool GlobalRotationEstimator::EstimateRotations(Scene& scene, unsigned* pNumFilt
 			globalRotations.emplace_back(img.IsValid() ? Point3(img.R.GetRotationAxisAngle()) : Point3::INF);
 	}
 
-	// Solve using common rotation averaging solver
 	if (!EstimateRotations(rotationPairs, scene.images.size(), globalRotations))
 		return false;
 
-	// Convert results back to scene
 	for (Image& image : scene.images) {
 		if (globalRotations[image.ID] != Point3::INF) {
 			image.R.SetRotationAxisAngle(globalRotations[image.ID]);
 			if (!image.IsValid())
-				image.C = Point3::ZERO; // validate position
+				image.C = Point3::ZERO;
 		}
 	}
 
-	// Filter relative rotations if requested
 	unsigned numFilteredPairs = 0;
 	if (options.maxRelativeRotationAngle > 0)
 		numFilteredPairs = FilterRelativeRotations(scene, options.maxRelativeRotationAngle);
@@ -126,7 +85,6 @@ bool GlobalRotationEstimator::EstimateRotations(
 {
 	TD_TIMER_STARTD();
 
-	// Initialize rotations from input if provided or from maximum spanning tree
 	fixedNodeId = NO_ID;
 	if (!globalRotations.empty()) {
 		ASSERT(globalRotations.size() == numNodes);
@@ -134,19 +92,15 @@ bool GlobalRotationEstimator::EstimateRotations(
 	} else
 		InitializeFromMaximumSpanningTree(numNodes, pairwiseRotations);
 
-	// Set up the linear system
 	if (!SetupLinearSystem(pairwiseRotations))
 		return false;
 
-	// Solve the linear system for L1 norm optimization
 	if (options.maxNumL1Iterations > 0 && !SolveL1Regression(pairwiseRotations))
 		return false;
 
-	// Solve the linear system for IRLS optimization
 	if (options.maxNumIrlsIterations > 0 && !SolveIRLS(pairwiseRotations))
 		return false;
 
-	// Copy results to output
 	globalRotations.assign(numNodes, Point3::INF);
 	for (const auto& [nodeId, idx] : nodeIdToIdx)
 		globalRotations[nodeId] = estimatedRotations[idx];
@@ -156,12 +110,43 @@ bool GlobalRotationEstimator::EstimateRotations(
 	return true;
 }
 
+unsigned GlobalRotationEstimator::EstimateAllComponents(
+	const std::vector<RotationPair>& pairwiseRotations,
+	const uint32_t numNodes,
+	std::vector<Point3>& rotations,
+	std::vector<uint32_t>& componentOf) const
+{
+	rotations.assign(numNodes, Point3::INF);
+	componentOf.assign(numNodes, NO_ID);
+	std::vector<RotationPair> remaining(pairwiseRotations);
+	unsigned numComponents = 0;
+	while (!remaining.empty()) {
+		std::vector<Point3> solved;
+		GlobalRotationEstimator estimator(options);
+		if (!estimator.EstimateRotations(remaining, numNodes, solved))
+			break;
+		for (uint32_t i = 0; i < numNodes; ++i) {
+			if (solved[i] == Point3::INF)
+				continue;
+			rotations[i] = solved[i];
+			componentOf[i] = numComponents;
+		}
+		std::vector<RotationPair> next;
+		for (const RotationPair& pair : remaining) {
+			ASSERT((solved[pair.idxA] == Point3::INF) == (solved[pair.idxB] == Point3::INF));
+			if (solved[pair.idxA] == Point3::INF)
+				next.push_back(pair);
+		}
+		remaining.swap(next);
+		++numComponents;
+	}
+	return numComponents;
+}
+
 void GlobalRotationEstimator::InitializeFromMaximumSpanningTree(uint32_t numNodes, const std::vector<RotationPair>& pairwiseRotations)
 {
 	std::vector<Point3> rotations;
-	const uint32_t root = RotationsFromMaximumSpanningTree(
-		numNodes, pairwiseRotations, std::make_pair(NO_ID, NO_ID), rotations, NULL);
-	// nothing to initialize from leaves the estimates exactly as they were
+	const uint32_t root = RotationsFromMaximumSpanningTree(numNodes, pairwiseRotations, rotations);
 	if (root == NO_ID)
 		return;
 	estimatedRotations = rotations;
@@ -171,125 +156,97 @@ void GlobalRotationEstimator::InitializeFromMaximumSpanningTree(uint32_t numNode
 
 uint32_t GlobalRotationEstimator::RotationsFromMaximumSpanningTree(
 	uint32_t numNodes, const std::vector<RotationPair>& pairwiseRotations,
-	const std::pair<uint32_t, uint32_t>& excluded,
-	std::vector<Point3>& rotations,
-	std::vector<std::pair<uint32_t, uint32_t>>* treeEdges)
+	std::vector<Point3>& rotations)
 {
-	if (treeEdges != NULL)
-		treeEdges->clear();
+	if (numNodes < 2 || pairwiseRotations.empty())
+		return NO_ID;
 
-	// Build an undirected weighted graph with all nodes as vertices
-	typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS,
-		boost::no_property, boost::property<boost::edge_weight_t, double>> Graph;
-	typedef boost::graph_traits<Graph>::vertex_descriptor Vertex;
-	typedef boost::graph_traits<Graph>::edge_descriptor Edge;
-
-	Graph g(numNodes);
-
-	// Add weighted edges from the valid pairs, skipping the excluded node pair
+	// Sort valid pair indices descending by weight for Kruskal's maximum spanning forest
+	std::vector<uint32_t> order;
+	order.reserve(pairwiseRotations.size());
 	FOREACH(pairIdx, pairwiseRotations) {
 		const RotationPair& pair = pairwiseRotations[pairIdx];
-		if (pair.weight <= 0)
-			continue;
-		if (MINF(pair.idxA, pair.idxB) == MINF(excluded.first, excluded.second) &&
-			MAXF(pair.idxA, pair.idxB) == MAXF(excluded.first, excluded.second))
-			continue;
-		// Maximum Spanning Tree is needed, but Kruskal finds Minimum, so negate weights
-		boost::add_edge(pair.idxA, pair.idxB, -pair.weight, g);
+		ASSERT(pair.idxA < numNodes && pair.idxB < numNodes);
+		if (pair.weight > 0.f && pair.idxA != pair.idxB)
+			order.push_back((uint32_t)pairIdx);
 	}
-
-	// Extract the largest connected component of nodes
-	std::vector<unsigned> component(num_vertices(g));
-	const unsigned numComponents = boost::connected_components(g, &component[0]);
-	if (numComponents == 0)
+	if (order.empty())
 		return NO_ID;
-	std::vector<unsigned> componentSize(numComponents, 0);
-	FOREACH(i, component)
-		++componentSize[component[i]];
-	unsigned largestComponent = 0;
-	for (unsigned i = 1; i < numComponents; ++i)
-		if (componentSize[i] > componentSize[largestComponent])
-			largestComponent = i;
-	if (componentSize[largestComponent] < 2)
+	std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+		return pairwiseRotations[a].weight > pairwiseRotations[b].weight;
+	});
+
+	// Build the maximum spanning forest and find the largest connected component
+	DisjointSet<uint32_t> dsu(numNodes);
+	std::vector<uint32_t> mstPairs;
+	mstPairs.reserve(numNodes - 1);
+	for (const uint32_t pairIdx : order) {
+		const RotationPair& pair = pairwiseRotations[pairIdx];
+		if (dsu.UnionMin(pair.idxA, pair.idxB))
+			mstPairs.push_back(pairIdx);
+	}
+	if (mstPairs.empty())
 		return NO_ID;
 
-	// Find the maximum spanning tree
-	// Note: Kruskal finds the MST forest
-	std::vector<Edge> mstEdges;
-	boost::kruskal_minimum_spanning_tree(g, std::back_inserter(mstEdges));
+	dsu.CompressAllPaths();
+	std::vector<uint32_t> compOfNode;
+	const unsigned numComponents = dsu.GetComponents(compOfNode);
+	std::vector<unsigned> compSize(numComponents, 0);
+	for (const uint32_t c : compOfNode)
+		++compSize[c];
+	unsigned largestComp = 0;
+	for (unsigned c = 1; c < numComponents; ++c)
+		if (compSize[c] > compSize[largestComp])
+			largestComp = c;
+	if (compSize[largestComp] < 2)
+		return NO_ID;
 
-	// Build the tree as an adjacency list for BFS traversal within the LCC
-	std::vector<IIndexArr> adj(numNodes);
-	for (const Edge& e : mstEdges) {
-		const Vertex u = boost::source(e, g);
-		const Vertex v = boost::target(e, g);
-		if (component[u] != largestComponent)
+	// Adjacency list carrying the exact chosen pair index (handles parallel edges accurately in O(1))
+	struct TreeEdge { uint32_t neighbor; uint32_t pairIdx; };
+	std::vector<std::vector<TreeEdge>> adj(numNodes);
+	for (const uint32_t pairIdx : mstPairs) {
+		const RotationPair& pair = pairwiseRotations[pairIdx];
+		if (compOfNode[pair.idxA] != largestComp)
 			continue;
-		adj[u].push_back((uint32_t)v);
-		adj[v].push_back((uint32_t)u);
-		if (treeEdges != NULL)
-			treeEdges->emplace_back((uint32_t)u, (uint32_t)v);
+		adj[pair.idxA].push_back({ pair.idxB, pairIdx });
+		adj[pair.idxB].push_back({ pair.idxA, pairIdx });
 	}
 
-	// Find the root as the node with most connections in the MST
 	uint32_t root = NO_ID;
-	FOREACH(i, adj)
-		if (root == NO_ID || adj[i].size() > adj[root].size())
+	for (uint32_t i = 0; i < numNodes; ++i)
+		if (!adj[i].empty() && (root == NO_ID || adj[i].size() > adj[root].size()))
 			root = i;
 	ASSERT(root != NO_ID);
 
-	// Initialize rotation estimates
+	// Propagate rotations over the MST starting from root at identity
 	rotations.assign(numNodes, Point3::INF);
-
-	// Use the tree to initialize the global rotations, starting from the root as identity
 	std::queue<uint32_t> q;
-	std::vector<bool> visited(numNodes, false);
+	std::vector<uint8_t> visited(numNodes, 0);
 	q.push(root);
-	visited[root] = true;
-	rotations[root] = Point3::ZERO; // identity rotation in angle-axis
+	visited[root] = 1;
+	rotations[root] = Point3::ZERO;
 	while (!q.empty()) {
 		const uint32_t curr = q.front();
 		q.pop();
-		for (const uint32_t child : adj[curr]) {
-			if (visited[child])
+		const RMatrix Rcurr(rotations[curr]);
+		for (const TreeEdge& edge : adj[curr]) {
+			if (visited[edge.neighbor])
 				continue;
-			visited[child] = true;
-			// Find the pair; a caller is free to give it either way round, the direction being
-			// read off the pair itself below
-			const RotationPair* pPair = nullptr;
-			for (const RotationPair& pair : pairwiseRotations) {
-				if ((pair.idxA == curr && pair.idxB == child) ||
-					(pair.idxA == child && pair.idxB == curr)) {
-					pPair = &pair;
-					break;
-				}
-			}
-			ASSERT(pPair != nullptr);
-			if (pPair == nullptr)
-				continue;
-			const Matrix3x3& relR = pPair->relativeRotation;
-			RMatrix Rcurr(rotations[curr]);
-			if (pPair->idxA == curr) {
-				// R_child = R_rel * R_curr
-				RMatrix Rchild = relR * Rcurr;
-				rotations[child] = Rchild.GetRotationAxisAngle();
-			} else {
-				// R_child = R_rel^T * R_curr
-				RMatrix Rchild = relR.t() * Rcurr;
-				rotations[child] = Rchild.GetRotationAxisAngle();
-			}
-			q.push(child);
+			visited[edge.neighbor] = 1;
+			const RotationPair& pair = pairwiseRotations[edge.pairIdx];
+			const RMatrix Rchild = (pair.idxA == curr) ? RMatrix(pair.relativeRotation * Rcurr)
+			                                           : RMatrix(pair.relativeRotation.t() * Rcurr);
+			rotations[edge.neighbor] = Rchild.GetRotationAxisAngle();
+			q.push(edge.neighbor);
 		}
 	}
 
-	DEBUG("Initialized rotations for %d nodes using MST (root: %u)", componentSize[largestComponent], root);
+	DEBUG("Initialized rotations for %u nodes using MST (root: %u)", compSize[largestComp], root);
 	return root;
 }
 
-// Set up the linear system for rotation averaging
 bool GlobalRotationEstimator::SetupLinearSystem(const std::vector<RotationPair>& pairwiseRotations)
 {
-	// Clear all structures
 	sparseMatrix.resize(0, 0);
 	tangentSpaceStep.resize(0);
 	tangentSpaceResidual.resize(0);
@@ -297,8 +254,6 @@ bool GlobalRotationEstimator::SetupLinearSystem(const std::vector<RotationPair>&
 	nodeIdToIdx.clear();
 	pairIdToInfo.clear();
 
-	// Map nodes to degrees of freedom, only those with valid rotations,
-	// initialize rotations and find best connected image
 	const uint32_t numInitialNodes = (uint32_t)estimatedRotations.size();
 	ASSERT(fixedNodeId == NO_ID ||
 		(fixedNodeId < numInitialNodes && estimatedRotations[fixedNodeId] != Point3::INF),
@@ -307,12 +262,12 @@ bool GlobalRotationEstimator::SetupLinearSystem(const std::vector<RotationPair>&
 	for (uint32_t nodeId = 0; nodeId < numInitialNodes; ++nodeId) {
 		const Point3d rotation = estimatedRotations[nodeId];
 		if (rotation == Point3::INF)
-			continue; // avoid zero-column in the linear system
+			continue;
 		if (fixedNodeId == NO_ID)
-			fixedNodeId = nodeId; // fix the first valid node if no fixed node specified
+			fixedNodeId = nodeId;
 		if (nodeId == fixedNodeId) {
 			fixedNodeRotation = rotation;
-			continue; // store the fixed node rotation and skip it in the linear system
+			continue;
 		}
 		const uint32_t idx = (uint32_t)nodeIdToIdx.size();
 		estimatedRotations[idx] = rotation;
@@ -324,30 +279,25 @@ bool GlobalRotationEstimator::SetupLinearSystem(const std::vector<RotationPair>&
 	}
 	ASSERT(fixedNodeId != NO_ID);
 	const uint32_t numFreeNodes = (uint32_t)nodeIdToIdx.size();
-	estimatedRotations[numFreeNodes] = fixedNodeRotation; // add fixed node at the end
+	estimatedRotations[numFreeNodes] = fixedNodeRotation;
 	nodeIdToIdx.emplace(fixedNodeId, numFreeNodes);
 	estimatedRotations.resize(nodeIdToIdx.size());
 
-	// Prepare relative information from rotation pairs
 	std::vector<Eigen::Triplet<double>> vecCoeffs;
-	std::vector<double> vecWeights;
+	std::vector<double> pairWeights;
 	vecCoeffs.reserve(pairwiseRotations.size() * 6);
-	vecWeights.reserve(pairwiseRotations.size() * 3);
+	pairWeights.reserve(pairwiseRotations.size());
 	unsigned currPos = 0;
 	FOREACH(pairIdx, pairwiseRotations) {
 		const RotationPair& pair = pairwiseRotations[pairIdx];
 		if (pair.weight <= 0)
-			continue; // skip invalid pairs
-		// Check if both nodes are in the estimation set
+			continue;
 		auto itA = nodeIdToIdx.find(pair.idxA);
 		auto itB = nodeIdToIdx.find(pair.idxB);
 		if (itA == nodeIdToIdx.end() || itB == nodeIdToIdx.end())
 			continue;
-		// Map pair to relative rotation
 		pairIdToInfo[pairIdx] = currPos;
-		// Get weight
 		const double weight = options.useWeight ? (double)pair.weight : 1.0;
-		// Set up linear system: R_rel = R_j * R_i^T => dR_rel = dR_j - dR_i
 		const uint32_t idx1 = itA->second * 3;
 		const uint32_t idx2 = itB->second * 3;
 		for (int i = 0; i < 3; ++i) {
@@ -355,42 +305,32 @@ bool GlobalRotationEstimator::SetupLinearSystem(const std::vector<RotationPair>&
 				vecCoeffs.emplace_back(currPos + i, idx1 + i, -1.0);
 			if (pair.idxB != fixedNodeId)
 				vecCoeffs.emplace_back(currPos + i, idx2 + i, 1.0);
-			vecWeights.push_back(weight);
 		}
+		pairWeights.push_back(weight);
 		currPos += 3;
 	}
 
-	// The weights are relative confidences, scaled here so that their median is options.weightMedian:
-	// the L1 step's ADMM shrinks the weighted residuals by a fixed amount within a fixed number of
-	// iterations, so without this its result would depend on the absolute scale of the input weights
-	// (the IRLS that follows is unaffected either way, its weights entering both sides of its equations)
-	// (the nodes set up above are the ones a pair of positive weight reaches -- the spanning tree's
-	// component, or a warm start's images, each joined to the rest by its link -- so there is a row)
-	ASSERT(options.weightMedian > 0);
-	ASSERT(!vecWeights.empty());
-	std::vector<double> sortedWeights(vecWeights);
+	// Normalize pair weights to median = options.weightMedian so L1 ADMM is scale-invariant
+	ASSERT(options.weightMedian > 0 && !pairWeights.empty());
+	std::vector<double> sortedWeights(pairWeights);
 	std::nth_element(sortedWeights.begin(), sortedWeights.begin() + sortedWeights.size() / 2, sortedWeights.end());
 	const double medianWeight = sortedWeights[sortedWeights.size() / 2];
 	ASSERT(medianWeight > 0);
 	const double scale = options.weightMedian / medianWeight;
-	for (double& weight : vecWeights)
-		weight *= scale;
 
-	// Build sparse matrix
-	const unsigned numDof = numFreeNodes * 3; // 3 DOF per rotation (angle-axis), fixed node is included
+	const unsigned numDof = numFreeNodes * 3;
 	sparseMatrix.resize(currPos, numDof);
 	sparseMatrix.setFromTriplets(vecCoeffs.begin(), vecCoeffs.end());
 
-	// Set up weights
-	weights = Eigen::Map<Eigen::ArrayXd>(vecWeights.data(), vecWeights.size());
+	weights.resize(currPos);
+	FOREACH(k, pairWeights)
+		weights.segment<3>((Eigen::Index)k * 3).setConstant(pairWeights[k] * scale);
 
-	// Initialize solution vectors
 	tangentSpaceStep.resize(numDof);
 	tangentSpaceResidual.resize(currPos);
 	return true;
 }
 
-// Solve using L1 regression with ADMM
 bool GlobalRotationEstimator::SolveL1Regression(const std::vector<RotationPair>& pairwiseRotations)
 {
 	const Eigen::SparseMatrix<double> A = weights.matrix().asDiagonal() * sparseMatrix;
@@ -410,8 +350,6 @@ bool GlobalRotationEstimator::SolveL1Regression(const std::vector<RotationPair>&
 	int iteration = 0;
 	for (iteration = 0; iteration < options.maxNumL1Iterations; ) {
 		++iteration;
-
-		// Use the current residual as b (Ax - b)
 		tangentSpaceStep.setZero();
 		if (!l1Solver.Solve(weights.matrix().asDiagonal() * tangentSpaceResidual, &tangentSpaceStep)) {
 			DEBUG("L1 solver failed");
@@ -427,7 +365,6 @@ bool GlobalRotationEstimator::SolveL1Regression(const std::vector<RotationPair>&
 		UpdateGlobalRotations();
 		ComputeResiduals(pairwiseRotations);
 
-		// Check the residual. If it is small, stop
 		const double avgStep = ComputeAverageStepSize();
 		DEBUG_ULTIMATE("L1 ADMM: iteration %d, avg-step %.6g, residual %.6g",
 			iteration, avgStep, (sparseMatrix * tangentSpaceStep - tangentSpaceResidual).array().abs().sum());
@@ -442,7 +379,6 @@ bool GlobalRotationEstimator::SolveL1Regression(const std::vector<RotationPair>&
 	return true;
 }
 
-// Solve using iteratively reweighted least squares
 bool GlobalRotationEstimator::SolveIRLS(const std::vector<RotationPair>& pairwiseRotations)
 {
 	#ifdef _USE_SUITESPARSE
@@ -460,27 +396,19 @@ bool GlobalRotationEstimator::SolveIRLS(const std::vector<RotationPair>& pairwis
 	int iteration = 0;
 	for (iteration = 0; iteration < options.maxNumIrlsIterations; ) {
 		++iteration;
-
-		// Compute robust weights based on residuals
 		for (const auto& [pairIdx, pos] : pairIdToInfo) {
 			const double residualSq = tangentSpaceResidual.segment<3>(pos).squaredNorm();
 			double weight;
 			if (options.weightType == GlobalRotationEstimatorOptions::GEMAN_MCCLURE) {
-				// Geman-McClure: w = σ² / (σ² + ε²)²
 				const double sigmaSq = SQUARE(sigma);
-				const double denomSq = SQUARE(sigmaSq + residualSq);
-				weight = sigmaSq / denomSq;
-			} else { // HALF_NORM
-				// Half-Norm: w = 1 / sqrt(ε²) = 1 / |ε|
+				weight = sigmaSq / SQUARE(sigmaSq + residualSq);
+			} else {
 				weight = 1.0 / MAXF(SQRT(residualSq), sigma);
 			}
 			weightsIrls.segment<3>(pos) = weight * weights.segment<3>(pos);
 		}
 
-		// Form the system: A^T W A dx = A^T W b where W = diag(weights_irls)
-		Eigen::SparseMatrix<double> ATWeight = sparseMatrix.transpose() * weightsIrls.matrix().asDiagonal();
-
-		// Factorize and solve
+		const Eigen::SparseMatrix<double> ATWeight = sparseMatrix.transpose() * weightsIrls.matrix().asDiagonal();
 		llt.factorize(ATWeight * sparseMatrix);
 		if (llt.info() != Eigen::Success) {
 			DEBUG("IRLS factorization failed at iteration %d", iteration);
@@ -495,7 +423,6 @@ bool GlobalRotationEstimator::SolveIRLS(const std::vector<RotationPair>& pairwis
 		UpdateGlobalRotations();
 		ComputeResiduals(pairwiseRotations);
 
-		// Check convergence
 		const double avgStep = ComputeAverageStepSize();
 		DEBUG_ULTIMATE("IRLS: iteration %d, avg_step %.6g", iteration, avgStep);
 		if (avgStep < options.irlsStepConvergenceThreshold) {
@@ -508,48 +435,38 @@ bool GlobalRotationEstimator::SolveIRLS(const std::vector<RotationPair>& pairwis
 	return true;
 }
 
-// Update global rotations based on computed step
 void GlobalRotationEstimator::UpdateGlobalRotations()
 {
 	ASSERT(estimatedRotations.size() >= 2);
-	const uint32_t numFreeNodes = (uint32_t)estimatedRotations.size() - 1; // fixed node is skipped
+	const uint32_t numFreeNodes = (uint32_t)estimatedRotations.size() - 1;
 	for (uint32_t idx = 0; idx < numFreeNodes; ++idx) {
-		RMatrix currentR(estimatedRotations[idx]);
-		Point3 aaUpdate(-tangentSpaceStep.segment<3>(idx * 3));
-		RMatrix updateR(aaUpdate);
-		RMatrix newR = currentR * updateR;
-		estimatedRotations[idx] = newR.GetRotationAxisAngle();
+		const RMatrix currentR(estimatedRotations[idx]);
+		const RMatrix updateR(Point3(-tangentSpaceStep.segment<3>(idx * 3)));
+		estimatedRotations[idx] = RMatrix(currentR * updateR).GetRotationAxisAngle();
 	}
 }
 
-// Compute residuals for current rotation estimates
 void GlobalRotationEstimator::ComputeResiduals(const std::vector<RotationPair>& pairwiseRotations)
 {
 	for (const auto& [pairIdx, pos] : pairIdToInfo) {
 		const RotationPair& pair = pairwiseRotations[pairIdx];
-		// Get current rotations in matrix form
 		const RMatrix R1(estimatedRotations[nodeIdToIdx.at(pair.idxA)]);
 		const RMatrix R2(estimatedRotations[nodeIdToIdx.at(pair.idxB)]);
-		// Compute residual: -log(R2^T * R_rel * R1)
-		// This is the error rotation in the tangent space
-		RMatrix errorR = R2.t() * pair.relativeRotation * R1;
-		Eigen::Vector3d residual = errorR.GetRotationAxisAngle();
-		tangentSpaceResidual.segment<3>(pos) = -residual;
+		const RMatrix errorR = R2.t() * pair.relativeRotation * R1;
+		tangentSpaceResidual.segment<3>(pos) = -Eigen::Vector3d(errorR.GetRotationAxisAngle());
 	}
 }
 
-// Compute average step size
 double GlobalRotationEstimator::ComputeAverageStepSize() const
 {
 	ASSERT(estimatedRotations.size() >= 2);
-	const uint32_t numFreeNodes = (uint32_t)estimatedRotations.size() - 1; // fixed node is skipped
+	const uint32_t numFreeNodes = (uint32_t)estimatedRotations.size() - 1;
 	double totalUpdate = 0;
 	for (uint32_t idx = 0; idx < numFreeNodes; ++idx)
 		totalUpdate += tangentSpaceStep.segment<3>(idx * 3).norm();
 	return totalUpdate / numFreeNodes;
 }
 
-// Filter relative rotations that are inconsistent with current global estimates
 unsigned GlobalRotationEstimator::FilterRelativeRotations(Scene& scene, REAL maxRelativeAngle)
 {
 	const REAL minCosAngle = COS(D2R(maxRelativeAngle));
@@ -558,24 +475,16 @@ unsigned GlobalRotationEstimator::FilterRelativeRotations(Scene& scene, REAL max
 	for (ImagePair& pair : scene.pairs) {
 		if (!IsPoseLinkPair(pair))
 			continue;
-		Image& image1 = scene.images[pair.ID1];
-		Image& image2 = scene.images[pair.ID2];
+		const Image& image1 = scene.images[pair.ID1];
+		const Image& image2 = scene.images[pair.ID2];
 		ASSERT(image1.HasCamera() && image2.HasCamera());
 		if (!image1.IsValid() || !image2.IsValid())
 			continue;
-		// Compute relative rotation from current global estimates:
-		// R_rel_calc = R2 * R1^T
-		const Matrix3x3 relCalcR = image2.R * image1.R.t();
-		// Get stored relative rotation
-		const Matrix3x3& relStoredR = pair.relativePose->R;
-		// Compute rotation difference: errorR = relStoredR * relCalcR^T
-		const REAL cosAngle = ComputeAngle(relStoredR, relCalcR);
+		const REAL cosAngle = ComputeAngle(pair.relativePose->R, Matrix3x3(image2.R * image1.R.t()));
 		if (cosAngle < minCosAngle) {
-			// Invalidate the pair by setting weight to 0
 			DEBUG_ULTIMATE("Filtered pair (% 4u, % 4u): %u/%u matches, relative rotation angle %.2f degrees, %.2f weight",
 				pair.ID1, pair.ID2, pair.GetNumFilteredInliers(), pair.GetNumMatches(), R2D(ACOS(cosAngle)), pair.GetCompositeWeight());
-			if (pair.GetCompositeWeight() > maxInvalidWeight)
-				maxInvalidWeight = pair.GetCompositeWeight();
+			maxInvalidWeight = MAXF(maxInvalidWeight, pair.GetCompositeWeight());
 			pair.InvalidateWeight();
 			++numInvalidPairs;
 		}
@@ -585,6 +494,7 @@ unsigned GlobalRotationEstimator::FilterRelativeRotations(Scene& scene, REAL max
 		numInvalidPairs, numPairs, maxRelativeAngle, maxInvalidWeight);
 	return numInvalidPairs;
 }
+
 unsigned GlobalRotationEstimator::FilterRelativeRotations(const std::vector<Point3>& globalRotations, std::vector<RotationPair>& pairwiseRotations, REAL maxRelativeAngle)
 {
 	const REAL minCosAngle = COS(D2R(maxRelativeAngle));
@@ -593,19 +503,11 @@ unsigned GlobalRotationEstimator::FilterRelativeRotations(const std::vector<Poin
 	for (RotationPair& pair : pairwiseRotations) {
 		if (pair.weight <= 0)
 			continue;
-		// Compute relative rotation from current global estimates:
-		// R_rel_calc = R2 * R1^T
-		const Matrix3x3 relCalcR = RMatrix(globalRotations[pair.idxB]) * RMatrix(globalRotations[pair.idxA]).t();
-		// Get stored relative rotation
-		const Matrix3x3& relStoredR = pair.relativeRotation;
-		// Compute rotation difference: errorR = relStoredR * relCalcR^T
-		const REAL cosAngle = ComputeAngle(relStoredR, relCalcR);
+		const REAL cosAngle = ComputeAngle(pair.relativeRotation, Matrix3x3(RMatrix(globalRotations[pair.idxB]) * RMatrix(globalRotations[pair.idxA]).t()));
 		if (cosAngle < minCosAngle) {
-			// Invalidate the pair by setting weight to 0
 			DEBUG_ULTIMATE("Filtered pair (% 4u, % 4u): relative rotation angle %.2f degrees, %.2f weight",
 				pair.idxA, pair.idxB, R2D(ACOS(cosAngle)), pair.weight);
-			if (pair.weight > maxInvalidWeight)
-				maxInvalidWeight = pair.weight;
+			maxInvalidWeight = MAXF(maxInvalidWeight, pair.weight);
 			pair.weight = 0;
 			++numInvalidPairs;
 		}
@@ -614,518 +516,6 @@ unsigned GlobalRotationEstimator::FilterRelativeRotations(const std::vector<Poin
 	DEBUG("Filtered %u/%u relative rotations with angle > %.2f degrees (max weight %.2f)",
 		numInvalidPairs, numPairs, maxRelativeAngle, maxInvalidWeight);
 	return numInvalidPairs;
-}
-/*----------------------------------------------------------------*/
-
-namespace {
-
-// The constants of the scale + centres solve (SolveScaleComponents)
-constexpr unsigned minScaleComponent = 10;  // pairs a component of the pair-scale graph needs to be solved
-constexpr unsigned numL1Rounds = 40;        // reweighting rounds of the centres
-constexpr REAL l1Floor = REAL(1e-3);        // the L1 weight's error floor, in median pair lengths
-constexpr float maxScaleResidual = 1.05f;   // the Geman-McClure scale of the pair scales (the same bar as the merge graph's)
-
-// the angle in degrees between a pair's baseline direction and the offset of its two camera centres
-REAL DirectionAngle(const Point3& baseline, const Point3& centresOffset)
-{
-	ASSERT(norm(baseline) > ZEROTOLERANCE<REAL>() && norm(centresOffset) > ZEROTOLERANCE<REAL>());
-	const REAL cosAngle = baseline.dot(centresOffset) / (norm(baseline) * norm(centresOffset));
-	ASSERT(ABS(cosAngle) <= REAL(1) + REAL(1e-6)); // a dot product over the two norms, up to rounding
-	return R2D(ACOS(MINF(MAXF(cosAngle, REAL(-1)), REAL(1)))); // the clamp is rounding only
-}
-
-} // namespace
-
-std::vector<Point3> SFM::ComputeWorldBaselines(const Scene& scene, const std::vector<Point3>& rotations, const std::vector<uint32_t>& componentOf)
-{
-	ASSERT(rotations.size() == scene.images.size() && componentOf.size() == scene.images.size());
-	std::vector<Point3> baselines(scene.pairs.size(), Point3::INF);
-	FOREACH(idxPair, scene.pairs) {
-		const ImagePair& pair = scene.pairs[idxPair];
-		if (pair.relativePose.has_value() && componentOf[pair.ID1] != NO_ID && componentOf[pair.ID1] == componentOf[pair.ID2])
-			baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
-	}
-	return baselines;
-}
-bool SFM::HasBaseline(const Point3& baseline)
-{
-	return baseline != Point3::INF;
-}
-bool SFM::HasBaselineLength(const Point3& baseline)
-{
-	return HasBaseline(baseline) && norm(baseline) > ZEROTOLERANCE<REAL>();
-}
-bool SFM::HasBaselineDirection(const ImagePair& pair, const Point3& baseline)
-{
-	return HasBaselineLength(baseline) && pair.meanRayAngle >= D2R(kNearDuplicateRayAngle);
-}
-
-std::vector<ScaleComponentSolve> SFM::SolveScaleComponents(const Scene& scene, const std::vector<ScalePair>& equations,
-	const std::vector<Point3>& baselines, const std::vector<float>& weights, unsigned& numComponents)
-{
-	const uint32_t numPairs = (uint32_t)scene.pairs.size();
-	const uint32_t numImages = (uint32_t)scene.images.size();
-	ASSERT(baselines.size() == numPairs && weights.size() == numPairs);
-	// the components of the pair-scale graph, largest first (by pairs, ties to the lower pair)
-	DisjointSet<uint32_t> sets(numPairs);
-	for (const ScalePair& equation : equations)
-		sets.Union(equation.idxA, equation.idxB);
-	struct Component { uint32_t root; std::vector<uint32_t> pairs; std::vector<ScalePair> equations; };
-	std::unordered_map<uint32_t, Component> componentOfRoot;
-	for (const ScalePair& equation : equations) {
-		Component& component = componentOfRoot[sets.Find(equation.idxA)];
-		component.root = sets.Find(equation.idxA);
-		component.equations.push_back(equation);
-	}
-	std::vector<bool> inEquation(numPairs, false);
-	for (const ScalePair& equation : equations)
-		inEquation[equation.idxA] = inEquation[equation.idxB] = true;
-	for (uint32_t idxPair = 0; idxPair < numPairs; ++idxPair)
-		if (inEquation[idxPair])
-			componentOfRoot[sets.Find(idxPair)].pairs.push_back(idxPair);
-	std::vector<Component*> components;
-	for (auto& [root, component] : componentOfRoot)
-		components.push_back(&component);
-	std::sort(components.begin(), components.end(), [](const Component* a, const Component* b) {
-		return a->pairs.size() != b->pairs.size() ? a->pairs.size() > b->pairs.size() : a->root < b->root;
-	});
-	numComponents = (unsigned)components.size();
-
-	// one solve per component
-	std::vector<ScaleComponentSolve> solves;
-	const REAL maxLogScaleResidual = LOGN((REAL)maxScaleResidual);
-	for (const Component* pComponent : components) {
-		if (pComponent->pairs.size() < minScaleComponent)
-			break;
-		ScaleComponentSolve solve;
-		solve.pairs = pComponent->pairs;
-		// the scales of the component's pairs: solved per scene pair, kept for its own
-		GlobalScaleEstimator scaleEstimator;
-		std::vector<REAL> scales, scaleResiduals;
-		if (!RobustAverage(pComponent->equations, maxLogScaleResidual, kRobustRounds,
-			[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) { return scaleEstimator.EstimateScales(active, numPairs, NO_ID, s); },
-			[&](size_t i, const std::vector<REAL>& s) {
-				const ScalePair& p = pComponent->equations[i];
-				return LOGN(p.scaleRatio) - (LOGN(s[p.idxB]) - LOGN(s[p.idxA]));
-			},
-			scales, scaleResiduals))
-			continue;
-		// the centres: C_2 - C_1 = scale * baseline of every pair, towards the sum of norms
-		std::vector<TranslationPair> offsets;
-		std::vector<REAL> lengths;
-		for (const uint32_t idxPair : solve.pairs) {
-			const ImagePair& pair = scene.pairs[idxPair];
-			ASSERT(HasBaselineLength(baselines[idxPair]));
-			solve.scales.push_back(scales[idxPair]);
-			offsets.emplace_back(pair.ID1, pair.ID2, baselines[idxPair] * solve.scales.back(), weights[idxPair]);
-			lengths.push_back(norm(offsets.back().relativeTranslation));
-		}
-		std::sort(lengths.begin(), lengths.end());
-		const REAL floorLength = l1Floor * lengths[lengths.size() / 2];
-		GlobalTranslationEstimator translationEstimator;
-		if (!RobustAverageWith(offsets, numL1Rounds,
-			[&](const std::vector<TranslationPair>& active, std::vector<Point3>& t) {
-				// the estimator's rows are scaled by the weight, the least squares' weight is its square
-				std::vector<TranslationPair> rows(active);
-				for (TranslationPair& row : rows)
-					row.weight = SQRT(row.weight);
-				return translationEstimator.EstimateTranslations(rows, numImages, NO_ID, t);
-			},
-			[&](size_t i, const std::vector<Point3>& t) {
-				const TranslationPair& p = offsets[i];
-				return norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation);
-			},
-			[&](REAL r) { return (float)(REAL(1) / MAXF(r, floorLength)); },
-			solve.centres, solve.centreResiduals))
-			continue;
-		solve.placed.assign(numImages, false);
-		for (const TranslationPair& p : offsets)
-			solve.placed[p.idxA] = solve.placed[p.idxB] = true;
-		solves.push_back(std::move(solve));
-	}
-	return solves;
-}
-
-namespace {
-
-// The translation stage of the contradiction cut: on the pairs the earlier stages kept, the scales of the pairs,
-// then the camera centres (SolveScaleComponents), then every pair whose baseline direction is more than
-// maxDirectionResidual degrees from the centres. Judged are the kept pairs with a baseline direction
-// (HasBaselineDirection); the solves read the usable ones among them, weighted by composite weight times triplet
-// score. A pair of a component is judged by its own solve, any other by the largest solve that places both its
-// images. Marks the pairs it removes CUT, but no LINK: where the centres contradict a link of the sequence chain
-// (SequenceChain.h), the centres are the ones in doubt. Fills `solves`, the largest first; returns the number of
-// links past the bar.
-unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<Point3>& baselines, const std::vector<float>& scores,
-	float minPairWeight, float maxDirectionResidual, std::vector<PairState>& states, std::vector<ScaleComponentSolve>& solves)
-{
-	TD_TIMER_STARTD();
-	const uint32_t numPairs = (uint32_t)scene.pairs.size();
-	ASSERT(baselines.size() == numPairs && scores.size() == numPairs && states.size() == numPairs);
-	IIndexArr judged, solved;
-	std::vector<float> weights(numPairs, 0.f);
-	FOREACH(idxPair, scene.pairs) {
-		const ImagePair& pair = scene.pairs[idxPair];
-		if (IsRemoved(states[idxPair]) || !HasBaselineDirection(pair, baselines[idxPair]))
-			continue;
-		judged.push_back((IIndex)idxPair);
-		if (pair.ExceedsWeightBar(minPairWeight) && scores[idxPair] != 0.f) {
-			solved.push_back((IIndex)idxPair);
-			weights[idxPair] = pair.GetCompositeWeight() * (scores[idxPair] < 0.f ? 1.f : scores[idxPair]);
-		}
-	}
-	const std::vector<ScalePair> equations = ComputePairScales(scene, solved);
-	unsigned numScaleComponents;
-	solves = SolveScaleComponents(scene, equations, baselines, weights, numScaleComponents);
-
-	// the pair's angle against the centres, NaN where no solve judged it: the component's own pairs by its solve, any
-	// other judged pair no solve has judged yet when both its images are placed
-	std::vector<REAL> angles(numPairs, std::numeric_limits<REAL>::quiet_NaN());
-	std::vector<bool> scaled(numPairs, false);
-	for (const ScaleComponentSolve& solve : solves) {
-		for (const uint32_t idxPair : solve.pairs)
-			scaled[idxPair] = true;
-		for (const IIndex idxPair : judged) {
-			const ImagePair& pair = scene.pairs[idxPair];
-			const bool own = std::binary_search(solve.pairs.begin(), solve.pairs.end(), (uint32_t)idxPair);
-			if (!own && (scaled[idxPair] || !std::isnan(angles[idxPair]) || !solve.placed[pair.ID1] || !solve.placed[pair.ID2]))
-				continue;
-			const Point3 centresOffset = solve.centres[pair.ID2] - solve.centres[pair.ID1];
-			if (norm(centresOffset) <= ZEROTOLERANCE<REAL>())
-				continue;
-			angles[idxPair] = DirectionAngle(baselines[idxPair], centresOffset);
-		}
-	}
-	unsigned numJudged = 0, numRemoved = 0, numProtected = 0;
-	for (const IIndex idxPair : judged) {
-		if (std::isnan(angles[idxPair]))
-			continue;
-		++numJudged;
-		if (angles[idxPair] <= maxDirectionResidual)
-			continue;
-		if (states[idxPair] == PairState::LINK) {
-			++numProtected;
-			continue;
-		}
-		states[idxPair] = PairState::CUT;
-		++numRemoved;
-	}
-	REAL medianResidual = 0; // of the largest solve
-	if (!solves.empty()) {
-		std::vector<REAL> residuals(solves.front().centreResiduals);
-		std::nth_element(residuals.begin(), residuals.begin() + residuals.size() / 2, residuals.end());
-		medianResidual = residuals[residuals.size() / 2];
-	}
-	VERBOSE("Translation cut: removed %u/%u pairs whose baseline direction is more than %g degrees from the centres of %u of %u scale components "
-		"(%u pairs scaled by %u equations, median residual of the largest %.3g) (%s)",
-		numRemoved, numJudged, maxDirectionResidual, (unsigned)solves.size(), numScaleComponents, (unsigned)solved.size(), (unsigned)equations.size(),
-		medianResidual, TD_TIMER_GET_FMT().c_str());
-	if (numProtected != 0)
-		VERBOSE("Translation cut: kept %u link(s) of the sequence chain it would have removed", numProtected);
-	return numProtected;
-}
-
-// The bars of the repair of the contradiction cut (RepairContradictedPairs, below)
-constexpr REAL kRepairAngle = 1;            // degrees between a match's ray and its epipolar plane
-constexpr unsigned kRepairRounds = 200;     // RANSAC rounds of the direction fit
-constexpr unsigned kRepairMinMatches = 8;   // track-forming matches that must agree
-constexpr float kRepairMinShare = 0.8f;     // share of the track-forming matches that must agree
-constexpr REAL kRepairMaxDirection = 20;    // degrees between the fitted direction and the centres
-
-// The baseline direction t (unit, in camera 1's frame, x_2 = R x_1 + t) of the first numMatches matches (unit
-// bearings) of a pair of rotation R. A match agrees with t when its ray R b_1 lies within kRepairAngle of the
-// epipolar plane of t (t . (R b_1 x b_2) = 0, linear in t): RANSAC over two matches, kRepairRounds rounds from
-// `seed`, then the least squares of the agreeing ones, the sign that puts most of them in front of both
-// cameras. Returns false when fewer than kRepairMinShare of the matches (and kRepairMinMatches) agree with the
-// RANSAC's best; else `agree` flags the matches agreeing with the returned t.
-bool FitBaselineDirection(const Eigen::Matrix3d& R, const std::vector<Eigen::Vector3d>& bearings1,
-	const std::vector<Eigen::Vector3d>& bearings2, unsigned numMatches, unsigned seed, Eigen::Vector3d& t, std::vector<char>& agree)
-{
-	ASSERT(bearings1.size() >= numMatches && bearings2.size() >= numMatches);
-	if (numMatches < kRepairMinMatches)
-		return false;
-	std::vector<Eigen::Vector3d> rays(numMatches), planes(numMatches); // R b_1, and the unit normal of its epipolar plane
-	for (unsigned i = 0; i < numMatches; ++i) {
-		rays[i] = R * bearings1[i];
-		planes[i] = rays[i].cross(bearings2[i]).normalized();
-	}
-	const REAL maxSin = SIN(D2R(kRepairAngle));
-	const auto agrees = [&](unsigned i, const Eigen::Vector3d& direction) { return ABS(planes[i].dot(direction)) <= maxSin; };
-	std::mt19937 rng(seed);
-	std::uniform_int_distribution<unsigned> pick(0, numMatches - 1);
-	Eigen::Vector3d best(Eigen::Vector3d::Zero());
-	unsigned numBest = 0;
-	for (unsigned round = 0; round < kRepairRounds; ++round) {
-		Eigen::Vector3d direction = planes[pick(rng)].cross(planes[pick(rng)]);
-		if (direction.norm() <= ZEROTOLERANCE<double>())
-			continue;
-		direction.normalize();
-		unsigned numAgreeing = 0;
-		for (unsigned i = 0; i < numMatches; ++i)
-			numAgreeing += agrees(i, direction);
-		if (numAgreeing > numBest) {
-			numBest = numAgreeing;
-			best = direction;
-		}
-	}
-	if (numBest < kRepairMinMatches || numBest < kRepairMinShare * numMatches)
-		return false;
-	// the least squares of the matches agreeing with the best: the direction closest to lying in all their planes
-	Eigen::Matrix3d M(Eigen::Matrix3d::Zero());
-	for (unsigned i = 0; i < numMatches; ++i)
-		if (agrees(i, best))
-			M += planes[i] * planes[i].transpose();
-	t = Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(M).eigenvectors().col(0);
-	// the sign: the depths d1, d2 of d1 R b_1 + t = d2 b_2 (their normal equations), most matches in front of both
-	int numFront = 0;
-	for (unsigned i = 0; i < numMatches; ++i) {
-		if (!agrees(i, t))
-			continue;
-		const double a12 = -rays[i].dot(bearings2[i]), det = 1 - a12 * a12;
-		if (det <= 1e-12)
-			continue;
-		const double r1 = -rays[i].dot(t), r2 = bearings2[i].dot(t);
-		const double d1 = (r1 - a12 * r2) / det, d2 = (r2 - a12 * r1) / det;
-		numFront += (d1 > 0 && d2 > 0) - (d1 < 0 && d2 < 0);
-	}
-	if (numFront < 0)
-		t = -t;
-	agree.resize(numMatches);
-	for (unsigned i = 0; i < numMatches; ++i)
-		agree[i] = agrees(i, t);
-	return true;
-}
-
-// Repair instead of remove: a pair the contradiction cut removed comes back with a relative pose built from
-// the cut's own solution when its matches agree with it. Its rotation is the averaged one, R_2 R_1^T; its
-// baseline direction is fitted to its track-forming matches at that rotation (FitBaselineDirection). The pair
-// is repaired when
-//  - at least kRepairMinShare of its track-forming matches (and kRepairMinMatches) agree with the direction,
-//  - the largest centres solve placing both its images has their offset within kRepairMaxDirection degrees of
-//    the direction (a pair no solve places is not repaired), and
-//  - the two images are the same spot (joined by pairs under kNearDuplicateRayAngle of ray angle), or some
-//    image of a third spot holds a kept pair with each of them (a block of look-alikes between two spots
-//    vouches only for itself).
-// A repaired pair takes that pose (E, and F between pinholes), keeps its agreeing matches as its sparse and
-// dense segments, the other sparse ones becoming outliers and the other dense ones dropped, and has its ray
-// angle measured again; its weight is left to be recomputed. The pairs are independent, repaired in parallel.
-// Offered are the CUT pairs of `states`, all of them pairs with a pose whose two images one rotation solve
-// reached; `solves` are the solves of the translation stage, the largest first. A VETOED pair is not offered
-// (its matches agree on a direction, and along a corridor it is the centres'), vouches for no pair and joins no
-// spot (its two images do not stand at one place). Marks the repaired pairs KEPT; returns their number.
-unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotations,
-	const std::vector<ScaleComponentSolve>& solves, std::vector<PairState>& states)
-{
-	TD_TIMER_STARTD();
-	ASSERT(states.size() == scene.pairs.size() && rotations.size() == scene.images.size());
-	const uint32_t numImages = (uint32_t)scene.images.size();
-	// the spot of every image (near-duplicate pairs join), and its neighbours over the kept pairs
-	DisjointSet<uint32_t> spots(numImages);
-	std::vector<IIndexArr> neighbours(numImages);
-	IIndexArr candidates;
-	FOREACH(idxPair, scene.pairs) {
-		const ImagePair& pair = scene.pairs[idxPair];
-		if (states[idxPair] == PairState::VETOED)
-			continue; // no spot, no candidate and no kept pair
-		if (pair.relativePose.has_value() && !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)))
-			spots.Union(pair.ID1, pair.ID2);
-		if (states[idxPair] == PairState::CUT) {
-			ASSERT(pair.relativePose.has_value());
-			candidates.push_back((IIndex)idxPair);
-		} else {
-			neighbours[pair.ID1].push_back(pair.ID2);
-			neighbours[pair.ID2].push_back(pair.ID1);
-		}
-	}
-	std::vector<uint32_t> spotOf(numImages);
-	for (uint32_t i = 0; i < numImages; ++i) {
-		spotOf[i] = spots.Find(i);
-		std::sort(neighbours[i].begin(), neighbours[i].end());
-	}
-	// the pose fitted for every candidate and the matches agreeing with it, `repaired` when it passes the guard
-	struct Repair { Pose3D pose; std::vector<char> agree; bool repaired{false}; };
-	std::vector<Repair> repairs(candidates.size());
-	#pragma omp parallel for schedule(dynamic, 8)
-	for (int_t k = 0; k < (int_t)candidates.size(); ++k) {
-		const ImagePair& pair = scene.pairs[candidates[k]];
-		Repair& repair = repairs[k];
-		// the same spot, or an image of a third spot paired with both
-		bool vouched = spotOf[pair.ID1] == spotOf[pair.ID2];
-		if (!vouched) {
-			IIndexArr common;
-			std::set_intersection(neighbours[pair.ID1].begin(), neighbours[pair.ID1].end(),
-				neighbours[pair.ID2].begin(), neighbours[pair.ID2].end(), std::back_inserter(common));
-			for (const IIndex c : common)
-				if (spotOf[c] != spotOf[pair.ID1] && spotOf[c] != spotOf[pair.ID2]) {
-					vouched = true;
-					break;
-				}
-		}
-		if (!vouched)
-			continue;
-		// the largest solve that places both images
-		const ScaleComponentSolve* pSolve = NULL;
-		for (const ScaleComponentSolve& solve : solves)
-			if (solve.placed[pair.ID1] && solve.placed[pair.ID2]) {
-				pSolve = &solve;
-				break;
-			}
-		if (pSolve == NULL)
-			continue;
-		const Point3 centresOffset = pSolve->centres[pair.ID2] - pSolve->centres[pair.ID1];
-		if (norm(centresOffset) <= ZEROTOLERANCE<REAL>())
-			continue;
-		const RMatrix R1(rotations[pair.ID1]);
-		const Matrix3x3 R = RMatrix(rotations[pair.ID2]) * R1.t();
-		const Eigen::Matrix3d eR((const Matrix3x3::EMat&)R);
-		const auto [bearings1, bearings2] = pair.GetMatchedBearings(scene.images[pair.ID1], scene.images[pair.ID2], true);
-		Eigen::Vector3d t;
-		if (!FitBaselineDirection(eR, bearings1, bearings2, pair.GetNumTrackFormingMatches(), candidates[k], t, repair.agree))
-			continue;
-		// x_2 = R x_1 + t: camera 2 stands at C = -R^T t in camera 1's frame, at R_1^T C from camera 1 in the world
-		const Point3 C(Eigen::Vector3d(-(eR.transpose() * t)));
-		repair.pose = Pose3D(RMatrix(R), CMatrix(C));
-		repair.repaired = DirectionAngle(R1.t() * C, centresOffset) <= kRepairMaxDirection;
-	}
-	unsigned numRepaired = 0;
-	FOREACH(k, candidates) {
-		const Repair& repair = repairs[k];
-		if (!repair.repaired)
-			continue;
-		ImagePair& pair = scene.pairs[candidates[k]];
-		const Image& image1 = scene.images[pair.ID1];
-		const Image& image2 = scene.images[pair.ID2];
-		const unsigned numSparse = pair.GetNumFilteredInliers(), numTrackForming = pair.GetNumTrackFormingMatches();
-		ASSERT(repair.agree.size() == numTrackForming);
-		std::vector<DMatch> sparse, dense;
-		for (unsigned i = 0; i < numTrackForming; ++i) {
-			if (repair.agree[i])
-				(i < numSparse ? sparse : dense).push_back(pair.matches[i]);
-			else if (i < numSparse)
-				pair.outlierMatches.push_back(pair.matches[i]);
-		}
-		pair.outlierMatches.insert(pair.outlierMatches.end(), pair.matches.begin() + numTrackForming, pair.matches.end());
-		pair.numFilteredInliers = (int)sparse.size();
-		pair.numDenseInliers = (int)dense.size();
-		pair.matches = std::move(sparse);
-		pair.matches.insert(pair.matches.end(), dense.begin(), dense.end());
-		pair.weightedInliers = -1.f; // it describes matches the pair has dropped
-		pair.returnedByRepair = true;
-		pair.relativePose = repair.pose;
-		pair.E = ImagePair::ComposeEssentialMatrix(repair.pose);
-		if (image1.pCamera->GetType() == CameraType::PINHOLE && image2.pCamera->GetType() == CameraType::PINHOLE)
-			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), image1.GetK(), image2.GetK());
-		pair.meanRayAngle = pair.ComputeMeanRayAngle(image1, image2);
-		states[candidates[k]] = PairState::KEPT;
-		++numRepaired;
-	}
-	VERBOSE("Contradiction cut: repaired %u of the %u removed pairs (%s)", numRepaired, (unsigned)candidates.size(), TD_TIMER_GET_FMT().c_str());
-	return numRepaired;
-}
-
-} // namespace
-/*----------------------------------------------------------------*/
-
-unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
-	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair,
-	const SequenceNeighbours* neighbours, SequenceFilterStats* stats)
-{
-	ASSERT(scores.size() == scene.pairs.size());
-	ASSERT(maxDirectionResidual >= 0 && maxDirectionResidual <= 180);
-	ASSERT(!repair || maxDirectionResidual > 0); // the repair guards on the centres of the translation stage
-	TD_TIMER_STARTD();
-	// the pairs the averaging is built from: the usable ones, weighted by the composite weight and the score
-	std::vector<RotationPair> rotationPairs;
-	FOREACH(idxPair, scene.pairs) {
-		const ImagePair& pair = scene.pairs[idxPair];
-		if (!pair.relativePose.has_value() || !pair.ExceedsWeightBar(minPairWeight))
-			continue;
-		const float weight = pair.GetCompositeWeight() * (scores[idxPair] < 0.f ? 1.f : scores[idxPair]);
-		if (weight > 0.f)
-			rotationPairs.emplace_back(pair.ID1, pair.ID2, pair.relativePose->R, weight);
-	}
-	// each component of the pairs is averaged on its own, the largest first: its images get their
-	// rotations and the component's number, the next solve takes the pairs left
-	const GlobalRotationEstimatorOptions options;
-	const uint32_t numImages = (uint32_t)scene.images.size();
-	std::vector<Point3> rotations(numImages, Point3::INF);
-	std::vector<uint32_t> componentOf(numImages, NO_ID);
-	unsigned numComponents = 0;
-	while (!rotationPairs.empty()) {
-		std::vector<Point3> solved;
-		GlobalRotationEstimator estimator(options);
-		if (!estimator.EstimateRotations(rotationPairs, numImages, solved))
-			break;
-		for (uint32_t i = 0; i < numImages; ++i) {
-			if (solved[i] == Point3::INF)
-				continue;
-			rotations[i] = solved[i];
-			componentOf[i] = numComponents;
-		}
-		std::vector<RotationPair> leftPairs;
-		for (const RotationPair& pair : rotationPairs) {
-			// a pair joins the two images of one component, so both or neither are reached
-			ASSERT((solved[pair.idxA] == Point3::INF) == (solved[pair.idxB] == Point3::INF));
-			if (solved[pair.idxA] == Point3::INF)
-				leftPairs.push_back(pair);
-		}
-		rotationPairs.swap(leftPairs);
-		++numComponents;
-	}
-	// judge every pair with a pose whose two images one solve reached: the pairs with a world baseline
-	const std::vector<Point3> baselines = ComputeWorldBaselines(scene, rotations, componentOf);
-	const REAL minCosAngle = COS(D2R(options.maxRelativeRotationAngle));
-	std::vector<PairState> states(scene.pairs.size(), PairState::KEPT);
-	unsigned numJudged = 0, numCut = 0;
-	float maxRemovedWeight = 0.f;
-	FOREACH(idxPair, scene.pairs) {
-		const ImagePair& pair = scene.pairs[idxPair];
-		if (!HasBaseline(baselines[idxPair]))
-			continue;
-		++numJudged;
-		const Matrix3x3 solvedR = RMatrix(rotations[pair.ID2]) * RMatrix(rotations[pair.ID1]).t();
-		if (ComputeAngle(pair.relativePose->R, solvedR) >= minCosAngle)
-			continue;
-		states[idxPair] = PairState::CUT;
-		maxRemovedWeight = MAXF(maxRemovedWeight, pair.GetCompositeWeight());
-		++numCut;
-	}
-	VERBOSE("Contradiction cut: removed %u/%u pairs more than %g degrees from the rotations of the weighted averaging of %u usable components (heaviest %.1f)",
-		numCut, numJudged, options.maxRelativeRotationAngle, numComponents, maxRemovedWeight);
-	SequenceFilterStats sequence;
-	unsigned numRepaired = 0;
-	if (maxDirectionResidual > 0) {
-		// the chain of an image sequence marks its links and the pairs that contradict it before the translation
-		// stage, which then reads no vetoed pair and removes no link
-		if (neighbours != nullptr)
-			ApplySequenceChain(scene, baselines, *neighbours, states, sequence);
-		std::vector<ScaleComponentSolve> solves;
-		sequence.numProtected = RemoveTranslationContradictions(scene, baselines, scores, minPairWeight, maxDirectionResidual, states, solves);
-		// the repair is offered the pairs the two stages cut
-		if (repair && std::find(states.begin(), states.end(), PairState::CUT) != states.end())
-			numRepaired = RepairContradictedPairs(scene, rotations, solves, states);
-	}
-	if (stats != nullptr)
-		*stats = sequence;
-	const unsigned numRemoved = (unsigned)std::count_if(states.begin(), states.end(), IsRemoved);
-	if (numRemoved == 0 && numRepaired == 0)
-		return 0;
-	// remove the scene pairs, compacting in one pass
-	const unsigned numPairs = scene.pairs.size();
-	unsigned numKept = 0;
-	for (unsigned idxPair = 0; idxPair < numPairs; ++idxPair) {
-		if (IsRemoved(states[idxPair]))
-			continue;
-		if (numKept != idxPair)
-			scene.pairs[numKept] = std::move(scene.pairs[idxPair]);
-		++numKept;
-	}
-	ASSERT(numPairs - numKept == numRemoved);
-	scene.pairs.RemoveLast(numRemoved);
-	ComputePairsWeights(scene, weightingCfg);
-	DEBUG("Filtered the view graph by contradiction with its %s averaging: %u pairs removed (%s)",
-		maxDirectionResidual > 0 ? "rotation and translation" : "rotation", numRemoved, TD_TIMER_GET_FMT().c_str());
-	return numRemoved;
 }
 /*----------------------------------------------------------------*/
 

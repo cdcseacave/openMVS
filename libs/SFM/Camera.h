@@ -152,6 +152,11 @@ public:
 
 typedef Camera* CameraPtr;
 typedef SEACAVE::cList<CameraPtr, CameraPtr, 0, 4, IIndex> CameraPtrArr;
+
+// Mean angular tolerance (radians) corresponding to a pixel error across a camera pair
+inline REAL PairPixelErrorToAngular(const Camera& cam1, const Camera& cam2, REAL pixelError) {
+	return REAL(0.5) * (cam1.PixelErrorToAngular(pixelError) + cam2.PixelErrorToAngular(pixelError));
+}
 /*----------------------------------------------------------------*/
 
 

@@ -40,7 +40,6 @@ namespace SFM {
 // Forward declarations
 class SFM_API Scene;
 class SFM_API Image;
-class SFM_API RoMa2Onnx;
 class SFM_API DenseMatcher;
 class SFM_API PairsMatcher;
 struct SFM_API PairWarps;
@@ -160,11 +159,10 @@ struct SFM_API PairVerdict {
 	bool admitted = false;
 	float confidentAreaA = 0.f, confidentAreaB = 0.f; // share of each warp grid at conf >= minConfidence and landing in-frame
 	float inlierAreaA = 0.f, inlierAreaB = 0.f;       // share of each warp grid the fitted geometry explains
-	// A's inlier cells, raster order, index-parallel, in the pixels of the working orientation of
-	// each image (SampleWarpByCoverage's convention), with each cell's confidence: the population the
-	// dense fill draws from
+	// A's inlier cells in raster order, index-parallel: pixel coordinates, confidences, and warp cell indices (y*cols + x)
 	std::vector<Point2f> inliersA, inliersB;
 	std::vector<float> confidences;
+	std::vector<int> inlierCells;
 };
 
 // The most dense correspondences one pair may keep: the configured density over the SMALLER of the

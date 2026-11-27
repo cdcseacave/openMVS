@@ -25,7 +25,6 @@ namespace SFM {
 
 // Forward declarations
 class SFM_API Scene;
-class SFM_API Image;
 struct SFM_API PairsWeightingConfig;
 class SFM_API SequenceNeighbours;
 
@@ -110,21 +109,21 @@ public:
 		const uint32_t numNodes,
 		std::vector<Point3>& globalRotations);
 
-	// The one maximum spanning tree of a set of relative rotations, and the global rotations it
-	// carries out from its best connected node at the identity: the initialization this estimator
-	// starts from, exposed so a caller that wants to see the tree, or to keep one pair out of it,
-	// reads the same tree this does.
-	//  - excluded: a node pair the tree may not run between (NO_ID for none)
-	//  - rotations: out, one per node, INF for every node outside the largest component the tree
-	//    reaches; left untouched when nothing could be initialized
-	//  - treeEdges: if not NULL, out: the node pairs that component's tree is built from
-	// Returns the root the rotations are gauged at, NO_ID when nothing could be initialized
+	// Estimate global rotations across all connected components (largest first).
+	// Fills rotations (angle-axis, INF where unreached) and componentOf (0..numComponents-1, NO_ID where unreached).
+	// Returns the number of solved components.
+	unsigned EstimateAllComponents(
+		const std::vector<RotationPair>& pairwiseRotations,
+		const uint32_t numNodes,
+		std::vector<Point3>& rotations,
+		std::vector<uint32_t>& componentOf) const;
+
+	// Build maximum spanning tree of pairwiseRotations and propagate rotations from the best-connected
+	// node of the largest component at identity. Returns the root node, or NO_ID if none.
 	static uint32_t RotationsFromMaximumSpanningTree(
 		uint32_t numNodes,
 		const std::vector<RotationPair>& pairwiseRotations,
-		const std::pair<uint32_t, uint32_t>& excluded,
-		std::vector<Point3>& rotations,
-		std::vector<std::pair<uint32_t, uint32_t>>* treeEdges = NULL);
+		std::vector<Point3>& rotations);
 
 	// Filter relative rotations that are inconsistent with current global estimates
 	//  - maxRelativeAngle: maximum allowed angle (degrees) between stored and computed relative rotation
@@ -196,32 +195,9 @@ struct SFM_API SequenceFilterStats {
 	unsigned numProtected{0}; // links the translation stage would have removed
 };
 
-// The contradiction cut: remove every pair whose relative rotation is more than the estimator's
-// maxRelativeRotationAngle from the global rotations a robust averaging of the usable pairs
-// gives. The usable pairs are those holding a relative pose and a composite weight above
-// minPairWeight (the ones the reconstruction reads); each is weighted by its composite weight
-// times its triplet score (scores: per scene pair, TripletScores::unscored, negative, for an
-// unscored pair, which weighs 1), and the averaging starts from the maximum spanning tree of those
-// weights. A component of the usable graph is averaged on its own (the largest first); every scene
-// pair with a pose whose two images one solve reached is judged, usable or not. A pair the graph
-// holds alone, a bridge, is fitted exactly and never removed.
-//  - maxDirectionResidual: after the rotation stage, a translation stage on the pairs it kept: the
-//    scales of the pairs (StarInitializer's equations, solved robustly), the camera centres they
-//    place (towards the sum of norms), and every pair whose baseline direction is more than this
-//    many degrees from the centres removed; a pair under kNearDuplicateRayAngle of ray angle is
-//    never judged. In [0,180]; 0 skips the translation stage, the rotation stage alone.
-//  - repair: repair instead of remove (needs maxDirectionResidual above 0): a removed pair comes back
-//    when, with its rotation fixed to the averaged one, its matches agree on a baseline direction that
-//    the camera centres of the translation stage confirm and a neighbouring spot vouches for (the
-//    guard is in GlobalRotationAveraging.cpp, RepairContradictedPairs); it then carries that relative
-//    pose and its agreeing matches, and is not counted as removed.
-//  - neighbours (nullptr: off; acts only with maxDirectionResidual above 0): the images are frames of a
-//    sequence. Between the two stages the chain of the kept neighbour pairs is solved and the pairs that
-//    contradict it are removed (ApplySequenceChain, SequenceChain.h); they are never offered to the
-//    repair. The translation stage then removes no link of the chain (a neighbour pair the chain solved).
-//  - stats (optional): what the chain did; all zero without it.
-// The pair weights are recomputed when anything was removed or repaired. Returns the number of removed
-// pairs, the vetoed ones among them.
+// Filter view-graph pairs contradicted by robust global rotation averaging (and optionally translation
+// averaging when maxDirectionResidual > 0, with optional repair and image-sequence chain veto/protection).
+// Recomputes pair weights if any pair was removed or repaired; returns total removed pairs.
 unsigned SFM_API FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
 	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair = false,
 	const SequenceNeighbours* neighbours = nullptr, SequenceFilterStats* stats = nullptr);

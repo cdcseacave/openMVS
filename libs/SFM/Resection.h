@@ -42,135 +42,39 @@ struct SFM_API RansacOptions
  */
 struct SFM_API ResectionConfig
 {
-	unsigned minCorrespondences{15};    // Minimum 2D-3D correspondences to attempt resection; every image holding them
-	                                    // and at least one link (a verified pair with a relative pose to a registered
-	                                    // image, ForEachLink) is a candidate, tried in the order of the composite weight
-	                                    // of its links
-	unsigned minInliers{12};            // Minimum weight of a pose's inliers to accept it: the described ones plus the
-	                                    // dense ones at PairsWeightingConfig::DenseScale(), as a pair weighs its matches
-	float minInlierRatio{0.25f};        // Minimum share of the 2D-3D correspondences that must be inliers for a pose to
-	                                    // be accepted; a smaller consensus can agree on a pose that is nowhere near the
-	                                    // image's true one (0 = disabled)
-	unsigned minInliersAbsolute{100};   // Inlier weight (as minInliers counts it) from which the ratio above is waived:
-	                                    // inliers weighing that much vouch for the pose whatever share of the total they are
-	float maxRelativeRotationError{15.f}; // Maximum angle (degrees) between the estimated rotation and the one the
-	                                    // quorum of the verified pairs to already registered images composes -- the
-	                                    // largest group of those pairs agreeing on a rotation within this same angle,
-	                                    // so that one pair among several cannot speak for the image;
-	                                    // checked for every pose unless wellSupportedInlierRatio is lowered, which
-	                                    // exempts a pose whose inlier share is above it, trusting it over its pairs
-	                                    // (0 = disabled)
-	float wellSupportedInlierRatio{1.f}; // Inlier share above which a pose is trusted over its verified pairs; 1 = no pose
-	                                    // is. On alameda a 54% share (87/162) put a pose 1.9 degrees off, taking the 15
-	                                    // images it seeded with it, and every right registration there passes the rotation
-	                                    // check (its quorum within 7.7 of the 15-degree bar)
-	float maxLinkRotationDisagreement{8.f}; // Maximum angle (degrees) between the estimated rotation and the ones the
-	                                    // verified pairs to already registered images predict from their neighbours'
-	                                    // poses, averaged over EVERY such link weighted by its pair weight (the weighted
-	                                    // inliers, the dense ones at PairsWeightingConfig::DenseScale()): the quorum above
-	                                    // hears only its agreeing group, this hears every link. Checked after the
-	                                    // rotation and direction checks, also when the quorum is contested; an image with
-	                                    // no such link is not judged (0 = disabled). Against no such check on 10 test
-	                                    // captures (12 runs): wrong registrations at acceptance 629.5 -> 593, wrong images
-	                                    // in the final models 70.5 -> 59.5, 8 right poses refused (252 at 5 degrees)
-	float maxLinkDirectionError{5.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
-	                                    // registered image predicts and the one the estimated centre makes with that
-	                                    // neighbour, as seen from the structure: held to the larger of the pair's ray
-	                                    // angle and the model's parallax of the two cameras (the baseline over the
-	                                    // median distance of the pose's inlier points), a small angle forgiving a wide
-	                                    // direction error; a link that the pair and the model both see under 2 degrees
-	                                    // agrees, one that only one of them does abstains, and a pair of unknown ray
-	                                    // angle is held to the model's parallax alone. A pose is refused when the
-	                                    // quorum links that contradict the direction outweigh the ones that agree
-	                                    // (at most 90; 0 = no direction check at all). Against the pair's ray angle
-	                                    // alone, on the 14 test captures: right poses refused 517 times (21 images, 10
-	                                    // never registered) -> 22 (7 images, 4), wrong poses refused 97 -> 178,
-	                                    // accepted 45 -> 41
-	unsigned maxLocalWindow{25};        // Max images in local BA window (0 = all neighbors)
-	unsigned triangulateEvery{0};       // Run triangulation every N registered images (0 = disabled)
-	unsigned localBAEvery{10};          // Run local BA every N registered images (0 = disabled)
+	unsigned minCorrespondences{15};      // Minimum 2D-3D correspondences (with a pose link) to attempt resection
+	unsigned minInliers{12};              // Minimum weighted inliers (described + dense * DenseScale) to accept a pose
+	float minInlierRatio{0.25f};          // Minimum inlier share of correspondences (0 = disabled)
+	unsigned minInliersAbsolute{100};     // Weighted inliers from which minInlierRatio is waived
+	float maxRelativeRotationError{15.f}; // Max angle (deg) from quorum-composed rotation (0 = disabled)
+	float maxLinkRotationDisagreement{8.f}; // Max weighted-mean rotation angle (deg) across all links (0 = disabled)
+	float maxLinkDirectionError{5.f};     // Max baseline-direction error (deg, scaled by parallax) on quorum links (<= 90; 0 = disabled)
+	unsigned maxLocalWindow{25};          // Max images in local BA window (0 = all neighbors)
+	unsigned localBAEvery{10};            // Run local BA every N registered images (0 = disabled)
 	std::array<unsigned, 3> fullBAEvery{25, 50, 100}; // Run full BA every N registered images (0 = disabled)
-	unsigned fullBARepeats{2};          // Solves a full BA may run after its first (AdjustRepeated), each one only while the
-	                                    // observations the next solve would fit differ enough from the ones the last one
-	                                    // fitted; 0 = one solve of the observations within fullBAInputErrorFactor x
-	                                    // maxReprojError. Playground's pinhole-verified matching needs them (F1 +0.017
-	                                    // over one solve, which leaves two images off in every run); two repeats (three
-	                                    // solves in all) against four cut the wall time 4-23% on the captures that ran
-	                                    // more than three, see docs/design/BundleAdjustment.md
-	// constant: the observations a full BA fits are the ones within this multiple of maxReprojError of the model,
-	// filtered just before each solve, the filter after it holding the model to maxReprojError again: a camera placed
-	// a few degrees off has its ties to the rest of the model a few pixels past the bar at its current pose, outside
-	// the inlier prefix, so no solve of the prefix alone brings it back. Playground's pinhole-verified matching left
-	// its turning stretch 6.6 deg off with the lens right, its ties 4-14 px off the bent poses, and 3x brought it back;
-	// on the eleven verified captures with the lens fitted, a tie or better on every capture
-	static constexpr float fullBAInputErrorFactor = 3.f;
-	// constant: another solve runs while some camera's input changes by at least this share of the observations it
-	// gave the last solve (the observations the next solve's input adds or removes); every share above it skips solves
-	// after which a camera still turns 1-4 deg, and 0.08 saves 6% of the time on the eleven verified captures but leaves
-	// 7 of 5936fac3's images unregistered in two runs of three
-	static constexpr float fullBARepeatMinChange = 0.05f;
-	// constant: a camera holding fewer observations in the input is left out of that share; at 300 the share already
-	// misses a camera of 2678a364 relocating 13 deg while it holds few observations
-	static constexpr unsigned fullBARepeatMinObservations = 100;
-	unsigned minRefineExtIntrs{100};    // Min number of registered images to refine extended intrinsics in full BA (0 = disabled)
+	unsigned fullBARepeats{2};            // Max additional solves in AdjustRepeated while input keeps changing
+	static constexpr float fullBAInputErrorFactor = 3.f; // Multiplies maxReprojError to gather BA input observations
+	static constexpr float fullBARepeatMinChange = 0.05f; // Min per-camera input change fraction to trigger another solve
+	static constexpr unsigned fullBARepeatMinObservations = 100; // Min observations for a camera to vote on repeat
+	unsigned minRefineExtIntrs{100};      // Min registered images to refine extended intrinsics in full BA (0 = disabled)
 
-	float avgInliersRatioForceBA{0.6f}; // Minimum resection average inliers ratio to force full BA, averaged over the
-	                                    // registered images alone (an attempt that failed or was refused adds nothing;
-	                                    // 0 = disabled)
-	unsigned minImagesForceBA{3};       // Minimum images registered since the last full BA before a low average inliers
-	                                    // ratio may force one; without it a persistently low ratio forces a full BA after
-	                                    // every single registration (0 = no minimum; the fullBAEvery cadence is unaffected)
-	float denseInlierRatioFactor{0.58f}; // Inlier share a registration made of dense correspondences alone reaches,
-	                                      // relative to one made of described ones, when the model is healthy: the
-	                                      // dense measurement is the less precise one, so its healthy inlier share is
-	                                      // lower. Normalizes each registration's ratio before it feeds the average
-	                                      // above (a fraction of avgInliersRatioForceBA, not an absolute ratio;
-	                                      // 1 = no distinction)
-	float denseFitWeight{1.f};          // Weight of a dense (warp-sampled) correspondence against a described one's 1 in
-	                                    // the polish that closes an image's absolute pose: the robust fit runs on every
-	                                    // correspondence, and the polish over its inliers lets the described ones,
-	                                    // sub-pixel where a dense one is a coarse warp sample whose error its neighbours
-	                                    // share, set the pose wherever they are many -- what DenseMatchConfig::denseFitWeight
-	                                    // does for a pair's relative pose (1 = no polish, 0 = the described ones alone).
-	                                    // Off: at 0.003 it tied the head on the eleven verified captures (F1 +0.0015
-	                                    // [-0.006, +0.010], better on two, worse on none) before the dense weight ceiling
-	                                    // of the bundle adjustment shipped, and was not measured with it
-	float maxReprojError{4.f};          // Reprojection error for triangulation and filtering
-	float denseReprojErrorFactor{1.f};  // Multiple of maxReprojError a dense (warp-sampled) observation is held to by
-	                                    // the triangulation and the filtering: the dense measurement is the less
-	                                    // precise one (its error grows with the image size, the warp being computed
-	                                    // at a fixed resolution), so it may answer to a looser bar (1 = the same bar)
-	float minAngleThreshold{1.f};       // Minimum triangulation angle (degrees) while a block grows: below the reconstruction's 1.5, so that the left-over images and the seams of the merge find more points; the reconstruction's filters apply its own bar afterwards
-	// constant: near and far depth threshold multipliers of the track filter: a track nearer than
-	// multDepthNear times the median distance of the tracks to their cameras, or farther than
-	// multDepthFar times it, is removed (ReconstructionConfig has the same two values)
+	float avgInliersRatioForceBA{0.6f};   // Min normalized running-average inlier ratio before forcing full BA (0 = disabled)
+	unsigned minImagesForceBA{3};         // Min registrations since last full BA before avgInliersRatioForceBA may trigger
+	float denseInlierRatioFactor{0.58f};  // Expected healthy inlier share of dense correspondences relative to described ones
+	float denseFitWeight{1.f};            // Weight of dense correspondences in post-RANSAC pose polish (1 = no polish)
+	float maxReprojError{4.f};            // Reprojection error for triangulation and filtering (pixels)
+	float minAngleThreshold{1.f};         // Min triangulation angle (deg) while growing a block
 	static constexpr float multDepthNear = 0.05f;
 	static constexpr float multDepthFar = 20.f;
-	RansacOptions ransac;               // RANSAC options for absolute pose estimation
-	BAConfig localBAConfig;             // Local BA settings (incremental); never refines intrinsics
-	BAConfig fullBAConfig;              // Full BA settings (global), restricted to the main-set intrinsics
-	                                     // (focal length, k1, k2) the reconstruction's flags allow
-	BAConfig extendedBAConfig;          // Same as fullBAConfig, but with every intrinsic the reconstruction's
-	                                     // flags allow, main and extended alike; used once minRefineExtIntrs
-	                                     // images are registered, and for the final solve
+	RansacOptions ransac;                 // RANSAC options for absolute pose estimation
+	BAConfig localBAConfig;               // Local BA settings (never refines intrinsics)
+	BAConfig fullBAConfig;                // Full BA settings (main-set intrinsics only)
+	BAConfig extendedBAConfig;            // Extended BA settings (all intrinsics allowed by base config)
 
-	// The weighting the run's pairs were weighed with (the application's matchCfg.weightingCfg, set
-	// by Scene where it copies this config); the direction check weighs the pose's own inliers by it
-	PairsWeightingConfig pairsWeighting;
+	PairsWeightingConfig pairsWeighting;  // Pair weighting config (used to weight dense pose inliers)
 
 	ResectionConfig() {
-		// Robust absolute pose estimation. The inlier bar is set for the dense (warp-sampled)
-		// correspondences, not only for the detected keypoints: the warp is computed at a fixed
-		// resolution, so on a full-resolution image a dense correspondence lands several pixels off
-		// (a median of 6 px over a reconstructed scene, against 1 px for a detected one), and the
-		// correspondences of an image seen through dense matches are mostly dense. At a 4 px bar the
-		// resection saw a third of such an image's correspondences as inliers on a healthy model,
-		// which kept the average inlier ratio under avgInliersRatioForceBA and forced a full bundle
-		// adjustment after nearly every registration (154 of them over 514 images, against 10 at 8 px,
-		// the poses coming out the same); it also let a minority of the correspondences vote a pose
-		// in that was degrees off. The bundle adjustments that follow are robust to the outliers the
-		// wider bar admits and the track filter removes them afterwards, so maxReprojError stays at 4.
-		// Once the dense matching gets more precise, 6 px is the bar to try.
+		// 8 px accommodates coarse dense warp correspondences during PnP; BA and FilterTracks tighten to maxReprojError
 		ransac.threshold = 8.0;
 		ransac.confidence = 0.999;
 		ransac.max_iterations = 100000;
@@ -179,27 +83,13 @@ struct SFM_API ResectionConfig
 		DeriveBAConfigs(BAConfig());
 	}
 
-	// Derive localBAConfig/fullBAConfig/extendedBAConfig from the scene's configured BAConfig
-	// (dense-observation weight, GPS weights, keypoint-confidence gating, ...): copy it, then reapply
-	// resection's own local overrides (iteration budget, robust threshold) on top, so every field the
-	// caller set on the base config reaches every bundle adjustment unchanged. The resection never
-	// turns on an intrinsic the reconstruction's flags did not already ask for: fullBAConfig keeps only
-	// whichever of the main-set intrinsics (focal length, k1, k2) baseCfg has, while extendedBAConfig
-	// keeps baseCfg's intrinsic flags as given, main and extended alike.
+	// Derive local/full/extended BA configs from baseCfg while preserving caller's global settings
 	void DeriveBAConfigs(const BAConfig& baseCfg) {
-		// Local BA defaults (fast); never refines intrinsics
 		localBAConfig = baseCfg;
 		localBAConfig.maxIterations = 20;
 		localBAConfig.robustThreshold = 2.f;
-		localBAConfig.refineFocalLength = false;
-		localBAConfig.refineFocalLengthAspectRatio = false;
-		localBAConfig.refinePrincipalPoint = false;
-		localBAConfig.refineRadialDistortion12 = false;
-		localBAConfig.refineTangentialDistortion = false;
-		localBAConfig.refineRadialDistortion456 = false;
-		localBAConfig.refineRadialDistortion3 = false;
+		localBAConfig.ClearIntrinsicRefinement();
 
-		// Full BA defaults (stronger), main-set intrinsics only
 		fullBAConfig = baseCfg;
 		fullBAConfig.maxIterations = 40;
 		fullBAConfig.robustThreshold = 2.f;
@@ -209,12 +99,10 @@ struct SFM_API ResectionConfig
 		fullBAConfig.refineTangentialDistortion = false;
 		fullBAConfig.refineRadialDistortion456 = false;
 
-		// Extended BA: same solver settings, every intrinsic flag baseCfg allows
 		extendedBAConfig = baseCfg;
 		extendedBAConfig.maxIterations = 40;
 		extendedBAConfig.robustThreshold = 2.f;
 
-		// the observation budget keeps every track as wide as the resection triangulates them
 		localBAConfig.minTriangulationAngle = fullBAConfig.minTriangulationAngle = extendedBAConfig.minTriangulationAngle = minAngleThreshold;
 	}
 };

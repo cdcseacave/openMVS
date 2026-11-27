@@ -17,22 +17,9 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-constexpr float WEIGHT_MULTIPLIER = 10.f; // Multiplier to convert float weights to integers for METIS
-
 namespace {
 
-// One cluster's internal coupling, the test the refinement passes and the creation-time check share.
-//
-// The greedy merge holds every merge to one test: it refuses to join two clusters across an interface
-// carrying less than minClusterCoupling of the weaker side's internal weight, so that no sub-scene
-// contains two blocks joined only by a sparse seam (such a seam lets scale drift accumulate unobserved
-// and reconstructs as two independently scaled blocks, or bends). This finds the cluster's weakest cut
-// among the prefix cuts of its Fiedler order: its images sorted by the second-smallest eigenvector of
-// the weighted Laplacian of its internal covisibility graph, every cut between the first k and the rest
-// weighed by that same coupling ratio, over the cuts whose smaller side holds at least minSide images.
-// The balanced cut the vector's sign gives is one of them; the others see a stretch of any size hanging
-// on its cluster by a thin interface, which the balanced cut hides (on Playground a 31-image stretch at
-// 0.023 inside a cluster whose balanced cut measured 0.145).
+// Analyze a cluster's internal connectivity and weakest prefix cut along its Fiedler order.
 struct ClusterCoupling {
 	unsigned larger = 0, smaller = 0; // sizes of the two sides of the weakest cut
 	double coupling = 1.0;            // its interface weight / the weaker side's internal weight
@@ -311,14 +298,13 @@ void SceneCluster::BuildConnectivityGraph()
 	}
 
 	adjncy.assign(xadj.back(), 0);
-	adjwgt.assign(xadj.back(), 0);
+	adjwgt.assign(xadj.back(), 0.f);
 	std::vector<int> offsets = xadj;
 
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.ExceedsWeightBar(config.minPairWeight))
 			continue;
-		const float weight = pair.GetCompositeWeight();
-		const int w = cvRound(weight * WEIGHT_MULTIPLIER);
+		const float w = pair.GetCompositeWeight();
 
 		int idx1 = offsets[pair.ID1]++;
 		adjncy[idx1] = pair.ID2;
@@ -350,44 +336,28 @@ ScenePartition SceneCluster::PartitionAggregativeClustering()
 	return FinishPartition(clusters);
 }
 
-// Merge clusters bottom-up: repeatedly join the two clusters connected by the
-// highest aggregate edge weight, subject to the capacity limit and the coupling
-// acceptance test. The aggregate weight between two communities grows with their
-// sizes, so many individually weak pairs eventually top the queue even when they
-// represent only a few percent of either side's internal cohesion; reconstructing
-// across such a sparse interface lets scale drift accumulate unobserved, hence
-// every merge is held to at least minClusterCoupling of the weaker side's internal
-// weight, whatever either side's size. The target-size rule below has one
-// exception: a cluster already at the target still takes in a cluster under the
-// floor, because that cluster has to go somewhere; without the same coupling bar
-// on that merge, the community would be handed to whichever cluster with room
-// happened to top the queue, over an interface far thinner than its own cohesion —
-// the coupling test has to hold for exactly the merge the size rule exempts. A
-// singleton has no internal weight, so it always passes. Any thin seam that still
-// slips through — including one that only emerges as a cluster accretes from both
-// sides — is caught after the fact by RefineClustersSplitThinWaist. A refusal is
-// not permanent: the edge is re-pushed whenever either side changes.
+// Bottom-up greedy max-weight clustering under capacity and minimum-coupling constraints.
 void SceneCluster::GreedyMergeClusters(std::vector<IIndexArr>& clusters)
 {
 	const IIndex nViews = scene.images.size();
-	std::vector<int> nodeToCluster(nViews, -1);
-	for (size_t c = 0; c < clusters.size(); ++c)
-		for (IIndex n : clusters[c])
-			nodeToCluster[n] = (int)c;
+	std::vector<int> nodeToCluster = MapNodesToClusters(clusters, nViews);
 
 	struct Edge {
 		int u, v;
-		int64_t weight;
-		bool operator<(const Edge& other) const { return weight < other.weight; }
+		double weight;
+		bool operator<(const Edge& other) const {
+			if (weight != other.weight) return weight < other.weight;
+			return u != other.u ? u > other.u : v > other.v;
+		}
 	};
 	std::priority_queue<Edge> pq;
-	std::vector<std::unordered_map<int, int64_t>> adj(clusters.size());
-	std::vector<int64_t> wint(clusters.size(), 0);
+	std::vector<std::unordered_map<int, double>> adj(clusters.size());
+	std::vector<double> wint(clusters.size(), 0.0);
 
 	auto rebuildPQ = [&]() {
 		pq = std::priority_queue<Edge>();
 		adj.assign(clusters.size(), {});
-		wint.assign(clusters.size(), 0);
+		wint.assign(clusters.size(), 0.0);
 		for (IIndex u = 0; u < nViews; ++u) {
 			const int cu = nodeToCluster[u];
 			if (cu < 0) continue;
@@ -397,11 +367,11 @@ void SceneCluster::GreedyMergeClusters(std::vector<IIndexArr>& clusters)
 				if (cu < cv)
 					adj[cu][cv] += adjwgt[i];
 				else if (cu == cv)
-					wint[cu] += adjwgt[i]; // each internal edge seen from both endpoints
+					wint[cu] += adjwgt[i];
 			}
 		}
 		for (size_t i = 0; i < clusters.size(); ++i) {
-			wint[i] /= 2;
+			wint[i] *= 0.5;
 			if (clusters[i].empty()) continue;
 			for (const auto& p : adj[i]) {
 				adj[p.first][(int)i] = p.second;
@@ -424,27 +394,16 @@ void SceneCluster::GreedyMergeClusters(std::vector<IIndexArr>& clusters)
 		if (it == adj[u].end() || it->second != e.weight) continue;
 
 		if (clusters[u].size() + clusters[v].size() > config.maxViewsPerCluster) continue;
-		// a cluster grows to the target and stops there; the one merge that takes it past the target
-		// is the one absorbing a cluster under the floor, which has to go somewhere
 		if (clusters[u].size() + clusters[v].size() > config.targetViewsPerCluster &&
 			(MINF(clusters[u].size(), clusters[v].size()) >= config.minViewsPerCluster ||
 			 MAXF(clusters[u].size(), clusters[v].size()) > config.targetViewsPerCluster)) continue;
-		// the coupling test holds for every merge, a community under the floor included: it is
-		// held to its own cohesion, so a singleton (no internal weight) joins freely while a tight
-		// small community is not absorbed over a thin interface by whichever cluster happens to
-		// have room, and MergeSmallClusters later places it with the neighbour it shares the most
-		// weight with
 		if (config.minClusterCoupling > 0 &&
-			(float)e.weight < config.minClusterCoupling * (float)MINF(wint[u], wint[v]))
-			continue; // two communities joined only by a sparse interface
+			e.weight < (double)config.minClusterCoupling * MINF(wint[u], wint[v]))
+			continue;
 
-		for (IIndex node : clusters[v]) {
-			nodeToCluster[node] = u;
-			clusters[u].push_back(node);
-		}
-		clusters[v].clear();
+		AbsorbCluster(clusters, (size_t)v, (size_t)u, &nodeToCluster);
 		wint[u] += wint[v] + e.weight;
-		wint[v] = 0;
+		wint[v] = 0.0;
 		numMergesSinceRefine++;
 
 		adj[u].erase(v);
@@ -461,10 +420,7 @@ void SceneCluster::GreedyMergeClusters(std::vector<IIndexArr>& clusters)
 		const unsigned mergesPerRefine = MAXF(10u, config.maxViewsPerCluster / 10);
 		if (numMergesSinceRefine >= mergesPerRefine) {
 			RefineClustersLocalSearch(clusters);
-			nodeToCluster.assign(nViews, -1);
-			for (size_t c = 0; c < clusters.size(); ++c)
-				for (IIndex n : clusters[c])
-					nodeToCluster[n] = (int)c;
+			nodeToCluster = MapNodesToClusters(clusters, nViews);
 			adj.resize(clusters.size());
 			rebuildPQ();
 			numMergesSinceRefine = 0;
@@ -472,49 +428,36 @@ void SceneCluster::GreedyMergeClusters(std::vector<IIndexArr>& clusters)
 	}
 }
 
-// A cluster under the floor that no neighbour is coupled to -- its heaviest interface carries less
-// than minClusterCoupling of its own internal weight, the coupling floor the greedy merge holds
-// every merge to, here taken against the community's own cohesion -- yet that the merge could
-// place, having the strong seams IsStrongSeam asks, as many as its track neighbours allow (the bar
-// MergeLeafClusters holds every cluster above the floor to). Absorbed into the neighbour it shares
-// the most weight with, as the small-cluster pass does with every cluster under the floor, such a
-// community lands inside a block whose reconstruction starts elsewhere and reaches it only through
-// single resections across that thin interface, which the evidence share the resection asks of
-// every pose refuses one by one: on alameda a 40-image loop-closure community, sparse-rich inside
-// and joined to the rest by 1.9% of its internal weight, as the earlier weighting measured it
-// (0.18% under the frame-anchored one), stayed unregistered to the end that way. Kept as its own
-// sub-scene it reconstructs on its own cohesion and enters through the merge's placement of the
-// whole block over every seam track at once. A community the merge could not place either is
-// absorbed by the small-cluster pass, or goes to the pool when no neighbour has room for it: a block
-// left unplaced would only hand the same images to the whole-scene resection.
-bool SceneCluster::IsStandaloneCommunity(const std::vector<IIndexArr>& clusters, size_t c, const SeamTrackStatsMap& seamStats) const
+// True if cluster c is under the floor, weakly coupled to all neighbours, yet has enough strong
+// merge seams to stand alone as its own sub-scene.
+bool SceneCluster::IsStandaloneCommunity(const std::vector<IIndexArr>& clusters, size_t c,
+	const std::vector<int>& nodeToCluster, const SeamTrackStatsMap& seamStats) const
 {
 	ASSERT(c < clusters.size() && !clusters[c].empty());
 	if (config.minClusterCoupling <= 0.f || clusters[c].size() >= config.minViewsPerCluster)
 		return false;
-	const std::vector<int> nodeToCluster = MapNodesToClusters(clusters, scene.images.size());
-	int64_t internal = 0;
-	std::unordered_map<int, int64_t> interface;
+	double internal = 0.0;
+	std::unordered_map<int, double> borderWeight;
 	for (IIndex u : clusters[c]) {
 		for (int i = xadj[u]; i < xadj[u+1]; ++i) {
 			const int cv = nodeToCluster[adjncy[i]];
 			if (cv == (int)c)
-				internal += adjwgt[i]; // each internal edge seen from both endpoints
+				internal += adjwgt[i];
 			else if (cv >= 0)
-				interface[cv] += adjwgt[i];
+				borderWeight[cv] += adjwgt[i];
 		}
 	}
-	internal /= 2;
-	int64_t heaviest = 0;
-	for (const auto& p : interface)
+	internal *= 0.5;
+	double heaviest = 0.0;
+	for (const auto& p : borderWeight)
 		heaviest = MAXF(heaviest, p.second);
-	if ((float)heaviest >= config.minClusterCoupling * (float)internal)
-		return false; // coupled to a neighbour: the small-cluster pass places it there
+	if (heaviest >= (double)config.minClusterCoupling * internal)
+		return false;
 	unsigned numStrong = 0, numAdjacent = 0;
 	for (const auto& [pair, seam] : seamStats) {
 		if (pair.first != (uint32_t)c && pair.second != (uint32_t)c)
 			continue;
-		++numAdjacent; // shares at least one seam-usable track with that cluster
+		++numAdjacent;
 		if (IsStrongSeam(seam, config))
 			++numStrong;
 	}
@@ -528,34 +471,30 @@ void SceneCluster::MergeSmallClusters(std::vector<IIndexArr>& clusters)
 	bool changed = true;
 	while (changed) {
 		changed = false;
-		// the predicate is only ever consulted for a cluster under the floor, so the statistics
-		// are worth computing only when one exists this round
 		const SeamTrackStatsMap seamStats = std::any_of(clusters.begin(), clusters.end(),
 			[&](const IIndexArr& c) { return !c.empty() && c.size() < config.minViewsPerCluster; }) ?
 			ComputeSeamTrackStats(clusters) : SeamTrackStatsMap();
 		for (size_t c = 0; c < clusters.size(); ++c) {
-			if (clusters[c].size() == 0 || clusters[c].size() >= config.minViewsPerCluster) continue;
-			if (IsStandaloneCommunity(clusters, c, seamStats)) continue; // its own sub-scene, placed by the merge
+			if (clusters[c].empty() || clusters[c].size() >= config.minViewsPerCluster) continue;
+			if (IsStandaloneCommunity(clusters, c, nodeToCluster, seamStats)) continue;
 
-			std::unordered_map<int, int> cluster_weights;
+			std::unordered_map<int, double> cluster_weights;
 			for (IIndex u : clusters[c]) {
 				for (int i = xadj[u]; i < xadj[u+1]; ++i) {
-					int v = adjncy[i];
-					int target_c = nodeToCluster[v];
-					if (target_c != (int)c && target_c != -1) {
+					const int target_c = nodeToCluster[adjncy[i]];
+					if (target_c != (int)c && target_c != -1)
 						cluster_weights[target_c] += adjwgt[i];
-					}
 				}
 			}
 
 			int best_target = -1;
-			int max_weight = -1;
+			double max_weight = -1.0;
 			for (const auto& p : cluster_weights) {
-				if (p.second > max_weight) {
-					if (clusters[p.first].size() + clusters[c].size() <= config.maxViewsPerCluster + config.maxOverCapacity) {
-						max_weight = p.second;
-						best_target = p.first;
-					}
+				if (clusters[p.first].size() + clusters[c].size() > config.maxViewsPerCluster + config.maxOverCapacity)
+					continue;
+				if (p.second > max_weight || (p.second == max_weight && p.first < best_target)) {
+					max_weight = p.second;
+					best_target = p.first;
 				}
 			}
 
@@ -571,37 +510,33 @@ void SceneCluster::MergeSmallClusters(std::vector<IIndexArr>& clusters)
 
 SeamTrackStatsMap SceneCluster::ComputeSeamTrackStats(const std::vector<IIndexArr>& clusters) const
 {
-	std::vector<uint32_t> clusterOf(scene.images.size(), NO_ID);
-	for (size_t c = 0; c < clusters.size(); ++c)
-		for (IIndex u : clusters[c])
-			clusterOf[u] = (uint32_t)c;
+	const std::vector<int> clusterOf = MapNodesToClusters(clusters, scene.images.size());
 
 	SeamTrackStatsMap stats;
-	std::map<uint32_t, unsigned> numObservations; // per cluster, for the track at hand
+	std::map<uint32_t, unsigned> numObservations;
 	for (const Track& track : scene.tracks) {
 		if (!track.IsValid())
 			continue;
 		numObservations.clear();
 		for (const Observation& obs : track.observations) {
 			ASSERT(obs.imageID < clusterOf.size());
-			if (clusterOf[obs.imageID] != NO_ID)
-				++numObservations[clusterOf[obs.imageID]];
+			if (clusterOf[obs.imageID] >= 0)
+				++numObservations[(uint32_t)clusterOf[obs.imageID]];
 		}
 		if (numObservations.size() < 2)
-			continue; // the track stays inside one cluster
-		// most tracks touch two clusters, so this is a pair or two per track
+			continue;
 		for (auto x = numObservations.cbegin(); x != numObservations.cend(); ++x) {
 			for (auto y = std::next(x); y != numObservations.cend(); ++y) {
 				if (x->second < 2 && y->second < 2)
-					continue; // neither side can triangulate it, so neither can pose the other
+					continue;
 				std::pair<SeamTrackStats, SeamTrackStats>& seam = stats[std::make_pair(x->first, y->first)];
 				++seam.first.usable;
 				++seam.second.usable;
 				for (const Observation& obs : track.observations) {
-					const uint32_t c = clusterOf[obs.imageID];
-					if (c == x->first)
+					const int c = clusterOf[obs.imageID];
+					if (c == (int)x->first)
 						++seam.first.perCamera[obs.imageID];
-					else if (c == y->first)
+					else if (c == (int)y->first)
 						++seam.second.perCamera[obs.imageID];
 				}
 			}
@@ -700,16 +635,9 @@ void SceneCluster::RefineClustersForSeams(std::vector<IIndexArr>& clusters)
 
 void SceneCluster::RefineClustersLocalSearch(std::vector<IIndexArr>& clusters)
 {
-	// a cluster takes in a moved image only while it is under the size every cluster aims at; the
-	// ceiling still bounds it when a configuration puts the aim above the ceiling
 	const unsigned sizeLimit = MINF(config.targetViewsPerCluster, config.maxViewsPerCluster);
 	const IIndex nViews = scene.images.size();
-	std::vector<int> nodeToCluster(nViews, -1);
-	for (size_t c = 0; c < clusters.size(); ++c) {
-		for (IIndex u : clusters[c]) {
-			nodeToCluster[u] = (int)c;
-		}
-	}
+	std::vector<int> nodeToCluster = MapNodesToClusters(clusters, nViews);
 
 	bool changed = true;
 	int iters = 0;
@@ -721,29 +649,23 @@ void SceneCluster::RefineClustersLocalSearch(std::vector<IIndexArr>& clusters)
 			if (current_c == -1) continue;
 
 			int best_target = current_c;
-			int max_gain = 0;
+			double max_gain = 0.0;
 
-			std::unordered_map<int, int> cluster_weights;
+			std::unordered_map<int, double> cluster_weights;
 			for (int i = xadj[u]; i < xadj[u+1]; ++i) {
-				int v = adjncy[i];
-				int target_c = nodeToCluster[v];
-				if (target_c != -1) {
+				const int target_c = nodeToCluster[adjncy[i]];
+				if (target_c != -1)
 					cluster_weights[target_c] += adjwgt[i];
-				}
 			}
 
-			int current_internal_weight = cluster_weights[current_c];
-
+			const double current_internal_weight = cluster_weights[current_c];
 			for (const auto& p : cluster_weights) {
-				int target_c = p.first;
-				int weight_to_target = p.second;
-				if (target_c == current_c) continue;
-				if (clusters[target_c].size() < sizeLimit) {
-					int gain = weight_to_target - current_internal_weight;
-					if (gain > max_gain) {
-						max_gain = gain;
-						best_target = target_c;
-					}
+				const int target_c = p.first;
+				if (target_c == current_c || clusters[target_c].size() >= sizeLimit) continue;
+				const double gain = p.second - current_internal_weight;
+				if (gain > max_gain || (gain == max_gain && gain > 0.0 && target_c < best_target)) {
+					max_gain = gain;
+					best_target = target_c;
 				}
 			}
 
@@ -760,56 +682,48 @@ void SceneCluster::RefineClustersLocalSearch(std::vector<IIndexArr>& clusters)
 		}
 	}
 
-	clusters.erase(std::remove_if(clusters.begin(), clusters.end(), [](const IIndexArr& c) {
-		return c.empty();
-	}), clusters.end());
+	EraseEmptyClusters(clusters);
 }
 
 // Whether cluster c without image u keeps every prefix cut along its Fiedler order at or above
 // minClusterCoupling, and stays connected
 bool SceneCluster::KeepsCoupling(const std::vector<IIndexArr>& clusters, int c, IIndex u) const
 {
-	std::vector<int> clusterOf(scene.images.size(), -1);
-	std::vector<uint32_t> localIndex(scene.images.size(), 0);
+	std::vector<int> localIndex(scene.images.size(), -1);
 	uint32_t li = 0;
 	for (IIndex g : clusters[c])
-		if (g != u) {
-			clusterOf[g] = 0;
-			localIndex[g] = li++;
+		if (g != u)
+			localIndex[g] = (int)li++;
+	std::vector<std::pair<uint32_t, uint32_t>> edges;
+	std::vector<double> weights;
+	for (IIndex g : clusters[c]) {
+		if (g == u)
+			continue;
+		const int lg = localIndex[g];
+		for (int i = xadj[g]; i < xadj[g + 1]; ++i) {
+			const int lv = localIndex[adjncy[i]];
+			if (lv > lg) {
+				edges.emplace_back((uint32_t)lg, (uint32_t)lv);
+				weights.push_back((double)adjwgt[i]);
+			}
 		}
-	std::vector<std::vector<std::pair<uint32_t, uint32_t>>> edges(1);
-	std::vector<std::vector<double>> weights(1);
-	BucketClusterEdges(scene, config.minPairWeight, clusterOf, localIndex, edges, weights);
-	const ClusterCoupling cc = AnalyzeClusterCoupling(li, edges[0], weights[0], config.minWaistSideViews, config.minClusterCoupling);
+	}
+	const ClusterCoupling cc = AnalyzeClusterCoupling(li, edges, weights, config.minWaistSideViews, config.minClusterCoupling);
 	return cc.connected && !cc.weak;
 }
 
-// Move well-connected boundary images out of the largest cluster into smaller
-// neighbors. Sub-scenes reconstruct concurrently, so wall-clock time is
-// dominated by the largest cluster; moving a modest number of strongly-shared
-// images shortens that critical path. Conservative by construction: a move is
-// only made when the candidate's connectivity to the target cluster is a
-// large fraction of its connectivity to its own cluster, so weakly-coupled
-// images (e.g. an isolated strip of views) never move; and never made at all
-// when it would leave the source cluster's weakest prefix cut (KeepsCoupling)
-// under minClusterCoupling, whatever the candidate's own affinity -- the
-// bridge of a stretch judged only by its own weight can strand that stretch
-// (Playground's 97-101, which used to leave 102-132 at a coupling of 0.023).
+// Move well-connected boundary images out of the largest cluster into smaller neighbours while
+// keeping the source cluster connected and above minClusterCoupling.
 void SceneCluster::RefineClustersBalance(std::vector<IIndexArr>& clusters)
 {
 	if (xadj.empty())
-		BuildConnectivityGraph(); // a caller handing clusters in directly (not through Partition) has none yet
+		BuildConnectivityGraph();
 
-	constexpr float kBalanceAffinity = 0.7f;   // min ratio of target-weight to current-internal-weight for a move
-	constexpr float kBalanceTolerance = 1.25f; // stop when largest cluster <= tolerance * mean cluster size
+	constexpr float kBalanceAffinity = 0.7f;
+	constexpr float kBalanceTolerance = 1.25f;
 
 	const IIndex nViews = scene.images.size();
-	std::vector<int> nodeToCluster(nViews, -1);
-	for (size_t c = 0; c < clusters.size(); ++c) {
-		for (IIndex u : clusters[c]) {
-			nodeToCluster[u] = (int)c;
-		}
-	}
+	std::vector<int> nodeToCluster = MapNodesToClusters(clusters, nViews);
 
 	unsigned sizeBefore = 0;
 	for (const IIndexArr& c : clusters)
@@ -818,7 +732,6 @@ void SceneCluster::RefineClustersBalance(std::vector<IIndexArr>& clusters)
 	const unsigned maxMoves = 2 * config.maxViewsPerCluster;
 	unsigned numMoves = 0;
 	while (numMoves < maxMoves) {
-		// pick the largest active cluster (ties -> lowest index) and the mean size over non-empty clusters
 		int src = -1;
 		unsigned srcSize = 0;
 		unsigned numActive = 0;
@@ -836,45 +749,38 @@ void SceneCluster::RefineClustersBalance(std::vector<IIndexArr>& clusters)
 		if (src < 0)
 			break;
 		const float mean = (float)totalSize / (float)numActive;
-		if (srcSize <= CEIL2INT<unsigned>(kBalanceTolerance * mean))
+		if (srcSize <= CEIL2INT<unsigned>(kBalanceTolerance * mean) || srcSize <= config.minViewsPerCluster)
 			break;
-		if (srcSize <= config.minViewsPerCluster)
-			break; // moving further would shrink the largest cluster below the minimum
 
-		// every eligible move this pass, heaviest first; the first that leaves the source cluster without
-		// a prefix cut under the coupling floor is made: a move judged by the image's own affinity alone
-		// can take the bridge of a stretch and strand it (Playground's 97-101, which left 102-132 at 0.023)
-		struct Move { int weight; IIndex u; int target; };
+		struct Move { double weight; IIndex u; int target; };
 		std::vector<Move> moves;
 		for (IIndex u = 0; u < nViews; ++u) {
 			if (nodeToCluster[u] != src)
 				continue;
 
-			std::unordered_map<int, int> cluster_weights;
-			int wSrc = 0;
+			std::unordered_map<int, double> cluster_weights;
+			double wSrc = 0.0;
 			for (int i = xadj[u]; i < xadj[u+1]; ++i) {
-				const int v = adjncy[i];
-				const int target_c = nodeToCluster[v];
+				const int target_c = nodeToCluster[adjncy[i]];
 				if (target_c == src)
 					wSrc += adjwgt[i];
 				else if (target_c != -1)
 					cluster_weights[target_c] += adjwgt[i];
 			}
-			if (wSrc == 0)
+			if (wSrc == 0.0)
 				continue;
 
 			int targetC = -1;
-			int targetW = 0;
+			double targetW = 0.0;
 			for (const auto& p : cluster_weights) {
-				if ((unsigned)clusters[p.first].size() >= srcSize - 1) continue; // would not strictly reduce imbalance
-				if ((unsigned)clusters[p.first].size() >= config.maxViewsPerCluster) continue;
-				if ((unsigned)clusters[p.first].size() < config.minViewsPerCluster) continue; // not a viable sub-scene, moving into it cannot shorten the critical path
+				const unsigned tSize = (unsigned)clusters[p.first].size();
+				if (tSize >= srcSize - 1 || tSize >= config.maxViewsPerCluster || tSize < config.minViewsPerCluster) continue;
 				if (p.second > targetW || (p.second == targetW && p.first < targetC)) {
 					targetW = p.second;
 					targetC = p.first;
 				}
 			}
-			if (targetC < 0 || (float)targetW < kBalanceAffinity * (float)wSrc)
+			if (targetC < 0 || targetW < (double)kBalanceAffinity * wSrc)
 				continue;
 
 			moves.push_back({targetW, u, targetC});
@@ -890,7 +796,7 @@ void SceneCluster::RefineClustersBalance(std::vector<IIndexArr>& clusters)
 			}
 		}
 		if (!chosen)
-			break; // no eligible move keeps its source coupled
+			break;
 
 		auto it = std::find(clusters[src].begin(), clusters[src].end(), chosen->u);
 		ASSERT(it != clusters[src].end());
@@ -912,85 +818,78 @@ void SceneCluster::RefineClustersBalance(std::vector<IIndexArr>& clusters)
 void SceneCluster::RefineClustersSplitDisconnected(std::vector<IIndexArr>& clusters)
 {
 	const IIndex nViews = scene.images.size();
-	std::vector<int> nodeToCluster(nViews, -1);
-	for (size_t c = 0; c < clusters.size(); ++c) {
-		for (IIndex u : clusters[c]) {
-			nodeToCluster[u] = (int)c;
-		}
-	}
+	const std::vector<int> nodeToCluster = MapNodesToClusters(clusters, nViews);
+	std::vector<uint8_t> visited(nViews, 0);
 
 	std::vector<IIndexArr> new_clusters;
 	for (size_t c = 0; c < clusters.size(); ++c) {
 		if (clusters[c].empty()) continue;
-
-		std::unordered_set<IIndex> remaining(clusters[c].begin(), clusters[c].end());
+		const IIndexArr members(clusters[c]);
 		bool first = true;
-		while (!remaining.empty()) {
-			IIndex start_node = *remaining.begin();
+		for (IIndex startNode : members) {
+			if (visited[startNode]) continue;
 			IIndexArr component;
 			std::queue<IIndex> q;
-			q.push(start_node);
-			remaining.erase(start_node);
+			q.push(startNode);
+			visited[startNode] = 1;
 			while (!q.empty()) {
-				IIndex u = q.front();
+				const IIndex u = q.front();
 				q.pop();
 				component.push_back(u);
 				for (int i = xadj[u]; i < xadj[u+1]; ++i) {
-					IIndex v = adjncy[i];
-					if (nodeToCluster[v] == (int)c && remaining.count(v)) {
+					const IIndex v = adjncy[i];
+					if (nodeToCluster[v] == (int)c && !visited[v]) {
+						visited[v] = 1;
 						q.push(v);
-						remaining.erase(v);
 					}
 				}
 			}
 			if (first) {
-				clusters[c] = component;
+				clusters[c] = std::move(component);
 				first = false;
 			} else {
-				new_clusters.push_back(component);
+				new_clusters.push_back(std::move(component));
 			}
 		}
 	}
-	if (!new_clusters.empty()) {
+	if (!new_clusters.empty())
 		clusters.insert(clusters.end(), new_clusters.begin(), new_clusters.end());
-	}
 }
 
-// A cluster whose weakest prefix cut along its Fiedler order (AnalyzeClusterCoupling) is under
-// minClusterCoupling is reshaped: a side of minViewsPerCluster images or more is split off into its
-// own cluster, as it stood a chance of reconstructing at two scales otherwise; a smaller stretch
-// cannot stand on its own, so it moves whole to the neighbouring cluster that holds it more than its
-// own cluster does, when one has the room, and otherwise stays, left for the merge to place through
-// whatever seam it still has.
 void SceneCluster::RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters)
 {
 	if (xadj.empty())
-		BuildConnectivityGraph(); // a caller handing clusters in directly (not through Partition) has none yet
+		BuildConnectivityGraph();
 	if (config.minClusterCoupling <= 0)
 		return;
 
-	// every split or move strictly shrinks the cluster analysed, and a moved stretch is held more by
-	// its new cluster than by its old one, so it never moves back; this bounds the rounds generously
 	constexpr unsigned kWaistRoundsPerCluster = 4;
 	unsigned budget = kWaistRoundsPerCluster * (unsigned)clusters.size();
+	std::vector<int> clusterOf;
+	std::vector<uint32_t> localIndex;
+	std::vector<std::vector<std::pair<uint32_t, uint32_t>>> edges;
+	std::vector<std::vector<double>> weights;
+	bool dirty = true;
+
 	for (size_t c = 0; c < clusters.size() && budget > 0; ) {
-		// a move changes two clusters' edges, so every round re-buckets the whole pair graph (one
-		// pass over the pairs) rather than patch the previous round's edges incrementally
-		std::vector<int> clusterOf(scene.images.size(), -1);
-		std::vector<uint32_t> localIndex(scene.images.size(), 0);
-		for (size_t ci = 0; ci < clusters.size(); ++ci) {
-			uint32_t li = 0;
-			for (IIndex g : clusters[ci]) {
-				clusterOf[g] = (int)ci;
-				localIndex[g] = li++;
+		if (dirty) {
+			clusterOf.assign(scene.images.size(), -1);
+			localIndex.assign(scene.images.size(), 0);
+			for (size_t ci = 0; ci < clusters.size(); ++ci) {
+				uint32_t li = 0;
+				for (IIndex g : clusters[ci]) {
+					clusterOf[g] = (int)ci;
+					localIndex[g] = li++;
+				}
 			}
+			edges.assign(clusters.size(), {});
+			weights.assign(clusters.size(), {});
+			BucketClusterEdges(scene, config.minPairWeight, clusterOf, localIndex, edges, weights);
+			dirty = false;
 		}
-		std::vector<std::vector<std::pair<uint32_t, uint32_t>>> edges(clusters.size());
-		std::vector<std::vector<double>> weights(clusters.size());
-		BucketClusterEdges(scene, config.minPairWeight, clusterOf, localIndex, edges, weights);
 
 		const unsigned V = (unsigned)clusters[c].size();
-		if (V < 2 * config.minWaistSideViews) { // cannot yield two sides the coupling checks can weigh
+		if (V < 2 * config.minWaistSideViews) {
 			++c;
 			continue;
 		}
@@ -1003,28 +902,22 @@ void SceneCluster::RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters
 		FOREACH(i, clusters[c])
 			(cc.side[i] ? stretch : rest).push_back(clusters[c][i]);
 		if (cc.smaller >= config.minViewsPerCluster) {
-			// the weak side can stand on its own: split it off, as before
 			VERBOSE("Clustering: split thin-waist cluster (%u images, internal coupling %.3f < %.3f) into %u+%u images",
 				V, cc.coupling, config.minClusterCoupling, (unsigned)rest.size(), (unsigned)stretch.size());
 			clusters[c] = std::move(rest);
 			clusters.push_back(std::move(stretch));
+			dirty = true;
 			--budget;
-			continue; // re-analyse what is left of c; the split-off side is reached later
+			continue;
 		}
 
-		// a stretch too small to stand on its own: its weight to every other cluster, counted only
-		// through the images the weakest cut puts on its side (clusterOf[...] == c guards the
-		// cc.side lookup, since cc.side is indexed by c's local index, not the image's global one)
 		std::unordered_map<int, double> interfaces;
-		for (const ImagePair& pair : scene.pairs) {
-			if (!pair.ExceedsWeightBar(config.minPairWeight))
-				continue;
-			const float weight(pair.GetCompositeWeight());
-			const int c1 = clusterOf[pair.ID1], c2 = clusterOf[pair.ID2];
-			if (c1 == (int)c && c2 >= 0 && c2 != (int)c && cc.side[localIndex[pair.ID1]])
-				interfaces[c2] += weight;
-			else if (c2 == (int)c && c1 >= 0 && c1 != (int)c && cc.side[localIndex[pair.ID2]])
-				interfaces[c1] += weight;
+		for (IIndex u : stretch) {
+			for (int i = xadj[u]; i < xadj[u + 1]; ++i) {
+				const int cv = clusterOf[adjncy[i]];
+				if (cv >= 0 && cv != (int)c)
+					interfaces[cv] += adjwgt[i];
+			}
 		}
 		int target = -1;
 		double targetWeight = 0.0;
@@ -1034,7 +927,6 @@ void SceneCluster::RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters
 		if (target < 0 || targetWeight <= cc.cutWeight ||
 			targetWeight < (double)config.minClusterCoupling * MINF(cc.smallerInternal, internalTarget) ||
 			clusters[target].size() + stretch.size() > config.maxViewsPerCluster + config.maxOverCapacity) {
-			// no neighbour holds it more than its own cluster does, or none has room: leave it in place
 			DEBUG("Clustering: a stretch of %u images coupled %.3f to its cluster of %u has no neighbour holding it better; left in place",
 				(unsigned)stretch.size(), cc.coupling, V);
 			++c;
@@ -1046,22 +938,21 @@ void SceneCluster::RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters
 		for (IIndex u : stretch)
 			clusters[target].push_back(u);
 		clusters[c] = std::move(rest);
+		dirty = true;
 		--budget;
-		// re-analyse what is left of c
 	}
 }
 
 ScenePartition SceneCluster::FinishPartition(std::vector<IIndexArr>& clusters)
 {
-	// a cluster under the floor goes to the pool, except a community that stands alone (see
-	// IsStandaloneCommunity); decided once, over the whole partition
+	const std::vector<int> nodeToCluster = MapNodesToClusters(clusters, scene.images.size());
 	const SeamTrackStatsMap seamStats = std::any_of(clusters.begin(), clusters.end(),
 		[&](const IIndexArr& c) { return !c.empty() && c.size() < config.minViewsPerCluster; }) ?
 		ComputeSeamTrackStats(clusters) : SeamTrackStatsMap();
 	std::vector<bool> isSubScene(clusters.size());
 	for (size_t c = 0; c < clusters.size(); ++c)
 		isSubScene[c] = !clusters[c].empty() &&
-			(clusters[c].size() >= config.minViewsPerCluster || IsStandaloneCommunity(clusters, c, seamStats));
+			(clusters[c].size() >= config.minViewsPerCluster || IsStandaloneCommunity(clusters, c, nodeToCluster, seamStats));
 
 	// verify the clusters are well connected before reconstruction; the internal
 	// covisibility graph still holds every intra-cluster pair (the blocks move them out

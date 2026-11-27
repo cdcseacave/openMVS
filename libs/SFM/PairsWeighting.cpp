@@ -28,22 +28,7 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// The coverage is the pair's estimate of its overlap wherever no dense matcher runs, and a factor of
-// the pair weight (ImagePair::GetCompositeWeight): the weight bars, the near-duplicate test and the
-// weights of the contradiction cut are calibrated to the 10 x 10 grid its callers pass.
-// How it compares with the true overlap (depth maps projected with reference poses, 12,000 pairs):
-//  - the 10 x 10 grid reads 0.17 too high on average (median absolute error 0.15), since a cell
-//    counts in full once one match falls in it;
-//  - a finer grid is closer (+0.10 at 20 cells per side, +0.04 at 40), but a grid cannot read above
-//    matches / gridSize^2: with the 30-100 matches of a pair without dense matches a 20 x 20 grid
-//    reads 0.06-0.17 low, and counts matches instead of area;
-//  - the side taken as the square root of the number of matches (between 6 and 30) is as close as
-//    20 cells and reads the same whatever the number of matches;
-//  - every grid reads high at small overlaps and low at large ones.
-// A change of the grid scales every pair weight (by 0.75-0.80 for the side from the number of
-// matches, by 0.69-0.86 depending on the pair for 20 cells), so everything that reads the weight
-// has to be calibrated again with it; with the bars scaled alone, a symmetric building folds in
-// the contradiction cut, which the weights of the pairs relative to each other decide.
+// Grid coverage estimate (10x10 grid by default) used as an overlap proxy and pair-weight factor.
 float SFM::ComputePairCoverage(const ImagePair& pair, const Image& img1, const Image& img2, int gridSize)
 {
 	ASSERT(gridSize > 0);
@@ -169,21 +154,10 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 
 	// Helper to get rotation error (cos of angle) for a triplet
 	auto GetRotationError = [&](const ImagePair& p_ij, const ImagePair& p_jk, const ImagePair& p_ki, IIndex i, IIndex j, IIndex k) {
-		// Pair stores R s.t. x2 = R*x1 + t so R_12 is pose of 2 relative to 1;
-		// Get relative rotation from pair in the correct direction
-		auto GetRelR = [](const ImagePair& p, IIndex u, IIndex v) -> Matrix3x3 {
-			if (p.ID1 == u && p.ID2 == v) return p.relativePose->R; // R_uv
-			if (p.ID1 == v && p.ID2 == u) return p.relativePose->R.t(); // R_vu = R_uv^T
-			return Matrix3x3::IDENTITY;
-		};
 		if (!p_ij.relativePose.has_value() || !p_jk.relativePose.has_value() || !p_ki.relativePose.has_value())
 			return -1.f; // invalid triplet
-		// Compose: R_ij * R_jk * R_ki (should be Identity)
-		Matrix3x3 R_ij = GetRelR(p_ij, i, j);
-		Matrix3x3 R_jk = GetRelR(p_jk, j, k);
-		Matrix3x3 R_ki = GetRelR(p_ki, k, i);
-		// Compose: cycle k->i->j->k
-		Matrix3x3 R_loop = R_jk * R_ij * R_ki;
+		// Compose cycle k->i->j->k: R_jk * R_ij * R_ki (Identity for consistent poses)
+		const Matrix3x3 R_loop = p_jk.GetRelativeRotation(j, k) * p_ij.GetRelativeRotation(i, j) * p_ki.GetRelativeRotation(k, i);
 		return (float)ComputeAngle(R_loop);
 	};
 

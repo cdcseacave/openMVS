@@ -329,13 +329,16 @@ void ViewGraphCalibrator::AddImagePairsToProblem(const Scene& scene) {
 unsigned ViewGraphCalibrator::ParameterizeCameras(const Scene& scene) {
 	unsigned numCamerasToOptimize = 0;
 	for (const CameraPtr pCamera : scene.cameras) {
-		if (!problem_->HasParameterBlock(&(focals_[pCamera])))
+		if (pCamera->GetType() != CameraType::PINHOLE)
+			continue;
+		const auto it = focals_.find(pCamera);
+		if (it == focals_.end() || !problem_->HasParameterBlock(&it->second))
 			continue;
 		// Set lower bound to avoid negative focal lengths
-		problem_->SetParameterLowerBound(&(focals_[pCamera]), 0, 1e-3);
+		problem_->SetParameterLowerBound(&it->second, 0, 1e-3);
 		// If camera has trusted intrinsics, keep it constant
 		if (pCamera->TrustIntrinsics() && config_.trustIntrinsics)
-			problem_->SetParameterBlockConstant(&(focals_[pCamera]));
+			problem_->SetParameterBlockConstant(&it->second);
 		else
 			++numCamerasToOptimize;
 	}
@@ -394,7 +397,7 @@ unsigned ViewGraphCalibrator::FilterImagePairs(Scene& scene) const {
 	const double maxErrorSq = SQUARE(config_.maxTwoViewError);
 	for (ImagePair& pair : scene.pairs) {
 		// Skip pairs that weren't added to the problem
-		if (!pair.F.has_value() || pair.GetNumWeightedInliers() < 15 || pair.GetCompositeWeight() < config_.minPairWeight)
+		if (!pair.F.has_value() || pair.GetNumWeightedInliers() < 15 || !pair.ExceedsWeightBar(config_.minPairWeight))
 			continue;
 		const Image& img1 = scene.images[pair.ID1];
 		const Image& img2 = scene.images[pair.ID2];

@@ -19,14 +19,7 @@ adjustment (`Scene::Reconstruct`) closes the pass.
 
 ## Pair selection
 
-The retrieval-based match modes (VOCABULARY, RETRIEVAL) rank candidates by visual similarity with no
-notion of capture order, and on a video or hand-held walkthrough that leaves out a share of the truly
-overlapping consecutive pairs -- exactly the ones that hold an interior's matched graph together end to
-end. `--match-sequence-overlap` (default 3, the whole candidate set of SEQUENTIAL mode) is also
-added, unconditionally, on top of whatever VOCABULARY or RETRIEVAL already picked
-(`PairsMatcher::AddSequentialPairs`): every image gets its next `overlap` neighbours in import order
-proposed alongside its ranked candidates. Images import in capture order, so a consecutive pair
-verifies almost every time; 0 turns the prior off.
+See `PairSelection.md` for candidate proposal, sequential overlap (`--match-sequence-overlap`, default 3), and image-sequence handling.
 
 ## The star initializer
 
@@ -147,7 +140,7 @@ inliers weighing `minInliers` (12) at least, and `minInlierRatio` (0.25) of the 
 inliers weigh `minInliersAbsolute` (100) -- a small consensus inside a large set can agree on a pose the image
 never had. The inliers are weighed as a pair weighs its matches (`PairsWeightingConfig::DenseScale`, 1/40 for a
 dense one against 1 for a described one), the same count the direction check below gives the pose's own vote:
-twenty dense correspondences agreeing on a pose weigh half a described one. Every pose (`wellSupportedInlierRatio` 1; lowering it exempts a well-supported pose) is cross-checked against the rotation its
+twenty dense correspondences agreeing on a pose weigh half a described one. Every pose is cross-checked against the rotation its
 verified pairs to registered images predict -- not the single strongest pair, misleading if that
 neighbour is misplaced, but the quorum: the largest group,
 among the strongest few links, agreeing within `maxRelativeRotationError` (15 degrees) of one another
@@ -240,9 +233,7 @@ whether it registered, and `numFullAdjustments`, the full adjustments it ran (st
 included).
 
 Between the adjustments, the tracks are triangulated and filtered against `maxReprojError` (4 px) and
-`minAngleThreshold`. `FilterTracks` and `TriangulateTracks` hold a dense (warp-sampled) observation to
-`ResectionConfig::denseReprojErrorFactor` times that bar (1 by default, so described and dense observations answer
-to the same bar, `TrackBuilding.md`); the reconstruction passes the factor in every call it makes.
+`minAngleThreshold` (`TrackBuilding.md`).
 
 A track seen by fewer than two posed images has no position that two posed views determine, so the triangulation
 leaves it out and the filter does not judge it: it either was never triangulated and still holds the default
@@ -255,43 +246,15 @@ coordinates, and not at the origin, which a posed camera can sit on (the star pu
 track of two posed views that a caller filters before it is triangulated (the resection's full adjustment, the merged
 model's adjustment) is then judged at a point far from every keypoint, with rays that meet at no angle, so the
 filter's own tests reject it. The value is finite, so nothing computed from it turns to INF or NaN. Nothing reads the
-position as a flag of "not triangulated": `numInliers` says that. A scene saved before this default stores (0,0,0)
-for such a track, and the rule above covers what that reaches.
+position as a flag of "not triangulated": `numInliers` says that.
 
 ## Bundle adjustment
 
-Reprojection residuals fit each track's observations against the camera model, robustified by a Huber
-loss (2 px in the resection's own solves); a dense (warp-sampled) keypoint's residual is discounted
-relative to a described one's (measured, or pinned with `--ba-dense-weight`; see `BundleAdjustment.md`).
-What a solve costs is the number of observations it fits, and one image can bring thousands of them
--- warp samples where it was matched densely, detections where it was not -- so each image
-contributes at most `maxObservationsPerImage` (1500, `--ba-max-obs`) of any kind. The budget goes to
-the described observations first -- a detected position is the precise measurement, so an image keeps
-all of its own unless they alone exceed the budget -- and the warp samples fill what is left of it,
-so that an image with few detections spends most of the budget on warp samples and one with many
-spends little. Each kind is taken round-robin across a grid over the image, so that what survives
-covers the frame instead of clustering where the matcher was densest; inside a cell the longest track
-comes first, and the remaining ties are ordered by a key drawn for that solve alone, so successive
-adjustments take different subsets and, over a reconstruction, most observations take part in some
-solve. A track left with a single view is given a dropped observation back, a described one first; a
-track left with none stays out of the solve. The budget applies only
-once the scene's observations reach `minObservationsForCap` (1500000,
-`--ba-cap-min-obs`): a scene small enough to be solved whole is solved whole, and once it is not,
-every solve of it is budgeted, including a local window that alone holds only a few images.
-
-Every verified pair whose two images are both in the solve also adds a relative-pose residual
-(`RelativePoseError`): the model's relative rotation against the pair's, and its baseline direction
-against the pair's, sharing one Huber loss at 3 standard deviations. Their sigmas are `--ba-pair-sigma`
-(default 1 degree for the rotation, twice that for the baseline direction, the weaker of a pair's two
-measurements), divided by the square root of the pair's weighted inlier count (capped at 500)
-against a reference of 100. A verified pair's evidence is otherwise invisible to the reprojection
-residuals, and this is what holds a joint straight where the tracks are few or two-view only. Either
-sigma at 0 switches that half off; both at 0 leaves the solve fitting reprojections alone.
-
-`--refine-intrinsics` (default 1) picks what the bundle adjustments may touch: 0 fixes every
-intrinsic, 1 focal length + k1, k2, 2 adds k3, the principal point and the tangential terms. Local BA
-never refines intrinsics, full BA stays at the main set regardless, and only the extended BA -- from
-`minRefineExtIntrs` images on, or the final solve -- opens everything allowed.
+Reprojection residuals, dense observation weighting (`--ba-dense-weight`), the per-image observation cap
+(`--ba-max-obs`, `--ba-cap-min-obs`), relative-pose pair constraints (`--ba-pair-sigma`), and intrinsic
+refinement levels (`--refine-intrinsics`) are documented in `BundleAdjustment.md`. Local BA never refines
+intrinsics, full BA stays at the main set until `minRefineExtIntrs` images are registered, and the final
+solve opens everything the configured level allows.
 
 ## The image filter
 
@@ -312,9 +275,7 @@ and geometric degeneracy (median triangulation angle too small, `minTriangulatio
 The rest form a covisibility graph -- an edge per pair sharing `minCovisibilityCount` (5) inlier tracks
 -- keeping only the largest connected component; a k-core peel then drops images whose independent
 covisibility degree falls under `minCovisDegree` (2), repeating on their neighbours, and the largest
-component is retaken. An optional pose-consistency cut (`maxPoseInconsistencyAngle`, off by default)
-can additionally drop an edge whose global rotation disagrees with the pair's own stored one, for a
-scene the tier verdicts and the peel do not separate.
+component is retaken.
 
 ## Flags
 
@@ -326,7 +287,7 @@ scene the tier verdicts and the peel do not separate.
 | `--max-link-direction-error F` | `5` | the resection's direction check, in degrees, in [0,90] (`maxLinkDirectionError`, read by every resection: the sub-scenes' and the whole-scene pass); 0 = no direction check at all, the inlier-share and rotation checks stay |
 
 The resection's other acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
-`maxRelativeRotationError`, `wellSupportedInlierRatio`, `maxLinkRotationDisagreement`) have no flags; their defaults live in `ResectionConfig`.
+`maxRelativeRotationError`, `maxLinkRotationDisagreement`) have no flags; their defaults live in `ResectionConfig`.
 
 ## Limitations
 

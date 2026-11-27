@@ -63,7 +63,7 @@ choice (sums of `W` over an image's links), the lens fit (the heaviest pairs per
 conflict settlement and a block's track rebuild (pair order), the frames-convention vote (the ten
 heaviest pairs), the clustering's METIS edge weights (`W` x 10 rounded, above the clustering bar). The
 bundle adjustment, the star initializer, the resection's pose checks and the merge read the weighted
-inliers `WI`, not `W`. `PairsMatcher::ExportPairsCSV` takes the track bar but does not use it.
+inliers `WI`, not `W`.
 
 ## Invariants
 

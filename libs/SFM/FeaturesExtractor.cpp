@@ -742,18 +742,10 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 				}
 			}
 
-			// Normalize keypoint responses to linear scale
-			// - SIFT: already linear (DoG value)
-			// - AKAZE: quadratic (det(Hessian)) -> apply sqrt()
-			// - ORB: quadratic by default (HARRIS_SCORE) -> apply sqrt()
-			// This ensures responses scale linearly with image contrast for proper weighting
-			auto NormalizeResponses = [](std::vector<cv::KeyPoint>& kps, size_t offset, FeatureType type) {
-				if (type == FeatureType::AKAZE || type == FeatureType::ORB)
-					for (size_t i = offset; i < kps.size(); ++i)
-						kps[i].response = SQRT(MAXF(0.f, kps[i].response));
-			};
-			// Normalize responses after detection (whether initial or retry)
-			NormalizeResponses(image.keypoints, offset, config.detectorType);
+			// Normalize quadratic responses (AKAZE/ORB) to linear scale
+			if (config.detectorType == FeatureType::AKAZE || config.detectorType == FeatureType::ORB)
+				for (size_t i = offset; i < image.keypoints.size(); ++i)
+					image.keypoints[i].response = SQRT(MAXF(0.f, image.keypoints[i].response));
 		}
 	}
 	cv::vconcat(vecDescriptors, image.descriptors);
@@ -1087,12 +1079,11 @@ bool FeaturesExtractor::ImportFeaturesOpenMVG(const String& inputDir, Image& ima
 				return false;
 			}
 		}
-		// ReleaseFeatures above cleared the boundary, so every keypoint read here is described and
-		// the two counts must match exactly. Read straight off the array rather than through
-		// NumDescribedKeypoints(), whose own consistency ASSERT is exactly what a mismatching file
-		// would trip before this diagnostic could report it.
-		if (image.keypoints.size() != numDesc)
+		if (image.keypoints.size() != numDesc) {
 			VERBOSE("error: descriptor/keypoint count mismatch: %zu descriptors vs %zu keypoints", numDesc, image.keypoints.size());
+			image.ReleaseFeatures();
+			return false;
+		}
 		DEBUG_LEVEL(3, "Image % 4u imported %zu OpenMVG features and descriptors: %s, %s",
 			image.ID, image.keypoints.size(), featPath.c_str(), descPath.c_str());
 		return true;

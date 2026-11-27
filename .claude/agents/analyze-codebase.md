@@ -14,7 +14,7 @@ cohesive documentation.
 
 ### Step 1 — Orient
 
-Read the project's `CLAUDE.md` (or `AGENTS.md`) at the repo root and any
+Read the project's `AGENTS.md` at the repo root and any
 `AGENTS.md` files in `libs/SFM/` and `libs/MVS/` to understand the overall
 architecture before delegating.
 

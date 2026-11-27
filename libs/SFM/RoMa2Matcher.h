@@ -27,16 +27,12 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "Common.h" // SFM_API, Image8U3, Image32F, Image32F2
-#include "OnnxRuntime.h" // OrtTensor (an inert stand-in in builds without ONNX Runtime)
+#include "Common.h"
+#include "OnnxRuntime.h"
 #include "DenseMatcher.h"
 
 #include <cstdint>
-#include <memory>
 #include <vector>
-
-
-// D E F I N E S ///////////////////////////////////////////////////
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -45,110 +41,88 @@ namespace SFM {
 
 #ifdef _USE_ONNXRUNTIME
 
-// Resample an 8-bit BGR image to size x size planar RGB in [0,1], reproducing torch's
-// F.interpolate(mode="bicubic", align_corners=False, antialias=True) exactly (separable Keys
-// cubic with A=-0.5, antialiasing support scaled by the downsampling ratio) -- the
-// preprocessing the exported RoMa2 descriptor graph expects on its `image` input.
-// Pure CPU, thread-safe (no shared state).
+// Resample an 8-bit BGR image to size x size planar RGB in [0,1] matching PyTorch's
+// F.interpolate(mode="bicubic", align_corners=False, antialias=True). Thread-safe.
 SFM_API void PreprocessImageRoMa2(const Image8U3& bgr, int size, std::vector<float>& planarRgb);
 
 #endif // _USE_ONNXRUNTIME
 /*----------------------------------------------------------------*/
 
-// One exported ROMAv2 preset, as described by its `roma_<setting>.json` manifest: which
-// graphs to load and the static shapes of their inputs/outputs. Everything the C++ needs to
-// consume an export it did not produce.
+// Exported RoMa v2 preset described by roma_<setting>.json: graph filenames and static I/O shapes.
 struct SFM_API RoMa2Manifest
 {
-	String setting;                       // preset name: turbo|fast|base
-	int imageSize = 0;                    // S: the graphs take S x S images
-	int patch = 16;                       // backbone patch size (S/patch = G, the descriptor grid)
-	std::vector<int> layers;              // backbone blocks the `layers` output stacks
-	std::vector<int> valueFacetBlocks;    // backbone blocks the `value_facets` output taps
-	std::vector<int64_t> layersShape;     // [1,2,G,G,1024], the `layers` output shape
-	std::vector<int64_t> facetsShape;     // [1,2,G,G,1024], the `value_facets` output shape
-	std::vector<int64_t> retrievalShape;  // [1, facetsDim], the `retrieval` output shape; Load() requires it
-	int warpSize = 0;                     // C: the coarse matcher's C x C warp grid
-	int confidenceChannels = 1;           // channels of the `confidence` output
-	unsigned facetsDim = 2048;            // dimension of the retrieval descriptor the graph pools
-	int opset = 0;                        // ONNX opset the graphs were traced with
-	String descriptorFile, descriptorData; // descriptor graph and its external-data file
-	String matchFile, matchData;           // coarse-match graph and its external-data file
+	String setting;                        // preset name: turbo|fast|base
+	int imageSize = 0;                     // S: input image side
+	int patch = 16;                        // backbone patch size (G = S/patch)
+	std::vector<int64_t> layersShape;      // [1,2,G,G,1024]
+	std::vector<int64_t> facetsShape;      // [1,2,G,G,1024]
+	std::vector<int64_t> retrievalShape;   // [1,facetsDim]
+	int warpSize = 0;                      // C: coarse warp grid side
+	int confidenceChannels = 1;
+	unsigned facetsDim = 2048;             // pooled retrieval descriptor dimension
+	String descriptorFile, descriptorData;
+	String matchFile, matchData;
 
-	// Parse the manifest, rejecting a file of another schema version, with a missing or
-	// ill-typed key, or whose declared graph I/O disagrees with the shapes derived from
-	// `image_size`/`warp_size`; every rejection names the offending key
+	// Parse and validate the manifest against schema version 1 and self-consistent I/O shapes.
 	bool Load(const String& fileName);
 };
 /*----------------------------------------------------------------*/
 
-// One ROMAv2 model: the descriptor graph and, loaded lazily on the first pair, the coarse-match
-// graph, both on the same ONNX Runtime execution provider so a descriptor tensor left on the
-// device can be fed straight to the matcher. Owns the sessions and their scratch tensors and
-// nothing else; the slot pool and the scheduling live above it.
-// All calls on one instance must come from a single thread (ONNX Runtime sessions are used
-// through one IoBinding each). Available only in builds with ONNX Runtime: elsewhere
-// IsAvailable() is false and Load() fails with a message.
+#ifdef _USE_ONNXRUNTIME
+
+// RoMa v2 dense matcher over ONNX Runtime: descriptor session plus lazily loaded coarse-match session
+// sharing the same execution provider. Single-threaded per instance; destroy MakeLayers() tensors
+// before this object or before reloading.
 class SFM_API RoMa2Onnx : public DenseMatcher
 {
 public:
-	RoMa2Onnx();
+	RoMa2Onnx() = default;
 	RoMa2Onnx(const RoMa2Onnx&) = delete;
 	RoMa2Onnx& operator=(const RoMa2Onnx&) = delete;
-	~RoMa2Onnx() override;
+	~RoMa2Onnx() override = default;
 
-	// True if this build can run the exported graphs at all
-	static bool IsAvailable();
-
-	// Load the manifest `roma_<setting>.json` of modelDir and its descriptor graph on the
-	// requested execution provider ("auto"|"cuda"|"coreml"|"dml"|"cpu"); the coarse-match
-	// graph is loaded on the first MatchCoarse call, on the provider the descriptor got.
-	// Returns false, with a message, on any manifest, file, or session problem.
 	bool Load(const String& modelDir, const String& setting = "base", const String& provider = "auto") override;
+	bool IsLoaded() const override { return descriptor.IsLoaded(); }
+	const RoMa2Manifest& Manifest() const { return manifest; }
+	String ProviderName() const override;
 
-	bool IsLoaded() const override;
-	const RoMa2Manifest& Manifest() const;
-	String ProviderName() const override; // execution provider of the descriptor session
-
-	// the DenseMatcher interface, thin adapters over the calls below
-	inline int ImageSize() const override { return Manifest().imageSize; }
-	inline int GridSize() const override { return Manifest().warpSize; }
-	inline unsigned RetrievalSize() const override { return Manifest().facetsDim; }
+	inline int ImageSize() const override { return manifest.imageSize; }
+	inline int GridSize() const override { return manifest.warpSize; }
+	inline unsigned RetrievalSize() const override { return manifest.facetsDim; }
 	void Preprocess(const Image8U3& bgr, std::vector<float>& planarRgb) const override;
 	OrtTensor MakeCode() override { return MakeLayers(); }
 	bool DescribeImage(const float* planarRgb, OrtTensor& layers, std::vector<float>& retrieval) override { return Describe(planarRgb, layers, NULL, retrieval); }
-	bool MatchPair(const OrtTensor& layersA, const OrtTensor& layersB, const PairInput&, PairOutput& out) override; // the coarse warps; RoMa2 has no covisibility or pose to give
+	bool MatchPair(const OrtTensor& layersA, const OrtTensor& layersB, const PairInput&, PairOutput& out) override;
 
-	inline int WarpSize() const { return Manifest().warpSize; }
-	inline const std::vector<int64_t>& LayersShape() const { return Manifest().layersShape; }
-	unsigned NumPatches() const; // G*G, the descriptor grid cells one image is described by
+	inline int WarpSize() const { return manifest.warpSize; }
+	inline const std::vector<int64_t>& LayersShape() const { return manifest.layersShape; }
+	unsigned NumPatches() const;
 
-	// One image's descriptor tensor, on the session device when the provider has device memory
-	// (a host tensor otherwise). Lifetime, because the tensor may live in the descriptor session's
-	// device arena: every tensor MakeLayers() hands out must be destroyed before this RoMa2Onnx is,
-	// and a second Load() destroys the sessions, which dangles every tensor still outstanding from
-	// the first one. Returns an invalid tensor (IsValid() == false) when the model is not loaded.
 	OrtTensor MakeLayers();
-
-	// Run the descriptor graph on one preprocessed image (3*S*S floats, PreprocessImageRoMa2),
-	// writing the `layers` output into layersOut (a MakeLayers()-shaped tensor) and the graph's
-	// own on-device retrieval pooling into retrievalOut, as facetsDim host floats -- the only way
-	// a caller gets a global retrieval descriptor; the transfer is small enough that every call
-	// pays for it. facetsOut stays optional: when not NULL the raw `value_facets` tensor is also
-	// read back, as 2*G*G*1024 host floats (~400x the transfer of retrievalOut) -- no production
-	// caller needs it, only the parity test's independent check of that tensor.
 	bool Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut, std::vector<float>& retrievalOut);
-
-	// Run the coarse-match graph once on two descriptor tensors, returning both directions:
-	// the C x C normalized warp of A's cells into B with its confidence (sigmoid of the logit), and
-	// the same for B's cells into A
 	bool MatchCoarse(const OrtTensor& layersA, const OrtTensor& layersB,
 		Image32F2& warpAB, Image32F& confidenceAB, Image32F2& warpBA, Image32F& confidenceBA);
 
 private:
-	struct Impl;
-	std::unique_ptr<Impl> impl; // pimpl: the header stays free of the ONNX Runtime session types
+	void Reset();
+	bool EnsureMatch();
+
+	// Sessions declared first so tensors allocated from their arenas are destroyed before them
+	OnnxModel descriptor;
+	OnnxModel match;
+	OrtTensor image;
+	OrtTensor facetsScratch;
+	OrtTensor facetsHost;
+	OrtTensor retrievalHost;
+	OrtTensor dummyImage;
+	OrtTensor warpHost, confidenceHost;
+	OrtTensor warpBAHost, confidenceBAHost;
+	String modelDir;
+	RoMa2Manifest manifest;
+	bool bMatchFailed = false;
 };
+
+#endif // _USE_ONNXRUNTIME
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

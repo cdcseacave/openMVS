@@ -27,47 +27,12 @@ class SFM_API Scene;
 
 /*
  * Hierarchical SfM — Global Alignment and Merge
- * ===============================================
  *
- * After SceneCluster splits the scene, each sub-scene ("block" below) is reconstructed
- * independently and lives in its own arbitrary coordinate system. The merge places the blocks as
- * the view-graph filter places images: the blocks are the nodes of a small graph, every block pair
- * joined by cross pairs an edge holding the readings of its Sim(3), and the block poses are what
- * one robust averaging of the kept readings says, every reading the poses contradict cut. See
- * docs/design/HierarchicalSFM.md for the full design; this is the short version.
- *
- * Readings (EstimateSeamPair): every block pair joined by cross pairs (all of them, read together) is measured in whichever
- * mode GlobalAlignmentConfig::alignment selects. ALIGN_CAMERAS reads each direction once: one
- * block's cameras as a generalized rig against the other's inlier tracks (generalized PnP with
- * scale), refined over its inliers at the reprojection bar; a direction whose correspondences come
- * from one camera gives no reading. The two directions stay two readings. ALIGN_POINTS
- * fits one 3D-3D similarity to the matches lying on an inlier track in both blocks. A reading is
- * scored on every correspondence of the pair -- the cameras that support it on its weaker side --
- * and read against the verified image pairs across it, together. It enters the block graph only
- * with minSeamWeight supporting cameras on its weaker side, an observed scale and its verified pairs
- * not against it, weighing its weaker side's supporting cameras times the share of the pairs'
- * inlier weight it reproduces; a reading refused leaves its block pair to its other readings, or to
- * the next round of the merge.
- *
- * Selection (SelectSeamGraph): every component of the kept readings (all of them at first) is
- * averaged (AverageBlockPoses: rotations by GlobalRotationEstimator, log-scales and translations
- * reweighted by the inverse of each reading's error); every reading is judged against the poses of
- * its component and kept within the graph bars; repeated, re-entry allowed, until the kept set
- * settles. Each component of the readings left is a model, its block poses the averaging's.
- *
- * Merge (MergeScenes): transform every block of the model merged (the one holding the most images, or
- * the one holding the anchor block: SceneBlocks::MergeInRounds anchors block 0, the merged model, from
- * round 2), average the intrinsics of a camera shared across blocks, move keypoints, descriptors and
- * pairs back from every block (reversing SceneBlocks::Extract), and merge tracks with a union-find over
- * global feature IDs under a duplicate-image and a 255-observation guard: first the correspondences of
- * the heavy cross pairs (minCommonTracks) of every placed block pair that the final block poses explain
- * within the loose bar (the closure, a join priority: a seam-consistent match takes a feature before a
- * competing match to the same image), then every track-forming match of every connecting pair, heavy
- * ones included; intra-block pairs are skipped -- their tracks were already correctly formed. AdjustMergedScene (Scene.h) then filters
- * the merged scene at that loose bar and adjusts it, so a block bent within the bars keeps the matches
- * of its far end until the adjustment has straightened it. Every block outside the merged model is
- * kept whole for the next round of the merge (SceneBlocks::MergeInRounds), or merged without a
- * pose for the post-merge resection to recover.
+ * Aligns independently reconstructed sub-scenes ("blocks") into one coordinate frame by
+ * measuring per-pair Sim(3) readings (generalized PnP with scale or 3D-3D similarity),
+ * solving the block graph by robust rotation/scale/translation averaging with iterative
+ * outlier cutting, transforming admitted blocks, and merging tracks across seams.
+ * Full design: docs/design/HierarchicalSFM.md.
  */
 
 // One cross-block correspondence: a feature of image A matched to a feature of image B (global image IDs)
@@ -190,12 +155,7 @@ struct SFM_API GlobalAlignmentConfig
 	// a reading's weight. maxPairRotationResidual 0 disables it.
 	unsigned minPairInliers{30};
 	float maxPairRotationResidual{5.f};     // degrees
-	// The graph bars: a reading stays in the block graph while the averaged poses of its component
-	// sit within these of it. The right readings of the two measured block sets reach 2.8 deg / 1.093
-	// and 3.3 deg / 1.156 at their 99th percentile; in translation the right readings of nine captures
-	// reach 0.08 of their seam's spread at the 95th percentile and 0.24 at the 99th. The copies of a
-	// repeated structure were measured past 0.27 of the smaller block's camera extent, which a seam's
-	// spread equals at the median (0.5 to 1.6 of it from the 10th to the 90th percentile)
+	// Graph consistency bars: a reading stays in the block graph while the averaged poses sit within these
 	float maxGraphRotationResidual{5.f};    // degrees
 	float maxGraphScaleResidual{1.20f};
 	float maxGraphTranslationResidual{0.20f}; // fraction of the spread of the reading's seam cameras
@@ -438,8 +398,8 @@ private:
 	 */
 	void MergeTracksWithCrossSubScenePairs(const std::vector<bool>& unplacedImages, const std::vector<SeamCorrespondence>& seamInliers, bool releaseUnplaced);
 
-	// Global image ID -> (sub-scene index, local image index)
-	std::unordered_map<IIndex, std::pair<uint32_t, IIndex>> globalToLocal;
+	// Global image ID -> (sub-scene index, local image index); (NO_ID, NO_ID) if unmapped
+	std::vector<PairIdx> globalToLocal;
 
 	// Block pair (a < b) -> indices into scene.pairs of its cross pairs
 	std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>> blockPairLinks;

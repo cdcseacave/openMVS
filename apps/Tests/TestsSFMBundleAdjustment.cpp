@@ -38,6 +38,7 @@
 #include "../../libs/SFM/PairsWeighting.h"
 #include "../../libs/SFM/ViewGraphCalibrator.h"
 #include "../../libs/SFM/BundleAdjustment.h"
+#include "../../libs/SFM/BundleAdjustmentCostFunctions.h"
 #include "../../libs/SFM/SceneCluster.h"
 #include "../../libs/SFM/SceneBlocks.h"
 #include "../../libs/SFM/GlobalAlignment.h"
@@ -433,9 +434,73 @@ bool ReconstructSphericalSyntheticTest()
 }
 /*----------------------------------------------------------------*/
 
-// The smoke tests of the bundle adjustment on synthetic scenes (the library's PinholeReprojectionJacobianTest, which checks
-// the Jacobian itself, runs beside it): the plain solve, a spherical camera, the refined focal length and radial distortion,
-// and Scene::Transform preserving the projections
+bool PinholeReprojectionJacobianTest()
+{
+	TestScope scope("PinholeReprojectionJacobianTest");
+	// Compare analytic and auto-diff reprojection Jacobians over randomized poses, points, and
+	// full distortion models (k1-k6, p1-p2). Auto-diff quaternion columns are projected onto the
+	// tangent space of the unit quaternion manifold before comparison.
+	constexpr double maxRelativeError = 1e-6;
+	constexpr unsigned numTrials = 256;
+	std::mt19937 rng(20260909u);
+	const auto rnd = [&rng](double lo, double hi) {
+		return std::uniform_real_distribution<double>(lo, hi)(rng);
+	};
+	double worstRelativeError = 0, worstResidualError = 0;
+	for (unsigned trial = 0; trial < numTrials; ++trial) {
+		double pose[7] = { rnd(-1.0, 1.0), rnd(-1.0, 1.0), rnd(-1.0, 1.0), rnd(-1.0, 1.0),
+			rnd(-3.0, 3.0), rnd(-3.0, 3.0), rnd(-3.0, 3.0) };
+		Eigen::Map<Eigen::Vector4d> quat(pose);
+		if (quat.norm() < 0.1)
+			continue;
+		quat.normalize();
+		const double pointCamera[3] = { rnd(-4.0, 4.0), rnd(-4.0, 4.0), rnd(1.0, 10.0) };
+		const double quatInverse[4] = { pose[0], -pose[1], -pose[2], -pose[3] };
+		double point[3];
+		ceres::UnitQuaternionRotatePoint(quatInverse, pointCamera, point);
+		point[0] += pose[4]; point[1] += pose[5]; point[2] += pose[6];
+		const double intrinsics[12] = { rnd(400.0, 2000.0), rnd(0.95, 1.05), rnd(300.0, 340.0), rnd(220.0, 260.0),
+			rnd(-0.3, 0.3), rnd(-0.2, 0.2), rnd(-0.1, 0.1), rnd(-0.01, 0.01), rnd(-0.01, 0.01),
+			rnd(-0.2, 0.2), rnd(-0.1, 0.1), rnd(-0.05, 0.05) };
+		const double* parameters[3] = { pose, intrinsics, point };
+
+		const double observedX = rnd(0.0, 640.0), observedY = rnd(0.0, 480.0);
+		PinholeReprojectionErrorAnalytic analytic(observedX, observedY);
+		double analyticResiduals[2], analyticPose[2*7], analyticIntrinsics[2*12], analyticPoint[2*3];
+		double* analyticJacobians[3] = { analyticPose, analyticIntrinsics, analyticPoint };
+		std::unique_ptr<ceres::CostFunction> autodiff(PinholeReprojectionError::Create(observedX, observedY));
+		double autodiffResiduals[2], autodiffPose[2*7], autodiffIntrinsics[2*12], autodiffPoint[2*3];
+		double* autodiffJacobians[3] = { autodiffPose, autodiffIntrinsics, autodiffPoint };
+		TEST_CHECK(analytic.Evaluate(parameters, analyticResiduals, analyticJacobians) &&
+			autodiff->Evaluate(parameters, autodiffResiduals, autodiffJacobians), "cost evaluation failed");
+		for (int i = 0; i < 2; ++i) {
+			Eigen::Map<Eigen::Vector4d> jacobianQuat(autodiffPose + i*7);
+			jacobianQuat -= jacobianQuat.dot(quat)*quat;
+		}
+		for (int i = 0; i < 2; ++i)
+			worstResidualError = MAXF(worstResidualError,
+				ABS(analyticResiduals[i] - autodiffResiduals[i])/MAXF(ABS(autodiffResiduals[i]), 1.0));
+		const int blockSizes[3] = { 2*7, 2*12, 2*3 };
+		const char* const blockNames[3] = { "pose", "intrinsics", "point" };
+		for (int block = 0; block < 3; ++block) {
+			double maxDifference = 0, maxValue = 0;
+			for (int i = 0; i < blockSizes[block]; ++i) {
+				maxDifference = MAXF(maxDifference, ABS(analyticJacobians[block][i] - autodiffJacobians[block][i]));
+				maxValue = MAXF(maxValue, MAXF(ABS(analyticJacobians[block][i]), ABS(autodiffJacobians[block][i])));
+			}
+			const double relativeError = maxValue > 0 ? maxDifference/maxValue : maxDifference;
+			worstRelativeError = MAXF(worstRelativeError, relativeError);
+			TEST_CHECK(relativeError <= maxRelativeError, "trial %u %s Jacobian differs by %g relative (max entry %g)",
+				trial, blockNames[block], relativeError, maxValue);
+		}
+	}
+	return scope.Pass("%u trials, worst relative Jacobian difference %.2e, residual %.2e",
+		numTrials, worstRelativeError, worstResidualError);
+}
+/*----------------------------------------------------------------*/
+
+// The smoke tests of the bundle adjustment on synthetic scenes: the plain solve, a spherical camera,
+// the refined focal length and radial distortion, and Scene::Transform preserving the projections
 bool BundleAdjustmentBasicsTest()
 {
 	TestScope scope("BundleAdjustmentBasicsTest");
@@ -891,24 +956,17 @@ bool RepeatedFullAdjustmentTest()
 }
 /*----------------------------------------------------------------*/
 
-// The track filter and the triangulation on the arc:
-// 1. a dense observation is held to its own multiple of the reprojection bar. Seven posed cameras share 30 exact tracks, plus two
-//    tracks whose observation in the last image is 7 pixels off: a described keypoint carries one, a dense keypoint the other.
-//    The displacement is vertical, across the plane of the arc, the direction the other six views constrain tightly: a
-//    least-squares triangulation then leaves most of it in the displaced view (about six sevenths, between the 4-pixel bar
-//    and twice it), where a displacement along the arc would be traded for depth and spread over every view;
-// 2. a track with one posed view, the star's reference at the world origin, is unjudged. The star puts its reference view exactly
-//    at the origin, and a track whose only posed view is that reference was never triangulated, so it still holds the position a
-//    scene saved before the default became an improbable point stores, (0,0,0): the point the reference camera sits on, where
-//    the angle to the observed ray is 0/0 (NaN), which the gate's comparison lets through. 30 exact tracks over two other posed
-//    images show the filter still judges the tracks that can have a position;
-// 3. a track of two posed views never triangulated holds the improbable default position (far, finite, rays that meet at no
-//    angle), not a point a posed camera can sit on, so that the filters that run before a triangulation reject it.
+// Track filtering and triangulation on the arc:
+// 1. Both described and dense observations are held to the same reprojection bar (4 px): seven posed cameras share
+//    30 exact tracks plus two tracks whose last-image observation is vertically displaced by 7 px (one described,
+//    one dense); both FilterTracks and TriangulateTracks drop the displaced observation on both tracks.
+// 2. A track with one posed view at the origin is left unjudged while tracks with two posed views are judged.
+// 3. A never-triangulated track of two posed views holds Track::UNTRIANGULATED_COORD and is rejected.
 bool FilterTracksTest()
 {
 	TestScope scope("FilterTracksTest");
 
-	// 1. the dense bar
+	// 1. Unified reprojection bar for described and dense observations
 	constexpr unsigned numViews = 7;
 	constexpr float displacement = 7.f;
 	{
@@ -919,7 +977,7 @@ bool FilterTracksTest()
 		TEST_CHECK(arc.TrackAt(Point3(0.2, 0.1, -0.3), allViews), "the described track does not project inside every image");
 		const size_t idxDescribed = scene.tracks.size() - 1;
 		Image& lastImage = scene.images[numViews - 1];
-		lastImage.CloseDescribedKeypoints(); // every keypoint the last image gains from here on is dense
+		lastImage.CloseDescribedKeypoints();
 		TEST_CHECK(arc.TrackAt(Point3(-0.3, 0.2, 0.1), allViews), "the dense track does not project inside every image");
 		const size_t idxDense = scene.tracks.size() - 1;
 		arc.Displace(numViews - 1, (unsigned)idxDescribed, 1, Point2f(0.f, displacement));
@@ -932,23 +990,13 @@ bool FilterTracksTest()
 				scene.tracks[idxDense].numInliers, numViews, expectedDescribed, expectedDense);
 			return true;
 		};
-		// at a 4-pixel bar with the dense observations held to twice that, the filter keeps the dense observation and drops the
-		// described one; held to the same bar, it drops both; the triangulation reads the two bars the same way
-		FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 2.f);
-		if (!Check("the filter, with dense observations held to twice the 4-pixel bar,", numViews - 1, numViews))
-			return false;
-		FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 1.f);
-		if (!Check("the filter, at a 4-pixel bar for both kinds,", numViews - 1, numViews - 1))
+		FilterTracks(scene, 4.f, 1.f, 0.f, 0.f);
+		if (!Check("FilterTracks at 4 px", numViews - 1, numViews - 1))
 			return false;
 		for (Track& track : scene.tracks)
 			track.position = Point3(0, 0, 0);
-		TriangulateTracks(scene, false, 4.f, 1.f, 2.f);
-		if (!Check("the triangulation, with dense observations held to twice the 4-pixel bar,", numViews - 1, numViews))
-			return false;
-		for (Track& track : scene.tracks)
-			track.position = Point3(0, 0, 0);
-		TriangulateTracks(scene, false, 4.f, 1.f, 1.f);
-		if (!Check("the triangulation, at a 4-pixel bar for both kinds,", numViews - 1, numViews - 1))
+		TriangulateTracks(scene, false, 4.f, 1.f);
+		if (!Check("TriangulateTracks at 4 px", numViews - 1, numViews - 1))
 			return false;
 	}
 
@@ -963,7 +1011,7 @@ bool FilterTracksTest()
 		arc.Tracks({1, 2}, 30);
 		numExact = scene.tracks.size();
 		Track positionless;
-		positionless.position = Point3(0, 0, 0); // what a scene saved before the default was an improbable point stores
+		positionless.position = Point3(0, 0, 0);
 		for (const IIndex imageID : {IIndex(0), IIndex(3)}) {
 			Image& img = scene.images[imageID];
 			positionless.observations.emplace_back(imageID, (uint32_t)img.keypoints.size());
@@ -972,7 +1020,7 @@ bool FilterTracksTest()
 		scene.tracks.emplace_back(std::move(positionless));
 		TEST_CHECK(scene.images[0].IsValid() && !scene.images[3].IsValid() && scene.images[0].C == CMatrix::ZERO && scene.tracks.back().position == Point3(0, 0, 0),
 			"premise not met: the reference at the origin, the unposed image and the track at the default position");
-		FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 1.f);
+		FilterTracks(scene, 4.f, 1.f, 0.f, 0.f);
 		TEST_CHECK(scene.tracks.back().numInliers == 0, "the filter judged the track with one posed view at its default position and kept %u of its %u "
 			"observations, expected none", scene.tracks.back().numInliers, scene.tracks.back().GetNumObservations());
 		for (size_t i = 0; i < numExact; ++i)
@@ -985,7 +1033,7 @@ bool FilterTracksTest()
 		ArcScene arc(2, 20261027);
 		Scene& scene = arc.scene;
 		static_cast<Pose3D&>(scene.images[0]) = Pose3D::Identity();
-		Track& untriangulated = scene.tracks.emplace_back(); // as BuildTracks makes its tracks
+		Track& untriangulated = scene.tracks.emplace_back();
 		for (const IIndex imageID : {IIndex(0), IIndex(1)}) {
 			Image& img = scene.images[imageID];
 			untriangulated.observations.emplace_back(imageID, (uint32_t)img.keypoints.size());
@@ -993,7 +1041,7 @@ bool FilterTracksTest()
 		}
 		TEST_CHECK(scene.images[0].IsValid() && scene.images[1].IsValid() && scene.images[0].C == CMatrix::ZERO && scene.tracks.back().GetNumPosedObservations(scene.images) == 2,
 			"premise not met: the reference at the origin, a second posed image and a track of both");
-		FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 1.f);
+		FilterTracks(scene, 4.f, 1.f, 0.f, 0.f);
 		const Track& track = scene.tracks.back();
 		TEST_CHECK(track.numInliers == 0 && scene.status.nTracks == 0, "the filter kept %u of the %u observations of a track that was never triangulated "
 			"(%u inlier tracks), expected none", track.numInliers, track.GetNumObservations(), scene.status.nTracks);
@@ -1003,8 +1051,7 @@ bool FilterTracksTest()
 			"expected the same far finite coordinate %g in all three", track.position.x, track.position.y, track.position.z, Track().position.x,
 			Track().position.y, Track().position.z, Track::UNTRIANGULATED_COORD);
 	}
-	return scope.Pass("the filter and the triangulation hold a dense observation to its own multiple of the reprojection bar; a track with one posed view "
-		"at the origin and a track never triangulated are left unjudged and not inliers, while the %zu tracks of two posed views are still judged", numExact);
+	return scope.Pass("the filter and triangulation hold described and dense observations to the same bar; single-view and untriangulated tracks are rejected while %zu valid tracks remain", numExact);
 }
 /*----------------------------------------------------------------*/
 // Triangulation, its failures and a geometry that once defeated it.

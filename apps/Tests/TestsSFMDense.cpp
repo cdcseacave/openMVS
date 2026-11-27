@@ -227,8 +227,7 @@ static bool ReadParityBounds(const String& fileName, RoMa2ParityBounds& bounds)
 	return true;
 }
 
-// Linear-interpolated percentile of a sample set, as numpy.percentile computes it
-// (the reference judging of polyml's check_correspondences); the values are sorted in place
+// Linear-interpolated percentile of a sample set, matching numpy.percentile; sorts values in place
 static float Percentile(std::vector<float>& values, double percent)
 {
 	ASSERT(!values.empty() && percent >= 0 && percent <= 100);
@@ -846,12 +845,6 @@ static bool DenseWedgeCorrespondence(const Image& imgSrc, const Image& imgDst, c
 	return Image8U::isInside(ptDst, imgDst.GetSize());
 }
 
-// The normalized (align_corners=false) coordinate a warp map stores for a pixel of the target image
-static inline Point2f DenseNormCoord(const Point2f& pt, const cv::Size& size)
-{
-	return Point2f(2.f*(pt.x + 0.5f)/(float)size.width - 1.f, 2.f*(pt.y + 0.5f)/(float)size.height - 1.f);
-}
-
 // One direction of the exact bidirectional warp: every cell of imgSrc's grid projected onto imgDst
 // through the wedge, with confidence 1 on the given cell rectangle and 0 everywhere else. A cell
 // whose ray misses the surface is pointed far outside imgDst, the "no correspondence here" encoding
@@ -870,7 +863,7 @@ static void MakeDenseWedgeWarp(const Image& imgSrc, const Image& imgDst, int cel
 			if (!DenseWedgeCorrespondence(imgSrc, imgDst,
 				CellToPixel(Point2f((float)x, (float)y), gridSize, sizeSrc), ptDst))
 				continue;
-			maps.warp(y, x) = DenseNormCoord(ptDst, sizeDst);
+			maps.warp(y, x) = NormCoord(ptDst, sizeDst);
 			if (x >= x0 && x < x1 && y >= y0 && y < y1)
 				maps.confidence(y, x) = 1.f;
 		}
@@ -897,7 +890,7 @@ static void MakeDenseHomographyWarp(const Image& imgSrc, const Image& imgDst, in
 			const float w = 1.f + 3e-4f*dx - 2e-4f*dy;
 			const Point2f ptDst(cxDst + (cosT*dx - sinT*dy - 30.f)/w, cyDst + (sinT*dx + cosT*dy + 12.f)/w);
 			maps.warp(y, x) = Image8U::isInside(ptDst, sizeDst) ?
-				DenseNormCoord(ptDst, sizeDst) : Point2f(-3.f, -3.f);
+				NormCoord(ptDst, sizeDst) : Point2f(-3.f, -3.f);
 			if (x >= x0 && x < x1 && y >= y0 && y < y1)
 				maps.confidence(y, x) = 1.f;
 		}
@@ -989,13 +982,13 @@ bool DenseWarpGridConventionTest()
 			Point2f(0.f, 0.f), Point2f(W1, H1), Point2f(0.f, H1), Point2f(W1, 0.f),
 			Point2f(1.f, cy), Point2f(cx, 1.f), Point2f(1.f, 1.f), Point2f(W1 - 1.f, cy), Point2f(cx, H1 - 1.f)})
 			imgA.keypoints.emplace_back(pt, 1.f);
-		std::vector<Point2f> trackedA, trackedB;
+		std::vector<Point2f> trackedB;
 		std::vector<uchar> status;
-		TEST_CHECK(TrackKeypointsByWarp(imgA, imgB, warp, confidence, 0.1f, trackedA, trackedB, status) == imgA.keypoints.size(),
+		TEST_CHECK(TrackKeypointsByWarp(imgA, imgB, warp, confidence, 0.1f, trackedB, status) == imgA.keypoints.size(),
 			"%dx%d: not every keypoint tracked through a fully confident warp", size.width, size.height);
 		float maxError = 0.f;
 		unsigned worst = 0;
-		FOREACH(i, trackedA) {
+		FOREACH(i, trackedB) {
 			const Point2f& a = imgA.keypoints[i].pt;
 			const Point2f expected(MapAB(Point2f(CLAMP(a.x, firstX, lastX), CLAMP(a.y, firstY, lastY))));
 			const float error = (float)norm(trackedB[i] - expected);
@@ -1087,9 +1080,9 @@ bool DenseWarpGridConventionTest()
 			imgA.keypoints.emplace_back(ux(rng), uy(rng), 1.f);
 		Image32F overlap(cv::Size(fx.CELLS, fx.CELLS), 1.f);
 		overlap.colRange(0, fx.CELLS/2).setTo(0.f);
-		std::vector<Point2f> trackedA, trackedB;
+		std::vector<Point2f> trackedB;
 		std::vector<uchar> status;
-		TrackKeypointsByWarp(imgA, fx.B(), fx.warp, overlap, 0.3f, trackedA, trackedB, status);
+		TrackKeypointsByWarp(imgA, fx.B(), fx.warp, overlap, 0.3f, trackedB, status);
 		FOREACH(i, status) {
 			const float x = imgA.keypoints[i].pt.x;
 			TEST_CHECK(!(x < 316.f && status[i]) && !(x > 324.f && !status[i]), "overlap gate at x=%g (%s)", x, status[i] ? "kept" : "dropped");
@@ -2622,11 +2615,7 @@ static bool RoMa2OnnxParityDescribe(const TestScope& scope, RoMa2Onnx& model, co
 	TEST_CHECK(ReadNpyExpect(descDir + "out_value_facets.npy", numTensor, reference), "[%s] cannot read out_value_facets.npy", setting.c_str());
 	const double cosFacets = CosineSimilarity(facets.data(), reference.data(), numTensor);
 
-	// the graph's own on-device retrieval pooling, judged against the CPU pool_retrieval reference's
-	// pooled_facets_A.npy fixture at the tighter bar (export.py check's --retrieval-min-cosine
-	// default) rather than the looser bounds.minCosine below -- this parity gate exists because
-	// this readback path had no automated coverage otherwise; it must keep running now that the CPU
-	// pooling it used to also be judged against (PoolRetrievalDescriptor) is gone
+	// The graph's own on-device retrieval pooling judged against pooled_facets_A.npy
 	TEST_CHECK(retrieval.size() == manifest.facetsDim, "[%s] the graph's retrieval output has %u values, the manifest declares %u",
 		setting.c_str(), (unsigned)retrieval.size(), manifest.facetsDim);
 	TEST_CHECK(ReadNpyExpect(descDir + "pooled_facets_A.npy", manifest.facetsDim, reference), "[%s] cannot read pooled_facets_A.npy", setting.c_str());
@@ -2648,10 +2637,9 @@ static bool RoMa2OnnxParityDescribe(const TestScope& scope, RoMa2Onnx& model, co
 	return true;
 }
 
-// polyml's check_correspondences in C++, for one match direction: the warp error in pixels of the
+// Reference check_correspondences in C++, for one match direction: the warp error in pixels of the
 // SxS grid over the cells the reference calls overlapping, and the agreement of the overlap
-// logit's sign. Shared by both directions of RoMa2OnnxParityMatchCoarse below, which compares a
-// computed (warp, confidence) pair to a same-shaped reference dump twice, once per direction.
+// logit's sign. Shared by both directions of RoMa2OnnxParityMatchCoarse below.
 static bool RoMa2OnnxCheckDirection(const TestScope& scope, const Image32F2& warp, const Image32F& confidence,
 	const std::vector<float>& refWarp, const std::vector<float>& refConfidence,
 	int S, int cells, const RoMa2ParityBounds& bounds, const String& setting, const char* direction,
@@ -2685,9 +2673,8 @@ static bool RoMa2OnnxCheckDirection(const TestScope& scope, const Image32F2& war
 }
 
 // The coarse-match stage of one preset against real_<setting>_match_coarse.reference, driven end
-// to end: both sources preprocessed, described, and matched, then judged as polyml's
-// check_correspondences does, by the bounds in that dump's own parity.json, on both directions
-// of the bidirectional graph (warp/confidence A->B, warp_BA/confidence_BA B->A)
+// to end: both sources preprocessed, described, and matched, then judged against the bounds in
+// parity.json on both directions of the bidirectional graph (A->B and B->A).
 static bool RoMa2OnnxParityMatchCoarse(const TestScope& scope, RoMa2Onnx& model, const String& matchDir, const String& setting)
 {
 	RoMa2ParityBounds bounds;
@@ -2749,7 +2736,7 @@ bool RoMa2OnnxParityTest()
 	VERBOSE("RoMa2OnnxParityTest: skipped (built without ONNX Runtime)");
 	return true;
 	#else
-	if (!RoMa2Onnx::IsAvailable()) {
+	if (!DenseMatcher::IsAvailable()) {
 		VERBOSE("RoMa2OnnxParityTest: skipped (no ONNX Runtime support in this build)");
 		return true;
 	}
@@ -2774,16 +2761,9 @@ bool RoMa2OnnxParityTest()
 				settings.emplace_back(knownSetting);
 	}
 	if (settings.empty()) {
-		// nothing to compare against: this model directory ships the graphs but no reference dumps,
-		// which the other ROMA2 tests are perfectly happy with, so skip loudly instead of
-		// failing the whole suite. Naming a preset explicitly through OPENMVS_ROMA2_SETTING still
-		// fails hard below (RoMa2OnnxParityDescribe cannot open its parity.json): the user then
-		// asked for a comparison that cannot be made.
 		VERBOSE("RoMa2OnnxParityTest: skipped (no reference dumps under '%s', parity not checked)", modelDir.c_str());
 		return true;
 	}
-	// a failed Load() must leave the model unloaded, never half-built; an unknown setting has no
-	// manifest to open, the only Load() failure reachable without corrupting a shipped model file
 	DEBUG("RoMa2OnnxParityTest: the 'failed to open RoMa2 manifest' error below is an expected negative check");
 	RoMa2Onnx unloaded;
 	TEST_CHECK(!unloaded.Load(modelDir, "no-such-setting", provider) && !unloaded.IsLoaded() && !unloaded.MakeLayers().IsValid(), "a failed Load() did not leave the model unloaded");
@@ -2795,21 +2775,13 @@ bool RoMa2OnnxParityTest()
 }
 
 #ifdef _USE_ONNXRUNTIME
-// One matched pair of a DenseReconstructScene run, reduced to what the checks below compare:
-// which pair it is and how large each of its two evidence segments is. A pair the one pass stored
-// carries no marker of its own, so a pair the pass created is read off the difference between two
-// runs' pair sets; the dense count is what says the pass's fill reached the scene, and it is part
-// of the tuple so the determinism runs compare the fill too -- the dense keypoint indices are
-// handed out by a serial append whose order is exactly what a parallel pass could disturb.
 struct DensePairSummary {
 	IIndex ID1, ID2;
 	unsigned numMatches, numFilteredInliers, numDenseInliers;
 
-	// order by pair identity alone: two runs of the same scene match the same pairs
 	bool operator<(const DensePairSummary& r) const {
 		return ID1 != r.ID1 ? ID1 < r.ID1 : ID2 < r.ID2;
 	}
-	// the (ID1, ID2, numMatches, numFilteredInliers, numDenseInliers) tuple the determinism check compares
 	bool operator==(const DensePairSummary& r) const {
 		return ID1 == r.ID1 && ID2 == r.ID2 && numMatches == r.numMatches &&
 			numFilteredInliers == r.numFilteredInliers && numDenseInliers == r.numDenseInliers;
@@ -2817,8 +2789,6 @@ struct DensePairSummary {
 };
 typedef std::vector<DensePairSummary> DensePairSummaries;
 
-// The scene's pairs as those tuples, sorted so that two runs are comparable whatever order
-// they happened to store the pairs in
 static DensePairSummaries SummarizePairs(const Scene& scene)
 {
 	DensePairSummaries summaries;
@@ -2830,25 +2800,6 @@ static DensePairSummaries SummarizePairs(const Scene& scene)
 	return summaries;
 }
 
-// One matching run of DenseMatcherReconstructTest: the bundled images and their AKAZE features (BundledImagesFeatures) at the
-// images' own focal, given and so trusted (720.51 px, no distortion), then MatchPairs in RETRIEVAL mode with the dense matcher
-// of denseCfg attached, the describe pass and (useMatching) the one pass in one model load. Unlike RealImagesPipelineTest, which
-// forces a wrong 900 px / k1 0.6 / k2 -0.09 and leans on the view-graph calibrator to recover them from the fundamental
-// matrices, this run cannot feed that recovery: warp-guided matching keeps, per keypoint of A, the descriptor-best keypoint of
-// B inside a disc around the position the warp predicts, so the stored correspondences fit a whole family of F near the warp's
-// own geometry and the focal a calibrator extracts from them is wildly unstable (measured at turbo with the forced 900 px: 690
-// px from the descriptor matches, 133 px from the guided ones on the CPU provider, a rejected 34450 px estimate on CUDA). With
-// the intrinsics trusted the pairs carry a relative pose straight from matching, which the reconstruction stage consumes. The
-// focal is given, not left to the import: the images carry only a 35 mm-equivalent focal (720.51 px on the 640x479 frame),
-// which the import takes as an untrusted guess for the lens fit, and four images give the fit too few pairs to trust it, so no
-// pair would carry a relative pose. The view-graph calibration is off: it re-solves a focal per camera and re-filters every
-// pair's inliers through it, one more moving part between two runs compared pair by pair.
-// Checks: the GLOBAL_DESCRIPTORS state; every image's global descriptor 1 x expectedDim and unit; no two images' descriptors
-// near-identical (cosine under 1-1e-6: the four close-up shots measure up to 0.99994838 by content alone, a descriptor
-// described twice from one reused prefetch buffer comes out within float rounding of 1); every candidate pair stored (a
-// covisibility gate may drop some: then at least one and no more) and geometrically verified on minMatches of evidence (the
-// track-forming set when the one pass ran, its dense fill counting). Hands the stored pairs back as summaries.
-// staleDescriptors: the scene first carries global descriptors of another matcher (2048-D), which MatchPairs must replace.
 static bool DenseReconstructScene(const TestScope& scope, Scene& scene, DenseMatchConfig denseCfg, int expectedDim,
 	DensePairSummaries& pairSummaries, bool staleDescriptors = false)
 {
@@ -2865,7 +2816,7 @@ static bool DenseReconstructScene(const TestScope& scope, Scene& scene, DenseMat
 		scene.status.nState.set(Scene::Status::STATE::GLOBAL_DESCRIPTORS);
 	}
 	MatchConfig matchCfg = BundledImagesConfig().matchCfg;
-	matchCfg.mode = MatchConfig::RETRIEVAL; // the describe pass and the dense pass, one model load; on four images every pair
+	matchCfg.mode = MatchConfig::RETRIEVAL;
 	matchCfg.viewGraphCalibrationEnabled = false;
 	denseCfg.enabled = true;
 	TEST_CHECK(scene.MatchPairs(matchCfg, denseCfg, ViewGraphCalibratorConfig()), "%s: MatchPairs failed", denseCfg.matcher.c_str());
@@ -2900,20 +2851,6 @@ static bool DenseReconstructScene(const TestScope& scope, Scene& scene, DenseMat
 	return true;
 }
 
-// The RoMa2 half of DenseMatcherReconstructTest, on the model at modelPath (OPENMVS_ROMA2_SETTING picks the preset, default
-// "base"; OPENMVS_ROMA2_PROVIDER the provider, default "auto"):
-// 1. a baseline run with the one pass off (the descriptor matching) against a run with it on: the same pair set, a dense segment
-//    on every pair and a sparse segment of another size than the descriptor batch's on most (the guided matching tests each
-//    keypoint of A against the best one OUTSIDE its disc, a different and stricter selection, so no more inliers are asked for);
-// 2. the dense run survives a Scene::Save/Load round trip (global descriptors bit for bit, the same pairs), and the
-//    reconstruction stage of RealImagesPipelineTest passes on it: 5000-12000 tracks (the fill hands the track builder several
-//    times the ~2.2k of the descriptor-only run, measured ~7.7k at turbo on CUDA under the flat cap the density rule replaced, so
-//    the window is loose at its top; a model, preset or budget change moves it: re-measure) and up to 20 px of residual
-//    distortion (the warp's bias absorbed by the bundle into a scene that has none, measured 10.1 px; the focal given at import
-//    already meets the 100 px bound, so here it checks the focal stays, not that it is recovered);
-// 3. determinism (design decision 11): two runs on one thread with a slot pool of 2, so the describe pass reuses a prefetch
-//    buffer (2 buffers for 4 images) and the one pass reloads evicted slots (8 loads for 6 pairs), store the very same pairs,
-//    sparse and dense segments alike. Both start from the same cached features: what is compared is the matching.
 static bool RoMa2Reconstruct(const TestScope& scope, const String& modelPath)
 {
 	const char* const envSetting = getenv("OPENMVS_ROMA2_SETTING");
@@ -2965,7 +2902,7 @@ static bool RoMa2Reconstruct(const TestScope& scope, const String& modelPath)
 		}
 		TEST_CHECK(SummarizePairs(loaded) == guided, "roma2: the round trip changed the matched pairs");
 	}
-	TEST_CHECK(ReconstructMatchedScene(scene, "DenseMatcherReconstructTest[roma2]", 5000, 12000, 20), "roma2: the reconstruction stage");
+	TEST_CHECK(ReconstructMatchedScene(scope, scene, 5000, 12000, 20), "roma2: the reconstruction stage");
 	DensePairSummaries tightPool, repeated;
 	for (DensePairSummaries* summaries : {&tightPool, &repeated}) {
 		Scene scene(1);
@@ -2985,15 +2922,6 @@ static bool RoMa2Reconstruct(const TestScope& scope, const String& modelPath)
 	return true;
 }
 
-// The FlexGlue half of DenseMatcherReconstructTest, on the bundle at modelPath (docs/design/DenseMatching.md), with no RoMa2 model
-// reachable (its explicit path names a folder that does not exist and OPENMVS_ROMA2_MODEL_PATH is unset for the duration): the
-// describe pass, the retrieval and the matching load the FlexGlue bundle alone, on scenes carrying stale 2048-D descriptors.
-// 1. every pair kept: each carries a covisibility score in [0,1], a pose prior that is a rotation and a unit direction, close to
-//    the pose its own matches give (12 deg in rotation, 30 in direction: a convention error of the pose head, a transposed
-//    rotation, the baseline's sign or frame, is far from that on pairs of 5-14 deg), and the pairs CSV carries both (25 fields);
-// 2. the covisibility gate at the median score keeps the pairs clearly above it and drops those clearly below (a second GPU run
-//    moves a score by about 1e-5);
-// 3. the reconstruction stage of RealImagesPipelineTest on the ungated scene (4000-12000 tracks, 20 px of distortion).
 static bool FlexGlueReconstruct(const TestScope& scope, const String& modelPath)
 {
 	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
@@ -3047,7 +2975,7 @@ static bool FlexGlueReconstruct(const TestScope& scope, const String& modelPath)
 		const ScopedTempDir tmpDir(_T("DenseMatcherReconstructTest"));
 		TEST_CHECK(tmpDir.IsValid(), "no temporary folder");
 		const String csvPath(tmpDir(_T("pairs.csv")));
-		TEST_CHECK(PairsMatcher::ExportPairsCSV(scene, csvPath, 0.f, 0.f, PairsWeightingConfig()), "flexglue: cannot export the pairs CSV");
+		TEST_CHECK(PairsMatcher::ExportPairsCSV(scene, csvPath, 0.f, PairsWeightingConfig()), "flexglue: cannot export the pairs CSV");
 		std::ifstream ifs(csvPath);
 		std::string header, row;
 		std::getline(ifs, header);
@@ -3083,23 +3011,18 @@ static bool FlexGlueReconstruct(const TestScope& scope, const String& modelPath)
 			TEST_CHECK(pair.covisibility && *pair.covisibility >= bar, "flexglue: the gate at %g kept pair (%u, %u) of covisibility %g", bar,
 				pair.ID1, pair.ID2, pair.covisibility ? *pair.covisibility : -1.f);
 	}
-	TEST_CHECK(ReconstructMatchedScene(scene, "DenseMatcherReconstructTest[flexglue]", 4000, 12000, 20), "flexglue: the reconstruction stage");
+	TEST_CHECK(ReconstructMatchedScene(scope, scene, 4000, 12000, 20), "flexglue: the reconstruction stage");
 	return true;
 }
 #endif // _USE_ONNXRUNTIME
 
-// The dense matchers in the whole import/AKAZE/RETRIEVAL pipeline on the bundled images, each half run when its model is given
-// (OPENMVS_ROMA2_MODEL_PATH, OPENMVS_FLEXGLUE_MODEL_PATH) and skipped otherwise: the shared checks of every matching run
-// (DenseReconstructScene: the describe pass's retrieval descriptors, every pair verified) and each matcher's own (RoMa2Reconstruct:
-// the one pass against the descriptor batch, the round trip, determinism; FlexGlueReconstruct: covisibility, pose prior, CSV,
-// the gate), each finished with RealImagesPipelineTest's reconstruction stage
 bool DenseMatcherReconstructTest()
 {
 	#ifndef _USE_ONNXRUNTIME
 	VERBOSE("DenseMatcherReconstructTest: skipped (built without ONNX Runtime)");
 	return true;
 	#else
-	if (!RoMa2Onnx::IsAvailable()) {
+	if (!DenseMatcher::IsAvailable()) {
 		VERBOSE("DenseMatcherReconstructTest: skipped (no ONNX Runtime support in this build)");
 		return true;
 	}

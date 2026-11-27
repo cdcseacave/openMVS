@@ -58,9 +58,8 @@ project="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
-# Everything runs in polyml's export project env: torch, onnx and onnxscript come from its lock file, and
-# onnxruntime-gpu is added on top so that the trace and the check of it happen in one process family.
-ROMA2_PROJECT="${ROMA2_PROJECT:-$HOME/polyml/romav2}"
+# Run inside the RoMaV2 Python environment (override ROMA2_PROJECT / ROMA2_ORT as needed).
+ROMA2_PROJECT="${ROMA2_PROJECT:-$HOME/RoMaV2}"
 ORT="${ROMA2_ORT:-onnxruntime-gpu==1.23.2}"
 run() { uv run --project "$ROMA2_PROJECT" --with "$ORT" python "$project/$1" "${@:2}"; }
 

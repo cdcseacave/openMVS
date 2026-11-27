@@ -81,6 +81,7 @@ bool Image::LoadPixels(bool gray)
 
 Image8U3 Image::GetImage8U3() const
 {
+	ASSERT(!pixels.empty());
 	// Fast path: already BGR/8U, return a shared view (no copy).
 	if (pixels.channels() == 3 && pixels.depth() == CV_8U)
 		return Image8U3(pixels);
@@ -387,6 +388,7 @@ UnsignedArr Image::SelectTopKeypoints(unsigned maxKeypoints) const
 	std::vector<UnsignedArr> cellKeypoints(9);
 	for (unsigned i = 0; i < numKeypoints; ++i) {
 		const cv::Point2f& pt = keypoints[i].pt;
+		ASSERT(pt.x >= 0.f && pt.y >= 0.f);
 		const int col = MINF(2, (int)(pt.x / cellWidth));
 		const int row = MINF(2, (int)(pt.y / cellHeight));
 		const int cellIdx = row * 3 + col;

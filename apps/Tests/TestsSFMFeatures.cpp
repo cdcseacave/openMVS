@@ -1276,9 +1276,16 @@ bool TwoViewGeometryTest()
 		Pose3D pose_recovered;
 		const int numInliers = ImagePair::RecoverPose(E_composed, bearings1, bearings2, pose_recovered);
 		TEST_CHECK(numInliers >= 8, "RecoverPose returned insufficient inliers (%d)", numInliers);
-		// the decomposed rotation is close to the recovered pose
+		// DecomposeEssentialMatrix returns one of the 4 valid (R, t) factorizations without cheirality:
+		// its rotation is either the true rotation or its 180-deg twisted pair around the baseline,
+		// and re-composing E matches E_composed up to scale and sign.
 		angle_decomp_err = ACOS(ComputeAngle(pose_decomposed.R, pose_recovered.R));
-		TEST_CHECK(angle_decomp_err <= 0.1, "DecomposeEssentialMatrix rotation error too large (%.4f rad)", angle_decomp_err);
+		const REAL angle_decomp_min = MINF(angle_decomp_err, ABS(angle_decomp_err - REAL(M_PI)));
+		TEST_CHECK(angle_decomp_min <= 0.1, "DecomposeEssentialMatrix rotation error too large (%.4f rad)", angle_decomp_err);
+		const Matrix3x3 E_decomp_norm = ImagePair::ComposeEssentialMatrix(pose_decomposed) / cv::norm(ImagePair::ComposeEssentialMatrix(pose_decomposed));
+		const Matrix3x3 E_composed_norm = E_composed / cv::norm(E_composed);
+		const REAL e_decomp_diff = MINF(FrobeniusNorm(E_decomp_norm, E_composed_norm), FrobeniusNorm(E_decomp_norm, -E_composed_norm));
+		TEST_CHECK(e_decomp_diff <= 0.01, "DecomposeEssentialMatrix essential mismatch (%.6f)", e_decomp_diff);
 		// the recovered rotation is close to the ground truth
 		const REAL angle_err = ACOS(ComputeAngle(pose_recovered.R, pose_rel.R));
 		TEST_CHECK(angle_err <= 0.1, "rotation error too large (%.4f rad)", angle_err);
@@ -1430,7 +1437,13 @@ bool SiftGPUTiledMatchTest()
 	std::vector<std::pair<int,int>> planted;
 	std::uniform_int_distribution<int> jitter(-2, 2);
 	const auto Copy = [&](const uint8_t* src, uint8_t* dst) {
-		for (int k = 0; k < 128; ++k) dst[k] = (uint8_t)std::clamp((int)src[k] + jitter(rng), 0, 255);
+		float v[128], n = 0;
+		for (int k = 0; k < 128; ++k) {
+			v[k] = (float)std::clamp((int)src[k] + jitter(rng), 0, 255);
+			n += v[k] * v[k];
+		}
+		n = 512.f / std::sqrt(n);
+		for (int k = 0; k < 128; ++k) dst[k] = (uint8_t)std::min(255.f, std::round(v[k] * n));
 	};
 	for (int t = 0; t < 600; ++t) {
 		const int i = (int)((int64_t)t * (num1 - 1) / 599), j = (int)((int64_t)(599 - t) * (num2 - 1) / 599);
@@ -1440,7 +1453,7 @@ bool SiftGPUTiledMatchTest()
 	// twins: rows 1001 and 65001 (different tiles) copies of one descriptor, both close to column 30001
 	const int twinA = 1001, twinB = 65001, twinCol = 30001;
 	Copy(&d2[(size_t)twinCol * 128], &d1[(size_t)twinA * 128]);
-	Copy(&d2[(size_t)twinCol * 128], &d1[(size_t)twinB * 128]);
+	memcpy(&d1[(size_t)twinB * 128], &d1[(size_t)twinA * 128], 128);
 	gpu->SetDescriptors(0, num1, d1.data());
 	gpu->SetDescriptors(1, num2, d2.data());
 	const auto Match = [&](int mbm, int n1) {

@@ -37,7 +37,6 @@
 // wrapper resolves SFM/MVS/Common symbols via their import libs.
 #include "Common.h"
 #include "Scene.h"
-#include "GlobalDescriptors.h"
 #include "InterfaceMVS.h"
 #ifndef BOOST_PYTHON_STATIC_LIB
 #define BOOST_PYTHON_STATIC_LIB
@@ -74,7 +73,7 @@ public:
 		return Reconstruct(MAKE_PATH_SAFE(source), config);
 	}
 	bool pyReconstructHierarchical(const SFM::ReconstructionConfig& config) {
-		return ReconstructHierarchical(config, SFM::IIndexArr());
+		return ReconstructHierarchical(config, SFM::IIndexArr(seedViews));
 	}
 	bool pyReconstructGlobal(const SFM::ReconstructionConfig& config) {
 		return ReconstructGlobal(config);

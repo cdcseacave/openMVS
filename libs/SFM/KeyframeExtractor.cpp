@@ -30,6 +30,7 @@ float ComputeFeatureOverlap(
 	const std::vector<uchar>& status,
 	const cv::Size& imageSize)
 {
+	ASSERT(!prevPoints.empty() && prevPoints.size() == currPoints.size() && prevPoints.size() == status.size());
 	// Count successfully tracked features
 	int trackedCount = 0;
 	FOREACH(i, status) {
@@ -177,7 +178,7 @@ public:
 				RelativePoseRefine::Config calibCfg;
 				calibCfg.refineFocalLength = !focalKnown;
 				RelativePoseRefine::Result calibRes;
-				PinholeCamera* pCamCopy = static_cast<PinholeCamera*>(cam.Clone()); // copy for tentative refinement
+				std::unique_ptr<PinholeCamera> pCamCopy(static_cast<PinholeCamera*>(cam.Clone()));
 				if (RelativePoseRefine::RefineTwoViewCalibration(
 						prevImg.keypoints, currImg.keypoints, pair.matches,
 						*pCamCopy, pair.relativePose.value(), calibCfg, &calibRes))
@@ -214,12 +215,11 @@ static REAL AverageEstimates(DoubleArr& estimates)
 	DEBUG("Focal estimates: median %.2f mean %.2f stddev %.2f range [%.2f,%.2f] n %u",
 			median, stats.GetMean(), stats.GetStdDev(), stats.GetMin(), stats.GetMax(), estimates.size());
 	return mean;
-};
+}
 
 // Triplet star-calibration helper
 static void RunThreeViewStarCalibration(
     Scene& scene,
-    const KeyframeConfig& config,
     DoubleArr& focalEstimates,
     DoubleArr& k1Estimates,
     DoubleArr& k2Estimates)
@@ -269,12 +269,12 @@ static void RunThreeViewStarCalibration(
 		// Build tracks in sub-scene
 		BuildTracks(sub);
 		if (sub.tracks.empty())
-			return;
+			continue;
 		// Star initialization (reference will be center with connectivity 2)
 		StarInitConfig initCfg; // defaults
 		initCfg.minViews = 3;
 		if (!StarInitializer::Initialize(sub, initCfg))
-			return;
+			continue;
 		// Collect refined intrinsics (camera index 0)
 		PinholeCamera& refinedCam = *static_cast<PinholeCamera*>(sub.cameras[0]);
 		if (refinedCam.fx > 0)
@@ -318,8 +318,9 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 	DEBUG("Video: %dx%d @ %.2f fps, %d frames, %d s",
 		frameWidth, frameHeight, fps, totalFrames, ROUND2INT(totalFrames / fps));
 	if (config.cameraType == CameraType::SPHERICAL && frameWidth != 2 * frameHeight) {
-		VERBOSE("warning: video '%s' is declared spherical but has %dx%d; equirectangular input requires width == 2 * height",
+		VERBOSE("error: video '%s' is declared spherical but has %dx%d; equirectangular input requires width == 2 * height",
 			videoPath.c_str(), frameWidth, frameHeight);
+		return false;
 	}
 
 	// Ensure output directory exists
@@ -600,7 +601,7 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 				DEBUG("warning: ViewGraph calibration failed");
 			}
 		} else if (config.refineCalibration == KeyframeConfig::THREE_VIEW) {
-			RunThreeViewStarCalibration(scene, config, focalEstimates, k1Estimates, k2Estimates);
+			RunThreeViewStarCalibration(scene, focalEstimates, k1Estimates, k2Estimates);
 		} else {
 			const unsigned totalPairs(scene.images.empty() ? 0u : scene.images.size()-1);
 			DEBUG("Focal estimation succeeded for %u/%u pairs (%.2f%%)",

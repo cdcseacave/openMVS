@@ -84,13 +84,14 @@ bool FlexGlueManifest::Load(const String& fileName)
 
 #ifdef _USE_ONNXRUNTIME
 
-// Every cell of a confidence map is a probability
+#ifndef _RELEASE
 static bool ConfidenceInRange(const Image32F& confidence)
 {
 	double minValue, maxValue;
 	cv::minMaxLoc(confidence, &minValue, &maxValue);
 	return minValue >= 0. && maxValue <= 1.;
 }
+#endif
 
 bool FlexGlueMatcher::Load(const String& _modelDir, const String& setting, const String& providerName)
 {
@@ -109,9 +110,13 @@ bool FlexGlueMatcher::Load(const String& _modelDir, const String& setting, const
 	options.provider = OnnxProviderFromString(providerName);
 	if (!descriptor.Load(modelDir + manifest.descriptorFile, options))
 		return false;
-	options.provider = descriptor.Provider(); // both graphs run where the descriptor does
-	if (!match.Load(modelDir + manifest.matchFile, options))
+	if (descriptor.Provider() == OnnxProvider::CPU)
+		VERBOSE("warning: FlexGlue running on the CPU execution provider (seconds per image)");
+	options.provider = descriptor.Provider();
+	if (!match.Load(modelDir + manifest.matchFile, options)) {
+		descriptor.Unload();
 		return false;
+	}
 	const std::vector<int64_t> featuresShape{1, FEATURE_CHANNELS, GRID, GRID};
 	const std::vector<int64_t> warpShape{1, WARP_GRID, WARP_GRID, 2};
 	const std::vector<int64_t> confidenceShape{1, WARP_GRID, WARP_GRID};
@@ -138,9 +143,17 @@ bool FlexGlueMatcher::Load(const String& _modelDir, const String& setting, const
 	}
 	rotation = OrtTensor::Host({1, 3, 3});
 	direction = OrtTensor::Host({1, 3});
-	ASSERT(image.IsValid() && retrieval.IsValid() && covisibility.IsValid() &&
-		imageSize[0].IsValid() && imageSize[1].IsValid() && warp[0].IsValid() && warp[1].IsValid() && confidence[0].IsValid() && confidence[1].IsValid() &&
-		rotation.IsValid() && direction.IsValid());
+	if (!image.IsValid() || !retrieval.IsValid() || !covisibility.IsValid() ||
+		!imageSize[0].IsValid() || !imageSize[1].IsValid() ||
+		!warp[0].IsValid() || !warp[1].IsValid() ||
+		!confidence[0].IsValid() || !confidence[1].IsValid() ||
+		!rotation.IsValid() || !direction.IsValid()) {
+		VERBOSE("error: can not allocate FlexGlue scratch tensors");
+		descriptor.Unload(); match.Unload();
+		return false;
+	}
+	DEBUG("FlexGlue model '%s' ready on %s: %dx%d images, %dx%d feature grid, %dx%d warp cells",
+		setting.c_str(), OnnxProviderName(descriptor.Provider()), IMAGE_SIZE, IMAGE_SIZE, GRID, GRID, WARP_GRID, WARP_GRID);
 	return true;
 }
 
@@ -158,26 +171,29 @@ OrtTensor FlexGlueMatcher::MakeCode()
 void FlexGlueMatcher::Preprocess(const Image8U3& bgr, std::vector<float>& planarRgb) const
 {
 	ASSERT(!bgr.empty());
-	cv::Mat rgb, resized;
-	cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
-	rgb.convertTo(rgb, CV_32FC3, 1.0 / 255.0);
-	cv::resize(rgb, resized, cv::Size(IMAGE_SIZE, IMAGE_SIZE), 0, 0, cv::INTER_LINEAR);
+	Image32F3 f32, resized;
+	bgr.convertTo(f32, CV_32FC3, 1.0 / 255.0);
+	cv::resize(f32, resized, cv::Size(IMAGE_SIZE, IMAGE_SIZE), 0, 0, cv::INTER_LINEAR);
 	const size_t plane = (size_t)IMAGE_SIZE * IMAGE_SIZE;
 	planarRgb.resize(3 * plane);
+	float* dstR = planarRgb.data();
+	float* dstG = dstR + plane;
+	float* dstB = dstG + plane;
 	for (int y = 0; y < IMAGE_SIZE; ++y) {
-		const cv::Vec3f* row = resized.ptr<cv::Vec3f>(y);
+		const Pixel32F* row = resized.ptr<Pixel32F>(y);
+		const size_t rowOffset = (size_t)y * IMAGE_SIZE;
 		for (int x = 0; x < IMAGE_SIZE; ++x) {
-			const size_t i = (size_t)y * IMAGE_SIZE + x;
-			planarRgb[i] = row[x][0];
-			planarRgb[plane + i] = row[x][1];
-			planarRgb[2 * plane + i] = row[x][2];
+			dstR[rowOffset + x] = row[x].r;
+			dstG[rowOffset + x] = row[x].g;
+			dstB[rowOffset + x] = row[x].b;
 		}
 	}
 }
 
 bool FlexGlueMatcher::DescribeImage(const float* planarRgb, OrtTensor& features, std::vector<float>& retrievalOut)
 {
-	ASSERT(IsLoaded() && planarRgb != NULL && features.Shape() == std::vector<int64_t>({1, FEATURE_CHANNELS, GRID, GRID}));
+	static const std::vector<int64_t> kFeaturesShape{1, FEATURE_CHANNELS, GRID, GRID};
+	ASSERT(IsLoaded() && planarRgb != NULL && features.IsValid() && features.Shape() == kFeaturesShape);
 	memcpy(image.HostData(), planarRgb, image.NumElements() * sizeof(float));
 	descriptor.ClearBindings();
 	if (!(descriptor.BindInput("image", image) && descriptor.BindOutput("features", features) &&

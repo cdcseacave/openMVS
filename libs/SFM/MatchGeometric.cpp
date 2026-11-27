@@ -17,13 +17,21 @@ using namespace SFM;
 
 namespace {
 
-// How many nearest neighbours MatchFeaturesGuided fetches per query to find the best keypoint
-// outside the search region. The region can only hold the true match and,
-// at most, a handful of its scale/orientation duplicates, so the closest keypoint outside it is within
-// a short list of the query's nearest neighbours; a list of this length answers that with one batched
-// query, instead of an index over the complement of the region, which is a different set for every
-// query.
+// Number of nearest neighbours fetched per query to find the best keypoint outside the search region.
 constexpr int K_NN = 8;
+
+typedef CLISTDEF0(Point2f::EVec) Point2fs;
+typedef TOctree<Point2fs, float, 2> Octree2f;
+
+// Build a 2D spatial octree over an image's described keypoints (preserving original keypoint indices).
+void BuildDescribedKeypointsOctree(const Image& img, Point2fs& pts, Octree2f& octree)
+{
+	const uint32_t numDescribed = img.NumDescribedKeypoints();
+	pts.Resize(numDescribed);
+	for (uint32_t j = 0; j < numDescribed; ++j)
+		pts[j] = Point2f(img.keypoints[j].pt);
+	octree.Insert(pts, [](Octree2f::IDX_TYPE n, Octree2f::Type r) { return n > 16 && r > 8.f; });
+}
 
 } // unnamed namespace
 
@@ -57,30 +65,11 @@ size_t SFM::MatchFeaturesGuided(
 	if (numDescribedA == 0 || numDescribedB == 0)
 		return 0;
 
-	// 2D index over imgB's described keypoints, the only ones a match may name: a trainIdx reads
-	// imgB.descriptors.row(), which exists for the described prefix alone. The octree returns
-	// indices into the array it was built from, so a prefix-sized array keeps them keypoint indices.
-	typedef CLISTDEF0(Point2f::EVec) Point2fs;
-	Point2fs kptsB(numDescribedB);
-	for (uint32_t j = 0; j < numDescribedB; ++j) {
-		const cv::KeyPoint& keypoint = imgB.keypoints[j];
-		kptsB[j] = Point2f::EVec(keypoint.pt.x, keypoint.pt.y);
-	}
-	typedef TOctree<Point2fs, float, 2> Octree2f;
-	Octree2f octree(kptsB, [](Octree2f::IDX_TYPE n, Octree2f::Type r) { return n > 16 && r > 8.f; });
+	// 2D index over imgB's described keypoints (preserving original keypoint indices).
+	Point2fs kptsB;
+	Octree2f octree;
+	BuildDescribedKeypointsOctree(imgB, kptsB, octree);
 
-	// The region a query searches: the band along its epipolar line, centred on its prediction --
-	// `length` either way along the line, `halfWidth` either way across it -- or, without a line to
-	// follow, the disc of radius `length` around the prediction. The band never reaches outside that
-	// disc (the half-width is held to the length), so the octree is asked for the disc and the band
-	// is cut out of what it returns; this ONE predicate decides both what a candidate is and what
-	// "outside" means, so no keypoint can ever be a candidate and the reference distance of the
-	// same query at once.
-	// The line comes from search.F (x_B^T F x_A = 0): its direction at the prediction is all the band
-	// takes from the geometry, the position it sits at is the warp's, in imgB's own pixels -- so an
-	// imprecise focal or principal point, or lens distortion the geometry does not model, turns the
-	// band by a few degrees and moves it not at all. Near the epipole of imgB every line direction is
-	// equally wrong, so a prediction within two lengths of it searches the disc.
 	const float length = search.length;
 	const float lengthSq = length*length;
 	const float halfWidth = MINF(search.halfWidth, length);
@@ -90,12 +79,11 @@ size_t SFM::MatchFeaturesGuided(
 	bool bEpipoleFinite = false;
 	if (bBand) {
 		F = search.F.value();
-		// the epipole of imgB is the left null vector of F (F^T e = 0); at infinity when the lines
-		// are parallel, and then never near a prediction
+		// imgB's epipole is the left null vector of F (F^T e = 0)
 		const Eigen::JacobiSVD<Eigen::Matrix3d> svd(F, Eigen::ComputeFullU);
 		const Eigen::Vector3d e = svd.matrixU().col(2);
 		if (ABS(e.z()) > 1e-9*e.norm()) {
-			epipoleB = Eigen::Vector2d(e.x()/e.z(), e.y()/e.z());
+			epipoleB = e.hnormalized();
 			bEpipoleFinite = true;
 		}
 	}
@@ -228,15 +216,7 @@ size_t SFM::MatchFeaturesGuided(
 		FOREACH(k, standing)
 			imgA.descriptors.row((int)winners[standing[k]].queryIdx).copyTo(queryDescriptors.row((int)k));
 		std::vector<std::vector<cv::DMatch>> knnMatches;
-		cv::DescriptorMatcher& matcher = pairsMatcher.GetMatcher(threadIdx);
-		if (pairsMatcher.GetConfig().descriptorsAreBinary) {
-			matcher.knnMatch(queryDescriptors, imgB.descriptors, knnMatches, K_NN);
-		} else {
-			cv::Mat queryDescriptorsF, trainDescriptorsF;
-			queryDescriptors.convertTo(queryDescriptorsF, CV_32F);
-			imgB.descriptors.convertTo(trainDescriptorsF, CV_32F);
-			matcher.knnMatch(queryDescriptorsF, trainDescriptorsF, knnMatches, K_NN);
-		}
+		pairsMatcher.KnnMatch(queryDescriptors, imgB.descriptors, knnMatches, K_NN, threadIdx);
 		// one neighbour list per query is the matcher's contract, and knnMatch keeps it: with the
 		// default compactResult=false it returns one list per query row, and the one path that
 		// returns fewer (an empty train set) is excluded by the numDescribedB == 0 early return
@@ -358,19 +338,10 @@ bool SFM::MatchFeaturesGeometric(
 	// Choose a reasonable spatial radius: at least a few pixels, scaled from epipolarThreshold
 	const float spatialThreshold = MAXF(10.f, epipolarThreshold * 6.f);
 
-	// Build a 2D octree over keypoints2 for fast spatial neighbor queries around trackedPoints2.
-	// Restricted to img2's described prefix, and so are every candidate scan and brute-force
-	// fallback below: a candidate's trainIdx is used to read img2.descriptors.row(), which only
-	// exists for a described keypoint. The octree returns indices into the array it was built
-	// from, so a prefix-sized array keeps them keypoint indices.
-	typedef CLISTDEF0(Point2f::EVec) Point2fs;
-	Point2fs kpts2(numDescribed2);
-	for (uint32_t i = 0; i < numDescribed2; ++i) {
-		const cv::KeyPoint& keypoint = img2.keypoints[i];
-		kpts2[i] = Point2f::EVec(keypoint.pt.x, keypoint.pt.y);
-	}
-	typedef TOctree<Point2fs, float, 2> Octree2f;
-	Octree2f octree(kpts2, [](Octree2f::IDX_TYPE n, Octree2f::Type r) { return n > 16 && r > 8.f; });
+	// Build a 2D octree over img2's described keypoints for fast spatial neighbor queries
+	Point2fs kpts2;
+	Octree2f octree;
+	BuildDescribedKeypointsOctree(img2, kpts2, octree);
 
 	const float matchRatio = pairsMatcher.GetConfig().matchRatio;
 	const int normType = pairsMatcher.GetConfig().descriptorsAreBinary ? cv::NORM_HAMMING : cv::NORM_L2;
@@ -380,8 +351,6 @@ bool SFM::MatchFeaturesGeometric(
 		if (candidates.empty())
 			return;
 		if (candidates.size() == 1) {
-			// the band left a single candidate, so there is no second best to run a ratio test
-			// against and the band's own verdict stands
 			pair.matches.push_back(candidates[0]);
 			return;
 		}
@@ -394,14 +363,11 @@ bool SFM::MatchFeaturesGeometric(
 			[](const cv::DMatch& a, const cv::DMatch& b) {
 				return a.distance < b.distance;
 			});
-		// Ratio test: best must be meaningfully better than second-best.
 		if (candidates[0].distance < matchRatio * candidates[1].distance)
 			pair.matches.push_back(candidates[0]);
 	};
 
-	// The candidates of keypoint i of img1, each handed to TestCandidate: the described keypoints of img2 near its
-	// tracked point when it has one, else (not tracked, or nothing of img2 near the tracked point) every described
-	// keypoint of img2, held to the epipolar constraint alone
+	// Candidate lookup: spatial neighbors around trackedPoints2[i], falling back to all described keypoints
 	const auto ForEachCandidate = [&](size_t i, const auto& TestCandidate) {
 		if (trackStatus[i]) {
 			Octree2f::IDXARR_TYPE neighbors;
@@ -416,22 +382,7 @@ bool SFM::MatchFeaturesGeometric(
 			TestCandidate(j);
 	};
 
-	// Branch on the geometry the bearings can be measured against. PairsMatcher::GeometricFilter
-	// sets pair.F only when BOTH cameras are pinhole -- for spherical or mixed pairs the fundamental
-	// matrix is not geometrically meaningful (SphericalCamera::GetK returns IDENTITY) -- and F is
-	// composed from E and K alone, a straight epipolar line in pixels that a lens bends. We dispatch:
-	//   - F present, and no lens on either camera or a camera that does not trust its intrinsics
-	//                                         -> pixel-space epipolar line distance (unchanged)
-	//   - otherwise, E present                -> bearing-space Sampson-on-sphere residual (the
-	//     bearings go through the lens) with an angular threshold derived per camera from
-	//     epipolarThreshold.
-	// E measures a lens pair where it is only as the essential branch fits it, on the bearings, which
-	// GeometricFilter runs when both cameras trust their intrinsics; the shared-focal branch fits its
-	// E on the distorted pixels at the focal its RANSAC finds, which the nominal focal and the lens
-	// would not measure exactly, so such a pair keeps F.
-	// For pinhole bearings the Sampson-on-sphere formula reduces exactly to the pinhole Sampson
-	// form (up to linear scaling), so the two paths agree on lens-free pinhole inputs up to the unit
-	// of the threshold. Keeping the F path separate preserves zero-regression on all pinhole tests.
+	// Use pixel-space F for distortion-free pinhole pairs (or untrusted intrinsics); otherwise use bearing-space E
 	const bool bLens = (img1.pCamera->HasDistortion() || img2.pCamera->HasDistortion()) &&
 		img1.TrustIntrinsics() && img2.TrustIntrinsics();
 	if (pair.F.has_value() && !(bLens && pair.E.has_value())) {
@@ -445,7 +396,6 @@ bool SFM::MatchFeaturesGeometric(
 			if (normFactor < FZERO_TOLERANCE)
 				continue;
 
-			// Find candidate matches near the epipolar line AND (if tracked) close to the tracked point
 			std::vector<cv::DMatch> candidates;
 			const auto TestCandidate = [&](size_t j) {
 				const cv::Point2f& pt2 = img2.keypoints[j].pt;
@@ -458,21 +408,11 @@ bool SFM::MatchFeaturesGeometric(
 			SelectAndAppendBest(candidates, (size_t)i);
 		}
 	} else if (pair.E.has_value()) {
-		// Spherical, mixed or lens path: E-matrix + bearing vectors.
-		// Convert the pixel epipolar threshold to a symmetric angular threshold
-		// (same averaging convention as PairsMatcher::GeometricFilter). The
-		// Sampson-on-sphere residual is radians-scaled in the small-error limit,
-		// so we compare r² against angleThreshold².
-		const Eigen::Matrix3d E = pair.E.value(); // implicit TMatrix<double,3,3> -> Eigen::Matrix3d
-		const REAL angle1 = img1.pCamera->PixelErrorToAngular((REAL)epipolarThreshold);
-		const REAL angle2 = img2.pCamera->PixelErrorToAngular((REAL)epipolarThreshold);
-		const double angleThreshold = 0.5 * (double)(angle1 + angle2);
+		// Spherical, mixed, or distorted-pinhole path: Sampson-on-sphere in bearing space
+		const Eigen::Matrix3d E = pair.E.value();
+		const double angleThreshold = (double)PairPixelErrorToAngular(*img1.pCamera, *img2.pCamera, (REAL)epipolarThreshold);
 		const double angleThresholdSq = angleThreshold * angleThreshold;
 
-		// Precompute unit bearing vectors for all keypoints in both images once.
-		// Each bearing costs a single Unproject call, and we reuse them across
-		// many candidate probes (up to #img2_keypoints per img1 keypoint in the
-		// brute-force case), so hoisting them out of the inner loop is a real win.
 		std::vector<Eigen::Vector3d> bearings1(numDescribed1);
 		std::vector<Eigen::Vector3d> bearings2(numDescribed2);
 		for (uint32_t i = 0; i < numDescribed1; ++i)
@@ -483,21 +423,17 @@ bool SFM::MatchFeaturesGeometric(
 		for (uint32_t i = 0; i < numDescribed1; ++i) {
 			const Eigen::Vector3d& b1 = bearings1[i];
 			const Eigen::Vector3d Eb1 = E * b1;
-			// Sampson (x,y)-subspace term from the "left" bearing — constant across
-			// all candidates j for this i.
-			const double Cx = Eb1.x() * Eb1.x() + Eb1.y() * Eb1.y();
-			if (Cx < 1e-14)
+			if (Eb1.squaredNorm() < 1e-14)
 				continue; // degenerate epipolar plane (bearing aligned with baseline)
 
-			// Candidate test closure using Sampson-on-sphere.
 			std::vector<cv::DMatch> candidates;
 			const auto TestCandidate = [&](size_t j) {
 				const Eigen::Vector3d& b2 = bearings2[j];
 				const double C = b2.dot(Eb1);
 				const Eigen::Vector3d Etb2 = E.transpose() * b2;
-				const double Cy = Etb2.x() * Etb2.x() + Etb2.y() * Etb2.y();
-				const double r2 = (C * C) / (Cx + Cy);
-				if (r2 < angleThresholdSq)
+				// Tangent-plane Sampson denominator on the unit sphere: ||b2 x (E b1)||^2 + ||b1 x (E^T b2)||^2
+				const double denom = b2.cross(Eb1).squaredNorm() + b1.cross(Etb2).squaredNorm();
+				if (denom > 1e-14 && (C * C) < angleThresholdSq * denom)
 					candidates.emplace_back((int)i, (int)j, 0.f);
 			};
 

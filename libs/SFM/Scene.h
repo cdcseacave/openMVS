@@ -234,7 +234,7 @@ public:
 			PAIRS_FILTERED = 32
 		};
 		Flags nState{STATE::EMPTY}; // current state (now type-safe with STATE enum)
-		FeatureType nFeaturesType{FeatureType::NONE}; // type of features extracted (0=none,1=AKAZE,2=ORB,3=SIFT)
+		FeatureType nFeaturesType{FeatureType::NONE}; // type of features extracted (0=none,1=AKAZE,2=ORB,3=SIFT,4=SIFTGPU)
 		uint32_t nCalibratedImages{0}; // number of calibrated images
 		uint32_t nTracks{0}; // number of inlier tracks
 
@@ -431,7 +431,7 @@ public:
 	bool AlignToPriorPoses(float thresholdRatio = 0.5f);
 
 	/**
-	 * @brief Get ECEF centroid stored in trasform if the scene is aligned to GPS
+	 * @brief Get ECEF centroid stored in transform if the scene is aligned to GPS
 	 * @return ECEF centroid
 	 */
 	const Point3 GetCenterECEF() const {

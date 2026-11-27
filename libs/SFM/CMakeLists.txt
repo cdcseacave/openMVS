@@ -35,7 +35,7 @@ if(_USE_SIFTGPU)
 	LIST(APPEND SFM_EXTRA_LIBS siftgpu::siftgpu)
 endif()
 
-# Optional ONNX Runtime support (in-process ROMA2); detected in the top-level CMakeLists, define in ConfigLocal.h
+# Optional ONNX Runtime support (detected in the top-level CMakeLists, defined in ConfigLocal.h)
 if(_USE_ONNXRUNTIME)
 	list(APPEND SFM_EXTRA_LIBS onnxruntime::onnxruntime)
 endif()
@@ -61,12 +61,7 @@ endif()
 # Link its dependencies
 TARGET_LINK_LIBRARIES(SFM PUBLIC Common Math IO ${SFM_EXTRA_LIBS})
 
-# Where `cmake --build . --target roma2-model` / `flexglue-model` install the model bundles (share/openMVS/<matcher>), so --dense-matcher
-# finds them without an environment variable (DenseMatchConfig::ResolveModelPath in MatchDense.h). PUBLIC so every
-# target linking SFM compiles that inline function with the same definition (ODR). The IF() guard
-# only matters for a configure that explicitly clears CMAKE_INSTALL_PREFIX, since CMake seeds it to
-# /usr/local otherwise; what actually keeps a wrong path from ever being returned is the runtime
-# File::isFolder() check inside ResolveModelPath() itself.
+# Default install location for fetched dense matcher bundles (PUBLIC for ODR with inline ResolveModelPath)
 IF(CMAKE_INSTALL_PREFIX)
 	TARGET_COMPILE_DEFINITIONS(SFM PUBLIC OPENMVS_MODEL_INSTALL_DIR="${CMAKE_INSTALL_PREFIX}/share/openMVS")
 ENDIF()

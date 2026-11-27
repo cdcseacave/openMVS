@@ -82,7 +82,7 @@ struct PoseLink
 	// direction, while its length is the pair's own (usually arbitrary) scale. False when the pair
 	// has no baseline at all, in which case it fixes no direction.
 	bool PredictedDirection(const Pose3D& neighborPose, Point3& direction) const {
-		direction = neighborPose.R.t() * relPose.C;
+		direction = neighborPose.RayCameraToWorld(relPose.C);
 		const REAL length = norm(direction);
 		if (length <= ZEROTOLERANCE<REAL>())
 			return false;
@@ -90,22 +90,17 @@ struct PoseLink
 		return true;
 	}
 
-	// How far a pose given to the image sits from what this link measured: the angle between the
-	// rotation the link predicts from the neighbor's pose and the image's own, and the angle
-	// between the baseline direction the link predicts and the one the two centres make (see
-	// PairDisagreement for when the direction is left unset and how it is held to a tolerance)
+	// How far a pose given to the image sits from what this link measured: rotation angle and
+	// baseline direction angle (unset when near-duplicate or zero baseline)
 	PairDisagreement Measure(const Pose3D& image, const Pose3D& neighbor) const {
 		PairDisagreement d;
-		d.rotation = R2D(ACOS(MINF(MAXF(ComputeAngle(image.R, PredictedRotation(neighbor)), REAL(-1)), REAL(1))));
+		d.rotation = R2D(ACOS(ComputeAngle(image.R, PredictedRotation(neighbor))));
 		d.direction = -1;
 		d.rayAngle = rayAngle > 0.f ? REAL(rayAngle) : REAL(0);
 		Point3 modelDirection(image.C - neighbor.C), linkDirection;
 		const REAL baseline = norm(modelDirection);
-		if (!IsNearDuplicate() && baseline > ZEROTOLERANCE<REAL>() && PredictedDirection(neighbor, linkDirection)) {
-			const REAL cosDirection = linkDirection.dot(modelDirection / baseline);
-			ASSERT(ABS(cosDirection) <= REAL(1) + REAL(1e-6)); // a dot product of two unit directions, up to rounding
-			d.direction = R2D(ACOS(MINF(MAXF(cosDirection, REAL(-1)), REAL(1)))); // the clamp is rounding only
-		}
+		if (!IsNearDuplicate() && baseline > ZEROTOLERANCE<REAL>() && PredictedDirection(neighbor, linkDirection))
+			d.direction = DirectionAngleDeg(linkDirection, modelDirection);
 		return d;
 	}
 };

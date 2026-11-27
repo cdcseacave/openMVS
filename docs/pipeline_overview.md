@@ -25,5 +25,3 @@ The MVS stages read an `.mvs` scene (from `CreateStructure --export-mvs` or from
 4. **`TextureMesh`.** Each face is assigned the image that should texture it, the seams are levelled in colour, and the regions are packed into one or more atlases. See [design/MeshTexturing.md](design/MeshTexturing.md).
 
 Other applications: `ExtractKeyframes` (keyframes from a video), `TransformScene` (apply a transformation to a scene), `Viewer` (interactive visualization of any stage), `Tests`.
-
-Notes: [notes/BlockGraphMerge.md](notes/BlockGraphMerge.md) keeps a merge design that was measured and not shipped, so that it can be rebuilt.

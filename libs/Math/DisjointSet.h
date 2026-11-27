@@ -70,6 +70,18 @@ public:
 		}
 	}
 
+	// Deterministic union keeping the smaller element as root; returns true if two sets merged.
+	bool UnionMin(Type x, Type y) {
+		Type px = Find(x);
+		Type py = Find(y);
+		if (px == py)
+			return false;
+		if (px > py)
+			std::swap(px, py);
+		parent[py] = px;
+		return true;
+	}
+
 	// Union with a guard+merge callback.
 	// The callback operates on the finalized root ordering (dst, src)
 	// after union-by-rank selection. It must perform any necessary

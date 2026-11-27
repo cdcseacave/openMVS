@@ -50,8 +50,7 @@ struct CameraCorrespondences
 	void Add(const Image& image, uint32_t featureID, const Point3& X);
 };
 
-// The image's correspondences to the model's inlier tracks, in track order: its first observation of
-// each inlier track it observes (a track can hold two keypoints of one image that BuildTracks merged)
+// The image's correspondences to the model's inlier tracks, in track order (each track holds at most one observation per image)
 SFM_API void CollectTrackCorrespondences(const Scene& scene, IIndex imageID, CameraCorrespondences& correspondences);
 
 // Per image, its observations of the model's inlier tracks, and of those the ones in the tracks'

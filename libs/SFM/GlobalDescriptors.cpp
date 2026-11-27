@@ -40,7 +40,7 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-DEFINE_LOG_NAME(lt, _T("ROMA2   "));
+DEFINE_LOG_NAME(lt, _T("DENSE   "));
 
 bool GlobalDescriptors::Build(const Scene& scene)
 {
@@ -50,7 +50,13 @@ bool GlobalDescriptors::Build(const Scene& scene)
 		VERBOSE("error: at least 2 images are needed to build a global-descriptor retrieval index (scene has %u)", scene.images.size());
 		return false;
 	}
-	const int dim = scene.images[0].globalDescriptor.cols;
+	const Image& first = scene.images[0];
+	if (!first.HasGlobalDescriptor() || first.globalDescriptor.rows != 1 ||
+		first.globalDescriptor.cols <= 0 || first.globalDescriptor.type() != CV_32F) {
+		VERBOSE("error: image %u has no valid 1xD CV_32F global descriptor", first.ID);
+		return false;
+	}
+	const int dim = first.globalDescriptor.cols;
 	descriptors.resize(scene.images.size(), dim);
 	imageIDs.resize(scene.images.size());
 	FOREACH(i, scene.images) {
@@ -63,7 +69,6 @@ bool GlobalDescriptors::Build(const Scene& scene)
 			return false;
 		}
 		const Eigen::Map<const Eigen::RowVectorXf> row(img.globalDescriptor.ptr<float>(), dim);
-		// the retrieval graph emits unit vectors (DenseMatcher::DescribeImage), and the cosine ranking relies on it
 		ASSERT(ABS(row.norm() - 1.f) < 1e-3f);
 		descriptors.row(i) = row;
 		imageIDs[i] = img.ID;
@@ -74,6 +79,8 @@ bool GlobalDescriptors::Build(const Scene& scene)
 std::vector<std::pair<uint32_t, float>> GlobalDescriptors::Query(IIndex idx, unsigned maxResults) const
 {
 	ASSERT(IsValid() && idx < Size());
+	if (maxResults == 0)
+		return {};
 	const Eigen::VectorXf sims = descriptors * descriptors.row(idx).transpose();
 	std::vector<std::pair<uint32_t, float>> ranked;
 	ranked.reserve(Size() - 1);

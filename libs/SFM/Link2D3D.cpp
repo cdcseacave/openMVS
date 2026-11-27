@@ -15,7 +15,7 @@ using namespace SFM;
 
 void CameraCorrespondences::Add(const Image& image, uint32_t featureID, const Point3& X)
 {
-	ASSERT(featureID < image.keypoints.size());
+	ASSERT(image.HasCamera() && featureID < image.keypoints.size());
 	const Point2 kp = image.keypoints[featureID].pt;
 	bearings.emplace_back(image.pCamera->UnprojectNormalized(kp));
 	points.push_back(X);
@@ -26,6 +26,7 @@ void CameraCorrespondences::Add(const Image& image, uint32_t featureID, const Po
 
 void SFM::CollectTrackCorrespondences(const Scene& scene, IIndex imageID, CameraCorrespondences& correspondences)
 {
+	ASSERT(imageID < scene.images.size());
 	correspondences = CameraCorrespondences();
 	const Image& image = scene.images[imageID];
 	for (const Track& track : scene.tracks) {

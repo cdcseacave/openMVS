@@ -1072,81 +1072,32 @@ bool HasDensePartition(const Scene& scene, const ImagePair& pair)
 // matchers, so that both hold a matched scene to exactly the same expectations.
 // testName prefixes the messages; minTracks/maxTracks bound the expected inlier track count and
 // maxDistortion the residual lens distortion the refined intrinsics may still carry (in pixels).
-bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned minTracks, unsigned maxTracks, REAL maxDistortion)
+bool ReconstructMatchedScene(const TestScope& scope, Scene& scene, unsigned minTracks, unsigned maxTracks, REAL maxDistortion)
 {
-	// Build tracks
 	BuildTracks(scene);
-	VERBOSE("%s: Built %u tracks", testName, (unsigned)scene.tracks.size());
-
-	// Initialize with star initializer
 	StarInitConfig initCfg;
 	initCfg.minViews = 3;
-	if (!StarInitializer::Initialize(scene, initCfg)) {
-		VERBOSE("%s: StarInitializer::Initialize failed", testName);
-		return false;
-	}
-	VERBOSE("%s: Initialized scene with %u calibrated images", testName, (unsigned)scene.status.nCalibratedImages);
-
-	// The star refines only the focal length (StarInitConfig::refineFocalLength); reproduce the
-	// distortion-refining bundle adjustment the pipeline's resection runs right after it
-	// (ResectionConfig::DeriveBAConfigs) so this helper still exercises the calibration recovery
-	// its callers below check for
+	TEST_CHECK(StarInitializer::Initialize(scene, initCfg), "StarInitializer::Initialize failed");
 	BAConfig fullBaConfig;
 	fullBaConfig.RefineMainIntrinsics();
-	if (!BundleAdjustment::Adjust(scene, fullBaConfig)) {
-		VERBOSE("%s: post-star bundle adjustment with intrinsics refinement failed", testName);
-		return false;
-	}
+	TEST_CHECK(BundleAdjustment::Adjust(scene, fullBaConfig), "post-star bundle adjustment with intrinsics refinement failed");
+	TEST_CHECK(scene.SampleColors() && scene.colors.size() == scene.tracks.size(), "SampleColors failed");
 
-	// Sample colors for tracks
-	if (!scene.SampleColors() || scene.colors.size() != scene.tracks.size()) {
-		VERBOSE("%s: SampleColors failed", testName);
-		return false;
-	}
-
-	// Test 1: All 4 images should be valid
 	unsigned numValidImages = 0;
-	for (const Image& img : scene.images) {
+	for (const Image& img : scene.images)
 		if (img.IsValid())
 			++numValidImages;
-	}
-	if (numValidImages != 4 || scene.status.nCalibratedImages != 4) {
-		VERBOSE("%s: Expected 4 valid images, got %u (%u)", testName, numValidImages, scene.status.nCalibratedImages);
-		return false;
-	}
-
-	// Test 2: Intrinsics should be close to f=700, k1=0, k2=0
-	if (scene.cameras.empty()) {
-		VERBOSE("%s: No cameras found", testName);
-		return false;
-	}
+	TEST_CHECK(numValidImages == 4 && scene.status.nCalibratedImages == 4,
+		"expected 4 valid images, got %u (%u)", numValidImages, scene.status.nCalibratedImages);
+	TEST_CHECK(!scene.cameras.empty(), "no cameras found");
 	const PinholeCamera* cam = dynamic_cast<PinholeCamera*>(scene.cameras[0]);
-	if (!cam) {
-		VERBOSE("%s: Camera is not PinholeCamera", testName);
-		return false;
-	}
-	const REAL focal_error = ABS(cam->fx - 700.f);
-	const REAL k1_error = ABS(cam->k1 - 0.f);
-	const REAL k2_error = ABS(cam->k2 - 0.f);
-	const REAL max_distortion = cam->ComputeMaxDistortion();
-	VERBOSE("%s: Refined intrinsics: f=%.2f (err=%.2f), k1=%.4g (err=%.4g), k2=%.4g (err=%.4g), max_distortion=%.4g",
-	    testName, cam->fx, focal_error, cam->k1, k1_error, cam->k2, k2_error, max_distortion);
-	if (focal_error > 100.f) { // Allow 100 pixels error
-		VERBOSE("%s: focal length error too large (%.2f)", testName, focal_error);
-		return false;
-	}
-	if (max_distortion > maxDistortion) {
-		VERBOSE("%s: distortion error too large (k1_err=%.4g, k2_err=%.4g, max_distortion=%.4g > %.4g)",
-			testName, k1_error, k2_error, max_distortion, maxDistortion);
-		return false;
-	}
-
-	// Test 3: the inlier track count, in the range the caller's matching produces
-	VERBOSE("%s: Found %u inlier tracks (expected [%u, %u])", testName, scene.status.nTracks, minTracks, maxTracks);
-	if (scene.status.nTracks < minTracks || scene.status.nTracks > maxTracks) {
-		VERBOSE("%s: number of inlier tracks out of range [%u, %u]", testName, minTracks, maxTracks);
-		return false;
-	}
+	TEST_CHECK(cam != nullptr, "camera is not PinholeCamera");
+	const REAL focalError = ABS(cam->fx - 700.f);
+	const REAL maxDist = cam->ComputeMaxDistortion();
+	TEST_CHECK(focalError <= 100.f, "focal length error too large (f=%.2f, err=%.2f)", cam->fx, focalError);
+	TEST_CHECK(maxDist <= maxDistortion, "distortion error too large (max_distortion=%.4g > %.4g)", maxDist, maxDistortion);
+	TEST_CHECK(scene.status.nTracks >= minTracks && scene.status.nTracks <= maxTracks,
+		"inlier tracks %u out of range [%u, %u]", scene.status.nTracks, minTracks, maxTracks);
 	return true;
 }
 

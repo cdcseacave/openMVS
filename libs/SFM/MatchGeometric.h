@@ -11,7 +11,6 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "View.h"
 #include "PairsMatcher.h"
 
 

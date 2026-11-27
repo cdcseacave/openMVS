@@ -7,18 +7,10 @@
 
 #include "Common.h"
 #include "Scene.h"
-#include "Image.h"
 #include "../Math/GeodeticTransforms.h"
 #include "../Math/Camera/CameraUndistort.h"
-#include "Track.h"
 #include "Triangulation.h"
-#include "SceneCluster.h"
 #include "SceneBlocks.h"
-#include "StarInitializer.h"
-#include "Resection.h"
-#include "BundleAdjustment.h"
-#include "GlobalAlignment.h"
-#include "GlobalDescriptors.h"
 #include "GlobalRotationAveraging.h"
 #include "GlobalPositioning.h"
 #include "SimilarityTransform.h"
@@ -26,7 +18,6 @@
 #include "DenseMatcher.h"
 #include "LensFit.h"
 
-#include <TinyEXIF.h>
 #include <unordered_set>
 
 using namespace SFM;
@@ -70,9 +61,9 @@ void SFM::AdjustMergedScene(Scene& scene, const ReconstructionConfig& cfg)
 {
 	TD_TIMER_STARTD();
 	const float looseBar = GlobalAlignmentConfig::looseSeamFactor * cfg.maxReprojError;
-	FilterTracks(scene, looseBar, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
-	TriangulateTracks(scene, true, looseBar, cfg.minAngleThreshold, cfg.resectionCfg.denseReprojErrorFactor);
-	FilterTracks(scene, looseBar, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
+	FilterTracks(scene, looseBar, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	TriangulateTracks(scene, true, looseBar, cfg.minAngleThreshold);
+	FilterTracks(scene, looseBar, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 	scene.status.nState.set(Scene::Status::STATE::CALIBRATED);
 	BAConfig baCfg = cfg.baConfig;
 	SetBAIntrinsicFlags(baCfg, cfg.baIntrinsicFlags);
@@ -523,40 +514,29 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 					break;
 				}
 			}
+			PinholeCamera* targetCamera = pinholeCamera;
 			if (sharedWithNonSelected) {
 				// Duplicate camera for selected images only
-				PinholeCamera* newCamera = static_cast<PinholeCamera*>(pinholeCamera->Clone());
-				if (config.focalLength > 0.f)
-					newCamera->fx = newCamera->fy = config.focalLength;
-				if (config.k1 != 0.f)
-					newCamera->k1 = config.k1;
-				if (config.k2 != 0.f)
-					newCamera->k2 = config.k2;
-				newCamera->trustIntrinsics = true;
-				// Add to cameras array and assign to all selected images using this camera
+				targetCamera = static_cast<PinholeCamera*>(pinholeCamera->Clone());
 				const IIndex newCamID = cameras.size();
-				cameras.emplace_back(newCamera);
+				cameras.emplace_back(targetCamera);
 				for (IIndex usedBy : usageList) {
 					if (uniqueIndices.count(usedBy)) {
-						images[usedBy].pCamera = newCamera;
+						images[usedBy].pCamera = targetCamera;
 						images[usedBy].cameraID = newCamID;
 					}
 				}
-				processedCameras.insert(newCamera);
 				++nDuplicated;
-				++nModified;
-			} else {
-				// Camera only used by selected images - modify directly
-				if (config.focalLength > 0.f)
-					pinholeCamera->fx = pinholeCamera->fy = config.focalLength;
-				if (config.k1 != 0.f)
-					pinholeCamera->k1 = config.k1;
-				if (config.k2 != 0.f)
-					pinholeCamera->k2 = config.k2;
-				pinholeCamera->trustIntrinsics = true;
-				processedCameras.insert(pinholeCamera);
-				++nModified;
 			}
+			if (config.focalLength > 0.f)
+				targetCamera->fx = targetCamera->fy = config.focalLength;
+			if (config.k1 != 0.f)
+				targetCamera->k1 = config.k1;
+			if (config.k2 != 0.f)
+				targetCamera->k2 = config.k2;
+			targetCamera->trustIntrinsics = true;
+			processedCameras.insert(targetCamera);
+			++nModified;
 		}
 		if (config.focalLength > 0.f)
 			VERBOSE("Forced focal length %.2f pixels for %u cameras (%u duplicated)",
@@ -725,9 +705,19 @@ namespace {
 void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 {
 	if (!config.exportPairsCSV.empty() &&
-		!PairsMatcher::ExportPairsCSV(scene, config.exportPairsCSV, config.minPairWeight,
+		!PairsMatcher::ExportPairsCSV(scene, config.exportPairsCSV,
 			config.tripletFilterCfg.minYield, config.matchCfg.weightingCfg))
 		VERBOSE("warning: failed to export image pairs to CSV file '%s'", config.exportPairsCSV.c_str());
+}
+
+ResectionConfig PrepareResectionConfig(const ReconstructionConfig& config)
+{
+	ResectionConfig resectionCfg = config.resectionCfg;
+	resectionCfg.pairsWeighting = config.matchCfg.weightingCfg;
+	BAConfig resectionBaCfg = config.baConfig;
+	SetBAIntrinsicFlags(resectionBaCfg, config.baIntrinsicFlags);
+	resectionCfg.DeriveBAConfigs(resectionBaCfg);
+	return resectionCfg;
 }
 
 // Weigh the pairs of a matched scene and export its pairs CSV: a saved scene's pair weights reflect
@@ -913,40 +903,27 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 
 
 	// Final global bundle adjustment
-	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
-	TriangulateTracks(*this, true, cfg.maxReprojError, cfg.minAngleThreshold, cfg.resectionCfg.denseReprojErrorFactor);
-	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
+	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	TriangulateTracks(*this, true, cfg.maxReprojError, cfg.minAngleThreshold);
+	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 	status.nState.set(Status::STATE::CALIBRATED);
 	BAConfig finalBaCfg = cfg.baConfig;
 	SetBAIntrinsicFlags(finalBaCfg, cfg.baIntrinsicFlags);
 	BundleAdjustment::Adjust(*this, finalBaCfg);
-	FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
+	FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 
 	// Filter weakly connected images and resection remaining images into the reconstruction;
-	// what the filter removed for contradicting the model is withheld from that resection, so it
-	// is not simply handed back and removed again, while what it removed for want of evidence
-	// (no structure, no witness) is tried again once the model has grown; the removal counts as a
-	// change of the model, so a stall of that resection adjusts and tries again before it stops.
-	// The pass always runs, whether or not an image is left for it, and so does the full adjustment
-	// that closes it: that
-	// adjustment triangulates every track again at the resection's bar, which re-admits the
-	// observations the final adjustment's tighter bar dropped from the model it receives
+	// images removed for contradicting the model are withheld from resection, while images
+	// removed for weak evidence are retried. The closing full BA re-admits observations
+	// dropped by the tighter final bar.
 	const RemovedImages removed = FilterWeaklyConnectedImages(*this);
-	ResectionConfig resectionCfg = cfg.resectionCfg;
-	resectionCfg.pairsWeighting = cfg.matchCfg.weightingCfg; // the pose's dense inliers weigh as the pairs' did
-	BAConfig resectionBaCfg = cfg.baConfig;
-	SetBAIntrinsicFlags(resectionBaCfg, cfg.baIntrinsicFlags);
-	resectionCfg.DeriveBAConfigs(resectionBaCfg);
+	const ResectionConfig resectionCfg = PrepareResectionConfig(cfg);
 	Resection resection(*this, resectionCfg);
 	resection.ImagesRemoved(removed);
 	if (resection.RegisterImages())
 		FilterWeaklyConnectedImages(*this);
 
-	// Align the scene back to the imported prior poses in known-poses mode (preserving the
-	// input frame is the point of that path, so it takes precedence over GPS, which would
-	// yank the scene out of that very frame), else to GPS if available. A failed prior-pose
-	// alignment leaves the scene in the refined (arbitrary-gauge) frame: it is reported, but
-	// must not discard the finished reconstruction
+	// Align back to imported prior poses in known-poses mode, else to GPS if available.
 	if (cfg.HasKnownPoses() && !priorPoses.empty()) {
 		if (!AlignToPriorPoses())
 			VERBOSE("warning: could not align the reconstruction back to the imported pose frame; "
@@ -954,31 +931,16 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	} else if (cfg.thAlignGPS > 0 && HasImagesWithGPS())
 		AlignToGPS(cfg.thAlignGPS);
 
-	// Refine the geo-aligned reconstruction with GPS position priors (if enabled): the GPS
-	// residuals are gated on GEO_ALIGN and their meters-vs-pixels weighting assumes the metric
-	// ENU frame, so this is the earliest point in the pipeline where they can take effect
-	// (validated for pinhole cameras; spherical scenes use angular residuals the weighting
-	// does not account for).
-	// Disable intrinsics which already converged in the final bundle adjustment.
-	BAConfig uncBaCfg = finalBaCfg;
-	uncBaCfg.refineFocalLength = uncBaCfg.refineFocalLengthAspectRatio = uncBaCfg.refinePrincipalPoint =
-	uncBaCfg.refineRadialDistortion12 = uncBaCfg.refineRadialDistortion3 =
-	uncBaCfg.refineTangentialDistortion = uncBaCfg.refineRadialDistortion456 = false;
-	if (cfg.baConfig.IsRefiningGPS() && status.nState.isSet(Status::STATE::GEO_ALIGN)) {
+	// Post-alignment GPS-prior BA and/or pose-uncertainty estimation (intrinsics already converged).
+	const bool runGPSBA = cfg.baConfig.IsRefiningGPS() && status.nState.isSet(Status::STATE::GEO_ALIGN);
+	if (runGPSBA || cfg.estimatePoseUncertainty) {
+		BAConfig uncBaCfg = finalBaCfg;
+		uncBaCfg.ClearIntrinsicRefinement();
 		BundleAdjustment ba(*this, uncBaCfg);
 		if (ba.Adjust()) {
-			if (cfg.estimatePoseUncertainty) {
-				// the GPS priors anchor the gauge, so this supersedes the earlier record
-				// with absolute ENU covariances (and covers the images resected since)
+			if (cfg.estimatePoseUncertainty)
 				poseUncertainty = ba.ComputePoseUncertainty();
-			}
-			FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
-		}
-	} else if (cfg.estimatePoseUncertainty) {
-		BundleAdjustment ba(*this, uncBaCfg);
-		if (ba.Adjust()) {
-			poseUncertainty = ba.ComputePoseUncertainty();
-			FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
+			FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 		}
 	}
 
@@ -1009,15 +971,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 	std::vector<Scene>& subScenes = sceneBlocks.blocks;
 	const std::vector<IIndexArr>& localToGlobals = sceneBlocks.localToGlobal;
 
-	// The resection of every block and of the pool resection; every Ceres solve clamps itself to the
-	// block's thread budget (see BundleAdjustment). The local/full BA settings derive from the scene's
-	// configured BAConfig so the resection's bundle adjustments see the same settings as the rest of the
-	// pipeline.
-	ResectionConfig resectionCfg = config.resectionCfg;
-	resectionCfg.pairsWeighting = config.matchCfg.weightingCfg; // the pose's dense inliers weigh as the pairs' did
-	BAConfig resectionBaCfg = config.baConfig;
-	SetBAIntrinsicFlags(resectionBaCfg, config.baIntrinsicFlags);
-	resectionCfg.DeriveBAConfigs(resectionBaCfg);
+	const ResectionConfig resectionCfg = PrepareResectionConfig(config);
 
 	// 2. Reconstruct each sub-scene in parallel
 	threadPool.detach_loop(IIndex(0), (IIndex)subScenes.size(), [&](IIndex i) {
@@ -1027,25 +981,21 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		// Build tracks
 		BuildTracks(subScene, config.minPairWeight, config.trackConflictCfg);
 
-		// Initialize with star initializer; thread the scene's configured BA settings into its
-		// mini bundle adjustments instead of using the compiled-in BAConfig defaults
+		// Initialize with star initializer
 		StarInitConfig initCfg = config.initCfg;
 		initCfg.baConfig = config.baConfig;
 		initCfg.seedViews = SubSceneSeedViews(seeds, localToGlobals, i);
 		initCfg.evidenceMinAngle = config.minAngleThreshold;
-		initCfg.pairsWeighting = config.matchCfg.weightingCfg; // the near-duplicates the pairs were weighted with
+		initCfg.pairsWeighting = config.matchCfg.weightingCfg;
 		if (!StarInitializer::Initialize(subScene, initCfg)) {
 			VERBOSE("error: star initialization failed for sub-scene %u (skipping)", i);
-			return; // skip this sub-scene
+			return;
 		}
 
 		// Incrementally resect images into the reconstruction
 		Resection resection(subScene, resectionCfg);
 		resection.RegisterImages();
-		// The resection always closes with a full adjustment of this sub-scene, also when the star
-		// initialization registered every image; only the tracks it leaves behind need settling
-		// before the sub-scenes are merged
-		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
+		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	});
 	threadPool.wait();
 
@@ -1114,14 +1064,14 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 	baCfg.refinePosesRotation = false;
 	baCfg.maxIterations = 12;
 	BundleAdjustment::Adjust(*this, baCfg);
-	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 
 	// Bundle Adjustment with full pose and structure refinement
 	baCfg.refinePosesRotation = true;
 	baCfg.maxIterations = 25;
 	BundleAdjustment::Adjust(*this, baCfg);
-	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
-	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold, config.resectionCfg.denseReprojErrorFactor);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold);
 
 	DEBUG("Global reconstruction complete: %u/%u images, %u/%u points (%s)",
 		status.nCalibratedImages, images.size(), status.nTracks, tracks.size(), TD_TIMER_GET_FMT().c_str());
@@ -1196,9 +1146,9 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 		return false;
 	}
 	const float initReprojError = config.maxReprojError*4.f;
-	TriangulateTracks(*this, false, initReprojError, config.minAngleThreshold, config.resectionCfg.denseReprojErrorFactor);
+	TriangulateTracks(*this, false, initReprojError, config.minAngleThreshold);
 	const std::pair<float, float> initError = FilterTracks(*this, initReprojError,
-		config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
+		config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	if (status.nTracks == 0) {
 		VERBOSE("error: no track survived triangulation with the imported poses "
 			"(wrong camera-axes convention or wrong image-to-pose association?)");
@@ -1240,15 +1190,15 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 		VERBOSE("error: known-poses bundle adjustment failed");
 		return false;
 	}
-	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold, config.resectionCfg.denseReprojErrorFactor);
-	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
+	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	baCfg.maxIterations = config.baConfig.maxIterations;
 	if (!BundleAdjustment::Adjust(*this, baCfg)) {
 		VERBOSE("error: known-poses bundle adjustment failed");
 		return false;
 	}
 	const std::pair<float, float> finalError = FilterTracks(*this, config.maxReprojError,
-		config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
+		config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 
 	RecomputeCalibratedImages();
 	DEBUG("Known-poses reconstruction complete: %u/%u images (%u posed by import), %u/%u points, "
@@ -1281,13 +1231,8 @@ bool Scene::SampleColors()
 			const Image& img = images[obs.imageID];
 			ASSERT(img.IsValid());
 			ASSERT(obs.featureID < img.keypoints.size());
-			// Compute pixel reprojection error
-			const cv::KeyPoint& kp = img.keypoints[obs.featureID];
-			const auto [projected, valid] = img.ProjectPoint(track.position);
-			if (!valid)
-				continue;
-			const float pixelError = norm(Cast<float>(projected) - kp.pt);
-			if (pixelError < minError) {
+			const auto [pixelError, valid] = ComputeReprojectionErrorPixels(img, track.position, obs.featureID);
+			if (valid && pixelError < minError) {
 				minError = pixelError;
 				bestObsIdx = obsIdx;
 			}
@@ -1376,18 +1321,7 @@ bool Scene::AlignToGPS(double threshold)
 	// at least 3 distinct, non-collinear positions spread wider than the GPS noise
 	// (consumer devices often tag consecutive images with the same stale GPS fix)
 	if (threshold > 0) {
-		Point3 mean(Point3::ZERO);
-		for (const Point3& enu : enuPositions)
-			mean += enu;
-		mean /= (double)enuPositions.size();
-		Eigen::Matrix3d cov(Eigen::Matrix3d::Zero());
-		for (const Point3& enu : enuPositions) {
-			const Eigen::Vector3d d(Point3d(enu - mean));
-			cov += d * d.transpose();
-		}
-		cov /= (double)enuPositions.size();
-		// standard deviation along each principal axis, in increasing order
-		const Eigen::Vector3d spread(Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(cov, Eigen::EigenvaluesOnly).eigenvalues().cwiseMax(0.).cwiseSqrt());
+		const Eigen::Vector3d spread = ComputePrincipalSpread(enuPositions);
 		if (spread(1) < threshold) {
 			VERBOSE("error: GPS positions nearly coincident or collinear (spread %.1fx%.1fx%.1fm, need %.1fm+), skipping GPS alignment",
 				spread(2), spread(1), spread(0), threshold);
@@ -1540,10 +1474,7 @@ void Scene::Transform(const struct Transform& T)
 		for (PoseUncertainty& u : poseUncertainty) {
 			if (!u.IsValid())
 				continue;
-			const Matrix3x3 cov(
-				u.posVar.x, u.posCov.x, u.posCov.y,
-				u.posCov.x, u.posVar.y, u.posCov.z,
-				u.posCov.y, u.posCov.z, u.posVar.z);
+			const Matrix3x3 cov(u.GetPositionCovariance());
 			const Matrix3x3 covT(T.R * cov * T.R.t() * s2);
 			u.posVar = Point3f((float)covT(0,0), (float)covT(1,1), (float)covT(2,2));
 			u.posCov = Point3f((float)covT(0,1), (float)covT(0,2), (float)covT(1,2));
@@ -1720,28 +1651,24 @@ bool SFM::CompareScenes(const Scene& scene, const String& gtFile, bool matchByNa
 			continue;
 		if (isCalibrated && !img.HasPose())
 			continue;
+		IIndex matchGtID = NO_ID;
 		if (matchByName) {
-			const String key(Util::getFileName(img.fileName));
-			auto it = gtByName.find(key);
-			if (it == gtByName.end())
-				continue;
-			sceneIdx.push_back(i);
-			gtIdx.push_back(it->second);
-			srcCenters.push_back(img.C);
-			dstCenters.push_back(gtScene.images[it->second].C);
-			srcRots.push_back(img.R);
-			dstRots.push_back(gtScene.images[it->second].R);
+			const auto it = gtByName.find(Util::getFileName(img.fileName));
+			if (it != gtByName.end())
+				matchGtID = it->second;
 		} else {
-			auto it = gtById.find(img.ID);
-			if (it == gtById.end())
-				continue;
-			sceneIdx.push_back(i);
-			gtIdx.push_back(it->second);
-			srcCenters.push_back(img.C);
-			dstCenters.push_back(gtScene.images[it->second].C);
-			srcRots.push_back(img.R);
-			dstRots.push_back(gtScene.images[it->second].R);
+			const auto it = gtById.find(img.ID);
+			if (it != gtById.end())
+				matchGtID = it->second;
 		}
+		if (matchGtID == NO_ID)
+			continue;
+		sceneIdx.push_back(i);
+		gtIdx.push_back(matchGtID);
+		srcCenters.push_back(img.C);
+		dstCenters.push_back(gtScene.images[matchGtID].C);
+		srcRots.push_back(img.R);
+		dstRots.push_back(gtScene.images[matchGtID].R);
 	}
 	if (sceneIdx.size() < 3) {
 		VERBOSE("error: insufficient common posed images (%zu) using %s matching to compare scenes",
@@ -1755,52 +1682,36 @@ bool SFM::CompareScenes(const Scene& scene, const String& gtFile, bool matchByNa
 	unsigned numLargeRotErrors = 0, numVeryLargeRotErrors = 0;
 	DoubleArr rotErrDeg, posErr;
 	rotErrDeg.reserve(sceneIdx.size());
-	if (isCalibrated)
-		posErr.reserve(sceneIdx.size());
+	const auto recordRotError = [&](const Matrix3x3& R_aligned, const Matrix3x3& R_gt) {
+		const double ang = R2D(ACOS(ComputeAngle(R_aligned, R_gt)));
+		if (ang > rotErrorLargeThresholdDeg)
+			++numVeryLargeRotErrors;
+		else if (ang > rotErrorThresholdDeg)
+			++numLargeRotErrors;
+		rotErrDeg.push_back(ang);
+	};
 	if (isCalibrated) {
-		// Full calibrated scene: estimate similarity transform and compare both rotation and
-		// position; the rotation-aware estimation keeps a (nearly) collinear capture (corridor
-		// walk) comparable, where a center-only fit would report an arbitrary roll about the
-		// trajectory as rotation error
+		posErr.reserve(sceneIdx.size());
 		const double threshold = 0.5 * (double)MedianNearestCameraDistance(gtScene.threadPool, dstCenters);
 		Transform align;
 		if (EstimateSimilarityTransformWithRotations(srcCenters, dstCenters, srcRots, dstRots, align, threshold) == 0) {
 			VERBOSE("error: compare scenes similarity estimation failed (%zu matches)", srcCenters.size());
 			return false;
 		}
-
 		FOREACH(k, sceneIdx) {
 			const Image& img = scene.images[sceneIdx[k]];
 			const Image& gtImg = gtScene.images[gtIdx[k]];
-
-			const Point3 C_aligned = align * img.C;
-			posErr.push_back(norm(C_aligned - gtImg.C));
-
-			const Matrix3x3 R_aligned(img.R * align.R.t());
-			const double ang = R2D(ACOS(ComputeAngle(R_aligned, gtImg.R)));
-			if (ang > rotErrorLargeThresholdDeg)
-				++numVeryLargeRotErrors;
-			else if (ang > rotErrorThresholdDeg)
-				++numLargeRotErrors;
-			rotErrDeg.push_back(ang);
+			posErr.push_back(norm((align * img.C) - gtImg.C));
+			recordRotError(img.R * align.R.t(), gtImg.R);
 		}
 	} else {
-		// Uncalibrated scene (rotation-only): robustly estimate common alignment then compare
 		Matrix3x3 alignR;
 		if (!EstimateRotationAlignment(srcRots, dstRots, alignR)) {
 			VERBOSE("error: rotation alignment estimation failed (%zu matches)", srcRots.size());
 			return false;
 		}
-		FOREACH(k, sceneIdx) {
-			const Matrix3x3 R_rel_scene(scene.images[sceneIdx[k]].R * alignR);
-			const Matrix3x3& R_gt = gtScene.images[gtIdx[k]].R;
-			const double ang = R2D(ACOS(ComputeAngle(R_rel_scene, R_gt)));
-			if (ang > rotErrorLargeThresholdDeg)
-				++numVeryLargeRotErrors;
-			else if (ang > rotErrorThresholdDeg)
-				++numLargeRotErrors;
-			rotErrDeg.push_back(ang);
-		}
+		FOREACH(k, sceneIdx)
+			recordRotError(scene.images[sceneIdx[k]].R * alignR, gtScene.images[gtIdx[k]].R);
 	}
 
 	const MeanStdMinMax<double> rotStats(rotErrDeg.data(), rotErrDeg.size());

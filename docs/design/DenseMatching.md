@@ -397,7 +397,6 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
   its disagreement with the verified pose flags most look-alike pairs (60% of the wrong verified poses at 10 / 30 deg,
   13.7% of the right ones). As a weight inside the contradiction cut's rotation averaging it changes at most 3 pairs per
   capture; as a factor on the pair weight it is unmeasured.
-- The covisibility gate at 0.2: it lets through look-alike pairs that 0.5 removes (see Validation).
 - The verdict does not tell apart two images of different instances of a repeated structure (both give a consistent
   correspondence set); the triplet scores and the contradiction cut downstream do (`TripletScores.md`,
   `ContradictionCut.md`).
@@ -405,5 +404,3 @@ choice (feature map, GeM p = 3, 256-D) reaches recall 0.165 at K = 10 against Ro
   `PairsMatcher` has no homography branch. The planar twin switch resolves the pairs whose loops decide.
 - CoreML and DirectML latency is unmeasured.
 - FlexGlue's coarser warp grid (128 cells against 160) is the candidate cause of its lower F1 on Palace.
-- `--dense-matcher` help text names the retrieval descriptors; with `--dense-matcher flexglue` the retrieval is FlexGlue's pooled
-  256-D descriptor.

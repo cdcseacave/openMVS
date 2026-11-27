@@ -24,35 +24,7 @@ using namespace SFM;
 
 namespace {
 
-constexpr uint32_t NO_INDEX = (uint32_t)-1;
 constexpr float CUT = -2.f; // the score of a pair the face rule removes at every threshold
-
-// Union-find with path halving; the root of a set is its smallest member, so the components are
-// deterministic and a component's root belongs to it.
-class UnionFind
-{
-public:
-	explicit UnionFind(size_t size) : parent(size) {
-		FOREACH(i, parent)
-			parent[i] = (uint32_t)i;
-	}
-	uint32_t Find(uint32_t x) {
-		while (parent[x] != x)
-			x = parent[x] = parent[parent[x]];
-		return x;
-	}
-	// join the sets of a and b; false when they were one already
-	bool Join(uint32_t a, uint32_t b) {
-		a = Find(a);
-		b = Find(b);
-		if (a == b)
-			return false;
-		parent[MAXF(a, b)] = MINF(a, b);
-		return true;
-	}
-private:
-	std::vector<uint32_t> parent;
-};
 
 // The view graph: the images as nodes, the geometrically verified pairs holding at least one
 // inlier as edges, one edge per distinct image pair. Two scene pairs of the same images (the
@@ -69,7 +41,7 @@ struct ViewGraph
 	};
 	IIndex numImages;
 	std::vector<Edge> edges;
-	std::vector<uint32_t> edgeOfPair; // per scene pair: its edge, NO_INDEX when the pair is no edge
+	std::vector<uint32_t> edgeOfPair; // per scene pair: its edge, NO_ID when the pair is no edge
 	std::vector<bool> isNode;         // per image: incident to an edge
 	std::vector<bool> inMain;         // per image: in the largest connected component
 	unsigned numNodes, mainSize;
@@ -79,9 +51,9 @@ ViewGraph BuildViewGraph(const Scene& scene, const PairsWeightingConfig& weighti
 {
 	ViewGraph g;
 	g.numImages = scene.images.size();
-	g.edgeOfPair.assign(scene.pairs.size(), NO_INDEX);
+	g.edgeOfPair.assign(scene.pairs.size(), NO_ID);
 	g.isNode.assign(g.numImages, false);
-	std::unordered_map<PairIdx::PairIndex, uint32_t> edgeOfImages;
+	std::unordered_map<PairIdx, uint32_t> edgeOfImages;
 	edgeOfImages.reserve(scene.pairs.size());
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
@@ -93,7 +65,7 @@ ViewGraph BuildViewGraph(const Scene& scene, const PairsWeightingConfig& weighti
 		const float strength = (float)numInliers *
 			ComputePairCoverage(pair, scene.images[pair.ID1], scene.images[pair.ID2], weighting.gridSize);
 		const bool nearDuplicate = weighting.IsNearDuplicate(pair);
-		const auto inserted = edgeOfImages.emplace(images.idx, (uint32_t)g.edges.size());
+		const auto inserted = edgeOfImages.emplace(images, (uint32_t)g.edges.size());
 		if (inserted.second) {
 			g.edges.push_back({images.i, images.j, strength, numInliers, pair.meanRayAngle, nearDuplicate});
 			g.isNode[images.i] = g.isNode[images.j] = true;
@@ -105,9 +77,9 @@ ViewGraph BuildViewGraph(const Scene& scene, const PairsWeightingConfig& weighti
 		g.edgeOfPair[idxPair] = inserted.first->second;
 	}
 	// the largest connected component, ties to the one holding the lowest image
-	UnionFind uf(g.numImages);
+	DisjointSet<uint32_t> uf(g.numImages);
 	for (const ViewGraph::Edge& edge : g.edges)
-		uf.Join(edge.i, edge.j);
+		uf.UnionMin(edge.i, edge.j);
 	std::unordered_map<uint32_t, unsigned> sizes;
 	g.numNodes = 0;
 	for (IIndex i = 0; i < g.numImages; ++i) {
@@ -116,7 +88,7 @@ ViewGraph BuildViewGraph(const Scene& scene, const PairsWeightingConfig& weighti
 		++g.numNodes;
 		++sizes[uf.Find(i)];
 	}
-	uint32_t mainRoot = NO_INDEX;
+	uint32_t mainRoot = NO_ID;
 	g.mainSize = 0;
 	for (const auto& [root, size] : sizes) {
 		if (size > g.mainSize || (size == g.mainSize && root < mainRoot)) {
@@ -256,11 +228,11 @@ EdgeScores ScoreEdges(const ViewGraph& g, float minScore, float minYield)
 
 	// the components of the triplet graph, carried on the edges (the three edges of a triangle
 	// share one component), and the triangles each edge takes part in
-	UnionFind components(numEdges);
+	DisjointSet<uint32_t> components(numEdges);
 	std::vector<unsigned> numTripletsOfEdge(numEdges, 0);
 	ForEachTriplet([&](uint32_t e0, uint32_t e1, uint32_t e2) {
-		components.Join(e0, e1);
-		components.Join(e0, e2);
+		components.UnionMin(e0, e1);
+		components.UnionMin(e0, e2);
 		++numTripletsOfEdge[e0];
 		++numTripletsOfEdge[e1];
 		++numTripletsOfEdge[e2];
@@ -274,7 +246,7 @@ EdgeScores ScoreEdges(const ViewGraph& g, float minScore, float minYield)
 		if (numTripletsOfEdge[e] > 0)
 			tripletsOfComponent[components.Find(e)] += numTripletsOfEdge[e];
 	result.numComponents = (unsigned)tripletsOfComponent.size();
-	uint32_t largest = NO_INDEX;
+	uint32_t largest = NO_ID;
 	size_t largestSize = 0;
 	for (const auto& [root, size] : tripletsOfComponent) {
 		if (size > largestSize || (size == largestSize && root < largest)) {
@@ -320,15 +292,15 @@ inline bool IsKept(float score, float tau)
 	return score == TripletScores::unscored || (score >= 0.f && score >= tau);
 }
 
-// The root of every node's connected component in the graph kept at tau (NO_INDEX for an image
+// The root of every node's connected component in the graph kept at tau (NO_ID for an image
 // that is no node).
 std::vector<uint32_t> ComponentsAt(const ViewGraph& g, const std::vector<float>& scores, float tau)
 {
-	UnionFind uf(g.numImages);
+	DisjointSet<uint32_t> uf(g.numImages);
 	FOREACH(e, g.edges)
 		if (IsKept(scores[e], tau))
-			uf.Join(g.edges[e].i, g.edges[e].j);
-	std::vector<uint32_t> root(g.numImages, NO_INDEX);
+			uf.UnionMin(g.edges[e].i, g.edges[e].j);
+	std::vector<uint32_t> root(g.numImages, NO_ID);
 	for (IIndex i = 0; i < g.numImages; ++i)
 		if (g.isNode[i])
 			root[i] = uf.Find(i);
@@ -365,7 +337,7 @@ Pieces PiecesAt(const ViewGraph& g, const std::vector<float>& scores, float tau,
 		if (g.inMain[i])
 			++sizes[p.root[i]];
 	// ties to the piece holding the lowest image, its root
-	uint32_t root1 = NO_INDEX, root2 = NO_INDEX;
+	uint32_t root1 = NO_ID, root2 = NO_ID;
 	unsigned size1 = 0, size2 = 0;
 	for (const auto& [root, size] : sizes) {
 		if (size < minPiece)
@@ -384,7 +356,7 @@ Pieces PiecesAt(const ViewGraph& g, const std::vector<float>& scores, float tau,
 	}
 	std::sort(p.roots.begin(), p.roots.end());
 	for (IIndex i = 0; i < g.numImages; ++i) {
-		if (p.root[i] == NO_INDEX)
+		if (p.root[i] == NO_ID)
 			continue;
 		if (p.root[i] == root1)
 			p.largest.push_back(i);
@@ -429,7 +401,7 @@ std::vector<float> ScoresOfPairs(const ViewGraph& g, const EdgeScores& edgeScore
 	std::vector<float> scores(g.edgeOfPair.size(), TripletScores::unscored);
 	FOREACH(idxPair, scores) {
 		const uint32_t e = g.edgeOfPair[idxPair];
-		if (e != NO_INDEX && edgeScores.scores[e] >= 0.f)
+		if (e != NO_ID && edgeScores.scores[e] >= 0.f)
 			scores[idxPair] = edgeScores.scores[e];
 	}
 	return scores;
@@ -590,7 +562,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	unsigned numKept = 0;
 	for (unsigned idxPair = 0; idxPair < numPairs; ++idxPair) {
 		const uint32_t e = graph.edgeOfPair[idxPair];
-		if (e != NO_INDEX && removed[e])
+		if (e != NO_ID && removed[e])
 			continue;
 		if (numKept != idxPair)
 			scene.pairs[numKept] = std::move(scene.pairs[idxPair]);

@@ -187,16 +187,9 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	pose.R = camPose.R();
 	pose.SetT(camPose.t);
 
-	// Every pose is cross-checked against the image's verified pairs to already registered images
-	// unless its inlier share is above wellSupportedInlierRatio, which the default (1) never allows
-	// (on alameda a 54% share, 87/162, put a pose 1.9 degrees off, taking the 15 images it seeded
-	// with it). The witness is the quorum of those pairs --
-	// the largest group agreeing on a rotation -- not the strongest one of them, which speaks falsely
-	// whenever that single neighbor is itself misplaced. When the pairs contradict one another they
-	// are no witness at all, so the pose is left to the other acceptance rules and the disagreement
-	// is reported.
-	if (inlierRatio <= config.wellSupportedInlierRatio &&
-		(config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f || config.maxLinkRotationDisagreement > 0.f)) {
+	// Cross-check the estimated pose against verified pairs to already registered images:
+	// rotation quorum, baseline direction across quorum links, and weighted mean rotation across all links.
+	if (config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f || config.maxLinkRotationDisagreement > 0.f) {
 		std::vector<PoseLink> links;
 		CollectPoseLinks(scene.pairs, imageID, IsRegistered(scene), links);
 		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, config.maxRelativeRotationError, NeighborPose(scene));
@@ -204,7 +197,6 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 			DEBUG("the pairs of image %u to its registered neighbours disagree by up to %.1f degrees",
 				imageID, quorum.maxDisagreement);
 		} else if (!quorum.links.empty()) {
-			// the rotation the quorum composes
 			if (config.maxRelativeRotationError > 0.f) {
 				const double angle = R2D(ACOS(ComputeAngle(pose.R, quorum.R)));
 				if (angle > config.maxRelativeRotationError) {
@@ -215,21 +207,11 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 					return {0, n, numDescribed};
 				}
 			}
-			// the baseline direction each quorum link predicts, judged on what the pair measured and on
-			// what the model sees: the model's parallax of a link is the baseline the pose makes with the
-			// neighbour over the median distance of the pose's inlier points. A link both see close
-			// (under kNearDuplicateRayAngle) agrees, one that only one of them sees close abstains, and
-			// any other is held to the tolerance of the larger of the pair's ray angle and the model's
-			// parallax (a pair of unknown ray angle, 0, to the model's parallax alone), so the pose under
-			// test can tighten its own tolerance but never widen it. The pose is refused only when the
-			// links that contradict it outweigh the ones that agree, so one misplaced neighbour cannot
-			// refuse a right pose that other links vouch for
 			if (config.maxLinkDirectionError > 0.f) {
-				// past 90 degrees the tangent of the tolerance turns negative and every link would contradict
 				ASSERT(config.maxLinkDirectionError <= 90.f);
 				REALArr depths;
 				depths.reserve(numInliers);
-				const Eigen::Vector3d C(pose.C.x, pose.C.y, pose.C.z);
+				const Eigen::Vector3d C = pose.C;
 				FOREACH(k, correspondences.points)
 					if (inliers[k])
 						depths.push_back((correspondences.points[k] - C).norm());
@@ -251,8 +233,6 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 					const REAL tolerance = PairDisagreement::DirectionTolerance(config.maxLinkDirectionError, MAXF(parallax, link.rayAngle));
 					(d.direction <= tolerance ? agreeing : disagreeing) += link.numInliers;
 				}
-				// the pose's own inliers vote for it at their weight, so a pose its own evidence carries
-				// is not refused by a few weak links that contradict it
 				if (disagreeing > agreeing + poseWeight) {
 					DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and its centre lies in a direction "
 						"the pairs carrying %u of the %u weighted inliers of the voting quorum links contradict, "
@@ -263,9 +243,6 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 				}
 			}
 		}
-		// the rotation every link predicts, not only the quorum's: the mean angle between the pose's
-		// rotation and each link's prediction, weighted by the pair weight, also when the quorum is
-		// contested; an image with no link is not judged
 		if (config.maxLinkRotationDisagreement > 0.f && !links.empty()) {
 			double sumWeight = 0, sumAngle = 0;
 			for (const PoseLink& link : links) {
@@ -340,7 +317,7 @@ unsigned SFM::AdjustRepeated(Scene& scene, const BAConfig& baConfig, const Resec
 	ASSERT(config.maxReprojError > 0.f);
 	const float inputErrorPixels = config.maxReprojError * ResectionConfig::fullBAInputErrorFactor;
 	const auto Filter = [&](float bar) {
-		FilterTracks(scene, bar, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
+		FilterTracks(scene, bar, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	};
 	// per image and keypoint: bit 1 = in the input of the solve that ran, bit 2 = in the input of the next one
 	std::vector<std::vector<uint8_t>> input(config.fullBARepeats > 0 ? scene.images.size() : 0);
@@ -366,16 +343,13 @@ unsigned SFM::AdjustRepeated(Scene& scene, const BAConfig& baConfig, const Resec
 		BundleAdjustment::Adjust(scene, baConfig);
 		++solves;
 		Filter(config.maxReprojError);
-		// the tracks left without a point triangulated again: what the next solve would fit from the model, or,
-		// when no solve is left, what the model holds at the bar as a converged adjustment leaves it
-		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
+		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
 		if (solves > config.fullBARepeats) {
 			Filter(config.maxReprojError);
 			break;
 		}
 		Filter(inputErrorPixels);
 		Mark(2);
-		// the largest share of one camera's input that the next solve's input adds or removes
 		change = 0;
 		for (std::vector<uint8_t>& bits : input) {
 			unsigned before = 0, changed = 0;
@@ -401,7 +375,6 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 	TD_TIMER_STARTD();
 	stats = Stats();
 
-	// Collect unregistered images
 	IIndexScores unregistered;
 	unregistered.reserve(scene.images.size() * 2 / 3);
 	for (const Image& img : scene.images)
@@ -410,21 +383,14 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 	if (unregistered.empty())
 		VERBOSE("warning: no unregistered images");
 
-	// Resection loop
 	unsigned nBA = 0;
 	unsigned registeredCount = 0;
 	unsigned sinceFullBA = 0;
 	IIndexArr lastRegistered;
 	TRunningAverage<float, 10> avgInliersRatio;
-	// Full BA of the images registered since the last one;
-	// filter first so the observations of the images registered since the last filtering enter the
-	// inlier prefix the BA iterates, then re-triangulate only the tracks left without a valid
-	// position (real outliers and never-triangulated tracks): a track that merely gained a newly
-	// valid view keeps the position the previous BA refined instead of being reset to a linear solve. The
-	// adjustment fits a wider bar than the model is held to and repeats while what it fits keeps changing
 	const auto AdjustFull = [&]() {
-		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
-		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
+		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
 		const bool refineExtended = config.minRefineExtIntrs > 0 &&
 			scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs;
 		AdjustRepeated(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig, config);
@@ -436,48 +402,37 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 		if (nBA + 1 < config.fullBAEvery.size())
 			++nBA;
 	};
-	// Run the bundle adjustment the registration count has come due for, if any; true when one ran
 	const auto AdjustIfScheduled = [&]() {
 		if ((config.fullBAEvery[nBA] > 0 && sinceFullBA >= config.fullBAEvery[nBA]) ||
 			(config.avgInliersRatioForceBA > 0.f && sinceFullBA >= config.minImagesForceBA &&
 			 avgInliersRatio.GetAverage() < config.avgInliersRatioForceBA)) {
-			// Full BA every N registered images
 			AdjustFull();
 			return true;
 		}
 		if (config.localBAEvery > 0 && lastRegistered.size() >= config.localBAEvery) {
-			// Local BA every N registered images
-			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
+			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
 			const IIndexArr fixedViewIDs = BuildLocalWindow(lastRegistered);
 			ASSERT(!fixedViewIDs.empty());
 			BundleAdjustment::AdjustLocal(scene, lastRegistered, fixedViewIDs, config.localBAConfig);
-			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
+			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 			lastRegistered.clear();
 			return true;
 		}
 		return false;
 	};
-	// One registration per round: the candidates are tried down the list until one registers, and
-	// the next round orders them again on the model it left
 	while (!unregistered.empty()) {
 		IIndexArr nextIDs = SelectNextImages(unregistered);
 		const IIndex numCandidates = nextIDs.size();
 		const unsigned startRegisteredCount = registeredCount;
 		for (IIndex n = 0; n < nextIDs.size(); ) {
-			// Attempt to register next image
 			const IIndex nextID = nextIDs[n];
 			const auto [numInliers, numPoints, numDescribed] = RegisterImage(nextID);
 			stats.attempts.push_back({nextID, numInliers > 0});
 			if (numInliers == 0) {
 				DEBUG("warning: failed to register image %u (%u/%u correspondences), retrying later", nextID, numInliers, numPoints);
 				nextIDs.RemoveAtMove(n);
-				continue; // n now points to the shifted element, do not increment
+				continue;
 			}
-			// The average the full bundle adjustment is forced from reads the registered images' inlier
-			// ratios alone, weighed against what a registration with this same mix of described and
-			// dense correspondences reaches on a healthy model, so it reads drift and not how much of
-			// the image matched densely: an image whose attempt failed or was refused is not in the
-			// model, so its zero says nothing about how well the model fits
 			const float describedShare = numDescribed / (float)numPoints;
 			const float expectedRatio = describedShare + (1.f - describedShare) * config.denseInlierRatioFactor;
 			avgInliersRatio += (numInliers / (float)numPoints) / expectedRatio;
@@ -488,25 +443,14 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 			++n;
 			DEBUG_EXTRA("\tImage %u registered: %u/%u correspondences (%u/%u images, %.2f%% avg normalized inliers ratio)",
 				nextID, numInliers, numPoints, scene.status.nCalibratedImages+registeredCount, scene.images.size(), avgInliersRatio.GetAverage() * 100.f);
-			if (!AdjustIfScheduled() &&
-				(n+1 == nextIDs.size() || (config.triangulateEvery > 0 && (lastRegistered.size() % config.triangulateEvery) == 0))) {
-				// Update scene with new points every N registered images, and when one candidate is left
-				// untried: the trigger is kept from the batch loop as it was measured (it read "the batch is
-				// almost exhausted"); with one registration per round it fires only when exactly one untried
-				// candidate is left after the registered image
-				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
-				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
+			if (!AdjustIfScheduled() && n + 1 == nextIDs.size()) {
+				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 			}
-			break; // restart selection of next images
+			break;
 		}
 		if (registeredCount > startRegisteredCount)
 			continue;
-		// Stall: no image holds enough correspondences, or every candidate failed. The full adjustment
-		// of the model changed since the last one (images registered, which made tracks triangulable,
-		// or images removed, which left tracks without a position) re-triangulates those tracks and
-		// moves the model, which can give the remaining images the correspondences or the fit they
-		// lacked, so it runs and the resection tries again; a stall with the model unchanged since the
-		// last full adjustment ends the resection
 		if (sinceFullBA > 0 || imagesRemoved) {
 			DEBUG("Resection stalled at %u registered images (%u registered since the last full adjustment%s), full adjustment and another pass",
 				scene.status.nCalibratedImages+registeredCount, sinceFullBA, imagesRemoved ? ", images removed" : "");
@@ -525,14 +469,8 @@ bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 		break;
 	}
 
-	// Full BA to close every resection, also one with no image left to try (the loop above is then
-	// skipped) and one that registered nothing since the last adjustment: the closing form (every
-	// track triangulated again, every intrinsic the flags allow, more iterations) settles the model
-	// the caller is left with, e.g. the whole-scene pass's model filtered at the final adjustment's
-	// tighter bar, re-admitting the observations that bar dropped and the resection's own bar keeps;
-	// a caller that asked to keep a model that took nothing as it was gets no closing then
 	if (registeredCount > 0 || closeWhenNothingRegistered) {
-		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
+		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
 		config.extendedBAConfig.maxIterations = 100;
 		AdjustRepeated(scene, config.extendedBAConfig, config);
 		++stats.numFullAdjustments;

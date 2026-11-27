@@ -35,7 +35,11 @@ using namespace SFM;
 
 bool DenseMatcher::IsAvailable()
 {
-	return RoMa2Onnx::IsAvailable();
+	#ifdef _USE_ONNXRUNTIME
+	return true;
+	#else
+	return false;
+	#endif
 }
 
 std::unique_ptr<DenseMatcher> DenseMatcher::Create(const DenseMatchConfig& config)
@@ -45,8 +49,10 @@ std::unique_ptr<DenseMatcher> DenseMatcher::Create(const DenseMatchConfig& confi
 	#ifdef _USE_ONNXRUNTIME
 	if (config.matcher == "flexglue")
 		return std::make_unique<FlexGlueMatcher>();
-	#endif
 	return std::make_unique<RoMa2Onnx>();
+	#else
+	return nullptr;
+	#endif
 }
 
 unsigned DenseMatcher::ExpectedRetrievalSize(const DenseMatchConfig& config)

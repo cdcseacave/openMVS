@@ -19,9 +19,9 @@ selected, only the FlexGlue bundle is loaded, required or looked for.
 | Hugging Face (canonical, fetched at the commit the script pins) | `cDcSeacave/openmvs-roma2-onnx` at `ea2b04648ba0` | `cDcSeacave/openmvs-flexglue-onnx` at `f635c84532db` |
 | GitHub mirror (the same files, flat) | release `roma2-model` of `cdcseacave/openMVS` | release `flexglue-model` of `cdcseacave/openMVS` |
 
-`DenseMatchConfig::ResolveModelPath()` finds the selected matcher's folder the same way for both: the explicit option, else the
-environment variable, else the install copy (`OPENMVS_MODEL_INSTALL_DIR/<matcher>`, checked with `File::isFolder`, so an
-unfetched prefix still gives the ordinary "needs a model" error), else nothing.
+Model discovery follows the same order for both matchers: the explicit command-line option, else the
+environment variable, else the installed `<prefix>/share/openMVS/<matcher>` directory (verified to exist on
+disk, so an unfetched prefix still reports a missing model).
 
 ## Obtaining a model
 
@@ -65,7 +65,7 @@ entries; two precisions of one setting would first need distinct manifest names.
 
 ## The FlexGlue bundle
 
-Exported from the FlexGlue fork with the pose head (branch `feat/pose-head`, commit `6124adb`), traced with the
+Exported from FlexGlue with the H1 pose head, traced with the
 `torch.onnx` dynamo exporter at opset 18 (ONNX Runtime's contrib MultiHeadAttention and Gelu in the match graph), the
 exporter's stack-trace metadata stripped. Contents of `base-fp16/`:
 `flexglue_base.json` (manifest: sizes, normalisation, retrieval recipe, gates, heads and their conventions, files, SHA256 of each

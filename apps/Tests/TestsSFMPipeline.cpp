@@ -717,7 +717,7 @@ bool RealImagesPipelineTest(bool verbose)
 	static_cast<PinholeCamera*>(scene.cameras[0])->trustIntrinsics = false;
 	TEST_CHECK(scene.MatchPairs(BundledImagesConfig().matchCfg), "the features of the bundled images were not matched");
 	// tracks, the star and the adjustment; the focal within 100 px of 700, at most 10 px of distortion
-	TEST_CHECK(ReconstructMatchedScene(scene, "RealImagesPipelineTest", 1500, 3000, 10), "the reconstruction from the wrong intrinsics");
+	TEST_CHECK(ReconstructMatchedScene(scope, scene, 1500, 3000, 10), "the reconstruction from the wrong intrinsics");
 	if (verbose) {
 		// the reconstructed scene in both native SfM and MVS formats, into the data folder
 		TEST_CHECK(scene.Save(MAKE_PATH("reconstruct_test.sfm")) && SFM::ExportMVS(MAKE_PATH("reconstruct_test.mvs"), scene),

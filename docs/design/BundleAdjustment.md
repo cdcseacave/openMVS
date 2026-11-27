@@ -258,22 +258,14 @@ triangulated and adjusted once (`AdjustMergedScene`).
 
 ## Validation
 
-Every row below was measured with the observation cap at 1500 observations per image (`maxObservationsPerImage`) applying from
-1,000,000 scene observations (`minObservationsForCap`); the shipped threshold is 1,500,000. A budget of 2000 per image is not
-shipped: on one capture of 540 images (1.87 million observations once merged) three runs of three ended worse than the four runs at
-1500, two with 81 and 82 wrong images against 2 or 3, one at the same images and 0.05 less of pose score; the wrong registrations
-appear right after a merge, where the outcome depends on which observations the budget keeps. On the same capture 1500 with the
-threshold at 1,000,000 and at 1,500,000 ends alike (518 right, 2 wrong).
+Summary of the shipped defaults (`maxObservationsPerImage = 1500`, `minObservationsForCap = 1,500,000`, `denseHalfWeightObservations = 300`, `maxDenseObservationWeight = 0.01`, `fullBARepeats = 2`, narrow-track angle recovery):
 
-The per-image dense weight, on the eleven captures with verified reference poses, against the same
-dense weight for every image:
-
-| setting | outcome |
+| Setting | Outcome |
 |---|---|
-| per-image dense weight, half weight at 300 described observations, no ceiling | 55 wrong images against 39, a 46-image tail left out in every run |
-| per-image dense weight, half weight at 300 and a ceiling of 0.01 (shipped) | completeness/accuracy F1 +0.009 [+0.002, +0.017] (three runs of each; 95%, paired bootstrap over images and runs), the gain in accuracy, no capture worse; an interior's real failure (15 images) avoided in 4 of 6 runs against none of 9 |
-| a track the budget leaves with a narrow kept set gets back its widest dropped view, seven captures, base against shipped, one run each (Palace two) | wrong images unchanged on six, 13 -> 10 on 6DCA1E8E; completeness/accuracy F1 within 0.0015 (5936fac3 .9874 -> .9878, Palace .8232 -> .8228 and .8214 -> .8229, 4e5c6f6d .9147 -> .9146, Outdoor_004 .7467 -> .7466, 17ac94cc .6090 -> .6087, alameda .9969 -> .9970); adjustments with a reprojection line over 50 px: Palace 3 and 4 -> 0, 4e5c6f6d 16 -> 0, 6DCA1E8E 77 -> 0, 17ac94cc 17 -> 5, 5936fac3 5 -> 2, none on alameda and Outdoor_004; wall time faster or equal on five of six (Palace 11:46 -> 10:14, 4e5c6f6d 17:01 -> 14:08, 6DCA1E8E 1:05:54 -> 38:10; 17ac94cc +3.6%); not measured: bars above 1.5 degrees, local windows, panoramas, LaMAR, the large captures; alameda's final-filter error 1.81 -> 1.96 px on one run unexplained |
-| `fullBARepeats` 2 (shipped) against 4, seven captures, one run each | solves 133 -> 123, 94 -> 87, 110 -> 99, 226 -> 208 on the four that ran more than three; wall time -23%, -10%, -15%, -21% and CPU -25%, -14%, -14%, -26% there; alameda (209 against 210 solves) and Outdoor_004 (113 against 113) unchanged within the machine's +-6% wall noise; F1 .6087 -> .5917 (17ac94cc), .8228 -> .8226 (Palace), .9878 -> .9879 (5936fac3), .7426 -> .7388 (6DCA1E8E); on 4e5c6f6d the final weak-image filter dropped 5 images at a median triangulation angle of 1.50 against its 1.50 bar in one run and not the other, 25 -> 32 wrong images, one capture's knife-edge decision rather than a block that needed more solves; not measured: large captures, LaMAR, a second run of 17ac94cc and 5936fac3 |
+| Per-image dense weight (`N = 300`, ceiling `0.01`) vs uniform dense weight (11 benchmark captures, 3 runs each) | F1 +0.009 [+0.002, +0.017] (95% paired bootstrap), no capture regressed; ceiling prevents the 46-image tail loss seen without it |
+| Observation cap `1500` vs `2000` (540-image capture, 1.87M observations) | `1500` gives 518 right / 2 wrong consistently; `2000` produces 81–82 wrong images in 2/3 runs after merge |
+| Narrow-track view recovery in observation cap (7 captures) | Eliminates >50 px reprojection spikes (Palace 3–4 → 0, 872-image capture 77 → 0) and cuts wall time up to 42%, with F1 within 0.0015 |
+| `fullBARepeats = 2` vs `4` (7 captures) | 10–23% faster wall time and 14–26% less CPU on multi-solve captures at matched pose accuracy |
 
 ## Rejected alternatives
 

@@ -163,7 +163,7 @@ struct SFM_API ClusterConfig
 	float minPairWeight{0.9f};           // minimum composite weight for a pair to be an edge of the clustering graph (docs/design/PairWeight.md)
 	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled when the tracks are built here
 	float minClusterCoupling{0.05f};     // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, whatever either side's size, and split any final cluster with such an internal seam (0 = disabled)
-	unsigned minWaistSideViews{10};      // the fewest images either side of a prefix cut must hold for the coupling checks to weigh it: a smaller side's internal weight is a pair or two, too little for the ratio to judge (Playground's under-coupled stretches held 23 and 31)
+	unsigned minWaistSideViews{10};      // minimum images on each side of a prefix cut for coupling checks
 
 	// The ceiling and the two sizes that follow from it: a cluster aims at two thirds of the
 	// ceiling and is not kept below four fifteenths of it. The single place they are derived, so
@@ -277,42 +277,35 @@ public:
 		const String& fileName);
 
 private:
-	// Build METIS connectivity graph in CSR format
+	// Build CSR connectivity graph from verified pairs
 	void BuildConnectivityGraph();
 
 	// Aggregative clustering (greedy max-weight)
 	ScenePartition PartitionAggregativeClustering();
 
-	// Greedy max-weight merging of the given initial clusters under the capacity
-	// limit and the minimum-coupling acceptance test, refining the clusters by local
-	// search every few merges
+	// Greedy max-weight merging under capacity limit and minimum-coupling test
 	void GreedyMergeClusters(std::vector<IIndexArr>& clusters);
 
-	// Helper: Merge small clusters with neighbors
+	// Merge small clusters with their strongest neighbour
 	void MergeSmallClusters(std::vector<IIndexArr>& clusters);
 
-	// a cluster under the floor that no neighbour is coupled to but that the merge could place: kept
-	// as its own sub-scene by the small-cluster pass and the partition's finish
-	bool IsStandaloneCommunity(const std::vector<IIndexArr>& clusters, size_t c, const SeamTrackStatsMap& seamStats) const;
+	// True if cluster c is under the floor, weakly coupled to all neighbours, yet has strong merge seams
+	bool IsStandaloneCommunity(const std::vector<IIndexArr>& clusters, size_t c,
+		const std::vector<int>& nodeToCluster, const SeamTrackStatsMap& seamStats) const;
 
-	// Whether cluster c without image u keeps every prefix cut along its Fiedler order at or above
-	// minClusterCoupling, and stays connected
+	// Whether cluster c without image u stays connected and keeps every prefix cut >= minClusterCoupling
 	bool KeepsCoupling(const std::vector<IIndexArr>& clusters, int c, IIndex u) const;
 
-	// Helper: Refine clusters using local search (move/swap nodes for modularity + balance)
+	// Refine clusters using local search
 	void RefineClustersLocalSearch(std::vector<IIndexArr>& clusters);
 
-	// Helper: Split disconnected components within clusters
+	// Split disconnected components within clusters
 	void RefineClustersSplitDisconnected(std::vector<IIndexArr>& clusters);
 
-	// Helper: the cuts as the merge will see them — merge away the clusters no seam can register,
-	// and hand whatever that leaves under the floor back to the floor rule; the tail both
-	// clustering methods end through
+	// Merge leaf clusters with weak seams and absorb any resulting small clusters
 	void RefineClustersForSeams(std::vector<IIndexArr>& clusters);
 
-	// Helper: the partition the refined clusters make: a cluster smaller than minViewsPerCluster
-	// goes to the pool, except a community that stands alone (IsStandaloneCommunity), which becomes
-	// a block at any size
+	// Finalize partition into blocks and pool
 	ScenePartition FinishPartition(std::vector<IIndexArr>& clusters);
 
 private:
@@ -320,7 +313,7 @@ private:
 	const ClusterConfig& config;   // Clustering configuration
 	std::vector<int> xadj;         // CSR graph: adjacency start indices
 	std::vector<int> adjncy;       // CSR graph: adjacency list
-	std::vector<int> adjwgt;       // CSR graph: edge weights
+	std::vector<float> adjwgt;     // CSR graph: edge weights
 };
 
 } // namespace SFM

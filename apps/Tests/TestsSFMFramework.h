@@ -363,7 +363,7 @@ Scene MakeSphereScene(const std::vector<Point3>& centres, unsigned numPoints, ui
 // Angle in degrees between two rotations
 inline double RotationErrorDeg(const RMatrix& a, const RMatrix& b)
 {
-	return R2D(ACOS(ComputeAngle(a, b)));
+	return R2D(ComputeAngleSO3<REAL>(a, b));
 }
 
 // ===============================================================================
@@ -395,7 +395,7 @@ bool HasDensePartition(const Scene& scene, const ImagePair& pair);
 // The reconstruction stage of RealImagesPipelineTest (tracks, star initialization, colors and the
 // checks on what they produce), shared with DenseMatcherReconstructTest so that both hold a matched
 // scene to exactly the same expectations
-bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned minTracks, unsigned maxTracks, REAL maxDistortion);
+bool ReconstructMatchedScene(const TestScope& scope, Scene& scene, unsigned minTracks, unsigned maxTracks, REAL maxDistortion);
 // The blocks of a partition as the reconstruction extracts them, with their local-to-global maps
 std::vector<Scene> ExtractBlocks(Scene& scene, const ScenePartition& partition, std::vector<IIndexArr>* localToGlobals = NULL);
 // The middle value of a sample, its own numbers left in place

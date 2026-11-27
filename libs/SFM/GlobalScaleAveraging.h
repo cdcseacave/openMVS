@@ -38,29 +38,11 @@ struct SFM_API ScalePair
 /**
  * @brief Global scale estimation from pairwise scale ratios
  *
- * Estimates global scales by solving a weighted least-squares system:
- *   log(s_j) - log(s_i) ≈ log(scale_ratio_ij)
- *
- * The indices the equations name split into connected components, which share no unknown, and each
- * component is solved on its own by conjugate gradients on the normal equations (Jacobi-preconditioned,
- * with one step of refinement against the equations themselves) of the system with one of its indices
- * pinned at scale 1 (exact gauge enforcement by eliminating that variable): the fixed index in the
- * component that holds it, the first named index in any other. A component the fixed index does not reach
- * has no scale to be tied to, so its log-scales are then shifted to mean zero, which is the minimum-norm
- * least squares of the whole system. An index no equation names keeps scale 1. Every solve starts from
- * the scales of this estimator's previous solve (relative to the component's pin) when that solve had as
- * many indices, as a robust averaging round does after the one before it.
- *
- * The solve is as accurate as the conditioning of the normal equations allows: conjugate gradients
- * stop on the relative residual of A^T A x = A^T b, and so does the refinement step, so
- * GetSolve().converged does not certify the answer, and a weak tie between two strongly connected groups
- * can be off (two groups of 150 indices with weights 1 to 100, joined by one equation of weight 1e-4,
- * left an error of 4e-4 in log scale, with weight 1e-5 of 0.37, both converged). The inputs measured
- * (the star initializer, the block merge and the contradiction cut of seven captures, 322 calls)
- * agree with a dense SVD to 3.4e-14. There is no warning and no fallback for such a tie.
- *
- * Generalized from StarInitializer::EstimateGlobalScale() to work with
- * arbitrary indices (sub-scenes, images, etc.) instead of image pairs.
+ * Solves log(s_j) - log(s_i) ~= log(scale_ratio_ij) per connected component using
+ * Jacobi-preconditioned conjugate gradients on the normal equations with one step of
+ * iterative refinement. Pins fixedIdx (or the best-connected node) to scale 1 in its
+ * component, shifts unpinned components to zero-mean log scale, and leaves unreferenced
+ * indices at scale 1. Warm-starts from the previous solve when numIndices matches.
  */
 class SFM_API GlobalScaleEstimator
 {
@@ -100,6 +82,16 @@ private:
 	Solve solve;
 	std::vector<REAL> previousScales; // the scales of the last solve, the start of the next
 };
+
+// Geman-McClure iteratively reweighted global scale averaging on log-scale residuals
+SFM_API bool RobustAverageScales(
+	const std::vector<ScalePair>& pairs,
+	uint32_t numIndices,
+	uint32_t fixedIdx,
+	REAL maxLogResidual,
+	unsigned maxRounds,
+	std::vector<REAL>& outScales,
+	std::vector<REAL>& outResiduals);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

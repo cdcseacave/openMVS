@@ -78,14 +78,7 @@ public:
 
 	// Compute the relative pose from this to other: result * this = other
 	// Returns the transformation that when composed with 'this' yields 'other'.
-	// Useful for computing how to transform from one absolute pose to another.
-    // Usage: RelPose = Pose2 / Pose1
-    // 'this' is the Target Pose (Pose2)
-    // 'other' is the Source Pose (Pose1)
-    // Logic: Find RelPose such that Pose2 = RelPose * Pose1
-	// This is equivalent to: this * other.Inverse()
-	// or: other * (this / other) = this
-	// (equivalent to ComputeRelativePose, but swapped i and j)
+	// Usage: RelPose = Pose2 / Pose1 ('this' is Pose2, 'other' is Pose1)
 	inline Pose3D operator / (const Pose3D& other) const {
 		return Pose3D(
 			R * other.R.t(),
@@ -112,6 +105,23 @@ public:
 	}
 	#endif
 };
+
+// Build an orthonormal tangent basis (e1, e2) perpendicular to unit vector n
+inline void OrthonormalBasis(const Point3& n, Point3& e1, Point3& e2)
+{
+	ASSERT(ABS(normSq(n) - REAL(1)) < REAL(1e-4));
+	const Point3 ref = (ABS(n.x) < REAL(0.9)) ? Point3(1, 0, 0) : Point3(0, 1, 0);
+	e1 = normalized(n.cross(ref));
+	e2 = n.cross(e1);
+}
+
+// Angle in degrees between two non-zero 3D directions
+inline REAL DirectionAngleDeg(const Point3& a, const Point3& b)
+{
+	const REAL na = norm(a), nb = norm(b);
+	ASSERT(na > ZEROTOLERANCE<REAL>() && nb > ZEROTOLERANCE<REAL>());
+	return R2D(ACOS(CLAMP(a.dot(b) / (na * nb), REAL(-1), REAL(1))));
+}
 
 } // namespace SFM
 

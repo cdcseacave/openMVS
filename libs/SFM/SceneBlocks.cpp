@@ -65,46 +65,62 @@ void SceneBlocks::Extract(const ScenePartition& partition)
 	DEBUG_EXTRA("Allocating %u threads per sub-scene (%u clusters, %u parent threads)",
 		nThreadsPerCluster, nClusters, scene.nMaxThreads);
 
-	// which global images each block took, as ranges: the membership every later stage is reported
-	// against, so a block that comes out wrong can be traced back to the split
-	std::vector<String> memberships;
 	blocks.reserve(nClusters);
 	localToGlobal.reserve(nClusters);
+	IIndexArr globalToLocal(scene.images.size());
+	globalToLocal.MemsetValue(NO_ID);
 	for (const IIndexArr& cluster : partition.clusters) {
-		// local IDs preserve the global order: localID1 < localID2 means globalID1 < globalID2, so
-		// pair ID ordering (ID1 < ID2) is maintained through local-global remapping
 		ASSERT(!cluster.empty() && std::is_sorted(cluster.begin(), cluster.end()));
-		String membership;
-		FOREACH(i, cluster) {
-			if (i > 0 && cluster[i] == cluster[i-1] + 1)
-				continue; // still inside the current range
-			IIndex last = cluster[i];
-			for (IIndex j = i + 1; j < cluster.size() && cluster[j] == last + 1; ++j)
-				last = cluster[j];
-			if (!membership.empty())
-				membership += ", ";
-			membership += last == cluster[i] ?
-				String::FormatString("%u", cluster[i]) :
-				String::FormatString("%u-%u", cluster[i], last);
-		}
-		memberships.emplace_back(String::FormatString("sub-scene %u: %s (%u images)",
-			(unsigned)blocks.size(), membership.c_str(), (unsigned)cluster.size()));
-		IIndexArr globalToLocal(scene.images.size());
-		globalToLocal.MemsetValue(NO_ID);
+		const IIndex blockIdx = (IIndex)blocks.size();
 		FOREACH(localID, cluster) {
 			globalToLocal[cluster[localID]] = localID;
-			blockOf[cluster[localID]] = (IIndex)blocks.size();
+			blockOf[cluster[localID]] = blockIdx;
 		}
 		blocks.emplace_back(ExtractBlock(cluster, globalToLocal, nThreadsPerCluster));
 		localToGlobal.emplace_back(cluster);
 	}
+	// Partition intra-block pairs in a single O(|pairs|) pass, preserving pair order
+	ImagePairArr crossPairs;
+	crossPairs.reserve(scene.pairs.size());
+	for (ImagePair& pair : scene.pairs) {
+		const IIndex b1 = blockOf[pair.ID1];
+		if (b1 != NO_ID && b1 == blockOf[pair.ID2]) {
+			pair.ID1 = globalToLocal[pair.ID1];
+			pair.ID2 = globalToLocal[pair.ID2];
+			ASSERT(pair.ID1 < pair.ID2);
+			blocks[b1].pairs.emplace_back(std::move(pair));
+		} else {
+			crossPairs.emplace_back(std::move(pair));
+		}
+	}
+	scene.pairs = std::move(crossPairs);
+	FOREACH(b, blocks)
+		VERBOSE("Sub-scene %u: %u images, %u pairs, %u tracks",
+			b, blocks[b].images.size(), blocks[b].pairs.size(), blocks[b].tracks.size());
 	DEBUG("Clustering: split into %u sub-scenes and %u skipped views, %u cross-sub-scene pairs remain",
 		(unsigned)blocks.size(), (unsigned)partition.pool.size(), scene.pairs.size());
-	for (const String& membership : memberships)
-		DEBUG_ULTIMATE("Clustering: %s", membership.c_str());
 	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 2 && !blocks.empty() && !blocks[0].images.empty() && blocks[0].images[0].View::metadata.HasGPS())
-		SceneCluster::ExportClusterPositions(blocks, MAKE_PATH(String("clusters_gps.ply")));
+	if (VERBOSITY_LEVEL > 2) {
+		FOREACH(b, localToGlobal) {
+			const IIndexArr& cluster = localToGlobal[b];
+			String membership;
+			FOREACH(i, cluster) {
+				if (i > 0 && cluster[i] == cluster[i-1] + 1)
+					continue;
+				IIndex last = cluster[i];
+				for (IIndex j = i + 1; j < cluster.size() && cluster[j] == last + 1; ++j)
+					last = cluster[j];
+				if (!membership.empty())
+					membership += ", ";
+				membership += last == cluster[i] ?
+					String::FormatString("%u", cluster[i]) :
+					String::FormatString("%u-%u", cluster[i], last);
+			}
+			DEBUG_ULTIMATE("Clustering: sub-scene %u: %s (%u images)", b, membership.c_str(), (unsigned)cluster.size());
+		}
+		if (!blocks.empty() && !blocks[0].images.empty() && blocks[0].images[0].View::metadata.HasGPS())
+			SceneCluster::ExportClusterPositions(blocks, MAKE_PATH(String("clusters_gps.ply")));
+	}
 	#endif
 }
 
@@ -114,71 +130,40 @@ Scene SceneBlocks::ExtractBlock(
 	unsigned nThreads)
 {
 	Scene subScene(nThreads);
-
-	// Map: global camera index -> local camera index
 	std::unordered_map<IIndex, IIndex> cameraMap;
 
-	// Copy images and cameras; move expensive data (keypoints, descriptors)
-	// from the global scene to sub-scenes to save memory during reconstruction.
-	// These are moved back during GlobalAlignment::MergeSingleScene.
+	// Move image features from global scene to sub-scene without copying keypoints/descriptors
+	subScene.images.reserve(viewIndices.size());
 	for (IIndex globalID : viewIndices) {
 		Image& img = scene.images[globalID];
-		// Ensure camera exists in sub-scene
 		const IIndex globalCamID = img.cameraID;
 		auto ret = cameraMap.emplace(globalCamID, subScene.cameras.size());
-		if (ret.second) {
-			// Clone camera for independent bundle adjustment
+		if (ret.second)
 			subScene.cameras.emplace_back(scene.cameras[globalCamID]->Clone());
-		}
-		IIndex localCamID = ret.first->second;
-		// Add image with remapped IDs
-		Image subImg = img;
-		subImg.ID = subScene.images.size();
+		const IIndex localCamID = ret.first->second;
+		const IIndex localImgID = subScene.images.size();
+		Image& subImg = AppendImage(subScene.images, img);
+		subImg.ID = localImgID;
 		subImg.cameraID = localCamID;
 		subImg.pCamera = subScene.cameras[localCamID];
-		// Move expensive data from global to sub-scene to save memory, described-keypoint boundary
-		// included: it indexes the keypoint array, so it has to follow it rather than stay behind
-		// on an image that no longer has one
-		subImg.MoveFeaturesFrom(img);
-		subScene.images.emplace_back(std::move(subImg));
 	}
 
-	// Move image pairs (only with image IDs within cluster)
-	for (uint32_t i = 0; i < scene.pairs.size(); ++i) {
-		ImagePair& pair = scene.pairs[i];
-		const IIndex localID1 = globalToLocal[pair.ID1];
-		const IIndex localID2 = globalToLocal[pair.ID2];
-		if (localID1 == NO_ID || localID2 == NO_ID)
-			continue; // pair crosses cluster boundary
-		// Move pair to avoid copying large match vectors
-		ASSERT(localID1 < localID2);
-		pair.ID1 = localID1;
-		pair.ID2 = localID2;
-		subScene.pairs.emplace_back(std::move(pair));
-		scene.pairs.RemoveAtMove(i--);
-	}
-
-	// Copy tracks (include tracks with ≥2 observations in this cluster)
+	// Copy tracks with >= 2 observations in this cluster
+	const IIndex blockIdx = viewIndices.empty() ? NO_ID : blockOf[viewIndices[0]];
 	for (const Track& srcTrack : scene.tracks) {
 		Track dstTrack;
 		dstTrack.position = srcTrack.position;
 		FOREACH(k, srcTrack.observations) {
 			const Observation& obs = srcTrack.observations[k];
-			const uint32_t localID = globalToLocal[obs.imageID];
-			if (localID == NO_ID)
-				continue; // observation outside this cluster
-			dstTrack.observations.emplace_back(localID, obs.featureID);
+			if (blockOf[obs.imageID] != blockIdx)
+				continue;
+			dstTrack.observations.emplace_back(globalToLocal[obs.imageID], obs.featureID);
 			if (k < srcTrack.numInliers)
 				++dstTrack.numInliers;
 		}
-		// Include track if it has at least 2 observations in this cluster
 		if (dstTrack.GetNumObservations() >= 2)
-			subScene.tracks.emplace_back(dstTrack);
+			subScene.tracks.emplace_back(std::move(dstTrack));
 	}
-
-	VERBOSE("Sub-scene: %u images, %u pairs, %u tracks",
-		subScene.images.size(), subScene.pairs.size(),
-		subScene.tracks.size());
 	return subScene;
 }
 /*----------------------------------------------------------------*/
@@ -232,7 +217,7 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 		{
 			Resection resection(scene, resectionCfg);
 			if (resection.RegisterImages(false))
-				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, resectionCfg.denseReprojErrorFactor);
+				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 		}
 		unsigned numEntered = 0;
 		FOREACH(g, scene.images)
@@ -257,7 +242,7 @@ unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const R
 
 IIndexArr SceneBlocks::FilterWeakImages()
 {
-	TD_TIMER_STARTD();
+	TD_TIMER_START();
 	ASSERT(IsSplit() && !blocks.empty());
 	// the blocks in parallel, the pairs of the ones left without a posed image appended in block order
 	std::vector<IIndexArr> removed(blocks.size()); // global IDs, written by the blocks in parallel
@@ -343,6 +328,20 @@ void SceneBlocks::RegroupAfterMerge(const std::vector<bool>& placed)
 		blockOf[model[l]] = 0;
 	}
 	blocks.emplace_back(ExtractBlock(model, globalToLocal, scene.nMaxThreads));
+	ImagePairArr remainingPairs;
+	remainingPairs.reserve(scene.pairs.size());
+	for (ImagePair& pair : scene.pairs) {
+		const IIndex l1 = globalToLocal[pair.ID1], l2 = globalToLocal[pair.ID2];
+		if (l1 != NO_ID && l2 != NO_ID) {
+			ASSERT(l1 < l2);
+			pair.ID1 = l1;
+			pair.ID2 = l2;
+			blocks.back().pairs.emplace_back(std::move(pair));
+		} else {
+			remainingPairs.emplace_back(std::move(pair));
+		}
+	}
+	scene.pairs = std::move(remainingPairs);
 	blocks.back().RecomputeCalibratedImages();
 	hasModel = true;
 	// the merged model's tracks now live in block 0; a pool image's observations join them again at the
@@ -637,8 +636,8 @@ void SceneBlocks::RebuildTracks(IIndex block, const ReconstructionConfig& config
 		unchanged.emplace_back((uint32_t)t, it->second);
 	}
 	const unsigned numChanged = (unsigned)(blk.tracks.size() - unchanged.size());
-	TriangulateTracks(blk, true, resectionCfg.maxReprojError, resectionCfg.minAngleThreshold, resectionCfg.denseReprojErrorFactor);
-	FilterTracks(blk, resectionCfg.maxReprojError, resectionCfg.minAngleThreshold, resectionCfg.multDepthNear, resectionCfg.multDepthFar, resectionCfg.denseReprojErrorFactor);
+	TriangulateTracks(blk, true, resectionCfg.maxReprojError, resectionCfg.minAngleThreshold);
+	FilterTracks(blk, resectionCfg.maxReprojError, resectionCfg.minAngleThreshold, resectionCfg.multDepthNear, resectionCfg.multDepthFar);
 	for (const auto& [t, o] : unchanged)
 		blk.tracks[t] = before[o];
 	DEBUG_EXTRA("Block %u tracks rebuilt: %u tracks (%u before), %u unchanged, %u new or changed",
@@ -647,7 +646,7 @@ void SceneBlocks::RebuildTracks(IIndex block, const ReconstructionConfig& config
 
 void SceneBlocks::ResectPool(const ResectionConfig& resectionCfg, const ReconstructionConfig& config)
 {
-	TD_TIMER_STARTD();
+	TD_TIMER_START();
 	ASSERT(IsSplit());
 	const IIndexArr origin(blockOf); // where each image was before: its block, or NO_ID for the partition's pool
 	const auto NumPool = [this]() {
@@ -741,7 +740,7 @@ void SceneBlocks::ResectPool(const ResectionConfig& resectionCfg, const Reconstr
 				blk.nMaxThreads = nThreads;
 				Resection resection(blk, resectionCfg);
 				if (resection.RegisterImages(false))
-					FilterTracks(blk, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, resectionCfg.denseReprojErrorFactor);
+					FilterTracks(blk, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 			});
 			scene.threadPool.wait();
 

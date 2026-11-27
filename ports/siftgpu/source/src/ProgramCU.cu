@@ -1584,18 +1584,7 @@ void __global__ MultiplyDescriptor_Kernel(cudaTextureObject_t texDes1, cudaTextu
 
 void ProgramCU::MultiplyDescriptor(CuTexImage* des1, CuTexImage* des2, CuTexImage* texDot, CuTexImage* texCRT)
 {
-	int num1 = des1->GetImgWidth() / 8;
-	int num2 = des2->GetImgWidth() / 8;
-	dim3 grid(	(num2 + MULT_BLOCK_DIMX - 1)/ MULT_BLOCK_DIMX,
-		(num1 + MULT_BLOCK_DIMY - 1)/MULT_BLOCK_DIMY);
-	dim3 block(MULT_TBLOCK_DIMX, MULT_TBLOCK_DIMY);
-	texDot->InitTexture( num2,num1);
-	if(texCRT) texCRT->InitTexture(num2, (num1 + MULT_BLOCK_DIMY - 1)/MULT_BLOCK_DIMY, 32);
-	const cudaTextureObject_t des1Tex = des1->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
-	const cudaTextureObject_t des2Tex = des2->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
-
-	MultiplyDescriptor_Kernel<<<grid, block>>>(des1Tex, des2Tex, (int*)texDot->_cuData, num1, num2,
-												(texCRT? (int3*)texCRT->_cuData : NULL), 0);
+	MultiplyDescriptorRows(des1, 0, des1->GetImgWidth() / 8, des2, texDot, texCRT);
 }
 
 // The dot products of rows row0 .. row0+num1-1 of des1 against all of des2: texDot becomes num1 x num2 and texCRT

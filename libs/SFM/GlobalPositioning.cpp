@@ -46,80 +46,39 @@ Point3 RandPoint3(std::mt19937& randomGenerator, REAL low, REAL high)
 		distribution(randomGenerator));
 }
 
-// Computes the error between a translation direction and the direction formed from
-// two positions such that: t_ij - scale * (p_j - p_i) is minimized.
-// The positions can either be two camera centers or one camera center and one 3D point.
-struct BATAPairwiseDirectionCostFunctor
-{
-	BATAPairwiseDirectionCostFunctor(const Eigen::Vector3d& translationObs) :
-		translationObs(translationObs) {}
+// Analytic cost function for t_ij - scale * (p_j - p_i)
+struct BATAPairwiseDirectionCostAnalytic : public ceres::SizedCostFunction<3, 3, 3, 1> {
+	explicit BATAPairwiseDirectionCostAnalytic(const Eigen::Vector3d& translationObs)
+		: translationObs(translationObs) {}
 
-	template <typename T>
-	bool operator()(const T* position1,
-					const T* position2,
-					const T* scale,
-					T* residuals) const
-	{
-		typedef Eigen::Matrix<T, 3, 1> Vector3;
-		Eigen::Map<Vector3>{residuals} =
-			translationObs.cast<T>() - scale[0] * (Eigen::Map<const Vector3>(position2) - Eigen::Map<const Vector3>(position1));
+	virtual bool Evaluate(double const* const* parameters,
+	                      double* residuals,
+	                      double** jacobians) const override {
+		Eigen::Map<const Eigen::Vector3d> p1(parameters[0]);
+		Eigen::Map<const Eigen::Vector3d> p2(parameters[1]);
+		const double s = parameters[2][0];
+		const Eigen::Vector3d diff = p2 - p1;
+		Eigen::Map<Eigen::Vector3d> res(residuals);
+		res = translationObs - s * diff;
+		if (jacobians) {
+			using Matrix3dRowMajor = Eigen::Matrix<double, 3, 3, Eigen::RowMajor>;
+			if (jacobians[0]) {
+				Eigen::Map<Matrix3dRowMajor> J0(jacobians[0]);
+				J0 = s * Eigen::Matrix3d::Identity();
+			}
+			if (jacobians[1]) {
+				Eigen::Map<Matrix3dRowMajor> J1(jacobians[1]);
+				J1 = -s * Eigen::Matrix3d::Identity();
+			}
+			if (jacobians[2]) {
+				Eigen::Map<Eigen::Vector3d> J2(jacobians[2]);
+				J2 = -diff;
+			}
+		}
 		return true;
 	}
 
-	static ceres::CostFunction* Create(const Eigen::Vector3d& translationObs)
-	{
-		return new ceres::AutoDiffCostFunction<BATAPairwiseDirectionCostFunctor, 3, 3, 3, 1>(
-			new BATAPairwiseDirectionCostFunctor(translationObs));
-	}
-
 	const Eigen::Vector3d translationObs;
-};
-
-// Analytic version of the cost function.
-// This removes the overhead of AutoDiff and ensures Ceres uses
-// fixed-size memory blocks (3,1,3) instead of dynamic ones (d,d,d).
-struct BATAPairwiseDirectionCostAnalytic : public ceres::SizedCostFunction<3, 3, 3, 1> {
-    BATAPairwiseDirectionCostAnalytic(const Eigen::Vector3d& translationObs)
-        : translationObs(translationObs) {}
-
-    virtual bool Evaluate(double const* const* parameters,
-                          double* residuals,
-                          double** jacobians) const override {
-        // Map parameters
-        Eigen::Map<const Eigen::Vector3d> p1(parameters[0]); // Position 1
-        Eigen::Map<const Eigen::Vector3d> p2(parameters[1]); // Position 2
-        const double s = parameters[2][0]; // Scale
-
-        // Compute Residual: r = t - s * (p2 - p1)
-        Eigen::Vector3d diff = p2 - p1;
-        Eigen::Map<Eigen::Vector3d> res(residuals);
-        res = translationObs - s * diff;
-
-        // Compute Jacobians if requested
-        if (jacobians) {
-			using Matrix3dRowMajor = Eigen::Matrix<double, 3, 3, Eigen::RowMajor>;
-            // Jacobian w.r.t Position 1 (3x3): dr/dp1 = s * I
-            if (jacobians[0]) {
-                Eigen::Map<Matrix3dRowMajor> J1(jacobians[0]);
-                J1.setIdentity();
-                J1 *= s;
-            }
-            // Jacobian w.r.t Position 2 (3x3): dr/dp2 = -s * I
-            if (jacobians[1]) {
-                Eigen::Map<Matrix3dRowMajor> J2(jacobians[1]);
-                J2.setIdentity();
-                J2 *= -s;
-            }
-            // Jacobian w.r.t Scale (3x1): dr/ds = -(p2 - p1)
-            if (jacobians[2]) {
-                Eigen::Map<Eigen::Vector3d> J3(jacobians[2]);
-                J3 = -diff;
-            }
-        }
-        return true;
-    }
-
-    const Eigen::Vector3d translationObs;
 };
 
 } // namespace
@@ -153,12 +112,7 @@ bool GlobalPositioner::Solve(Scene& scene)
 	solverOptions.max_num_iterations = options.maxNumIterations;
 	solverOptions.num_threads = options.numThreads;
 	solverOptions.function_tolerance = options.functionTolerance;
-	#ifndef _RELEASE
-	solverOptions.minimizer_progress_to_stdout = true;
-	#else
 	solverOptions.minimizer_progress_to_stdout = false;
-	#endif
-	solverOptionsPtr = &solverOptions;
 
 	// Allocate enough memory for the scales (very important to avoid reallocations)
 	scales.clear();
@@ -187,7 +141,7 @@ bool GlobalPositioner::Solve(Scene& scene)
 
 	// Add the camera to camera constraints to the problem
 	unsigned numValidPairs = 0;
-	if (options. constraintType != GlobalPositionerOptions::ONLY_POINTS)
+	if (options.constraintType != GlobalPositionerOptions::ONLY_POINTS)
 		numValidPairs = AddCameraToCameraConstraints(scene);
 
 	// Add the point to camera constraints to the problem
@@ -196,7 +150,7 @@ bool GlobalPositioner::Solve(Scene& scene)
 		numValidTracks = AddPointToCameraConstraints(scene, numPtToCam);
 
 	// Set the parameter groups and parameterize the variables
-	ConfigureProblem(scene);
+	ConfigureProblem(scene, &solverOptions);
 
 	ceres::Solver::Summary summary;
 	ceres::Solve(solverOptions, problem.get(), &summary);
@@ -208,7 +162,7 @@ bool GlobalPositioner::Solve(Scene& scene)
 	}
 	#endif
 	if (!summary.IsSolutionUsable()) {
-		VERBOSE("error: bundle adjustment failed");
+		VERBOSE("error: global positioning failed");
 		return false;
 	}
 	DEBUG("Global positioner completed: %u images, %u pairs, %u tracks (%s)",
@@ -223,17 +177,14 @@ unsigned GlobalPositioner::AddCameraToCameraConstraints(Scene& scene)
 	for (const ImagePair& pair : scene.pairs) {
 		if (!IsPoseLinkPair(pair))
 			continue; // skip invalid pairs
-		ASSERT(scene.images[pair.ID1].HasCamera() && scene.images[pair.ID2].HasCamera());
-		if (!scene.images[pair.ID1].IsValid() || !scene.images[pair.ID2].IsValid())
-			continue; // skip pairs with unposed images (not initialized in rotation averaging)
-
 		const IIndex imageId1 = pair.ID1;
 		const IIndex imageId2 = pair.ID2;
 		ASSERT(imageId1 < scene.images.size() && imageId2 < scene.images.size());
-
 		Image& image1 = scene.images[imageId1];
 		Image& image2 = scene.images[imageId2];
 		ASSERT(image1.HasCamera() && image2.HasCamera());
+		if (!image1.IsValid() || !image2.IsValid())
+			continue; // skip pairs with unposed images (not initialized in rotation averaging)
 
 		ASSERT(scales.capacity() > scales.size());
 		double& scale = scales.emplace_back(1);
@@ -269,10 +220,8 @@ unsigned GlobalPositioner::AddPointToCameraConstraints(Scene& scene, size_t numP
 		weightScalePt = options.constraintReweightScale * static_cast<double>(numCamToCam) / static_cast<double>(numPtToCam);
 	}
 
-	if (lossFunctionCamUncalibrated == nullptr) {
-		lossFunctionCamUncalibrated = std::make_shared<ceres::ScaledLoss>(
-			lossFunction.get(), 0.5 * weightScalePt, ceres::DO_NOT_TAKE_OWNERSHIP);
-	}
+	lossFunctionCamUncalibrated = std::make_shared<ceres::ScaledLoss>(
+		lossFunction.get(), 0.5 * weightScalePt, ceres::DO_NOT_TAKE_OWNERSHIP);
 
 	if (options.constraintType == GlobalPositionerOptions::POINTS_AND_CAMERAS_BALANCED) {
 		lossFunctionCamCalibrated = std::make_shared<ceres::ScaledLoss>(
@@ -315,7 +264,7 @@ unsigned GlobalPositioner::AddPointToCameraConstraints(Scene& scene, size_t numP
 					? lossFunctionCamCalibrated.get()
 					: lossFunctionCamUncalibrated.get();
 
-			ceres::CostFunction* costFunction = BATAPairwiseDirectionCostFunctor::Create(translation);
+			ceres::CostFunction* costFunction = new BATAPairwiseDirectionCostAnalytic(translation);
 
 			problem->AddResidualBlock(
 				costFunction,
@@ -333,9 +282,10 @@ unsigned GlobalPositioner::AddPointToCameraConstraints(Scene& scene, size_t numP
 	return numValidTracks;
 }
 
-void GlobalPositioner::ConfigureProblem(Scene& scene)
+void GlobalPositioner::ConfigureProblem(Scene& scene, void* pSolverOptions)
 {
-	ceres::Solver::Options& solverOptions = *(static_cast<ceres::Solver::Options*>(solverOptionsPtr));
+	ASSERT(pSolverOptions != nullptr);
+	ceres::Solver::Options& solverOptions = *(static_cast<ceres::Solver::Options*>(pSolverOptions));
 
 	// Add cameras and points to parameter groups:
 	// Create a custom ordering for Schur-based problems.

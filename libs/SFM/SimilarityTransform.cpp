@@ -98,6 +98,23 @@ private:
 	const Point3 src_, dst_;
 };
 
+Eigen::Vector3d SFM::ComputePrincipalSpread(const Point3Arr& points)
+{
+	ASSERT(!points.empty());
+	Point3 mean(Point3::ZERO);
+	for (const Point3& p : points)
+		mean += p;
+	mean /= (REAL)points.size();
+	Eigen::Matrix3d cov(Eigen::Matrix3d::Zero());
+	for (const Point3& p : points) {
+		const Eigen::Vector3d d(Point3d(p - mean));
+		cov += d * d.transpose();
+	}
+	cov /= (double)points.size();
+	return Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(cov, Eigen::EigenvaluesOnly)
+		.eigenvalues().cwiseMax(0.0).cwiseSqrt();
+}
+
 unsigned SFM::EstimateSimilarityTransform(
 	const Point3Arr& srcPoints,
 	const Point3Arr& dstPoints,
@@ -130,8 +147,7 @@ unsigned SFM::EstimateSimilarityTransform(
 		}
 		DEBUG_EXTRA("Similarity-transform RANSAC found %u inliers (%.2f%%)", (unsigned)inliers.size(), 100.0f * inliers.size() / n);
 
-		// Refine using inliers (disable RANSAC to avoid recursion);
-		// pass nullptr so the recursive call does not overwrite our inlier count.
+		// Re-estimate on inliers without RANSAC
 		Point3Arr srcInliers, dstInliers;
 		srcInliers.reserve(inliers.size());
 		dstInliers.reserve(inliers.size());
@@ -139,7 +155,7 @@ unsigned SFM::EstimateSimilarityTransform(
 			srcInliers.push_back(srcPoints[idx]);
 			dstInliers.push_back(dstPoints[idx]);
 		}
-		return EstimateSimilarityTransform(srcInliers, dstInliers, transform, 0.0, refine && inliers.size() < n);
+		return EstimateSimilarityTransform(srcInliers, dstInliers, transform, 0.0, refine);
 	}
 
 	transform = EstimateSimilarityTransform(srcPoints, dstPoints);
@@ -159,14 +175,12 @@ unsigned SFM::EstimateSimilarityTransform(
 		params[7] = transform.scale;
 		// Set quaternion manifold for all pose blocks
 		ceres::Problem problem;
-		#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
-		// Ceres 2.1+: Use ProductManifold to combine QuaternionManifold (4 params) + EuclideanManifold (3 params) + Scale (1 param)
-		// This represents SE(3): rotation (quaternion, 3 DOF tangent space) + translation (Euclidean, 3 DOF) + scale (1 DOF)
+		#if CERES_VERSION_MAJOR >= 3 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 1)
+		// Ceres 2.1+: QuaternionManifold (4) + EuclideanManifold (4: translation + scale)
 		auto* se3_manifold = new ceres::ProductManifold<ceres::QuaternionManifold, ceres::EuclideanManifold<4>>{
 			ceres::QuaternionManifold{}, ceres::EuclideanManifold<4>{} };
 		problem.AddParameterBlock(params, 8, se3_manifold);
 		#else
-		// Ceres 2.0: Use parameterizations
 		auto* quaternion_param = new ceres::QuaternionParameterization;
 		auto* identity_param = new ceres::IdentityParameterization(4);
 		auto* pose_param = new ceres::ProductParameterization(quaternion_param, identity_param);
@@ -183,11 +197,7 @@ unsigned SFM::EstimateSimilarityTransform(
 		}
 		ceres::Solver::Options options;
 		options.linear_solver_type = ceres::DENSE_QR;
-		#ifndef _RELEASE
-		options.minimizer_progress_to_stdout = true;
-		#else
 		options.minimizer_progress_to_stdout = false;
-		#endif
 		options.max_num_iterations = 100;
 		ceres::Solver::Summary summary;
 		ceres::Solve(options, &problem, &summary);
@@ -223,18 +233,7 @@ unsigned SFM::EstimateSimilarityTransformWithRotations(
 	// below the threshold, the roll about the common axis is unconstrained by the centers
 	bool wellSpread = true;
 	if (threshold > 0 && dstCenters.size() >= 3) {
-		Point3 mean(Point3::ZERO);
-		for (const Point3& C: dstCenters)
-			mean += C;
-		mean /= (REAL)dstCenters.size();
-		Eigen::Matrix3d cov(Eigen::Matrix3d::Zero());
-		for (const Point3& C: dstCenters) {
-			const Eigen::Vector3d d(Point3d(C-mean));
-			cov += d * d.transpose();
-		}
-		cov /= (double)dstCenters.size();
-		// standard deviation along each principal axis, in increasing order
-		const Eigen::Vector3d spread(Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(cov, Eigen::EigenvaluesOnly).eigenvalues().cwiseMax(0.).cwiseSqrt());
+		const Eigen::Vector3d spread = ComputePrincipalSpread(dstCenters);
 		wellSpread = spread(1) >= threshold;
 		if (!wellSpread)
 			DEBUG("Centers are nearly collinear (spread %gx%gx%g, threshold %g): "
@@ -251,30 +250,29 @@ unsigned SFM::EstimateSimilarityTransformWithRotations(
 		DEBUG("Rotation alignment of the collinear center set failed");
 		return 0;
 	}
-	transform.R = RMatrix(Matrix3x3(alignR.t()));
+	transform.R = alignR.t();
 	// scale and translation by least squares with the rotation fixed
-	const Eigen::Matrix3d R = transform.R;
-	Eigen::Vector3d meanSrc(Eigen::Vector3d::Zero()), meanDst(Eigen::Vector3d::Zero());
+	Point3 meanSrc(Point3::ZERO), meanDst(Point3::ZERO);
 	FOREACH(k, srcCenters) {
-		meanSrc += Eigen::Vector3d(Point3d(srcCenters[k]));
-		meanDst += Eigen::Vector3d(Point3d(dstCenters[k]));
+		meanSrc += srcCenters[k];
+		meanDst += dstCenters[k];
 	}
-	meanSrc /= (double)srcCenters.size();
-	meanDst /= (double)dstCenters.size();
-	double num = 0, den = 0;
+	const REAL invN = REAL(1) / (REAL)srcCenters.size();
+	meanSrc *= invN;
+	meanDst *= invN;
+	REAL num = 0, den = 0;
 	FOREACH(k, srcCenters) {
-		const Eigen::Vector3d dr(R * (Eigen::Vector3d(Point3d(srcCenters[k])) - meanSrc));
-		const Eigen::Vector3d dp(Eigen::Vector3d(Point3d(dstCenters[k])) - meanDst);
+		const Point3 dr = transform.R * (srcCenters[k] - meanSrc);
+		const Point3 dp = dstCenters[k] - meanDst;
 		num += dp.dot(dr);
-		den += dr.squaredNorm();
+		den += normSq(dr);
 	}
 	if (den <= 0 || num <= 0) {
 		DEBUG("Source centers are degenerate, cannot recover the scale of the collinear alignment");
 		return 0;
 	}
 	transform.scale = num / den;
-	const Eigen::Vector3d t(meanDst - transform.scale * (R * meanSrc));
-	transform.t = Point3(t);
+	transform.t = meanDst - (transform.R * meanSrc) * transform.scale;
 	// the rotation came from the rotations alone, so validate it against the centers:
 	// the aligned centers must land within the threshold of their counterparts
 	DoubleArr residuals(srcCenters.size());

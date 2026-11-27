@@ -124,7 +124,7 @@ String ChainImageName(const Scene& scene, IIndex idxImage)
 void VetoPairsByChain(const Scene& scene, const std::vector<Point3>& baselines, const SequenceChain& chain,
 	std::vector<PairState>& states, SequenceFilterStats& stats)
 {
-	TD_TIMER_STARTD();
+	TD_TIMER_START();
 	const size_t numPairs = scene.pairs.size();
 	ASSERT(baselines.size() == numPairs && states.size() == numPairs && chain.linkScale.size() == numPairs);
 	ASSERT(chain.segmentOf.size() == scene.images.size());
@@ -189,7 +189,7 @@ void VetoPairsByChain(const Scene& scene, const std::vector<Point3>& baselines, 
 SequenceChain SFM::SolveSequenceChain(const Scene& scene, const std::vector<Point3>& baselines,
 	const SequenceNeighbours& neighbours, const std::vector<PairState>& states)
 {
-	TD_TIMER_STARTD();
+	TD_TIMER_START();
 	const uint32_t numPairs = (uint32_t)scene.pairs.size();
 	const uint32_t numImages = (uint32_t)scene.images.size();
 	ASSERT(baselines.size() == numPairs && states.size() == numPairs);

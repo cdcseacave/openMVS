@@ -27,7 +27,6 @@
 #include "Common.h"
 #include "MatchDense.h"
 #include "Scene.h"
-#include "RoMa2Matcher.h"
 #include "DenseMatcher.h"
 #include "PairsMatcher.h"
 #include "MatchGeometric.h"
@@ -49,31 +48,42 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-DEFINE_LOG_NAME(lt, _T("ROMA2   "));
+DEFINE_LOG_NAME(lt, _T("DENSE   "));
 
 namespace {
 
 typedef std::vector<float> PlanarImage;
 
+// Temporarily switches OpenCV to single-threaded execution (for pool-parallel passes) and restores on exit.
+struct ScopedCvThreads
+{
+	int restoreThreads;
+	explicit ScopedCvThreads(int nMaxThreads) : restoreThreads(nMaxThreads) { cv::setNumThreads(1); }
+	ScopedCvThreads(const ScopedCvThreads&) = delete;
+	ScopedCvThreads& operator=(const ScopedCvThreads&) = delete;
+	~ScopedCvThreads() { cv::setNumThreads(restoreThreads); }
+};
+
+// Waits for every detached task in the scene thread pool on scope exit (including exceptional exits).
+struct ScopedPoolDrain
+{
+	Scene& scene;
+	explicit ScopedPoolDrain(Scene& _scene) : scene(_scene) {}
+	ScopedPoolDrain(const ScopedPoolDrain&) = delete;
+	ScopedPoolDrain& operator=(const ScopedPoolDrain&) = delete;
+	~ScopedPoolDrain() { scene.threadPool.wait(); }
+};
+
 #ifdef _USE_ONNXRUNTIME
 
-// What a dense matcher is told about the pair (A, B): the pixel sizes
 PairInput MakePairInput(const Image& imgA, const Image& imgB)
 {
-	PairInput input;
-	input.sizeA = imgA.GetSize();
-	input.sizeB = imgB.GetSize();
-	return input;
+	return PairInput{ imgA.GetSize(), imgB.GetSize() };
 }
 
-// Pool task: load (if not already resident) and preprocess one image into the planar RGB
-// buffer the descriptor graph expects. Uses the working-orientation pixels (Image::LoadPixels
-// rotates portrait to landscape), the same pixels the keypoints were
-// extracted from. Each image is touched by exactly one pool task, and by the calling thread
-// only after that task's future has resolved (PrefetchRing::Take, below), so no locking is
-// needed on Image.
 bool PrepareImageDense(Image& img, const DenseMatcher& matcher, PlanarImage& planar)
 {
+	ASSERT(matcher.IsLoaded());
 	const bool hadPixels = img.HasPixels();
 	if (!hadPixels && !img.LoadPixels())
 		return false;
@@ -83,35 +93,12 @@ bool PrepareImageDense(Image& img, const DenseMatcher& matcher, PlanarImage& pla
 	return true;
 }
 
-// Pipelines image load+preprocess on the thread pool while the calling thread runs the ONNX
-// Runtime call for the previously prepared buffer (the SiftGPU bulk-driver pattern,
-// FeaturesExtractor.cpp:113-153, applied to the dense matcher). Fixed-size ring of `capacity` planar
-// buffers keyed by *submission order*, not by image: Submit(image) schedules a pool task
-// writing into buffer `numSubmitted++ % capacity`, and Take() blocks on the oldest
-// still-outstanding submission and hands back the buffer it filled (NULL if it could not).
-// Submission order is what lets both passes share the ring: the describe pass submits every
-// image once, in order, but the dense-matching pass replays the slot plan's load sequence,
-// which revisits images in an arbitrary order (a slot reload describes the same image again),
-// so keying by `image % capacity` would give two in-flight loads of images congruent modulo
-// capacity the same buffer.
-//
-// Ordering invariant callers must keep, restated as a count in Submit()'s ASSERT: at most
-// `capacity` submissions may be outstanding, so the (capacity+1)-th may only be issued after
-// Take() consumed the first. Both passes keep it by construction (each pass issues at most one
-// submission per Take()). A submission for an image another outstanding submission is already
-// preparing is refused as well: PrepareImageDense loads and releases that Image's pixels, so
-// two concurrent tasks on one image would race on them. Only the dense-matching pass can ask
-// for that (an image evicted from its slot and reloaded a few steps later); CanSubmit() tells
-// it to let the prefetch window run short until the earlier submission has been taken.
-//
-// The destructor waits on every outstanding future: without it, a throw unwinding through
-// Take()'s future::get() (RoMa2Onnx::Describe or a pool task itself can throw) would let
-// planars be destroyed while a pool task is still writing into it.
+// Pipelines image load+preprocess on the thread pool while the calling thread drives ONNX Runtime.
 class PrefetchRing
 {
 public:
 	PrefetchRing(Scene& _scene, unsigned capacity, const DenseMatcher& _matcher)
-		: scene(_scene), matcher(_matcher), planars(capacity) {}
+		: scene(_scene), matcher(_matcher), planars(capacity) { ASSERT(capacity > 0); }
 	PrefetchRing(const PrefetchRing&) = delete;
 	PrefetchRing& operator=(const PrefetchRing&) = delete;
 
@@ -195,24 +182,7 @@ struct ScopedPassState
 	}
 };
 
-// Waits for every task of the scene thread pool on scope exit. MatchPairsDense's consumers are
-// detached (they hand nothing back but the result slot they fill), so this is what guarantees
-// none of them is still running when the locals they capture by reference die -- on the normal
-// path, where the explicit wait has already drained them, and on an exceptional one alike.
-struct ScopedPoolDrain
-{
-	Scene& scene;
-
-	explicit ScopedPoolDrain(Scene& _scene) : scene(_scene) {}
-	ScopedPoolDrain(const ScopedPoolDrain&) = delete;
-	ScopedPoolDrain& operator=(const ScopedPoolDrain&) = delete;
-	~ScopedPoolDrain() { scene.threadPool.wait(); }
-};
-
-// Returns one permit of the in-flight semaphore on scope exit. MatchPairsDense's producer takes
-// a permit before it hands a warp to a consumer, so a consumer that left without returning one
-// (the verdict, the guided match and the assembly can all throw) would starve the producer
-// permanently; this keeps the count balanced on every path out of the task.
+// Returns one permit of the in-flight semaphore on scope exit.
 struct ScopedSemaphore
 {
 	Semaphore& semaphore;
@@ -223,34 +193,26 @@ struct ScopedSemaphore
 	~ScopedSemaphore() { semaphore.Signal(); }
 };
 
-// Which device slot each image of each pair is described into, and in which order the slots
-// are (re)loaded: one Step per pair, in the order MatchPairsDense walks the pairs.
+// Device slot plan for a sequence of pairs (Belady optimal replacement).
 struct SlotPlan {
 	struct Load {
 		IIndex image;  // image to describe
 		unsigned slot; // slot its description overwrites
 	};
 	struct Step {
-		unsigned slotA = NO_ID, slotB = NO_ID; // slots holding the pair's two images once `loads` ran
-		CLISTDEF0(Load) loads;                 // slots to (re)load before this pair can be matched
+		unsigned slotA = NO_ID, slotB = NO_ID;
+		CLISTDEF0(Load) loads;
 	};
 	std::vector<Step> steps;
-	unsigned numSlots = 0;               // slots the plan actually uses (at most the budget)
-	size_t numLoads = 0, numReloads = 0; // describe calls the plan costs, and how many are reloads
+	unsigned numSlots = 0;
+	size_t numLoads = 0, numReloads = 0;
 };
 
-// Plan the device slots of the given pairs: Belady's optimal replacement, the semantics of
-// polycpp's plan.cpp with a single step in flight (ONNX Runtime's Run is synchronous, so the
-// producer never has more than one pair's descriptors in preparation). The pairs come in
-// (ID1,ID2) order, which by itself keeps every use of an image inside a short window
-// (plan.hpp:38-45); once the pool is full, the resident image whose next use is furthest away
-// -- or which is never needed again -- is the one overwritten. The pool only grows towards the
-// budget when it has to, so a scene with fewer images than slots simply keeps them all resident
-// and the plan degenerates to one load per image.
 SlotPlan MakeSlotPlan(const PairIdxArr& pairs, unsigned slotBudget, IIndex nImages)
 {
+	ASSERT(slotBudget >= 2u);
 	SlotPlan plan;
-	const unsigned budget = MAXF(slotBudget, 2u); // a pair always needs two slots
+	const unsigned budget = slotBudget;
 	// steps every image is used at, in increasing order, and how many of them are already past
 	std::vector<std::vector<size_t>> uses(nImages);
 	FOREACH(p, pairs) {
@@ -363,7 +325,7 @@ bool ForEachDenseWarp(PairsMatcher& pairsMatcher, DenseMatcher& matcher, const P
 	stats.numSlots = plan.numSlots;
 	stats.numLoads = plan.numLoads;
 	stats.numReloads = plan.numReloads;
-	DEBUG_EXTRA("ROMA2 slot plan: %u pairs, %u slots, %u loads (%u reloads)",
+	DEBUG_EXTRA("Dense slot plan: %u pairs, %u slots, %u loads (%u reloads)",
 		pairs.size(), plan.numSlots, (unsigned)plan.numLoads, (unsigned)plan.numReloads);
 
 	Semaphore inFlight(2*nThreads);
@@ -433,59 +395,10 @@ bool ForEachDenseWarp(PairsMatcher& pairsMatcher, DenseMatcher& matcher, const P
 
 #endif // _USE_ONNXRUNTIME
 
-// Target size of the coverage-uniform sample the verdict fits its one geometry on. A target, not a
-// cap (SampleWarpByCoverage): large enough that a spread sample of a genuine overlap conditions the
-// estimator well, small enough that a RANSAC per candidate pair stays affordable. It is a cost, not
-// a resolution -- the areas the verdict decides on are measured over ALL eligible cells, not over
-// the sample.
 constexpr unsigned VERDICT_SAMPLE = 4000;
 
-// Every eligible cell of one warp direction, in raster order. Eligibility is not decided here: the
-// one predicate every warp scan uses decides it (IsWarpCellEligible, DenseWarp.h, the same one
-// CollectWarpCandidates walks the grid with), so the population the verdict measures below and the
-// population the dense fill draws from cannot drift apart. `ptsSrc` are the cell centres in the
-// pixels of the working orientation of the source image, `ptsDst` the warped points in the target
-// image, index-parallel with `confidences`.
-// Returns the number of eligible cells.
-size_t CollectEligibleCells(const WarpMaps& maps, const Image& imgSrc, const Image& imgDst,
-	float minConfidence, float sphericalBottomBand, std::vector<Point2f>& ptsSrc, std::vector<Point2f>& ptsDst, std::vector<float>& confidences)
-{
-	ASSERT(maps.IsValid());
-	ptsSrc.clear();
-	ptsDst.clear();
-	confidences.clear();
-	for (int y = 0; y < maps.confidence.rows; ++y) {
-		for (int x = 0; x < maps.confidence.cols; ++x) {
-			const float conf = maps.confidence(y, x);
-			const Point2f ptSrc(CellToPixel(Point2f((float)x, (float)y), maps.confidence.size(), imgSrc.GetSize()));
-			Point2f ptDst;
-			if (!IsWarpCellEligible(conf, maps.warp(y, x), minConfidence, imgDst, ptSrc, imgSrc, sphericalBottomBand, ptDst))
-				continue;
-			ptsSrc.push_back(ptSrc);
-			ptsDst.push_back(ptDst);
-			confidences.push_back(conf);
-		}
-	}
-	return ptsSrc.size();
-}
-
-// One correspondence measured against the geometry a fit produced: the first-order (Sampson)
-// distance, compared against a tolerance. Through F where the fit produced one, unless a camera has
-// a lens and both trust their intrinsics -- in pixels, the units WarpTolerance and
-// MatchConfig::maxEpipolarError are both expressed in -- and otherwise through E on calibrated
-// bearings, with the pixel tolerance converted per camera exactly as PairsMatcher::GeometricFilter
-// converts its own. F is composed from E and K alone: a straight epipolar line in pixels, which a lens
-// bends, so that F puts a right match near a corner tens of pixels off; a bearing goes through the
-// lens (UnprojectNormalized undistorts first), so E measures it where it is -- the E the essential
-// branch fits on those bearings, which GeometricFilter runs when both cameras trust their
-// intrinsics. A pair with an untrusted camera keeps F: the shared-focal branch fits its E on the
-// distorted pixels at the focal its RANSAC finds, which the nominal focal and the lens would not
-// measure exactly. F is not geometrically meaningful on a spherical or mixed pair either
-// (SphericalCamera::GetK is the identity, so GeometricFilter leaves F unset), and such a pair has to
-// be judged rather than silently rejected for want of a matrix.
-// The convention is the matcher's own throughout: F maps a point of the FIRST image to its epipolar
-// line in the second (PairsMatcher::GeometricFilter composes it that way, MatchGeometric reads it
-// that way), so a correspondence is always given as (A side, B side).
+// First-order (Sampson) distance test against pair geometry: uses F in pixels unless a calibrated
+// pair has lens distortion (or non-pinhole camera), in which case it uses E on unit bearings.
 class SampsonTest
 {
 public:
@@ -497,95 +410,59 @@ public:
 	{
 		if (bFundamental) {
 			M = pair.F.value();
-			toleranceSq = (double)tolerance*(double)tolerance;
+			Mt = M.t();
+			toleranceSq = (REAL)tolerance * (REAL)tolerance;
 		} else if (pair.E.has_value()) {
 			M = pair.E.value();
-			// the symmetric averaging GeometricFilter uses to turn a pixel threshold into the
-			// radians its bearing estimator scores in, so both spaces demand the same precision
-			const double angle = 0.5*(double)(camA->PixelErrorToAngular((REAL)tolerance) +
-				camB->PixelErrorToAngular((REAL)tolerance));
-			toleranceSq = angle*angle;
+			Mt = M.t();
+			const REAL angle = PairPixelErrorToAngular(*camA, *camB, (REAL)tolerance);
+			toleranceSq = angle * angle;
 		} else {
-			toleranceSq = -1.0; // the fit produced no geometry at all: nothing can be scored
+			toleranceSq = REAL(-1);
 		}
 	}
 
-	inline bool IsValid() const { return toleranceSq >= 0.0; }
+	inline bool IsValid() const { return toleranceSq >= REAL(0); }
 
-	// true if the correspondence lies within the tolerance of the geometry; compared squared, so
-	// no square root runs per warp cell
 	inline bool operator()(const Point2f& ptA, const Point2f& ptB) const {
 		ASSERT(IsValid());
-		Eigen::Vector3d a, b;
 		if (bFundamental) {
-			a = Eigen::Vector3d(ptA.x, ptA.y, 1.0);
-			b = Eigen::Vector3d(ptB.x, ptB.y, 1.0);
-		} else {
-			a = camA->UnprojectNormalized(Cast<REAL>(ptA));
-			b = camB->UnprojectNormalized(Cast<REAL>(ptB));
+			const Point3 a(ptA.x, ptA.y, REAL(1));
+			const Point3 b(ptB.x, ptB.y, REAL(1));
+			const Point3 Ma(M * a), Mtb(Mt * b);
+			const REAL den = Ma.x * Ma.x + Ma.y * Ma.y + Mtb.x * Mtb.x + Mtb.y * Mtb.y;
+			if (den < REAL(1e-14))
+				return false;
+			const REAL num = b.dot(Ma);
+			return num * num <= toleranceSq * den;
 		}
-		const Eigen::Vector3d Ma(M*a), Mtb(M.transpose()*b);
-		const double den = Ma.x()*Ma.x() + Ma.y()*Ma.y() + Mtb.x()*Mtb.x() + Mtb.y()*Mtb.y();
-		if (den < 1e-14)
-			return false; // degenerate epipolar geometry here (the bearing lies along the baseline)
-		const double num = b.dot(Ma);
-		return num*num <= toleranceSq*den;
+		const Point3 a(camA->UnprojectNormalized(Cast<REAL>(ptA)));
+		const Point3 b(camB->UnprojectNormalized(Cast<REAL>(ptB)));
+		const Point3 Ma(M * a), Mtb(Mt * b);
+		// Sphere-tangent gradient norm squared: valid for both pinhole and spherical unit bearings
+		const REAL den = normSq(b.cross(Ma)) + normSq(a.cross(Mtb));
+		if (den < REAL(1e-14))
+			return false;
+		const REAL num = b.dot(Ma);
+		return num * num <= toleranceSq * den;
 	}
 
-
 private:
-	CameraPtr camA, camB;   // only read for the bearings of the E path
-	Eigen::Matrix3d M;      // F in pixels, or E on unit bearings
-	double toleranceSq;     // squared, in the units of M's space
+	CameraPtr camA, camB;
+	Matrix3x3 M, Mt;
+	REAL toleranceSq;
 	bool bFundamental;
 };
 
-// Put the verdict's inlier cells back on the warp grid they were read off: a warpSize x warpSize
-// confidence map holding each inlier cell's own confidence and 0 everywhere else, plus the matching
-// normalized warp. This is what lets the dense fill run through the ONE warp draw
-// (SampleWarpComplementary) instead of a second implementation of the same stratification -- same
-// eligibility bar, same bucket sizing, same lattice winner rule, hence the same cross-pair keypoint
-// identity FilterRedundantKeypoints chains tracks through.
-// The cell of an inlier is recovered from its A position rather than carried through PairVerdict:
-// the verdict wrote it as CellToPixel(cell, grid, sizeA), whose exact inverse PixelToCell lands back
-// on the same integer cell.
-void RebuildInlierWarp(const PairVerdict& verdict, const cv::Size& sizeA, const cv::Size& sizeB,
-	int warpSize, Image32F2& warp, Image32F& confidence)
-{
-	ASSERT(verdict.inliersA.size() == verdict.inliersB.size() &&
-		verdict.inliersA.size() == verdict.confidences.size());
-	const cv::Size gridSize(warpSize, warpSize);
-	warp.create(gridSize);
-	confidence.create(gridSize);
-	confidence.memset(0);
-	// a normalized coordinate far outside [-1,1] in every cell the verdict did not keep: DenormCoord
-	// sends it well outside imgB, so such a cell fails the draw's in-frame test whatever the
-	// confidence floor is -- a zero floor included, where a zeroed confidence would admit it and a
-	// zeroed warp would point every one of them at the centre of imgB
-	for (int y = 0; y < warpSize; ++y)
-		for (int x = 0; x < warpSize; ++x)
-			warp(y, x) = Point2f(-3.f, -3.f);
-	FOREACH(k, verdict.inliersA) {
-		const Point2f cell(PixelToCell(verdict.inliersA[k], sizeA, gridSize));
-		const int x = MINF(MAXF(ROUND2INT(cell.x), 0), warpSize-1);
-		const int y = MINF(MAXF(ROUND2INT(cell.y), 0), warpSize-1);
-		confidence(y, x) = verdict.confidences[k];
-		warp(y, x) = NormCoord(verdict.inliersB[k], sizeB);
-	}
-}
-
-// Arm the temporary Image copies every fit in this file runs on: the given correspondences as their
-// keypoints, and NO pose -- so that a scene which happens to hold a ground-truth solution cannot
-// leak it into a fitted geometry however the estimator later changes. Enforced structurally rather
-// than trusted, because judging a pair on its warp alone is the whole point.
-// The caller hands over a pair whose matches are EMPTY: the keypoint arrays are replaced but the
-// matches are appended to, so a reused pair would come out with a match list twice as long as its
-// keypoints and index them out of range in the estimator.
-void MakeFitImages(const std::vector<Point2f>& pointsA, const std::vector<Point2f>& pointsB,
+// Build pose-free temporary Image copies holding pointsA/pointsB as keypoints and 1:1 matches in fit.
+void MakeFitImages(const Image& imgA, const Image& imgB,
+	const std::vector<Point2f>& pointsA, const std::vector<Point2f>& pointsB,
 	Image& imgACopy, Image& imgBCopy, ImagePair& fit)
 {
 	ASSERT(pointsA.size() == pointsB.size());
 	ASSERT(fit.matches.empty());
+	imgACopy = Image(imgA.ID, imgA.fileName, Pose3D(), imgA.cameraID, imgA.pCamera);
+	imgBCopy = Image(imgB.ID, imgB.fileName, Pose3D(), imgB.cameraID, imgB.pCamera);
 	imgACopy.InvalidatePose();
 	imgBCopy.InvalidatePose();
 	ASSERT(!imgACopy.HasPose() && !imgBCopy.HasPose());
@@ -672,80 +549,58 @@ void SFM::JudgePairDense(const PairsMatcher& pairsMatcher, const Image& imgA, co
 	// would hide (it is 1 by construction)
 	const float numCells = (float)(warps.ab.warp.rows*warps.ab.warp.cols);
 
-	// the two populations the verdict is decided on: each direction's cells the model is confident
-	// about and which land inside the other image. The B side is the precision of the whole rule --
-	// it is what rejects the pairs that put the whole of A on a few pixels of B.
 	std::vector<Point2f> cellsAinA, cellsAinB, cellsBinA, cellsBinB;
 	std::vector<float> confidencesA, confidencesB;
-	CollectEligibleCells(warps.ab, imgA, imgB, config.minConfidence, config.sphericalBottomBand, cellsAinA, cellsAinB, confidencesA);
-	CollectEligibleCells(warps.ba, imgB, imgA, config.minConfidence, config.sphericalBottomBand, cellsBinB, cellsBinA, confidencesB);
-	verdict.confidentAreaA = (float)cellsAinA.size()/numCells;
-	verdict.confidentAreaB = (float)cellsBinB.size()/numCells;
+	std::vector<int> cellsA, cellsB;
+	CollectEligibleWarpCells(warps.ab, imgA, imgB, config.minConfidence, config.sphericalBottomBand, cellsAinA, cellsAinB, confidencesA, cellsA);
+	CollectEligibleWarpCells(warps.ba, imgB, imgA, config.minConfidence, config.sphericalBottomBand, cellsBinB, cellsBinA, confidencesB, cellsB);
+	verdict.confidentAreaA = (float)cellsAinA.size() / numCells;
+	verdict.confidentAreaB = (float)cellsBinB.size() / numCells;
 
-	// ONE geometry, fitted on a coverage-uniform sample of A's cells alone. Nothing is pre-selected
-	// along the epipolar lines of a geometry the warp itself supplied, which is what makes the
-	// verdict independent of the warp's own claim: the sample is exactly what the warp asserts,
-	// chosen for spread and confidence only, and one geometry either explains it or does not.
 	std::vector<Point2f> sampledA, sampledB;
-	SampleWarpByCoverage(imgA, imgB, warps.ab.warp, warps.ab.confidence, config.minConfidence,
-		config.sphericalBottomBand, VERDICT_SAMPLE, sampledA, sampledB);
-	if (sampledA.size() < 8) {
-		// the estimator needs 8 correspondences of its own; a warp that cannot offer that many
-		// confident, spread-out cells is no evidence about the pair
+	SampleWarpByCoverage(cellsAinA, cellsAinB, cellsA, warps.ab.confidence.size(), VERDICT_SAMPLE, sampledA, sampledB);
+	if (sampledA.size() < 8)
+		return;
+	const float tolerance = WarpTolerance(sizeA, sizeB, warpSize);
+	Image imgACopy, imgBCopy;
+	MakeFitImages(imgA, imgB, sampledA, sampledB, imgACopy, imgBCopy, pair);
+	if (!pairsMatcher.GeometricFilter(imgACopy, imgBCopy, pair, tolerance)) {
 		pair.Reset();
 		return;
 	}
-	// the tolerance every test on warp cells uses, including this fit: half a warp cell, the
-	// accuracy a coarse-warp correspondence can claim. Demanding the descriptor path's sub-pixel
-	// precision of a 160-cell grid would reject the true pairs along with the false ones.
-	const float tolerance = WarpTolerance(sizeA, sizeB, warpSize);
-	Image imgACopy(imgA.ID, imgA.fileName, Pose3D(), imgA.cameraID, imgA.pCamera);
-	Image imgBCopy(imgB.ID, imgB.fileName, Pose3D(), imgB.cameraID, imgB.pCamera);
-	MakeFitImages(sampledA, sampledB, imgACopy, imgBCopy, pair);
-	if (!pairsMatcher.GeometricFilter(imgACopy, imgBCopy, pair, tolerance)) {
-		pair.Reset(); // no single geometry explained enough of the sample to survive the estimator
-		return;
-	}
-	// the fit's matches index the temporary copies, not the two images: the pair keeps the geometry
-	// the branch produced and nothing else
 	pair.ResetMatches();
 	const SampsonTest inlier(imgA, imgB, pair, tolerance);
 	if (!inlier.IsValid()) {
-		pair.Reset(); // the branch left neither F nor E, so its inlier area cannot be measured
+		pair.Reset();
 		return;
 	}
 
-	// A's inlier area, and with it the population the dense fill draws from
 	verdict.inliersA.reserve(cellsAinA.size());
 	verdict.inliersB.reserve(cellsAinA.size());
 	verdict.confidences.reserve(cellsAinA.size());
+	verdict.inlierCells.reserve(cellsAinA.size());
 	FOREACH(k, cellsAinA) {
 		if (!inlier(cellsAinA[k], cellsAinB[k]))
 			continue;
 		verdict.inliersA.push_back(cellsAinA[k]);
 		verdict.inliersB.push_back(cellsAinB[k]);
 		verdict.confidences.push_back(confidencesA[k]);
+		verdict.inlierCells.push_back(cellsA[k]);
 	}
-	verdict.inlierAreaA = (float)verdict.inliersA.size()/numCells;
-	// B's inlier area against the SAME geometry, each of B's cells taken as the correspondence
-	// (where the B->A warp sends it in A, its own centre in B)
+	verdict.inlierAreaA = (float)verdict.inliersA.size() / numCells;
 	size_t numInliersB = 0;
 	FOREACH(k, cellsBinB)
 		if (inlier(cellsBinA[k], cellsBinB[k]))
 			++numInliersB;
-	verdict.inlierAreaB = (float)numInliersB/numCells;
+	verdict.inlierAreaB = (float)numInliersB / numCells;
 
-	// the whole rule: an inlier COUNT or RATIO on the warp's own cells cannot tell a hallucinated
-	// warp from a true pair (a hallucination is locally a homography, and every homography is
-	// explained exactly by a family of fundamental matrices), but the min-side inlier AREA can
 	verdict.admitted = MINF(verdict.inlierAreaA, verdict.inlierAreaB) >= config.minOverlap;
 	if (!verdict.admitted) {
-		// a rejected pair is dropped: no descriptor matching, no second chance in this round, and
-		// nothing downstream reads its cells, so they go back now
 		pair.Reset();
 		verdict.inliersA = std::vector<Point2f>();
 		verdict.inliersB = std::vector<Point2f>();
 		verdict.confidences = std::vector<float>();
+		verdict.inlierCells = std::vector<int>();
 	}
 }
 /*----------------------------------------------------------------*/
@@ -759,31 +614,34 @@ bool SFM::AssemblePairDense(const PairsMatcher& pairsMatcher, const Image& imgA,
 {
 	ASSERT(verdict.admitted);
 	ASSERT(pair.matches.empty() && pair.GetNumDenseInliers() == 0);
-	ASSERT(pair.F.has_value() || pair.E.has_value()); // the verdict's geometry, the fallback of the union fit
+	ASSERT(pair.F.has_value() || pair.E.has_value());
 	ASSERT(warpSize > 0);
 	dense = DenseMatches();
 	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
 
-	// 1) the dense fill: the verdict's inlier cells where the guided candidates are NOT, drawn at
-	// config.denseMatchesPerFrame's density over the overlap (DenseFillGridSide) and capped by
-	// DenseFillCeiling, the same density over whichever of the verdict's two inlier areas is smaller --
-	// the term that keeps the draw bounded in B, which the bucket grid itself cannot see. Occupancy
-	// is read in A's frame, the frame the warp grid lives in and the only one where a keypoint
-	// position and a warp cell are directly comparable.
 	std::vector<Point2f> occupiedA;
 	occupiedA.reserve(guided.size());
 	for (const DMatch& match : guided) {
 		ASSERT((size_t)match.queryIdx < imgA.NumDescribedKeypoints());
 		occupiedA.push_back(imgA.keypoints[match.queryIdx].pt);
 	}
-	{
-		Image32F2 inlierWarp;
-		Image32F inlierConfidence;
-		RebuildInlierWarp(verdict, sizeA, sizeB, warpSize, inlierWarp, inlierConfidence);
-		SampleWarpComplementary(imgA, imgB, inlierWarp, inlierConfidence, config.minConfidence,
-			config.sphericalBottomBand, DenseFillGridSide(config.denseMatchesPerFrame, warpSize), DenseFillCeiling(config, verdict),
-			occupiedA, dense.pointsA, dense.pointsB, dense.confidences);
+	const cv::Size gridSize(warpSize, warpSize);
+	std::vector<int> derivedCells;
+	const std::vector<int>* pCells = &verdict.inlierCells;
+	if (verdict.inlierCells.size() != verdict.inliersA.size()) {
+		// Support synthetic PairVerdict fixtures constructed by callers without populating inlierCells
+		derivedCells.reserve(verdict.inliersA.size());
+		for (const Point2f& pt : verdict.inliersA) {
+			const Point2f c(PixelToCell(pt, sizeA, gridSize));
+			const int x = CLAMP(ROUND2INT(c.x), 0, warpSize - 1);
+			const int y = CLAMP(ROUND2INT(c.y), 0, warpSize - 1);
+			derivedCells.push_back(y * warpSize + x);
+		}
+		pCells = &derivedCells;
 	}
+	SampleWarpComplementary(verdict.inliersA, verdict.inliersB, verdict.confidences, *pCells,
+		sizeA, gridSize, DenseFillGridSide(config.denseMatchesPerFrame, warpSize), DenseFillCeiling(config, verdict),
+		occupiedA, dense.pointsA, dense.pointsB, dense.confidences);
 
 	// 2) the one geometry and the classification of both kinds of correspondence
 	// (FitAndClassifyPairDense); the warp's half cell is the dense bar when the verification is off,
@@ -839,10 +697,9 @@ bool SFM::FitAndClassifyPairDense(const PairsMatcher& pairsMatcher, const Image&
 		}
 		pointsA.insert(pointsA.end(), densePointsA.begin(), densePointsA.end());
 		pointsB.insert(pointsB.end(), densePointsB.begin(), densePointsB.end());
-		Image imgACopy(imgA.ID, imgA.fileName, Pose3D(), imgA.cameraID, imgA.pCamera);
-		Image imgBCopy(imgB.ID, imgB.fileName, Pose3D(), imgB.cameraID, imgB.pCamera);
+		Image imgACopy, imgBCopy;
 		ImagePair fit(pair.ID1, pair.ID2);
-		MakeFitImages(pointsA, pointsB, imgACopy, imgBCopy, fit);
+		MakeFitImages(imgA, imgB, pointsA, pointsB, imgACopy, imgBCopy, fit);
 		if (pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit)) {
 			// the polish that closes the fit, again over the fit's inliers but with each dense
 			// correspondence at DenseMatchConfig::denseFitWeight: the union found the pose, the sparse
@@ -953,9 +810,8 @@ void SFM::ReverifyPairDense(const PairsMatcher& pairsMatcher, const Image& imgA,
 		if (denseKept[k])
 			pair.matches.push_back(denseMatches[k]);
 	pair.numDenseInliers = (int)(pair.matches.size() - (size_t)pair.numFilteredInliers);
-	pair.weightedInliers = -1.f;
-	if (pair.relativePose.has_value() && pair.GetNumTrackFormingMatches() > 0)
-		pair.meanRayAngle = pair.ComputeMeanRayAngle(imgA, imgB);
+	pair.meanRayAngle = (pair.relativePose.has_value() && pair.GetNumTrackFormingMatches() > 0) ?
+		pair.ComputeMeanRayAngle(imgA, imgB) : 0.f;
 }
 
 bool SFM::PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
@@ -964,12 +820,14 @@ bool SFM::PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, c
 	ASSERT(pair.ID1 == imgA.ID && pair.ID2 == imgB.ID);
 	ASSERT(pair.relativePose.has_value());
 	share = 0.f;
+	const Camera& camA = *imgA.pCamera;
+	const Camera& camB = *imgB.pCamera;
+	if (camA.GetType() != CameraType::PINHOLE || camB.GetType() != CameraType::PINHOLE)
+		return false;
 	const unsigned numSparse = pair.GetNumFilteredInliers(), numMatches = pair.GetNumTrackFormingMatches();
 	if (numMatches < 8)
 		return false;
-	// the track-forming matches on the normalized plane of each camera (the homography's space)
-	const Camera& camA = *imgA.pCamera;
-	const Camera& camB = *imgB.pCamera;
+	// Project track-forming matches onto each camera's normalized image plane
 	std::vector<cv::Point2f> pointsA, pointsB;
 	pointsA.reserve(numMatches);
 	pointsB.reserve(numMatches);
@@ -984,10 +842,7 @@ bool SFM::PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, c
 	}
 	if (pointsA.size() < 8)
 		return false;
-	// the homography is held to the bar the matches were classified with: the gate asks whether a
-	// plane explains the pair's inliers
-	const float bar = pairsMatcher.GetConfig().maxEpipolarError;
-	const double angle = 0.5*(double)(camA.PixelErrorToAngular((REAL)bar) + camB.PixelErrorToAngular((REAL)bar));
+	const double angle = (double)PairPixelErrorToAngular(camA, camB, (REAL)pairsMatcher.GetConfig().maxEpipolarError);
 	cv::Mat mask;
 	const cv::Mat H = cv::findHomography(pointsA, pointsB, cv::RANSAC, angle, mask, 2000, 0.999);
 	if (H.empty())
@@ -995,30 +850,21 @@ bool SFM::PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, c
 	share = (float)cv::countNonZero(mask)/(float)pointsA.size();
 	if (share < config.twinMinPlaneShare)
 		return false;
-	// the physically valid decompositions: 90% of the homography's inliers in front of both cameras;
-	// the one nearest the stored pose (rotation + direction/10, in degrees) is the stored pose itself
+	// Keep physically valid decompositions (90% of H inliers in front of both cameras);
+	// the one nearest the stored pose is the stored pose itself, the other is its planar twin.
 	std::vector<cv::Mat> rotations, translations, normals;
 	cv::decomposeHomographyMat(H, cv::Mat::eye(3, 3, CV_64F), rotations, translations, normals);
 	const Matrix3x3 R0(pair.relativePose->R);
 	const Point3 t0 = pair.relativePose->GetT();
-	const auto DirectionDeg = [](const Point3& a, const Point3& b) {
-		const REAL cosAngle = a.dot(b)/(norm(a)*norm(b));
-		ASSERT(ABS(cosAngle) <= REAL(1) + REAL(1e-6)); // a dot product over the two norms, up to rounding
-		return R2D(ACOS(CLAMP(cosAngle, REAL(-1), REAL(1)))); // the clamp is rounding only
-	};
 	std::vector<Pose3D> valid;
 	int nearest = -1;
 	REAL nearestDistance = std::numeric_limits<REAL>::max();
 	FOREACH(s, rotations) {
-		Matrix3x3 R;
-		Point3 t, n;
-		for (int r = 0; r < 3; ++r) {
-			for (int c = 0; c < 3; ++c)
-				R(r,c) = rotations[s].at<double>(r,c);
-			t[r] = translations[s].at<double>(r);
-			n[r] = normals[s].at<double>(r);
-		}
-		if (norm(t) < 1e-9)
+		const Matrix3x3 R(rotations[s]);
+		const Point3 t = cv::Vec3d(translations[s]);
+		const Point3 n = cv::Vec3d(normals[s]);
+		const REAL normT = norm(t);
+		if (normT < 1e-9)
 			continue;
 		unsigned numInFront = 0, numInliers = 0;
 		FOREACH(i, pointsA) {
@@ -1034,20 +880,18 @@ bool SFM::PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, c
 			continue;
 		Pose3D& pose = valid.emplace_back();
 		pose.R = R;
-		pose.SetT(t*(REAL(1)/norm(t)));
-		const REAL distance = R2D(ACOS(ComputeAngle(R, R0))) + DirectionDeg(t, t0)/10;
+		pose.SetT(t*(REAL(1)/normT));
+		const REAL distance = R2D(ACOS(ComputeAngle(R, R0))) + DirectionAngleDeg(t, t0)/10;
 		if (distance < nearestDistance) {
 			nearestDistance = distance;
 			nearest = (int)valid.size()-1;
 		}
 	}
-	int other = -1;
-	FOREACH(v, valid)
-		if ((int)v != nearest)
-			other = (int)v;
-	if (other < 0)
+	ASSERT(valid.size() <= 2);
+	if (valid.size() < 2)
 		return false;
-	// the union fit's polish on the twin, over the same matches
+	const int other = 1 - nearest;
+	// Refine the twin on the same weighted union of matches
 	twin = ImagePair(pair.ID1, pair.ID2);
 	twin.matches.assign(pair.matches.begin(), pair.matches.begin() + numMatches);
 	twin.relativePose = valid[other];
@@ -1057,37 +901,35 @@ bool SFM::PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, c
 	twin.matches = std::vector<DMatch>(); // only the geometry is kept
 	if (!bRefined)
 		return false;
-	// a twin this close to the stored pose is the same pose
+	// Reject if the twin converged back to the stored pose
 	constexpr REAL minRotationDeg = 0.5, minDirectionDeg = 10;
 	return R2D(ACOS(ComputeAngle(Matrix3x3(twin.relativePose->R), R0))) > minRotationDeg ||
-		DirectionDeg(twin.relativePose->GetT(), t0) > minDirectionDeg;
+		DirectionAngleDeg(twin.relativePose->GetT(), t0) > minDirectionDeg;
 }
 
 unsigned SFM::SwitchPlanarTwinsDense(PairsMatcher& pairsMatcher, const DenseMatchConfig& config)
 {
 	if (config.twinMinLoopGain == 0)
 		return 0;
-	TD_TIMER_STARTD();
+	TD_TIMER_START();
 	Scene& scene = pairsMatcher.GetScene();
-	const auto IsDensePair = [&](const ImagePair& pair) {
-		return pair.GetNumDenseInliers() > 0 || scene.images[pair.ID1].HasDenseKeypoints() || scene.images[pair.ID2].HasDenseKeypoints();
-	};
-	// 1) the twin of every posed, plane-dominated dense pair
+	// 1) Find the planar twin of every posed, plane-dominated dense pair
 	std::vector<ImagePair> twins(scene.pairs.size());
 	std::vector<uint8_t> hasTwin(scene.pairs.size(), 0);
 	std::atomic<unsigned> numPlanar{0};
-	cv::setNumThreads(1); // temporarily turn off multi-threading for OpenCV functions (the pool tasks are already parallel)
-	scene.threadPool.detach_loop(0u, scene.pairs.size(), [&](unsigned i) {
-		const ImagePair& pair = scene.pairs[i];
-		if (!pair.relativePose.has_value() || !IsDensePair(pair))
-			return;
-		float share;
-		hasTwin[i] = PlanarTwinDense(pairsMatcher, scene.images[pair.ID1], scene.images[pair.ID2], config, pair, twins[i], share) ? 1 : 0;
-		if (share >= config.twinMinPlaneShare)
-			++numPlanar;
-	});
-	scene.threadPool.wait();
-	cv::setNumThreads(scene.nMaxThreads); // restore OpenCV threading
+	{
+		ScopedCvThreads cvGuard(scene.nMaxThreads);
+		ScopedPoolDrain poolGuard(scene);
+		scene.threadPool.detach_loop(0u, scene.pairs.size(), [&](unsigned i) {
+			const ImagePair& pair = scene.pairs[i];
+			if (!pair.relativePose.has_value() || !pair.IsDense(scene.images[pair.ID1], scene.images[pair.ID2]))
+				return;
+			float share;
+			hasTwin[i] = PlanarTwinDense(pairsMatcher, scene.images[pair.ID1], scene.images[pair.ID2], config, pair, twins[i], share) ? 1 : 0;
+			if (share >= config.twinMinPlaneShare)
+				++numPlanar;
+		});
+	}
 	// 2) the candidates and their triangles, each with whether its loop closes for every state
 	// combination of the candidates it holds (bit s of `closed`: bit k of s set = its k-th candidate
 	// at its twin)
@@ -1233,16 +1075,14 @@ unsigned SFM::SwitchPlanarTwinsDense(PairsMatcher& pairsMatcher, const DenseMatc
 		const Point3 t0 = pair.relativePose->GetT(), t1 = twin.relativePose->GetT();
 		const unsigned numSparseBefore = pair.GetNumFilteredInliers(), numDenseBefore = pair.GetNumDenseInliers();
 		const REAL rotationDeg = R2D(ACOS(ComputeAngle(Matrix3x3(pair.relativePose->R), Matrix3x3(twin.relativePose->R))));
-		const REAL cosDirection = t0.dot(t1)/(norm(t0)*norm(t1));
-		ASSERT(ABS(cosDirection) <= REAL(1) + REAL(1e-6)); // a dot product over the two norms, up to rounding
+		const REAL directionDeg = DirectionAngleDeg(t0, t1);
 		pair.relativePose = twin.relativePose;
 		pair.E = twin.E;
 		pair.F = twin.F;
 		ReverifyPairDense(pairsMatcher, scene.images[pair.ID1], scene.images[pair.ID2], config, pair, false);
 		VERBOSE("Pair %u-%u switched to its planar twin: loops %d -> %d of %u within %g deg, rotation change %.2f deg, direction change %.1f deg; sparse inliers %u -> %u, dense %u -> %u",
 			pair.ID1, pair.ID2, loopsStored, loopsTwin, (unsigned)trianglesOf[ci].size(), config.twinMaxLoopAngle, rotationDeg,
-			R2D(ACOS(CLAMP(cosDirection, REAL(-1), REAL(1)))), // the clamp is rounding only
-			numSparseBefore, pair.GetNumFilteredInliers(), numDenseBefore, pair.GetNumDenseInliers());
+			directionDeg, numSparseBefore, pair.GetNumFilteredInliers(), numDenseBefore, pair.GetNumDenseInliers());
 		++numSwitched;
 	}
 	VERBOSE("Planar twins: %u plane-dominated pairs (share >= %g) of %u, %u with a distinct twin, %u switches (%u back) in %u triangles, %u pairs switched (%s)",
@@ -1261,12 +1101,8 @@ void SFM::StorePairDense(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 	const auto it = pairIndexMap.find(key);
 	IIndex idxPair;
 	if (it != pairIndexMap.end()) {
-		// a same-key pair a previous Match() left: this pass judged the pair again on its warp
-		// alone, so its verdict replaces that pair whole rather than merging two sets of evidence.
-		// Unreached today -- MatchPairsDense skips every candidate already in pairIndexMap -- and
-		// safe only as long as that holds: the incumbent must carry no dense segment of its own, or
-		// this move would orphan the keypoints its dense fill already appended to both images.
 		idxPair = it->second;
+		ASSERT(scene.pairs[idxPair].GetNumDenseInliers() == 0);
 		scene.pairs[idxPair] = std::move(pair);
 	} else {
 		// overlapRatio/overlapArea stay at their reset value (0): a created pair is weighted exactly
@@ -1295,7 +1131,7 @@ static void LogOnePassSummary(size_t numCandidates, unsigned numJudged, unsigned
 	unsigned numDenseOnly, unsigned numSlots, unsigned numLoads, unsigned numReloads, unsigned numAlreadyStored,
 	unsigned numUnprepared, unsigned numFailedLoads, unsigned numFailedMatches, unsigned numDenseMatches, const String& elapsed)
 {
-	DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
+	DEBUG("Dense one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
 		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
 		(unsigned)numCandidates, numJudged, numAdmitted, numStored, numDenseOnly,
 		numSlots, numLoads, numReloads,
@@ -1366,17 +1202,19 @@ bool SFM::MatchPairsDense(PairsMatcher& pairsMatcher, DenseMatcher& matcher, con
 		bool bAssembled = false;
 	};
 	std::vector<AssembledPair> results(pairs.size());
-	std::atomic<unsigned> numJudged{0}, numAdmitted{0}, numGated{0};
+	std::atomic<unsigned> numJudged{0}, numAdmitted{0}, numGated{0}, numWithCovisibility{0};
 	const int warpSize = matcher.GridSize();
 	WarpPassStats stats;
 	if (!ForEachDenseWarp(pairsMatcher, matcher, pairs, config.slotBudget, _T("Dense match image pairs"),
 		[&](size_t p, const PairIdx& pairIdx, PairOutput& warps, unsigned threadIdx) {
 			const Image& imgA = scene.images[pairIdx.i];
 			const Image& imgB = scene.images[pairIdx.j];
-			// the covisibility gate, before the verdict: a pair the matcher says does not show the same place is dropped
-			if (warps.covisibility && *warps.covisibility < config.minCovisibility) {
-				++numGated;
-				return;
+			if (warps.covisibility) {
+				++numWithCovisibility;
+				if (*warps.covisibility < config.minCovisibility) {
+					++numGated;
+					return;
+				}
 			}
 			ImagePair pair(pairIdx.i, pairIdx.j);
 			pair.covisibility = warps.covisibility;
@@ -1385,26 +1223,22 @@ bool SFM::MatchPairsDense(PairsMatcher& pairsMatcher, DenseMatcher& matcher, con
 			JudgePairDense(pairsMatcher, imgA, imgB, warps, config, pair, verdict);
 			++numJudged;
 			if (!verdict.admitted) {
-				DEBUG_ULTIMATE("ROMA2 pair %u-%u: conf %.4f %.4f inl %.4f %.4f REJECT",
+				DEBUG_ULTIMATE("Dense pair %u-%u: conf %.4f %.4f inl %.4f %.4f REJECT",
 					pairIdx.i, pairIdx.j, verdict.confidentAreaA, verdict.confidentAreaB,
 					verdict.inlierAreaA, verdict.inlierAreaB);
 				return;
 			}
 			++numAdmitted;
-			// the guided sparse matching: the warp tracks A's described keypoints into B, and the
-			// descriptor match is restricted to a band along each keypoint's epipolar line under the
-			// verdict's geometry, centred on its prediction (GuidedSearch). This is where appearance
-			// enters, and the only place it does.
-			std::vector<Point2f> trackedA, trackedB;
+			std::vector<Point2f> trackedB;
 			std::vector<uchar> trackStatus;
 			TrackKeypointsByWarp(imgA, imgB, warps.ab.warp, warps.ab.confidence, config.minConfidence,
-				trackedA, trackedB, trackStatus);
+				trackedB, trackStatus);
 			GuidedSearch search;
-			const float cell = (float)MAXF(imgB.GetWidth(), imgB.GetHeight())/(float)warpSize;
-			search.length = config.guidedBandLengthCells*cell;
+			const float cell = (float)MAXF(imgB.GetWidth(), imgB.GetHeight()) / (float)warpSize;
+			search.length = config.guidedBandLengthCells * cell;
 			search.F = pair.F;
 			search.sameFeatureDistance = config.guidedSameFeatureDistance;
-			search.halfWidth = config.guidedBandHalfWidthCells*cell;
+			search.halfWidth = config.guidedBandHalfWidthCells * cell;
 			std::vector<DMatch> guided;
 			MatchFeaturesGuided(pairsMatcher, imgA, imgB, trackedB, trackStatus, search, threadIdx, guided);
 			AssembledPair& result = results[p];
@@ -1413,16 +1247,14 @@ bool SFM::MatchPairsDense(PairsMatcher& pairsMatcher, DenseMatcher& matcher, con
 			const unsigned numSparse = result.bAssembled ? pair.GetNumFilteredInliers() : 0u;
 			if (result.bAssembled)
 				result.pair = std::move(pair);
-			DEBUG_ULTIMATE("ROMA2 pair %u-%u: conf %.4f %.4f inl %.4f %.4f ADMIT cap %u grid %d band %.1f guided %u sparse %u dense %u",
+			DEBUG_ULTIMATE("Dense pair %u-%u: conf %.4f %.4f inl %.4f %.4f ADMIT cap %u grid %d band %.1f guided %u sparse %u dense %u",
 				pairIdx.i, pairIdx.j, verdict.confidentAreaA, verdict.confidentAreaB,
 				verdict.inlierAreaA, verdict.inlierAreaB, DenseFillCeiling(config, verdict),
 				DenseFillGridSide(config.denseMatchesPerFrame, warpSize), search.halfWidth, (unsigned)guided.size(), numSparse,
 				(unsigned)result.dense.pointsA.size());
 		}, stats))
-		return false; // the slot pool could not be allocated: nothing was warped, and the round fails
+		return false;
 
-	// 3) serial store, in (ID1,ID2) order: the keypoint indices the dense append hands out depend on
-	// what the two images already carry, so the labelling must not depend on the pool's order
 	unsigned numDenseOnly = 0;
 	size_t numDenseMatches = 0;
 	FOREACH(p, results) {
@@ -1430,20 +1262,18 @@ bool SFM::MatchPairsDense(PairsMatcher& pairsMatcher, DenseMatcher& matcher, con
 		if (!result.bAssembled)
 			continue;
 		if (result.pair.GetNumFilteredInliers() == 0)
-			++numDenseOnly; // no sparse inlier at all: the dense segment is this pair's whole evidence
+			++numDenseOnly;
 		numDenseMatches += result.dense.pointsA.size();
 		StorePairDense(scene, pairIndexMap, std::move(result.pair), result.dense, warpSize);
 		++numStored;
 	}
-	if (config.minCovisibility > 0.f && numGated.load() + numJudged.load() > 0)
-		DEBUG("ROMA2 covisibility gate: %u of %u warped pairs below %g", numGated.load(), numGated.load() + numJudged.load(), config.minCovisibility);
+	if (config.minCovisibility > 0.f && numWithCovisibility.load() > 0)
+		DEBUG("Dense covisibility gate: %u of %u warped pairs below %g", numGated.load(), numWithCovisibility.load(), config.minCovisibility);
 	LogOnePassSummary(candidatePairs.size(), numJudged.load(), numAdmitted.load(), numStored, numDenseOnly,
 		stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads,
 		numAlreadyStored, numUnprepared, stats.numFailedLoads, stats.numFailedMatches, (unsigned)numDenseMatches, TD_TIMER_GET_FMT());
 	return true;
 #else // _USE_ONNXRUNTIME
-	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never
-	// loads a model and PairsMatcher::Match never calls here
 	ASSERT(false);
 	return false;
 #endif // _USE_ONNXRUNTIME

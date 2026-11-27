@@ -26,14 +26,13 @@ struct ParsedName {
 	bool hasNumber = false;
 };
 
-ParsedName ParseName(const String& fileName)
+ParsedName ParseName(const String& name)
 {
-	const std::string name(fileName.c_str(), fileName.size());
 	const size_t dirEnd = name.find_last_of("/\\");
-	const size_t nameBegin = (dirEnd == std::string::npos ? 0 : dirEnd + 1);
+	const size_t nameBegin = (dirEnd == String::npos ? 0 : dirEnd + 1);
 	const size_t dot = name.find_last_of('.');
 	// a leading dot is part of the stem (a hidden file), not an extension
-	const size_t stemEnd = (dot == std::string::npos || dot <= nameBegin ? name.size() : dot);
+	const size_t stemEnd = (dot == String::npos || dot <= nameBegin ? name.size() : dot);
 	size_t digitsBegin = stemEnd;
 	while (digitsBegin > nameBegin && name[digitsBegin-1] >= '0' && name[digitsBegin-1] <= '9')
 		--digitsBegin;

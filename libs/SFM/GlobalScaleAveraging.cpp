@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "GlobalScaleAveraging.h"
+#include "RobustAveraging.h"
 #include <Eigen/IterativeLinearSolvers>
 #include "../Math/DisjointSet.h"
 
@@ -25,41 +26,9 @@ DEFINE_LOG_NAME(lt, _T("GlbSclAg"));
 
 namespace {
 
-// The conjugate gradients on the normal equations A^T A x = A^T b of a component pinned at one of its
-// indices: the pinned system's normal matrix is positive definite, so it needs no ridge. The tolerance is
-// tight because at 1e-10 an equation on the robust weight floor crosses the bar in another round and the
-// cut's removed pairs change; the correction of the refinement step needs only its first digits.
 constexpr double kTolerance = 1e-14;
 constexpr int kMaxIterations = 20000;
 constexpr double kRefinementTolerance = 1e-6;
-
-bool SelectFixedNode(
-	const std::vector<ScalePair>& pairwiseScales,
-	const uint32_t fixedIdx,
-	const std::unordered_map<uint32_t, int>& idxToVar,
-	uint32_t& fixedNode)
-{
-	fixedNode = fixedIdx;
-	if (fixedNode == NO_ID) {
-		std::unordered_map<uint32_t, float> connectionWeights;
-		for (const ScalePair& scalePair : pairwiseScales) {
-			connectionWeights[scalePair.idxA] += scalePair.weight;
-			connectionWeights[scalePair.idxB] += scalePair.weight;
-		}
-		float maxWeight = 0.f;
-		for (const auto& [idx, weight] : connectionWeights) {
-			if (weight > maxWeight) {
-				maxWeight = weight;
-				fixedNode = idx;
-			}
-		}
-	}
-	if (fixedNode == NO_ID || idxToVar.find(fixedNode) == idxToVar.end()) {
-		VERBOSE("warning: invalid fixed index for scale estimation");
-		return false;
-	}
-	return true;
-}
 
 } // namespace
 
@@ -90,13 +59,16 @@ bool GlobalScaleEstimator::EstimateScales(
 		if (idxToVar.emplace(scalePair.idxB, (int)varToIdx.size()).second)
 			varToIdx.push_back(scalePair.idxB);
 	}
-	const int N = (int)varToIdx.size(); // number of variables (scales)
-	const int M = (int)pairwiseScales.size(); // number of equations
+	const int N = (int)varToIdx.size();
+	const int M = (int)pairwiseScales.size();
 	ASSERT(N >= 2);
 
-	uint32_t fixedNode;
-	if (!SelectFixedNode(pairwiseScales, fixedIdx, idxToVar, fixedNode))
+	if (fixedIdx != NO_ID && idxToVar.find(fixedIdx) == idxToVar.end()) {
+		VERBOSE("warning: invalid fixed index for scale estimation");
 		return false;
+	}
+	const uint32_t fixedNode = SelectGaugeNode(pairwiseScales, fixedIdx);
+	ASSERT(fixedNode != NO_ID && idxToVar.count(fixedNode));
 
 	// The equations split into connected components, which share no unknown: each is solved on its own
 	DisjointSet<uint32_t> sets((size_t)N);
@@ -168,15 +140,15 @@ bool GlobalScaleEstimator::EstimateScales(
 		Eigen::VectorXd x = solver.solveWithGuess(A.transpose() * b, x0);
 		stats.iterations += (unsigned)solver.iterations();
 		stats.converged = stats.converged && solver.info() == Eigen::Success;
-		if (x.array().isNaN().any()) {
+		if (!x.array().isFinite().all()) {
 			VERBOSE("warning: scale solve failed");
 			return false;
 		}
-		// one step of refinement against the incidence matrix itself, as the translation solve does: the
-		// normal matrix holds the squared condition number's rounding (a weak equation between two groups
-		// of strong ones moved the answer by 3e-7), the residual of A and b does not
+		// One refinement step against the incidence matrix recovers accuracy lost in the normal equations
 		solver.setTolerance(kRefinementTolerance);
-		x += solver.solve(A.transpose() * (b - A * x));
+		const Eigen::VectorXd dx = solver.solve(A.transpose() * (b - A * x));
+		if (dx.array().isFinite().all())
+			x += dx;
 		stats.refinementIterations += (unsigned)solver.iterations();
 		stats.converged = stats.converged && solver.info() == Eigen::Success;
 		const double shift = holdsFixed ? 0.0 : x.sum() / (double)component.vars.size();
@@ -193,4 +165,27 @@ bool GlobalScaleEstimator::EstimateScales(
 		N, M, fixedNode);
 	return true;
 }
+
+bool SFM::RobustAverageScales(
+	const std::vector<ScalePair>& pairs,
+	uint32_t numIndices,
+	uint32_t fixedIdx,
+	REAL maxLogResidual,
+	unsigned maxRounds,
+	std::vector<REAL>& outScales,
+	std::vector<REAL>& outResiduals)
+{
+	GlobalScaleEstimator estimator;
+	return RobustAverage(pairs, maxLogResidual, maxRounds,
+		[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) {
+			return estimator.EstimateScales(active, numIndices, fixedIdx, s);
+		},
+		[&](size_t i, const std::vector<REAL>& s) {
+			const ScalePair& p = pairs[i];
+			return LOGN(p.scaleRatio) - (LOGN(s[p.idxB]) - LOGN(s[p.idxA]));
+		},
+		outScales, outResiduals);
+}
 /*----------------------------------------------------------------*/
+
+#pragma pop_macro("VERBOSE")

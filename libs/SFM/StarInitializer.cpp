@@ -9,7 +9,6 @@
 #include "Scene.h"
 #include "Triangulation.h"
 #include "BundleAdjustment.h"
-#include "GlobalRotationAveraging.h"
 #include "GlobalScaleAveraging.h"
 #include "PoseLink.h"
 #include <numeric>
@@ -18,30 +17,25 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// The matching noise of a pair's matches: 0.65 pixels on an image of 2880 pixels on its longer side, kept as a share of the
-// image, so that it does not change when an image is resized
+// Matching noise expressed as a fraction of the longer image side (0.65 px at 2880 px)
 constexpr float kArmMatchNoisePixels = 0.65f;
 constexpr float kArmMatchNoiseImageSide = 2880.f;
-// The bar on a pair's baseline direction, in degrees: the matching noise over the parallax energy of the pair's matches in
-// their weakest direction (ImagePair::ComputeBaselineDirectionSigma); it folds in the parallax of every match, how many there
-// are and how they are spread. A pair whose direction is less sure than this places an arm at a random direction
-// (a simpler bar performs similarly on the evaluation captures: the pair's median ray angle, in pixels, under the longer
-// image side over 180; see docs/design/IncrementalReconstruction.md)
+// Maximum baseline-direction sigma (degrees) allowed for a star arm
 constexpr float kMaxArmDirectionSigma = 0.09f;
 
-// Does the pair fix no baseline direction of its own, so that its arm would be placed at a random direction?
+// True if the pair's baseline direction is too poorly constrained to place a star arm
 static bool FixesNoBaselineDirection(const ImagePair& pair, const Scene& scene)
 {
-	ASSERT(pair.meanRayAngle >= 0.f); // measured by ComputePairsWeights
-	ASSERT(pair.relativePose.has_value()); // the candidates of the star are pose-link pairs
+	ASSERT(pair.meanRayAngle >= 0.f);
+	ASSERT(pair.relativePose.has_value());
 	if (pair.meanRayAngle <= 0.f)
-		return false; // no measured parallax: not decided by the bar
+		return false;
 	const Image& img1 = scene.images[pair.ID1];
 	const Image& img2 = scene.images[pair.ID2];
 	const cv::Size& size1 = img1.pCamera->GetSize();
 	const cv::Size& size2 = img2.pCamera->GetSize();
 	ASSERT(size1.area() > 0 && size2.area() > 0);
-	const REAL pixelAngle = REAL(0.5) * (img1.pCamera->PixelErrorToAngular(1) + img2.pCamera->PixelErrorToAngular(1));
+	const REAL pixelAngle = PairPixelErrorToAngular(*img1.pCamera, *img2.pCamera, REAL(1));
 	const REAL longerSide = REAL(0.5) * (MAXF(size1.width, size1.height) + MAXF(size2.width, size2.height));
 	const REAL noiseAngle = kArmMatchNoisePixels * (longerSide / kArmMatchNoiseImageSide) * pixelAngle;
 	return pair.ComputeBaselineDirectionSigma(img1, img2, noiseAngle) > D2R(REAL(kMaxArmDirectionSigma));
@@ -153,33 +147,17 @@ std::vector<ScalePair> SFM::ComputePairScales(const Scene& scene, const IIndexAr
 		const Camera& cam1 = *img1.pCamera;
 		const Camera& cam2 = *img2.pCamera;
 		const Pose3D& relPose = pair.relativePose.value();
-		// Angular reprojection threshold (works for both pinhole and spherical; pixel metric breaks on equirectangular)
-		const REAL cosReprojAngle = COS(REAL(0.5) * (cam1.PixelErrorToAngular(reprojPixelThreshold) + cam2.PixelErrorToAngular(reprojPixelThreshold)));
+		const REAL cosReprojAngle = COS(PairPixelErrorToAngular(cam1, cam2, reprojPixelThreshold));
 		std::vector<PairPoint>& points = pairPoints[k];
 		points.reserve(pair.matches.size());
 		for (const DMatch& match : pair.matches) {
-			// Observed unit bearings (works for both camera types)
-			const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(img1.keypoints[match.queryIdx].pt));
-			const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(img2.keypoints[match.trainIdx].pt));
-			// Triangulate in Camera 1 frame (midpoint on unit bearings)
 			Point3 Xlocal;
-			if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, Xlocal))
+			REAL cosAngle;
+			if (!ImagePair::TriangulateVerifiedMatch(relPose, cam1, cam2,
+					img1.keypoints[match.queryIdx].pt, img2.keypoints[match.trainIdx].pt,
+					cosReprojAngle, maxCosAngle, Xlocal, cosAngle))
 				continue;
-			// Cheirality + angular reprojection in Cam1
-			const REAL nX = norm(Xlocal);
-			if (nX < ZEROTOLERANCE<REAL>() || b1.dot(Xlocal / nX) < cosReprojAngle)
-				continue;
-			// Cheirality + angular reprojection in Cam2
-			const Point3 Xcam2 = relPose.TransformPointW2C(Xlocal);
-			const REAL nXc2 = norm(Xcam2);
-			if (nXc2 < ZEROTOLERANCE<REAL>() || b2.dot(Xcam2 / nXc2) < cosReprojAngle)
-				continue;
-			// Angle check between the rays from C1 and from C2 (relPose.C is Cam 2's position in Cam 1's frame)
-			const Point3 V1 = Xlocal;
-			const Point3 V2 = Xlocal - relPose.C;
-			if (ComputeAngle(V1.ptr(), V2.ptr()) > maxCosAngle)
-				continue;
-			points.push_back({(uint32_t)match.queryIdx, (uint32_t)match.trainIdx, cv::norm(Xlocal), cv::norm(V2)});
+			points.push_back({(uint32_t)match.queryIdx, (uint32_t)match.trainIdx, (double)norm(Xlocal), (double)norm(Xlocal - relPose.C)});
 		}
 	}
 
@@ -331,27 +309,14 @@ bool StarInitializer::EstimateGlobalScale(
 		DEBUG_ULTIMATE("Pair (%u,%u) scale: %.4f", pair.ID1, pair.ID2, scale);
 	}
 
-	// 5. Update absolute poses of connected views
-	// We assume Ref is at Identity.
-	// We update neighbors of Ref using the updated relative poses.
-	// Note: We only update views that are directly connected to Ref in the star graph.
-	// Other views (if any in connectedViews but not directly connected? Star implies direct connection)
-	// StarInitializer::Initialize ensures connectedViews are directly connected.
-	for (uint32_t viewID : connectedViews) {
-		const ImagePair* pPair(refViewID < viewID ? scene.FindPair(refViewID, viewID) : scene.FindPair(viewID, refViewID));
-		if (!pPair || !pPair->relativePose.has_value())
+	// 5. Update absolute poses of connected views directly linked to Ref (at Identity)
+	for (const IIndex pairIdx : pairIndices) {
+		const ImagePair& pair = scene.pairs[pairIdx];
+		if (pair.ID1 != refViewID && pair.ID2 != refViewID)
 			continue;
-		Image& img = scene.images[viewID];
-		// Re-compute absolute pose from Ref (Identity) and scaled RelativePose
-		if (pPair->ID1 == refViewID) {
-			// T_view_ref = RelPose
-			// ViewPose = RelPose * RefPose(Identity) = RelPose
-			static_cast<Pose3D&>(img) = pPair->relativePose.value();
-		} else {
-			// T_ref_view = RelPose
-			// ViewPose = RelPose^-1 * RefPose(Identity)
-			static_cast<Pose3D&>(img) = pPair->relativePose.value().Inverse();
-		}
+		const IIndex viewID = pair.ID1 == refViewID ? pair.ID2 : pair.ID1;
+		static_cast<Pose3D&>(scene.images[viewID]) = pair.ID1 == refViewID ?
+			pair.relativePose.value() : pair.relativePose.value().Inverse();
 	}
 	return true;
 }
@@ -361,15 +326,16 @@ bool StarInitializer::Initialize(
 	const StarInitConfig& config)
 {
 	TD_TIMER_START();
-	ASSERT(!scene.IsEmpty() && !scene.pairs.empty() && !scene.tracks.empty())
+	ASSERT(!scene.IsEmpty() && !scene.pairs.empty() && !scene.tracks.empty());
+	ASSERT(config.minViews >= 2);
 
 	// 1. Select reference view (highest connectivity)
-	const IIndex refID = SelectReferenceView(scene, config.seedViews, config.minViews > 0 ? config.minViews - 1 : 0, config.pairsWeighting);
+	const IIndex refID = SelectReferenceView(scene, config.seedViews, config.minViews - 1, config.pairsWeighting);
 	if (refID == NO_ID)
 		return false;
 	// Set reference view to identity pose
 	Image& refImg = scene.images[refID];
-	reinterpret_cast<Pose3D&>(refImg) = Pose3D::Identity();
+	static_cast<Pose3D&>(refImg) = Pose3D::Identity();
 	DEBUG("Reference view %u set to identity pose", refID);
 
 	// 2. Register connected views from relative poses
@@ -456,21 +422,9 @@ bool StarInitializer::Initialize(
 	}
 	DEBUG("Registered %u views from relative poses", candidates.size());
 
-	// 2.a. Finetune rotations with global rotation averaging (optional)
-	if (config.globalRotations) {
-		DEBUG("Refining initial rotations with global rotation averaging");
-		GlobalRotationEstimatorOptions rotOptions;
-		rotOptions.skipInitialization = true; // rotations are already initialized
-		GlobalRotationEstimator rotEstimator(rotOptions);
-		if (!rotEstimator.EstimateRotations(scene)) {
-			VERBOSE("error: initializer global rotation averaging failed");
-			return false;
-		}
-	}
-
 	// 3. Estimate global scale
 	if (!EstimateGlobalScale(scene, refID, connectedViews, config.pairsWeighting)) {
-		VERBOSE("error: global scale estimation failed (proceeding without scaling)");
+		VERBOSE("error: global scale estimation failed");
 		return false;
 	}
 

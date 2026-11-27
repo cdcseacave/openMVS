@@ -146,6 +146,11 @@ struct SFM_API TrackConflictConfig {
 };
 
 /**
+ * @brief Pre-compute per-image global feature offsets (size images.size() + 1, last element = total features).
+ */
+SFM_API Unsigned32Arr BuildFeatureOffsets(const ImageArr& images);
+
+/**
  * @brief Build 3D point tracks from 2D feature matches
  *
  * Creates tracks by merging observations connected through pair matches.
@@ -165,103 +170,63 @@ typedef std::function<bool(uint32_t imageID, uint32_t featureID)> ObservationFil
  *
  * Without isUsed every observation of the inlier tracks counts. With it (a solve whose per-image budget
  * left observations out) the means, and the views per track of the log line, are taken over the
- * observations isUsed accepts, and the line adds how many it left out: those are not adjusted, and a
- * point close to a camera can carry an unbounded pixel error there that would dominate the mean.
+ * observations isUsed accepts, and the line adds how many it left out.
  * @return mean reprojection error in pixels (first) and degrees (second), over the used observations when isUsed is set
  */
-SFM_API std::pair<float, float> ComputeTracksMeanReprojectionError(Scene& scene, const ObservationFilter& isUsed = nullptr);
+SFM_API std::pair<float, float> ComputeTracksMeanReprojectionError(const Scene& scene, const ObservationFilter& isUsed = nullptr);
 
 /**
- * @brief Pixel reprojection error of an already camera-space point against an observed keypoint,
- * using the observing camera's projection model. This is the exact formula FilterTracks uses when
- * it accumulates its pixel-error statistics for a kept observation; exposed as its own function so
- * any other reader of a track (e.g. an offline per-observation dump) computes the identical number
- * instead of re-deriving it.
- * @param camera the observing camera (current intrinsics)
- * @param Xcam the track position already transformed into this camera's frame (Image::TransformPointW2C)
- * @param kpPt the observed keypoint's pixel position
- * @return pixel error and whether the projection is valid (false = behind the camera / degenerate;
- *         the error is then undefined and must not be used)
+ * @brief Pixel reprojection error of a camera-space point against an observed keypoint.
+ * @return pixel error and whether the projection is valid (false = behind camera / degenerate)
  */
 SFM_API std::pair<float, bool> ComputeReprojectionErrorPixels(const Camera& camera, const Point3& Xcam, const Point2f& kpPt);
 
 /**
- * Robust reprojection sigma of the two observation populations of the current solution, in pixels:
- * the median reprojection error over the observations on described keypoints, and over those on
- * dense (warp-sampled) ones, each computed with ComputeReprojectionErrorPixels -- the same formula
- * FilterTracks uses, so the two numbers describe the residuals bundle adjustment actually sees.
- * The median of an already non-negative error is taken as the scale directly, with no 1.4826
- * consistency factor: the only consumer takes the RATIO of the two, in which any common factor
- * cancels. Only inlier tracks and valid images take part -- an image without a pose is skipped
- * rather than asserted, unlike ComputeTracksMeanReprojectionError, because this runs at the head
- * of every solve, where a scene still holding images the incremental reconstruction has not
- * registered yet is the normal state and not a bug. An observation whose projection is invalid
- * is counted by neither population.
- * The counts come back so the caller can refuse a sample too small to be a sigma.
+ * @brief Pixel reprojection error of a world-space point against an image's observed keypoint.
+ */
+inline std::pair<float, bool> ComputeReprojectionErrorPixels(const Image& image, const Point3& Xworld, uint32_t featureID)
+{
+	ASSERT(image.IsValid() && featureID < image.keypoints.size());
+	return ComputeReprojectionErrorPixels(*image.pCamera, image.TransformPointW2C(Xworld), image.keypoints[featureID].pt);
+}
+
+/**
+ * Robust reprojection sigma (median pixel error) over described vs dense observations of inlier tracks.
  */
 SFM_API void ComputeObservationSigmas(const Scene& scene,
 	double& sigmaDescribed, size_t& numDescribed, double& sigmaDense, size_t& numDense);
 
 /**
- * @brief Filter tracks based on various criteria
+ * @brief Filter tracks based on angular reprojection error, triangulation angle, and depth bounds.
  *
- * A track seen by fewer than two posed images has no position that two posed views determine: it is
- * not judged and ends with numInliers 0.
- *
- * Reprojection error is always evaluated in the angular domain — the pixel threshold is
- * converted per-camera via Camera::PixelErrorToAngular, so the same check works uniformly
- * for pinhole and spherical (equirectangular pixel distance has no linear angular meaning).
+ * A track seen by fewer than two posed images is left with numInliers = 0.
+ * Reprojection error is evaluated in the angular domain via Camera::PixelErrorToAngular, so the
+ * check works uniformly for pinhole and spherical cameras.
  *
  * @param scene Scene containing tracks to filter
  * @param maxReprojErrorPixels Maximum allowed reprojection error in pixels (converted to angle per camera)
  * @param minAngleDegrees Minimum required angle between any two observations in degrees
  * @param multDepthNear Multiplier for near depth threshold based on median depth (0 disabled)
  * @param multDepthFar Multiplier for far depth threshold based on median depth (0 disabled)
- * @param denseReprojErrorFactor Multiple of maxReprojErrorPixels a dense (warp-sampled) observation
- *                               is held to: the less precise measurement answers to a looser bar
- *                               (1 = the same bar as a described observation)
  * @return mean reprojection error in pixels (first) and degrees (second)
  */
 SFM_API std::pair<float, float> FilterTracks(Scene& scene,
 	float maxReprojErrorPixels = 3.f,
 	float minAngleDegrees = 2.f,
 	float multDepthNear = 0.05f,
-	float multDepthFar = 20.f,
-	float denseReprojErrorFactor = 1.f);
+	float multDepthFar = 20.f);
 
 /**
- * @brief Filter weakly connected images and cluster the remainder based on covisibility
+ * @brief Filter weakly connected images using spatial distribution, triangulation angle, and covisibility k-core.
  *
- * Applies two pre-filters to identify and remove weakly connected images:
- * - Tier 1: Spatial Distribution Filter (Effective Inlier Count) - removes images where
- *   tracks are clustered in a small region
- * - Tier 2: Geometric Degeneracy Filter - removes images with small triangulation angles
- *
- * Then builds a covisibility graph based on shared inlier tracks and:
- * - Keeps only the largest connected component
- * - Peels images with too few independent covisibility neighbors (absolute k-core) and
- *   keeps the largest remaining connected component
- *
- * Among the images the largest-component passes cut, the ones the model contradicts are told from
- * the ones it merely lacks evidence for: a cut component whose verified pairs (of at least 15
- * weighted inliers) to the kept images disagree with the pose the model gives it, in rotation or
- * baseline direction beyond 5 degrees, by more inlier weight than agrees is contradicted; one with
- * no such pair, or agreeing ones, is not.
+ * Among images removed by the largest-component passes, separates those whose verified pairs to the kept
+ * core contradict the reconstructed pose from those merely lacking evidence.
  *
  * @param scene Scene containing images and tracks (tracks must be pre-filtered by FilterTracks)
- * @param minCovisibilityCount Minimum number of shared tracks to form a covisibility edge
- *                             Default: 5 (typically 5-10 for standard images)
- * @param minObservationArea Fraction of image grid cells [0-1] that must contain tracks
- *                           Default: 0.15 (15% occupancy, detects clustering)
- * @param minTriangulationAngle Minimum median triangulation angle in degrees
- *                              Default: 1.5° (conservative)
- * @param minCovisDegree Minimum independent covisibility neighbors to survive the k-core peel
- *                       Default: 2 (sibling absolute threshold to minCovisibilityCount)
- * @param maxPoseInconsistencyAngle Cut covisibility edges whose global relative rotation disagrees
- *                       with the stored two-view relativePose by more than this angle, in degrees
- *                       (detects wrongly positioned views). Default: 0 (disabled)
- * @param maxReprojErrorPixels Enable the agreement-gated per-image backstops (match-survival +
- *                       robust reprojection); pass config.maxFineReprojError. Default: 0 (disabled)
+ * @param minCovisibilityCount Minimum number of shared tracks to form a covisibility edge (default: 5)
+ * @param minObservationArea Fraction of 10x10 image grid cells [0-1] that must contain tracks (default: 0.15)
+ * @param minTriangulationAngle Minimum median triangulation angle in degrees (default: 1.5)
+ * @param minCovisDegree Minimum independent covisibility neighbors to survive the k-core peel (default: 2)
  * @return the invalidated image IDs, and among them the ones cut for contradicting the model
  */
 struct RemovedImages {
@@ -272,9 +237,7 @@ SFM_API RemovedImages FilterWeaklyConnectedImages(Scene& scene,
 	unsigned minCovisibilityCount = 5,
 	float minObservationArea = 0.15f,
 	float minTriangulationAngle = 1.5f,
-	unsigned minCovisDegree = 2,
-	float maxPoseInconsistencyAngle = 0.f,
-	float maxReprojErrorPixels = 0.f);
+	unsigned minCovisDegree = 2);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

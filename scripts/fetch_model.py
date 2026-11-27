@@ -171,8 +171,7 @@ def verify_digest(path: Path, expected_sha256: str) -> bool:
 def read_checksums(checksums_path: Path) -> Dict[str, str]:
     """Parse `models/<model>/checksums.txt`: lines of `<sha256>  <relative/path>`, '#' comments
     and blank lines ignored. Raises ModelFetchError naming `checksums_path` when it has no
-    entries at all -- the placeholder the repo ships until the controller regenerates it from
-    the export run and pastes the digests in."""
+    entries at all."""
     checksums_path = Path(checksums_path)
     try:
         lines = checksums_path.read_text().splitlines()
@@ -522,9 +521,8 @@ def main(argv=None) -> int:
     option = "--flexglue-model" if args.model == "flexglue" else "--roma2-model"
     print(f"model ready at: {dest.resolve()}")
     print(f"set {spec.env}={dest.resolve()} (or pass {option} {dest.resolve()} to CreateStructure) so "
-          f"--dense-matcher finds it. If --dest was the CMake install prefix's own share/openMVS/{args.model}, "
-          "DenseMatchConfig::ResolveModelPath()'s install-prefix fallback already finds it with no environment "
-          "variable needed.")
+          f"--dense-matcher finds it. If --dest was the CMake install prefix's share/openMVS/{args.model}, "
+          "CreateStructure discovers it automatically without an environment variable.")
     return 0
 
 
