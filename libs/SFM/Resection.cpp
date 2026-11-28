@@ -6,6 +6,8 @@
 
 #include "Common.h"
 #include "Resection.h"
+#include "Link2D3D.h"
+#include "PoseLink.h"
 #include "Scene.h"
 #include "Track.h"
 #include "Triangulation.h"
@@ -18,6 +20,50 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+namespace {
+
+// The absolute pose of an image, as the quorum reads its neighbors
+inline auto NeighborPose(const Scene& scene)
+{
+	return [&scene](IIndex imageID) -> const Pose3D& { return scene.images[imageID]; };
+}
+
+// Is the given image registered in the scene, as the links and the evidence of a model read it?
+inline auto IsRegistered(const Scene& scene)
+{
+	return [&scene](IIndex imageID) { return scene.images[imageID].HasPose(); };
+}
+
+// Polish an absolute pose over its inliers with each dense correspondence at denseWeight against a
+// described one's 1, through the estimator's own final refinement (estimate_absolute_pose_bearings:
+// the same loss at the same chord-distance tolerance). Uniform weights would leave that refinement's
+// pose where it is, so an inlier set of a single kind is left alone.
+void PolishAbsolutePose(const CameraCorrespondences& correspondences, const std::vector<char>& inliers,
+	const poselib::AbsolutePoseOptions& opt, float denseWeight, poselib::CameraPose& pose)
+{
+	ASSERT(denseWeight >= 0.f && denseWeight <= 1.f);
+	ASSERT(correspondences.size() == inliers.size());
+	std::vector<poselib::Point3D> bearingsInliers, pointsInliers;
+	std::vector<double> weights;
+	size_t numDense = 0;
+	FOREACH(k, correspondences.bearings) {
+		if (!inliers[k])
+			continue;
+		bearingsInliers.push_back(correspondences.bearings[k]);
+		pointsInliers.push_back(correspondences.points[k]);
+		weights.push_back(correspondences.dense[k] ? (double)denseWeight : 1.0);
+		if (correspondences.dense[k])
+			++numDense;
+	}
+	if (numDense == 0 || numDense == weights.size())
+		return;
+	poselib::BundleOptions bundle = opt.bundle;
+	bundle.loss_scale = 2.0 * std::sin(0.5 * opt.max_error);
+	poselib::bundle_adjust_bearing(bearingsInliers, pointsInliers, &pose, bundle, weights);
+}
+
+} // namespace
+
 Resection::Resection(Scene& _scene, const ResectionConfig& _config)
 	: scene(_scene), config(_config)
 {}
@@ -27,45 +73,51 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	ASSERT(!unregistered.empty());
 
 	// Score accumulation
+	const std::vector<TrackObservationCount> counts(CountTrackObservations(scene));
 	for (auto& it : unregistered)
-		it.second = 0;
-	for (uint32_t trackID = 0; trackID < scene.tracks.size(); ++trackID) {
-		const Track& track = scene.tracks[trackID];
-		if (!track.IsInlier())
-			continue;
-		for (const Observation& obs : track.observations) {
-			auto it = unregistered.find(obs.imageID);
-			if (it != unregistered.end())
-				++it->second;
-		}
-	}
+		it.second = counts[it.first].observations;
 
-	// Fetch image IDs and order by score
+	// Fetch the image IDs with sufficient correspondences and a link (ForEachLink: a verified pair with
+	// a relative pose to a registered image), with the composite weight of their links. An image can
+	// reach the correspondences through long tracks alone, before any image it is paired with is
+	// registered; its pose would then have no link for the checks of RegisterImage to weigh it against,
+	// so it waits until one of its paired images is registered
+	std::unordered_map<IIndex, float> linkWeights;
+	ForEachLink(scene.pairs, IsRegistered(scene), [&unregistered, &linkWeights](IIndex imageID, IIndex, const ImagePair& pair) {
+		if (unregistered.count(imageID))
+			linkWeights[imageID] += pair.GetCompositeWeight();
+	});
 	IIndexArr nextIDs;
-	for (const auto& it : unregistered)
-		if (it.second >= config.minCorrespondences)
+	unsigned numWaiting = 0;
+	for (const auto& it : unregistered) {
+		if (it.second < config.minCorrespondences)
+			continue;
+		if (linkWeights.count(it.first))
 			nextIDs.push_back(it.first);
+		else
+			++numWaiting;
+	}
 	if (nextIDs.empty()) {
-		VERBOSE("warning: no next images with sufficient correspondences");
+		VERBOSE("warning: no next images with sufficient correspondences and a link (%u hold the correspondences but no link)", numWaiting);
 		return nextIDs;
 	}
-	nextIDs.Sort([&unregistered](IIndex a, IIndex b) {
+
+	// Order them by the weight of the evidence the model holds of them: the composite weight of their
+	// links. Among the candidates of one moment the one with the most correspondences is often the one
+	// that fails while a less counted one beside it, whose links lie in the model, registers; and every
+	// candidate stays in the list, however few its correspondences against the best one's
+	nextIDs.Sort([&linkWeights, &unregistered](IIndex a, IIndex b) {
+		const float weightA = linkWeights.at(a), weightB = linkWeights.at(b);
+		if (weightA != weightB)
+			return weightA > weightB;
 		return unregistered.at(a) > unregistered.at(b);
 	});
-
-	// Select top images with sufficient visible points
-	const unsigned thScore = config.ratioCorrespondences * unregistered.at(nextIDs[0]);
-	for (unsigned i = 1; i < nextIDs.size(); ++i) {
-		if (unregistered.at(nextIDs[i]) < thScore) {
-			nextIDs.resize(i);
-			break;
-		}
-	}
-	VERBOSE("Selected %u images with %u best visible points", nextIDs.size(), unregistered.at(nextIDs[0]));
+	DEBUG_EXTRA("Selected %u images, the first with %g link weight and %u visible points (%u more wait for a link)",
+		nextIDs.size(), linkWeights.at(nextIDs[0]), unregistered.at(nextIDs[0]), numWaiting);
 	return nextIDs;
 }
 
- std::pair<unsigned, unsigned> Resection::RegisterImage(IIndex imageID)
+ std::tuple<unsigned, unsigned, unsigned> Resection::RegisterImage(IIndex imageID)
 {
 	Image& img = scene.images[imageID];
 	ASSERT(img.HasCamera() && !img.HasPose());
@@ -74,23 +126,12 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	// (pinhole, spherical / equirectangular, fisheye). The bearings come from
 	// Camera::UnprojectNormalized which already returns unit vectors carrying
 	// hemisphere information (sign(z)) for spherical cameras.
-	std::vector<poselib::Point3D> bearings;
-	std::vector<poselib::Point3D> points3D;
-	for (const Track& track : scene.tracks) {
-		if (!track.IsInlier())
-			continue;
-		for (const Observation& obs : track.observations) {
-			if (obs.imageID == imageID) {
-				const Point2 kp = img.keypoints[obs.featureID].pt;
-				bearings.emplace_back(img.pCamera->UnprojectNormalized(kp));
-				points3D.push_back(track.position);
-				break;
-			}
-		}
-	}
-	const unsigned n = (unsigned)bearings.size();
+	CameraCorrespondences correspondences;
+	CollectTrackCorrespondences(scene, imageID, correspondences);
+	const unsigned n = correspondences.size();
+	const unsigned numDescribed = correspondences.numDescribed;
 	if (n < config.minInliers)
-		return {0, n};
+		return {0, n, numDescribed};
 
 	// Convert the pixel-space reprojection threshold to an angular threshold
 	// on the unit sphere via the camera's PixelErrorToAngular helper and hand
@@ -103,21 +144,125 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	opt.ransac.max_iterations = config.ransac.max_iterations;
 	opt.ransac.min_iterations = config.ransac.min_iterations;
 	opt.ransac.success_prob = config.ransac.confidence;
-	opt.max_error = img.pCamera->PixelErrorToAngular(
-		config.ransac.threshold * img.pCamera->GetFeatureNoiseScale());
+	opt.max_error = AngularError(img, config.ransac.threshold);
 
 	std::vector<char> inliers;
 	poselib::CameraPose camPose;
 	poselib::RansacStats stats = poselib::estimate_absolute_pose_bearings(
-		bearings, points3D, opt, &camPose, &inliers);
+		correspondences.bearings, correspondences.points, opt, &camPose, &inliers);
 
 	const unsigned numInliers = (unsigned)stats.num_inliers;
-	if (numInliers < config.minInliers)
-		return {0, n};
+	// what the pose's inliers weigh, as a pair weighs its matches: the described ones plus the dense
+	// ones at the pairs' dense scale (PairsWeightingConfig::DenseScale); the count every bar below reads
+	unsigned numDescribedInliers = 0, numDenseInliers = 0;
+	FOREACH(k, inliers)
+		if (inliers[k])
+			++(correspondences.dense[k] ? numDenseInliers : numDescribedInliers);
+	ASSERT(numDescribedInliers + numDenseInliers == numInliers);
+	const unsigned poseWeight = ROUND2INT<unsigned>(numDescribedInliers + numDenseInliers * config.pairsWeighting.DenseScale());
+	if (poseWeight < config.minInliers)
+		return {0, n, numDescribed};
 
-	img.R = camPose.R();
-	img.SetT(camPose.t);
-	return {numInliers, n};
+	// A pose is accepted only when its support is credible. A small consensus inside a large set of
+	// correspondences can agree on a pose the image never had, so the inliers must be a large enough
+	// share of the correspondences, unless they weigh so much that they vouch for the pose whatever
+	// the share.
+	const float inlierRatio = numInliers / (float)n;
+	if (config.minInlierRatio > 0.f && inlierRatio < config.minInlierRatio && poseWeight < config.minInliersAbsolute) {
+		DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) below the %.1f%% minimum share",
+			imageID, numInliers, n, inlierRatio * 100.f, config.minInlierRatio * 100.f);
+		return {0, n, numDescribed};
+	}
+
+	// the polish that closes the fit, again over its inliers but with each dense correspondence at
+	// ResectionConfig::denseFitWeight: the robust fit over every correspondence found the pose, and the
+	// described ones, sub-pixel where a dense one is a coarse warp sample whose error its neighbours
+	// share, set it wherever they are many
+	if (config.denseFitWeight != 1.f)
+		PolishAbsolutePose(correspondences, inliers, opt, config.denseFitWeight, camPose);
+
+	// the pose the estimator found, in the model's own frame: the checks below weigh it against the
+	// image's links before the image is given it
+	Pose3D pose;
+	pose.R = camPose.R();
+	pose.SetT(camPose.t);
+
+	// Cross-check the estimated pose against verified pairs to already registered images:
+	// rotation quorum, baseline direction across quorum links, and weighted mean rotation across all links.
+	if (config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f || config.maxLinkRotationDisagreement > 0.f) {
+		std::vector<PoseLink> links;
+		CollectPoseLinks(scene.pairs, imageID, IsRegistered(scene), links);
+		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, config.maxRelativeRotationError, NeighborPose(scene));
+		if (quorum.IsContested()) {
+			DEBUG("the pairs of image %u to its registered neighbours disagree by up to %.1f degrees",
+				imageID, quorum.maxDisagreement);
+		} else if (!quorum.links.empty()) {
+			if (config.maxRelativeRotationError > 0.f) {
+				const double angle = R2D(ACOS(ComputeAngle(pose.R, quorum.R)));
+				if (angle > config.maxRelativeRotationError) {
+					DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and %.1f degrees away from the "
+						"rotation its quorum of %u of %u pairs composes (strongest to image %u)", imageID, numInliers, n,
+						inlierRatio * 100.f, angle, (unsigned)quorum.links.size(), (unsigned)links.size(),
+						quorum.links.front().neighborID);
+					return {0, n, numDescribed};
+				}
+			}
+			if (config.maxLinkDirectionError > 0.f) {
+				ASSERT(config.maxLinkDirectionError <= 90.f);
+				REALArr depths;
+				depths.reserve(numInliers);
+				const Eigen::Vector3d C = pose.C;
+				FOREACH(k, correspondences.points)
+					if (inliers[k])
+						depths.push_back((correspondences.points[k] - C).norm());
+				const REAL depth = depths.GetNth(depths.size() / 2);
+				ASSERT(depth > 0);
+				unsigned agreeing = 0, disagreeing = 0;
+				for (const PoseLink& link : quorum.links) {
+					const Image& neighbor = scene.images[link.neighborID];
+					const float parallax = (float)(norm(pose.C - neighbor.C) / depth);
+					const bool pairClose = link.IsNearDuplicate(), modelClose = parallax < D2R(kNearDuplicateRayAngle);
+					if (pairClose || modelClose) {
+						if (pairClose && modelClose)
+							agreeing += link.numInliers;
+						continue;
+					}
+					const PairDisagreement d = link.Measure(pose, neighbor);
+					if (!d.HasDirection())
+						continue;
+					const REAL tolerance = PairDisagreement::DirectionTolerance(config.maxLinkDirectionError, MAXF(parallax, link.rayAngle));
+					(d.direction <= tolerance ? agreeing : disagreeing) += link.numInliers;
+				}
+				if (disagreeing > agreeing + poseWeight) {
+					DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and its centre lies in a direction "
+						"the pairs carrying %u of the %u weighted inliers of the voting quorum links contradict, "
+						"outweighing the %u weighted inliers of the pose itself (strongest to image %u)",
+						imageID, numInliers, n, inlierRatio * 100.f, disagreeing, agreeing + disagreeing,
+						poseWeight, quorum.links.front().neighborID);
+					return {0, n, numDescribed};
+				}
+			}
+		}
+		if (config.maxLinkRotationDisagreement > 0.f && !links.empty()) {
+			double sumWeight = 0, sumAngle = 0;
+			for (const PoseLink& link : links) {
+				const PairDisagreement d = link.Measure(pose, scene.images[link.neighborID]);
+				sumWeight += link.numInliers;
+				sumAngle += link.numInliers * d.rotation;
+			}
+			ASSERT(sumWeight > 0);
+			const double linkRot = sumAngle / sumWeight;
+			if (linkRot > config.maxLinkRotationDisagreement) {
+				DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and %.2f degrees away from the rotations "
+					"its %u links predict, on average weighted by the pair weights", imageID, numInliers, n,
+					inlierRatio * 100.f, linkRot, (unsigned)links.size());
+				return {0, n, numDescribed};
+			}
+		}
+	}
+
+	static_cast<Pose3D&>(img) = pose;
+	return {numInliers, n, numDescribed};
 }
 
 IIndexArr Resection::BuildLocalWindow(const IIndexArr& imageIDs) const
@@ -160,98 +305,175 @@ IIndexArr Resection::BuildLocalWindow(const IIndexArr& imageIDs) const
 	return fixedViewIDs;
 }
 
-bool Resection::RegisterImages()
+void Resection::ImagesRemoved(const RemovedImages& removed)
+{
+	excludedImages.insert(removed.contradicting.begin(), removed.contradicting.end());
+	if (!removed.all.empty())
+		imagesRemoved = true;
+}
+
+unsigned SFM::AdjustRepeated(Scene& scene, const BAConfig& baConfig, const ResectionConfig& config)
+{
+	ASSERT(config.maxReprojError > 0.f);
+	const float inputErrorPixels = config.maxReprojError * ResectionConfig::fullBAInputErrorFactor;
+	const auto Filter = [&](float bar) {
+		FilterTracks(scene, bar, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	};
+	// per image and keypoint: bit 1 = in the input of the solve that ran, bit 2 = in the input of the next one
+	std::vector<std::vector<uint8_t>> input(config.fullBARepeats > 0 ? scene.images.size() : 0);
+	FOREACH(i, input)
+		if (scene.images[i].IsValid())
+			input[i].assign(scene.images[i].keypoints.size(), 0);
+	const auto Mark = [&](uint8_t bit) {
+		for (const Track& track : scene.tracks) {
+			if (!track.IsInlier())
+				continue;
+			for (const Observation& obs : track) {
+				ASSERT(obs.featureID < input[obs.imageID].size()); // an inlier prefix holds valid images only
+				input[obs.imageID][obs.featureID] |= bit;
+			}
+		}
+	};
+	Filter(inputErrorPixels);
+	unsigned solves = 0;
+	double change = 0;
+	for (;;) {
+		if (!input.empty())
+			Mark(1);
+		BundleAdjustment::Adjust(scene, baConfig);
+		++solves;
+		Filter(config.maxReprojError);
+		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+		if (solves > config.fullBARepeats) {
+			Filter(config.maxReprojError);
+			break;
+		}
+		Filter(inputErrorPixels);
+		Mark(2);
+		change = 0;
+		for (std::vector<uint8_t>& bits : input) {
+			unsigned before = 0, changed = 0;
+			for (uint8_t& b : bits) {
+				before += b & 1;
+				changed += b == 1 || b == 2;
+				b = 0;
+			}
+			if (before >= ResectionConfig::fullBARepeatMinObservations)
+				change = MAXF(change, (double)changed / before);
+		}
+		if (change < ResectionConfig::fullBARepeatMinChange) {
+			Filter(config.maxReprojError);
+			break;
+		}
+	}
+	DEBUG("Full adjustment ran %u solve(s), the last input change %.1f%% of a camera's input", solves, change * 100);
+	return solves;
+}
+
+bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 {
 	TD_TIMER_STARTD();
+	stats = Stats();
 
-	// Collect unregistered images
 	IIndexScores unregistered;
 	unregistered.reserve(scene.images.size() * 2 / 3);
 	for (const Image& img : scene.images)
-		if (!img.HasPose())
+		if (!img.HasPose() && !excludedImages.count(img.ID))
 			unregistered.emplace(img.ID, 0u);
-	if (unregistered.empty()) {
+	if (unregistered.empty())
 		VERBOSE("warning: no unregistered images");
-		return true;
-	}
 
-	// Resection loop
 	unsigned nBA = 0;
 	unsigned registeredCount = 0;
 	unsigned sinceFullBA = 0;
 	IIndexArr lastRegistered;
 	TRunningAverage<float, 10> avgInliersRatio;
+	const auto AdjustFull = [&]() {
+		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+		const bool refineExtended = config.minRefineExtIntrs > 0 &&
+			scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs;
+		AdjustRepeated(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig, config);
+		++stats.numFullAdjustments;
+		lastRegistered.clear();
+		avgInliersRatio.Clear();
+		sinceFullBA = 0;
+		imagesRemoved = false;
+		if (nBA + 1 < config.fullBAEvery.size())
+			++nBA;
+	};
+	const auto AdjustIfScheduled = [&]() {
+		if ((config.fullBAEvery[nBA] > 0 && sinceFullBA >= config.fullBAEvery[nBA]) ||
+			(config.avgInliersRatioForceBA > 0.f && sinceFullBA >= config.minImagesForceBA &&
+			 avgInliersRatio.GetAverage() < config.avgInliersRatioForceBA)) {
+			AdjustFull();
+			return true;
+		}
+		if (config.localBAEvery > 0 && lastRegistered.size() >= config.localBAEvery) {
+			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+			const IIndexArr fixedViewIDs = BuildLocalWindow(lastRegistered);
+			ASSERT(!fixedViewIDs.empty());
+			BundleAdjustment::AdjustLocal(scene, lastRegistered, fixedViewIDs, config.localBAConfig);
+			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+			lastRegistered.clear();
+			return true;
+		}
+		return false;
+	};
 	while (!unregistered.empty()) {
 		IIndexArr nextIDs = SelectNextImages(unregistered);
-		if (nextIDs.empty()) {
-			VERBOSE("warning: no more connected images to register, %u images remain", unregistered.size());
-			for (const auto& it : unregistered) {
-				DEBUG_EXTRA("\timage %u ('%s'): %u 2D-3D correspondences (min %u)", it.first,
-					Util::getFileName(scene.images[it.first].fileName).c_str(), it.second, config.minCorrespondences);
-			}
-			break;
-		}
+		const IIndex numCandidates = nextIDs.size();
 		const unsigned startRegisteredCount = registeredCount;
 		for (IIndex n = 0; n < nextIDs.size(); ) {
-			// Attempt to register next image
 			const IIndex nextID = nextIDs[n];
-			const auto [numInliers, numPoints] = RegisterImage(nextID);
-			if (numPoints > 0)
-				avgInliersRatio += numInliers / (float)numPoints;
+			const auto [numInliers, numPoints, numDescribed] = RegisterImage(nextID);
+			stats.attempts.push_back({nextID, numInliers > 0});
 			if (numInliers == 0) {
 				DEBUG("warning: failed to register image %u (%u/%u correspondences), retrying later", nextID, numInliers, numPoints);
 				nextIDs.RemoveAtMove(n);
-				continue; // n now points to the shifted element, do not increment
+				continue;
 			}
+			const float describedShare = numDescribed / (float)numPoints;
+			const float expectedRatio = describedShare + (1.f - describedShare) * config.denseInlierRatioFactor;
+			avgInliersRatio += (numInliers / (float)numPoints) / expectedRatio;
 			lastRegistered.push_back(nextID);
 			unregistered.erase(nextID);
 			++registeredCount;
 			++sinceFullBA;
 			++n;
-			DEBUG_EXTRA("\tImage %u registered: %u/%u correspondences (%u/%u images, %.2f%% avg inliers ratio)",
+			DEBUG_EXTRA("\tImage %u registered: %u/%u correspondences (%u/%u images, %.2f%% avg normalized inliers ratio)",
 				nextID, numInliers, numPoints, scene.status.nCalibratedImages+registeredCount, scene.images.size(), avgInliersRatio.GetAverage() * 100.f);
-			if ((config.fullBAEvery[nBA] > 0 && sinceFullBA >= config.fullBAEvery[nBA]) || (config.avgInliersRatioForceBA > 0.f && avgInliersRatio.GetAverage() < config.avgInliersRatioForceBA)) {
-				// Full BA every N registered images
-				TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
-				if (config.minRefineExtIntrs > 0 && scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs)
-					config.fullBAConfig.RefineExtendedIntrinsics();
-				BundleAdjustment::Adjust(scene, config.fullBAConfig);
-				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-				lastRegistered.clear();
-				avgInliersRatio.Clear();
-				sinceFullBA = 0;
-				if (nBA + 1 < config.fullBAEvery.size())
-					++nBA;
-				break; // restart selection of next images
-			} else if (config.localBAEvery > 0 && lastRegistered.size() >= config.localBAEvery) {
-				// Local BA every N registered images
-				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
-				const IIndexArr fixedViewIDs = BuildLocalWindow(lastRegistered);
-				ASSERT(!fixedViewIDs.empty());
-				BundleAdjustment::AdjustLocal(scene, lastRegistered, fixedViewIDs, config.localBAConfig);
-				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-				lastRegistered.clear();
-				break; // restart selection of next images
-			} else if (n+1 == nextIDs.size() || (config.triangulateEvery > 0 && (lastRegistered.size() % config.triangulateEvery) == 0)) {
-				// Update scene with new points every N registered images
+			if (!AdjustIfScheduled() && n + 1 == nextIDs.size()) {
 				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
 				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-				break; // restart selection of next images
 			}
-		}
-		if (registeredCount == startRegisteredCount) {
-			VERBOSE("warning: no images were registered in last iteration, stopping resection, %u images remain", unregistered.size());
 			break;
 		}
+		if (registeredCount > startRegisteredCount)
+			continue;
+		if (sinceFullBA > 0 || imagesRemoved) {
+			DEBUG("Resection stalled at %u registered images (%u registered since the last full adjustment%s), full adjustment and another pass",
+				scene.status.nCalibratedImages+registeredCount, sinceFullBA, imagesRemoved ? ", images removed" : "");
+			AdjustFull();
+			continue;
+		}
+		if (numCandidates == 0) {
+			VERBOSE("warning: no more connected images to register, %u images remain", unregistered.size());
+			for (const auto& it : unregistered) {
+				DEBUG_EXTRA("\timage %u ('%s'): %u 2D-3D correspondences (min %u)", it.first,
+					Util::getFileName(scene.images[it.first].fileName).c_str(), it.second, config.minCorrespondences);
+			}
+		} else {
+			VERBOSE("warning: no images were registered in last iteration, stopping resection, %u images remain", unregistered.size());
+		}
+		break;
 	}
 
-	// Full BA after all images are registered (nothing changed if none were)
-	if (registeredCount > 0) {
+	if (registeredCount > 0 || closeWhenNothingRegistered) {
 		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
-		config.fullBAConfig.maxIterations = 100;
-		config.fullBAConfig.RefineExtendedIntrinsics();
-		BundleAdjustment::Adjust(scene, config.fullBAConfig);
-		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		config.extendedBAConfig.maxIterations = 100;
+		AdjustRepeated(scene, config.extendedBAConfig, config);
+		++stats.numFullAdjustments;
 	}
 
 	// Update scene status

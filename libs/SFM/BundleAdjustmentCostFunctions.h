@@ -131,23 +131,14 @@ struct PinholeReprojectionErrorAnalytic : public ceres::SizedCostFunction<2, 7, 
 		const double* intrinsics = parameters[1]; // [fx, fy/fx, cx, cy, k1-k6, p1, p2]
 		const double* point = parameters[2];      // [X, Y, Z]
 
-		const double* quat = pose;       // [qw, qx, qy, qz]
-		const double* center = pose + 4; // [Cx, Cy, Cz]
-
 		// Transform to camera space: p_cam = R * (p_world - C)
-		double p[3];
-		p[0] = point[0] - center[0];
-		p[1] = point[1] - center[1];
-		p[2] = point[2] - center[2];
-
 		double p_cam[3];
-		ceres::UnitQuaternionRotatePoint(quat, p, p_cam);
+		CameraSpaceTransform(pose, point, p_cam);
 
 		// Check depth
 		if (p_cam[2] < 1e-8) {
 			residuals[0] = 2.0;
 			residuals[1] = 2.0;
-			// Zero out Jacobians if requested
 			if (jacobians) {
 				if (jacobians[0]) std::memset(jacobians[0], 0, 2 * 7 * sizeof(double));
 				if (jacobians[1]) std::memset(jacobians[1], 0, 2 * 12 * sizeof(double));
@@ -156,22 +147,32 @@ struct PinholeReprojectionErrorAnalytic : public ceres::SizedCostFunction<2, 7, 
 			return true;
 		}
 
-		// Compute forward projection and distortion
-		double projected[2];
-		ProjectPinhole(intrinsics, p_cam, projected);
+		// Forward projection and distortion (reused by Jacobians below)
+		const double inv_z = 1.0 / p_cam[2];
+		const double un = p_cam[0] * inv_z;
+		const double vn = p_cam[1] * inv_z;
+		const double fx = intrinsics[0];
+		const double fy = fx * intrinsics[1];
+		const double k1 = intrinsics[4], k2 = intrinsics[5], k3 = intrinsics[6];
+		const double p1 = intrinsics[7], p2 = intrinsics[8];
+		const double k4 = intrinsics[9], k5 = intrinsics[10], k6 = intrinsics[11];
+		const double r2 = un*un + vn*vn;
+		const double r4 = r2*r2;
+		const double r6 = r4*r2;
+		const double num = 1.0 + k1*r2 + k2*r4 + k3*r6;
+		const double den = 1.0 + k4*r2 + k5*r4 + k6*r6;
+		const double inv_den = 1.0 / den;
+		const double radial = num * inv_den;
+		const double ud = un * radial + 2.0*p1*un*vn + p2*(r2 + 2.0*un*un);
+		const double vd = vn * radial + p1*(r2 + 2.0*vn*vn) + 2.0*p2*un*vn;
 
-		// Compute residuals
-		residuals[0] = projected[0] - observed_x_;
-		residuals[1] = projected[1] - observed_y_;
+		residuals[0] = fx * ud + intrinsics[2] - observed_x_;
+		residuals[1] = fy * vd + intrinsics[3] - observed_y_;
 
-		// Compute Jacobians if requested
 		if (jacobians) {
-			// Pre-calculate partial derivatives using chain rule
-			// 1. P_cam = R(q)*(P_world - C)
-			// J_Pcam_q (3x4)
+			const double* quat = pose;
 			const double qw = quat[0], qx = quat[1], qy = quat[2], qz = quat[3];
-			const double dx = p[0], dy = p[1], dz = p[2];
-			// dx = p[0], dy = p[1], dz = p[2]
+			const double dx = point[0] - pose[4], dy = point[1] - pose[5], dz = point[2] - pose[6];
 			Eigen::Matrix<double, 3, 4, Eigen::RowMajor> J_Pcam_q;
 			J_Pcam_q(0, 0) = 2*dx*qw - 2*dy*qz + 2*dz*qy;
 			J_Pcam_q(0, 1) = 2*dx*qx + 2*dy*qy + 2*dz*qz;
@@ -185,7 +186,6 @@ struct PinholeReprojectionErrorAnalytic : public ceres::SizedCostFunction<2, 7, 
 			J_Pcam_q(2, 1) = 2*dx*qz + 2*dy*qw - 2*dz*qx;
 			J_Pcam_q(2, 2) = -2*dx*qw + 2*dy*qz - 2*dz*qy;
 			J_Pcam_q(2, 3) = 2*dx*qx + 2*dy*qy + 2*dz*qz;
-			// R matrix (3x3)
 			Eigen::Matrix<double, 3, 3, Eigen::RowMajor> R;
 			R(0, 0) = 1 - 2*qy*qy - 2*qz*qz;
 			R(0, 1) = 2*qx*qy - 2*qw*qz;
@@ -196,12 +196,7 @@ struct PinholeReprojectionErrorAnalytic : public ceres::SizedCostFunction<2, 7, 
 			R(2, 0) = 2*qx*qz - 2*qw*qy;
 			R(2, 1) = 2*qy*qz + 2*qw*qx;
 			R(2, 2) = 1 - 2*qx*qx - 2*qy*qy;
-			// 2. Projection un = x/z, vn = y/z
-			// J_norm_Pcam (2x3)
-			const double inv_z = 1.0 / p_cam[2];
 			const double inv_z2 = inv_z * inv_z;
-			const double un = p_cam[0] * inv_z;
-			const double vn = p_cam[1] * inv_z;
 			Eigen::Matrix<double, 2, 3, Eigen::RowMajor> J_norm_Pcam;
 			J_norm_Pcam(0, 0) = inv_z;
 			J_norm_Pcam(0, 1) = 0;
@@ -209,88 +204,56 @@ struct PinholeReprojectionErrorAnalytic : public ceres::SizedCostFunction<2, 7, 
 			J_norm_Pcam(1, 0) = 0;
 			J_norm_Pcam(1, 1) = inv_z;
 			J_norm_Pcam(1, 2) = -p_cam[1] * inv_z2;
-			// 3. Distortion
-			const double fx = intrinsics[0];
-			const double fy = fx * intrinsics[1];
-			const double k1 = intrinsics[4], k2 = intrinsics[5], k3 = intrinsics[6];
-			const double p1 = intrinsics[7], p2 = intrinsics[8];
-			const double k4 = intrinsics[9], k5 = intrinsics[10], k6 = intrinsics[11];
-			const double r2 = un*un + vn*vn;
-			const double r4 = r2*r2;
-			const double r6 = r4*r2;
-			const double num = 1 + k1*r2 + k2*r4 + k3*r6;
-			const double den = 1 + k4*r2 + k5*r4 + k6*r6;
-			const double inv_den = 1.0 / den;
-			const double radial = num * inv_den;
-			// Derivatives of radial distortion part w.r.t un, vn
-			// D(radial)/Dr2 = ((k1 + 2*k2*r2 + 3*k3*r4)*D - N*(k4 + 2*k5*r2 + 3*k6*r4)) / D^2
 			const double dnum_dr2 = k1 + 2*k2*r2 + 3*k3*r4;
 			const double dden_dr2 = k4 + 2*k5*r2 + 3*k6*r4;
 			const double dradial_dr2 = (dnum_dr2 * den - num * dden_dr2) * inv_den * inv_den;
-			// J_dist_norm (2x2)
-			// ud = un*radial + 2*p1*un*vn + p2*(r2 + 2*un^2)
-			// vd = vn*radial + p1*(r2 + 2*vn^2) + 2*p2*un*vn
 			const double dud_dun = radial + un * dradial_dr2 * 2 * un + 2*p1*vn + p2*(2*un + 4*un);
 			const double dud_dvn = un * dradial_dr2 * 2 * vn + 2*p1*un + p2*(2*vn);
 			const double dvd_dun = vn * dradial_dr2 * 2 * un + p1*(2*un) + 2*p2*vn;
 			const double dvd_dvn = radial + vn * dradial_dr2 * 2 * vn + p1*(2*vn + 4*vn) + 2*p2*un;
-			// Combined Jacobian J = J_pixel_dist * J_dist_norm * J_norm_Pcam
-			// J_pixel_norm = [fx 0; 0 fy] * [dud_dun dud_dvn; dvd_dun dvd_dvn] * [inv_z 0 -x*inv_z2; 0 inv_z -y*inv_z2]
 			Eigen::Matrix<double, 2, 2, Eigen::RowMajor> J_pixel_dist;
 			J_pixel_dist(0, 0) = fx * dud_dun;
 			J_pixel_dist(0, 1) = fx * dud_dvn;
 			J_pixel_dist(1, 0) = fy * dvd_dun;
 			J_pixel_dist(1, 1) = fy * dvd_dvn;
 			const Eigen::Matrix<double, 2, 3, Eigen::RowMajor> J_pixel_Pcam = J_pixel_dist * J_norm_Pcam;
-			// Jacobian w.r.t. pose (qw, qx, qy, qz, Cx, Cy, Cz)
 			if (jacobians[0]) {
 				Eigen::Map<Eigen::Matrix<double, 2, 7, Eigen::RowMajor>> J_pose(jacobians[0]);
-				// J_pose_q = J_pixel_Pcam * J_Pcam_q
 				J_pose.leftCols<4>() = J_pixel_Pcam * J_Pcam_q;
-				// J_pose_C = J_pixel_Pcam * J_Pcam_C = J_pixel_Pcam * (-R)
 				J_pose.rightCols<3>() = J_pixel_Pcam * (-R);
 			}
-			// Jacobian w.r.t. 3D point (X, Y, Z)
 			if (jacobians[2]) {
 				Eigen::Map<Eigen::Matrix<double, 2, 3, Eigen::RowMajor>> J_pt(jacobians[2]);
-				// J_pt = J_pixel_Pcam * J_Pcam_X = J_pixel_Pcam * R
 				J_pt = J_pixel_Pcam * R;
 			}
-			// Jacobian w.r.t. intrinsics (12 params)
 			if (jacobians[1]) {
 				Eigen::Map<Eigen::Matrix<double, 2, 12, Eigen::RowMajor>> J_intr(jacobians[1]);
 				J_intr.setZero();
-				// ud, vd are distorted normalized coords
-				const double ud = un * radial + 2.0*p1*un*vn + p2*(r2 + 2.0*un*un);
-				const double vd = vn * radial + p1*(r2 + 2.0*vn*vn) + 2.0*p2*un*vn;
-				// du/dfx = ud + cx (already handled: u = fx*ud + cx)
-				// Actually u = fx*ud + cx, so du/dfx = ud
 				J_intr(0, 0) = ud;
-				J_intr(0, 2) = 1.0; // du/dcx
-				J_intr(1, 0) = intrinsics[1] * vd; // dv/dfx = (fy/fx)*vd
-				J_intr(1, 1) = fx * vd;            // dv/d(fy/fx) = fx*vd
-				J_intr(1, 3) = 1.0; // dv/dcy
-				// Derivatives w.r.t. k1..k6, p1, p2
+				J_intr(0, 2) = 1.0;
+				J_intr(1, 0) = intrinsics[1] * vd;
+				J_intr(1, 1) = fx * vd;
+				J_intr(1, 3) = 1.0;
 				const double common_u = fx * un * inv_den;
 				const double common_v = fy * vn * inv_den;
 				const double common_den_u = -fx * un * num * inv_den * inv_den;
 				const double common_den_v = -fy * vn * num * inv_den * inv_den;
-				J_intr(0, 4) = common_u * r2;   // du/dk1
-				J_intr(0, 5) = common_u * r4;   // du/dk2
-				J_intr(0, 6) = common_u * r6;   // du/dk3
-				J_intr(0, 7) = fx * 2.0*un*vn;  // du/dp1
-				J_intr(0, 8) = fx * (r2 + 2.0*un*un); // du/dp2
-				J_intr(0, 9) = common_den_u * r2;  // du/dk4
-				J_intr(0, 10) = common_den_u * r4; // du/dk5
-				J_intr(0, 11) = common_den_u * r6; // du/dk6
-				J_intr(1, 4) = common_v * r2;    // dv/dk1
-				J_intr(1, 5) = common_v * r4;    // dv/dk2
-				J_intr(1, 6) = common_v * r6;    // dv/dk3
-				J_intr(1, 7) = fy * (r2 + 2.0*vn*vn); // dv/dp1
-				J_intr(1, 8) = fy * 2.0*un*vn;     // dv/dp2
-				J_intr(1, 9) = common_den_v * r2;  // dv/dk4
-				J_intr(1, 10) = common_den_v * r4; // dv/dk5
-				J_intr(1, 11) = common_den_v * r6; // dv/dk6
+				J_intr(0, 4) = common_u * r2;
+				J_intr(0, 5) = common_u * r4;
+				J_intr(0, 6) = common_u * r6;
+				J_intr(0, 7) = fx * 2.0*un*vn;
+				J_intr(0, 8) = fx * (r2 + 2.0*un*un);
+				J_intr(0, 9) = common_den_u * r2;
+				J_intr(0, 10) = common_den_u * r4;
+				J_intr(0, 11) = common_den_u * r6;
+				J_intr(1, 4) = common_v * r2;
+				J_intr(1, 5) = common_v * r4;
+				J_intr(1, 6) = common_v * r6;
+				J_intr(1, 7) = fy * (r2 + 2.0*vn*vn);
+				J_intr(1, 8) = fy * 2.0*un*vn;
+				J_intr(1, 9) = common_den_v * r2;
+				J_intr(1, 10) = common_den_v * r4;
+				J_intr(1, 11) = common_den_v * r6;
 			}
 		}
 
@@ -360,6 +323,91 @@ struct SphericalAngularReprojectionError {
 
 private:
 	Eigen::Vector3d u_, v_; // pre-scaled tangent basis (includes pixel scale)
+};
+
+// Relative-pose error between the two images of a verified pair
+//
+// An image pair stores the transform from its first image to its second (x_2 = R*x_1 + t) as a pose
+// whose center C = -R^T*t is the second image's center expressed in the first image's frame, so the
+// two absolute poses the pair predicts satisfy
+//     R_2 = R * R_1        and        R_1 * (C_2 - C_1) = C
+// which is the same relation the pose-link helpers state for the resection and the image filter.
+// Six residuals, each an angle in degrees divided by its standard deviation:
+//   [0..2] the angle-axis of R^T * (R_2 * R_1^T), zero exactly when the model's relative rotation
+//          is the pair's;
+//   [3..5] the model's baseline direction in the first image's frame, R_1 * (C_2 - C_1) normalized,
+//          minus the pair's own unit C. The chord between two unit vectors is the angle between
+//          them in radians up to third order, so 180/pi reads it in degrees. Held at zero when the
+//          model's two centers are closer together than the zero tolerance: coincident viewpoints
+//          have no baseline and so fix no direction.
+// A half whose weight (the reciprocal of its sigma) is zero contributes three zero residuals rather
+// than dividing by nothing, so either angle can be dropped without changing the residual layout.
+struct RelativePoseError {
+	// quatRel: the pair's relative rotation R as a unit quaternion [qw, qx, qy, qz]
+	// dirRel: the pair's unit baseline direction C/|C|, in the first image's frame
+	// weightRot, weightDir: 1/sigma in 1/degrees, 0 to drop that half
+	RelativePoseError(const double* quatRel, const double* dirRel, double weightRot, double weightDir) {
+		// kept inverted, since what the rotation residual composes with the model is R^T
+		quatRelInv_[0] =  quatRel[0];
+		quatRelInv_[1] = -quatRel[1];
+		quatRelInv_[2] = -quatRel[2];
+		quatRelInv_[3] = -quatRel[3];
+		dirRel_[0] = dirRel[0];
+		dirRel_[1] = dirRel[1];
+		dirRel_[2] = dirRel[2];
+		weightRot_ = weightRot;
+		weightDir_ = weightDir;
+	}
+
+	template <typename T>
+	bool operator()(
+		const T* const pose1,  // 7 params of the pair's first image: quat[4] + center[3]
+		const T* const pose2,  // 7 params of its second image
+		T* residuals) const
+	{
+		// rotation: angle-axis of R^T * (R_2 * R_1^T), the quaternions being unit by the pose manifold
+		if (weightRot_ > 0.0) {
+			const T quat1Inv[4] = { pose1[0], -pose1[1], -pose1[2], -pose1[3] };
+			const T quatRelInv[4] = { T(quatRelInv_[0]), T(quatRelInv_[1]), T(quatRelInv_[2]), T(quatRelInv_[3]) };
+			T quatModel[4], quatError[4], angleAxis[3];
+			ceres::QuaternionProduct(pose2, quat1Inv, quatModel);
+			ceres::QuaternionProduct(quatRelInv, quatModel, quatError);
+			ceres::QuaternionToAngleAxis(quatError, angleAxis);
+			const T scale(R2D(1.0) * weightRot_);
+			residuals[0] = angleAxis[0] * scale;
+			residuals[1] = angleAxis[1] * scale;
+			residuals[2] = angleAxis[2] * scale;
+		} else {
+			residuals[0] = residuals[1] = residuals[2] = T(0);
+		}
+		// translation: the model's baseline direction in the first image's frame against the pair's
+		residuals[3] = residuals[4] = residuals[5] = T(0);
+		if (weightDir_ > 0.0) {
+			const T baseline[3] = { pose2[4]-pose1[4], pose2[5]-pose1[5], pose2[6]-pose1[6] };
+			T direction[3];
+			ceres::UnitQuaternionRotatePoint(pose1, baseline, direction);
+			const T length = ceres::sqrt(direction[0]*direction[0] + direction[1]*direction[1] + direction[2]*direction[2]);
+			if (length > T(ZEROTOLERANCE<double>())) {
+				const T scale(R2D(1.0) * weightDir_);
+				residuals[3] = (direction[0]/length - dirRel_[0]) * scale;
+				residuals[4] = (direction[1]/length - dirRel_[1]) * scale;
+				residuals[5] = (direction[2]/length - dirRel_[2]) * scale;
+			}
+		}
+		return true;
+	}
+
+	static ceres::CostFunction* Create(const double* quatRel, const double* dirRel,
+		double weightRot, double weightDir)
+	{
+		return new ceres::AutoDiffCostFunction<RelativePoseError, 6, 7, 7>(
+			new RelativePoseError(quatRel, dirRel, weightRot, weightDir));
+	}
+
+private:
+	double quatRelInv_[4];         // the pair's relative rotation, inverted
+	double dirRel_[3];             // its unit baseline direction, in the first image's frame
+	double weightRot_, weightDir_; // 1/sigma in 1/degrees, 0 where that half is dropped
 };
 
 // GPS position error cost functor

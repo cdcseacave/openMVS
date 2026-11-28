@@ -30,8 +30,8 @@ struct SFM_API KeyframeConfig
 	// Camera model type
 	CameraType cameraType { CameraType::PINHOLE };
 
-	// Feature detector type: "AKAZE", "ORB", or "SIFT"
-	FeatureType detectorType { FeatureType::AKAZE };
+	// Feature detector type: AKAZE, ORB, SIFT or SIFTGPU
+	FeatureType detectorType { FeatureType::DEFAULT };
 
 	// Overlap threshold (0-1): keyframe is selected when overlap drops below this
 	float overlapThreshold { 0.85f };

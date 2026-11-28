@@ -1,0 +1,497 @@
+#!/usr/bin/env python3
+"""Unit tests for scripts/fetch_model.py.
+
+Runs with plain `python3 -m unittest` and touches no network: the suite blocks the import of
+huggingface_hub (a None entry in sys.modules raises ImportError whether or not the package is
+installed -- the whole point of the ImportError fallback is that the fetch works without it),
+and the mirror is a local `file://` directory standing in for a GitHub release's flat asset list.
+"""
+import contextlib
+import hashlib
+import io
+import os
+import sys
+import tempfile
+import types
+import unittest
+from pathlib import Path
+
+# fetch_model.py lives at scripts/fetch_model.py; this test file sits three levels
+# below (scripts/python/tests/), so add scripts/ to sys.path rather than relying on cwd.
+_SCRIPTS_DIR = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_SCRIPTS_DIR))
+
+import fetch_model as fm  # noqa: E402
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+class VerifyDigestTests(unittest.TestCase):
+    def test_matching_digest_returns_true(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "f.bin"
+            path.write_bytes(b"hello world")
+            self.assertTrue(fm.verify_digest(path, _sha256(b"hello world")))
+
+    def test_mismatched_digest_returns_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "f.bin"
+            path.write_bytes(b"hello world")
+            self.assertFalse(fm.verify_digest(path, _sha256(b"goodbye world")))
+
+    def test_missing_file_returns_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(fm.verify_digest(Path(tmp) / "missing.bin", _sha256(b"x")))
+
+
+class _FetchFixtureMixin:
+    """Shared local file:// mirror fixture for FetchTests and DestWritabilityTests."""
+
+    def setUp(self):
+        # a None entry makes `import huggingface_hub` raise ImportError, installed or not
+        sys.modules["huggingface_hub"] = None
+        self.addCleanup(sys.modules.pop, "huggingface_hub", None)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.dest = root / "dest"
+        self.mirror_dir = root / "mirror"
+        self.mirror_dir.mkdir()
+        self.mirror_url = self.mirror_dir.resolve().as_uri()
+
+        self.setting = "base"
+        self.precision = "fp32"
+        self.basename = "roma_base.json"  # the manifest RoMa2Onnx::Load looks for, verbatim
+        self.published_relpath = f"{self.setting}-{self.precision}/{self.basename}"
+        self.content = b'{"setting": "base", "fixture": true}' + b" " * 200
+        self.digest = _sha256(self.content)
+
+        # The mirror is flat -- exactly what a GitHub release gives back.
+        _write(self.mirror_dir / self.basename, self.content)
+
+        self.checksums_path = root / "checksums.txt"
+        self.checksums_path.write_text(
+            f"# test fixture\n{self.digest}  {self.published_relpath}\n")
+
+    def _fetch(self, **overrides):
+        params = dict(
+            model="roma2",
+            setting=self.setting,
+            precision=self.precision,
+            mirror=self.mirror_url,
+            checksums_path=self.checksums_path,
+        )
+        params.update(overrides)
+        return fm.fetch(self.dest, **params)
+
+    def _local_target(self) -> Path:
+        return self.dest / self.basename
+
+    def _install_fake_huggingface_hub(self, snapshot_download) -> None:
+        """Stand in for huggingface_hub (whose import setUp blocks) so the Hugging Face
+        branch's own logic is exercised with no real network access."""
+        fake_module = types.ModuleType("huggingface_hub")
+        fake_module.snapshot_download = snapshot_download
+        sys.modules["huggingface_hub"] = fake_module
+        self.addCleanup(sys.modules.pop, "huggingface_hub", None)
+
+
+class FetchTests(_FetchFixtureMixin, unittest.TestCase):
+    """Exercises `fetch()` entirely over a local file:// mirror."""
+
+    def test_downloads_missing_file_from_mirror_flat(self):
+        result = self._fetch()
+        target = self._local_target()
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.read_bytes(), self.content)
+        self.assertFalse(target.with_name(target.name + ".part").exists())
+        self.assertEqual(result.downloaded, [self.published_relpath])
+        self.assertEqual(result.cached, [])
+
+    def test_manifest_lands_flat_directly_under_dest(self):
+        """The one assertion that would catch a regression back to a nested layout: this is exactly the path
+        DenseMatchConfig::ResolveModelPath() hands to RoMa2Onnx::Load, which reads
+        modelDir + "roma_" + setting + ".json" with no further nesting."""
+        self._fetch()
+        self.assertTrue((self.dest / f"roma_{self.setting}.json").is_file())
+        # and definitely not tucked under a reconstructed "<setting>-<precision>/" shell
+        self.assertFalse((self.dest / f"{self.setting}-{self.precision}").exists())
+
+    def test_huggingface_branch_moves_only_files_named_in_checksums(self):
+        """A file present in the remote repo but omitted from checksums.txt must not be moved into --dest."""
+        stray_name = "roma_base_a_file_checksums_txt_never_named.bin"
+
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            prefix = allow_patterns[0].split("/", 1)[0]
+            nested = Path(local_dir) / prefix
+            _write(nested / self.basename, self.content)
+            _write(nested / stray_name, b"present upstream, never pinned in checksums.txt")
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+        # Remove the mirror's copy too: if the Hugging Face branch were skipped (e.g. the
+        # ImportError check broke and never picked up the fake module above), a fall-through to
+        # the mirror must fail loudly instead of masking that with an unrelated success.
+        (self.mirror_dir / self.basename).unlink()
+
+        result = self._fetch()
+
+        self.assertTrue((self.dest / self.basename).is_file())
+        self.assertFalse((self.dest / stray_name).exists())
+        self.assertEqual(result.downloaded, [self.published_relpath])
+
+    def test_huggingface_branch_wraps_failures_as_model_fetch_error(self):
+        """Failures inside the Hugging Face branch must surface as ModelFetchError, not raw tracebacks."""
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            raise ConnectionError("simulated network failure")
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+        # If the Hugging Face branch were skipped, a fall-through to the mirror could still
+        # succeed and hide the missing wrap -- remove its copy so that path fails loudly too.
+        (self.mirror_dir / self.basename).unlink()
+
+        with self.assertRaises(fm.ModelFetchError) as ctx:
+            self._fetch()
+
+        self.assertIn("simulated network failure", str(ctx.exception))
+
+    def test_falls_back_to_mirror_when_huggingface_fetch_fails(self):
+        """A Hugging Face attempt that raises (not merely ImportError) must still fall back to
+        the mirror -- otherwise having huggingface_hub installed makes this script strictly less
+        able to reach the model than not having it installed at all."""
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            raise ConnectionError("simulated network failure")
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+        # leave the mirror's copy in place this time -- the fallback must actually use it
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = self._fetch()
+
+        target = self._local_target()
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.read_bytes(), self.content)
+        self.assertEqual(result.downloaded, [self.published_relpath])
+        # a Hugging Face failure and a merely-absent huggingface_hub must read differently, so a
+        # user can tell "the Hub was not available" from "the Hub said no"
+        self.assertIn("simulated network failure", stderr.getvalue())
+
+    def test_huggingface_step_that_leaves_a_file_out_is_completed_from_the_mirror(self):
+        """A Hub download that returns without error but does not deliver a pending file must not end in a
+        "<missing>" digest failure while the mirror has the file: the mirror supplies what is absent."""
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            pass  # succeeds, delivers nothing
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = self._fetch()
+
+        target = self._local_target()
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.read_bytes(), self.content)
+        self.assertEqual(result.downloaded, [self.published_relpath])
+        self.assertIn("mirror", stderr.getvalue())
+
+    def test_huggingface_and_mirror_both_failing_names_both_reasons(self):
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            raise ConnectionError("simulated network failure")
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+        (self.mirror_dir / self.basename).unlink()
+
+        with self.assertRaises(fm.ModelFetchError) as ctx:
+            self._fetch()
+
+        message = str(ctx.exception)
+        self.assertIn("simulated network failure", message)
+        self.assertIn("mirror", message.lower())
+
+    def test_missing_huggingface_hub_falls_back_to_mirror_without_reporting_a_hub_failure(self):
+        """The absence of huggingface_hub is not a failed Hub attempt: it must be reported as
+        "not installed", never as a failure, keeping the two cases the user can hit visibly
+        distinct."""
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = self._fetch()
+
+        output = stderr.getvalue()
+        self.assertIn("huggingface_hub not installed", output)
+        self.assertNotIn("failed", output.lower())
+        self.assertEqual(result.downloaded, [self.published_relpath])
+
+    def test_stale_part_file_next_to_an_already_cached_file_is_removed(self):
+        """A `.part` left by an earlier interrupted fetch of a file that is now already present
+        and verified is never revisited by the pending-file loop, so nothing else would ever
+        clean it up."""
+        target = self._local_target()
+        _write(target, self.content)
+        part = target.with_name(target.name + ".part")
+        _write(part, b"leftover from an interrupted run")
+        (self.mirror_dir / self.basename).unlink()  # nothing should need to be fetched
+
+        result = self._fetch()
+
+        self.assertFalse(part.exists())
+        self.assertEqual(result.cached, [self.published_relpath])
+        self.assertEqual(result.downloaded, [])
+
+    def test_stable_staging_directory_persists_across_an_interrupted_and_a_resumed_run(self):
+        """A Hugging Face fetch interrupted partway through must be able to pick up where it left
+        off on the next call instead of starting over -- the reason for handing snapshot_download
+        a staging directory nested under --dest itself rather than a fresh temporary one it would
+        forget as soon as the call that made it raises.
+        """
+        second_basename = "roma_base_descriptor_fp32.onnx"
+        second_relpath = f"{self.setting}-{self.precision}/{second_basename}"
+        second_content = b"second file content" + b" " * 50
+        second_digest = _sha256(second_content)
+        self.checksums_path.write_text(
+            f"# test fixture\n{self.digest}  {self.published_relpath}\n"
+            f"{second_digest}  {second_relpath}\n"
+        )
+        (self.mirror_dir / self.basename).unlink()  # no mirror fallback in this test either way
+
+        prefix = f"{self.setting}-{self.precision}"
+        nested_dir = self.dest / prefix
+
+        def interrupted_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            # One file finishes; the connection drops before the second does. Real
+            # huggingface_hub would leave the first file's bytes at their final path and the
+            # second's partial bytes plus resume metadata under local_dir/.cache/huggingface/ --
+            # what this test can observe from outside that library is whether the first file's
+            # bytes survive the call raising, which depends entirely on local_dir being a stable
+            # directory rather than one this script deletes on the way out.
+            _write(Path(local_dir) / prefix / self.basename, self.content)
+            raise ConnectionError("simulated connection drop partway through the second file")
+
+        self._install_fake_huggingface_hub(interrupted_snapshot_download)
+
+        with self.assertRaises(fm.ModelFetchError):
+            self._fetch()
+
+        self.assertTrue((nested_dir / self.basename).is_file())
+        self.assertEqual((nested_dir / self.basename).read_bytes(), self.content)
+
+        def resumed_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            self.assertTrue((Path(local_dir) / prefix / self.basename).is_file(),
+                            "the file that already completed must still be there to resume from")
+            _write(Path(local_dir) / prefix / second_basename, second_content)
+
+        self._install_fake_huggingface_hub(resumed_snapshot_download)
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = self._fetch()
+
+        self.assertIn(f"resuming a Hugging Face download already in progress under '{nested_dir}'",
+                      stderr.getvalue())
+        self.assertEqual((self.dest / self.basename).read_bytes(), self.content)
+        self.assertEqual((self.dest / second_basename).read_bytes(), second_content)
+        self.assertEqual(sorted(result.downloaded), sorted([self.published_relpath, second_relpath]))
+        # a successful run leaves no staging shell behind
+        self.assertFalse(nested_dir.exists())
+
+    def test_huggingface_resume_metadata_is_removed_after_a_fully_verified_fetch(self):
+        """Once a fetch has been independently verified against checksums.txt, nothing is left to
+        resume, so the hidden .cache/huggingface/ bookkeeping a Hugging Face fetch leaves under
+        --dest should not linger as a surprise inside the user's model directory."""
+        prefix = f"{self.setting}-{self.precision}"
+        metadata_file = self.dest / ".cache" / "huggingface" / "download" / prefix / f"{self.basename}.metadata"
+
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            # real huggingface_hub writes its own resume/dedup bookkeeping here as a side effect
+            # of every local_dir fetch, interrupted or not
+            _write(Path(local_dir) / prefix / self.basename, self.content)
+            _write(Path(local_dir) / ".cache" / "huggingface" / "download" / prefix / f"{self.basename}.metadata",
+                   b"pretend resume bookkeeping")
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+        (self.mirror_dir / self.basename).unlink()
+
+        result = self._fetch()
+
+        self.assertEqual(result.downloaded, [self.published_relpath])
+        self.assertFalse(metadata_file.exists())
+        # nothing else was sharing --dest, so the whole huggingface_hub cache tree is gone
+        self.assertFalse((self.dest / ".cache" / "huggingface").exists())
+
+    def test_huggingface_resume_metadata_survives_a_run_that_does_not_fully_succeed(self):
+        """Removing the resume bookkeeping the moment a fetch is merely attempted, rather than
+        once it is verified complete, would defeat the entire point of giving the Hugging Face
+        branch a stable staging directory to resume from."""
+        prefix = f"{self.setting}-{self.precision}"
+        metadata_file = self.dest / ".cache" / "huggingface" / "download" / prefix / f"{self.basename}.metadata"
+
+        def interrupted_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            _write(Path(local_dir) / ".cache" / "huggingface" / "download" / prefix / f"{self.basename}.metadata",
+                   b"pretend resume bookkeeping")
+            raise ConnectionError("simulated connection drop")
+
+        self._install_fake_huggingface_hub(interrupted_snapshot_download)
+        (self.mirror_dir / self.basename).unlink()  # so the fallback fails too and nothing succeeds
+
+        with self.assertRaises(fm.ModelFetchError):
+            self._fetch()
+
+        self.assertTrue(metadata_file.is_file())
+
+    def test_file_already_present_with_right_digest_is_left_untouched_and_cached(self):
+        target = self._local_target()
+        _write(target, self.content)
+        # Remove the mirror's copy so a redownload attempt -- if one wrongly happened -- would
+        # fail loudly instead of silently re-writing identical bytes.
+        (self.mirror_dir / self.basename).unlink()
+
+        result = self._fetch()
+
+        # Assert on the actually-transferred-file counter, not mtime (whose
+        # one-second granularity on many filesystems would make a fast run flaky).
+        self.assertEqual(result.downloaded, [])
+        self.assertEqual(result.cached, [self.published_relpath])
+        self.assertEqual(target.read_bytes(), self.content)
+
+    def test_file_present_with_wrong_digest_is_deleted_and_fetch_fails(self):
+        target = self._local_target()
+        _write(target, b"corrupted, not the published bytes")
+        # The mirror has no fix available either, so the re-fetch attempt itself fails too --
+        # the file must not survive the wrong-digest check regardless.
+        (self.mirror_dir / self.basename).unlink()
+
+        with self.assertRaises(fm.ModelFetchError):
+            self._fetch()
+
+        self.assertFalse(target.is_file())
+
+    def test_empty_checksums_file_fails_naming_the_file(self):
+        empty = Path(self._tmp.name) / "empty_checksums.txt"
+        empty.write_text("# header only, no entries yet\n")
+
+        with self.assertRaises(fm.ModelFetchError) as ctx:
+            self._fetch(checksums_path=empty)
+
+        self.assertIn(str(empty), str(ctx.exception))
+
+
+@unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                 "POSIX directory permissions required")
+class DestWritabilityTests(_FetchFixtureMixin, unittest.TestCase):
+    """Non-writable destinations (e.g. a system CMake install prefix) must be reported by name
+    before any network attempt is made."""
+
+    def setUp(self):
+        super().setUp()
+        readonly_parent = Path(self._tmp.name) / "readonly_parent"
+        readonly_parent.mkdir()
+        readonly_parent.chmod(0o500)
+        self.addCleanup(readonly_parent.chmod, 0o700)
+        self.dest = readonly_parent / "roma2"
+
+    def test_reports_the_destination_by_name_before_touching_the_network(self):
+        with self.assertRaises(fm.ModelFetchError) as ctx:
+            self._fetch()
+
+        message = str(ctx.exception)
+        self.assertIn(str(self.dest), message)
+        self.assertFalse(self.dest.exists())
+
+    def test_reported_even_with_huggingface_hub_installed(self):
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            self.fail("must not touch the network before the destination is known writable")
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+
+        with self.assertRaises(fm.ModelFetchError) as ctx:
+            self._fetch()
+
+        message = str(ctx.exception)
+        self.assertIn(str(self.dest), message)
+        self.assertIn("sudo", message)
+        self.assertNotIn("Hugging Face", message)
+
+
+class ModelTableTests(unittest.TestCase):
+    """One script and one checksums scheme for both bundles: --model picks the model's own defaults (preset, precision,
+    Hub repo, mirror release, checksums file, environment variable), everything else is shared."""
+
+    def setUp(self):
+        sys.modules["huggingface_hub"] = None
+        self.addCleanup(sys.modules.pop, "huggingface_hub", None)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_each_model_names_its_own_publishing_targets(self):
+        self.assertEqual(fm.MODELS["roma2"].hf_repo, "cDcSeacave/openmvs-roma2-onnx")
+        self.assertEqual(fm.MODELS["flexglue"].hf_repo, "cDcSeacave/openmvs-flexglue-onnx")
+        self.assertEqual(fm.MODELS["roma2"].mirror_url, "https://github.com/cdcseacave/openMVS/releases/download/roma2-model")
+        self.assertEqual(fm.MODELS["flexglue"].mirror_url, "https://github.com/cdcseacave/openMVS/releases/download/flexglue-model")
+        self.assertEqual(fm.checksums_path_of("flexglue"), _SCRIPTS_DIR.parent / "models" / "flexglue" / "checksums.txt")
+
+    def test_repository_checksums_cover_each_default_preset_and_its_manifest(self):
+        """the checksums files the repository carries: entries under each model's default <setting>-<precision>/, its manifest among them"""
+        for model, manifest in (("roma2", "roma_base.json"), ("flexglue", "flexglue_base.json")):
+            spec = fm.MODELS[model]
+            entries = fm._entries_for(fm.read_checksums(fm.checksums_path_of(model)), spec.setting, spec.precision, fm.checksums_path_of(model))
+            self.assertIn(f"{spec.setting}-{spec.precision}/{manifest}", entries, model)
+            for relpath, digest in entries.items():
+                self.assertRegex(digest, r"^[0-9a-f]{64}$", relpath)
+
+    def test_flexglue_defaults_fetch_its_preset_flat_from_a_directory_mirror(self):
+        content = b'{"model": "flexglue", "fixture": true}'
+        mirror = self.root / "mirror"
+        _write(mirror / "flexglue_base.json", content)
+        checksums = self.root / "checksums.txt"
+        checksums.write_text(f"{_sha256(content)}  base-fp16/flexglue_base.json\n{_sha256(b'x')}  base-fp32/other.json\n")
+        dest = self.root / "dest"
+        result = fm.fetch(dest, "flexglue", mirror=mirror.resolve().as_uri(), checksums_path=checksums)
+        self.assertEqual(result.downloaded, ["base-fp16/flexglue_base.json"])   # the fp16 default only, not the fp32 entry
+        self.assertEqual((dest / "flexglue_base.json").read_bytes(), content)
+
+    def test_flexglue_file_with_a_wrong_digest_fails_and_is_removed(self):
+        content = b'{"model": "flexglue", "fixture": true}'
+        mirror = self.root / "mirror"
+        _write(mirror / "flexglue_base.json", b"not the published bytes")
+        checksums = self.root / "checksums.txt"
+        checksums.write_text(f"{_sha256(content)}  base-fp16/flexglue_base.json\n")
+        dest = self.root / "dest"
+        with self.assertRaises(fm.ModelFetchError) as ctx:
+            fm.fetch(dest, "flexglue", mirror=mirror.resolve().as_uri(), checksums_path=checksums)
+        self.assertIn("base-fp16/flexglue_base.json", str(ctx.exception))
+        self.assertFalse((dest / "flexglue_base.json").exists())
+
+    def test_unknown_model_is_refused_by_name(self):
+        with self.assertRaises(fm.ModelFetchError) as ctx:
+            fm.fetch(self.root / "dest", "lightglue")
+        self.assertIn("lightglue", str(ctx.exception))
+
+    def test_the_command_line_needs_the_model(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            fm.main(["--dest", str(self.root / "dest")])
+
+    def test_default_destination_and_variable_are_the_models_own(self):
+        backup = {k: os.environ.pop(k, None) for k in ("OPENMVS_ROMA2_MODEL_PATH", "OPENMVS_FLEXGLUE_MODEL_PATH")}
+        try:
+            self.assertEqual(fm.resolve_dest(None, "flexglue"), Path("~/.cache/openMVS/flexglue").expanduser())
+            os.environ["OPENMVS_ROMA2_MODEL_PATH"] = str(self.root / "roma2")
+            self.assertEqual(fm.resolve_dest(None, "flexglue"), Path("~/.cache/openMVS/flexglue").expanduser())
+            os.environ["OPENMVS_FLEXGLUE_MODEL_PATH"] = str(self.root / "flexglue")
+            self.assertEqual(fm.resolve_dest(None, "flexglue"), self.root / "flexglue")
+            self.assertEqual(fm.resolve_dest(None, "roma2"), self.root / "roma2")
+        finally:
+            for k, v in backup.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+
+if __name__ == "__main__":
+    unittest.main()

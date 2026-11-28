@@ -32,43 +32,45 @@ class SFM_API Scene;
 	* cameras the 2D unproject is front-hemisphere biased (it aliases back-hemisphere
 	* features onto the front), so this formulation cannot represent observations with
 	* |longitude| > pi/2. Use TriangulateSkewLLS() instead — it operates on 3D unit
-	* bearing vectors from Camera::UnprojectNormalized() and is singularity-free for
-	* all camera models.
+	* bearing vectors from Camera::UnprojectNormalized() and has no preferred
+	* direction, so it serves all camera models.
 	*
 	* @param track The track to triangulate.
 	* @param images Scene images with pinhole cameras and poses
 	* @param reprojThreshold Reprojection error threshold (pixels)
 	* @param minAngleThreshold Minimum angle between rays (degrees)
 	* @param minInliers Minimum number of inlier views
-	* @return number of inliers if triangulation successful
+	* @return number of inliers if triangulation successful, 0 on failure (the track then holds no inliers)
 	*/
 SFM_API unsigned TriangulateDLT(
 	Track& track,
 	const ImageArr& images,
 	float reprojThreshold = 4.f,
 	float minAngleThreshold = 2.f,
-	unsigned minInliers = 2);
+	unsigned minInliers = Track::MIN_VIEWS);
 
 /**
 	* @brief Robust triangulation using the skew-symmetric formulation ([d]_x * (R * Pw + t) = 0).
-	* It builds an overdetermined system A * Pw = b with 2 independent rows per observation.
+	* It builds an overdetermined system A * Pw = b with the 3 rows of [d]_x * R per observation (rank 2 for
+	* every unit bearing d; two of the rows alone are ill-conditioned for a ray near the axis they leave out).
 	* It ignores invalid observations (views without pose).
 	* @param track The track to triangulate.
 	* @param images Scene images with cameras and poses.
 	* @param reprojThreshold Reprojection error threshold (pixels).
 	* @param minAngleThreshold Minimum triangulation angle threshold (degrees).
 	* @param minInliers Minimum number of inlier observations.
-	* @return The number of inliers or 0 on failure.
+	* @return The number of inliers or 0 on failure (the track then holds no inliers).
 	*/
 SFM_API unsigned TriangulateSkewLLS(
 	Track& track,
 	const ImageArr& images,
 	float reprojThreshold = 4.f,
 	float minAngleThreshold = 2.f,
-	unsigned minInliers = 2);
+	unsigned minInliers = Track::MIN_VIEWS);
 
 /**
-	* @brief Triangulate all tracks in scene.
+	* @brief Triangulate all tracks in scene. A track seen by fewer than two posed images is left out;
+	* a track whose triangulation fails holds no inliers.
 	* @param scene Scene with cameras, poses, and tracks
 	* @param outliersOnly If true, triangulate only tracks with outlier observations
 	* @param reprojThreshold Reprojection error threshold

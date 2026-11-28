@@ -240,7 +240,7 @@ void CountTriangulationInliers(const Image& img1, const Image& img2,
 		dst.ID = k;
 		dst.cameraID = k;
 		dst.pCamera = src.pCamera;
-		dst.keypoints = src.keypoints;
+		dst.keypoints = src.keypoints; // triangulation only reads keypoints
 		dst.C = src.C;
 	}
 	const auto Count = [&images, &matches]() {
@@ -610,7 +610,7 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 				// rotated 90 degrees clockwise on load (View::ToWorkingOrientation), so the
 				// same in-plane rotation must be composed here; it is the inverse of the R
 				// branch of View::RevertRotation, which undoes it again on export
-				rotation = RMatrix(RMatrix(0, 0, REAL(M_PI_2)) * rotation);
+				rotation = RMatrix(InPlaneRotation(1) * rotation);
 			}
 			img.R = rotation;
 		}
@@ -755,13 +755,14 @@ FramesPoseFrame SFM::DetectFramesConvention(const Scene& scene, FramesConvention
 			continue;
 		// relativePose maps the first image to the second one, same as R2 * R1^T
 		const Matrix3x3& verified = pair.relativePose->R;
+		const Matrix3x3 relR(img2.R * img1.R.t());
 		FOREACH(h, hypotheses) {
 			const Hypothesis& hypothesis = hypotheses[h];
 			// correcting both images conjugates their relative rotation by the per-image
 			// corrections: R2c * R1c^T = M2 * R2 * R1^T * M1^T
 			const Matrix3x3 M1(PoseCorrection(img1, hypothesis.flipAxes, hypothesis.inPlaneTurns));
 			const Matrix3x3 M2(PoseCorrection(img2, hypothesis.flipAxes, hypothesis.inPlaneTurns));
-			const Matrix3x3 relative(Matrix3x3(M2 * Matrix3x3(img2.R * img1.R.t())) * M1.t());
+			const Matrix3x3 relative(Matrix3x3(M2 * relR) * M1.t());
 			errors[h].emplace_back(ComputeAngleSO3<REAL>(relative, verified));
 		}
 	}

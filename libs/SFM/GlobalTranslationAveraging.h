@@ -11,6 +11,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Camera.h"
+#include <Eigen/SparseCore>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -41,8 +42,10 @@ struct SFM_API TranslationPair
  * Estimates global translations by solving a weighted linear least-squares system:
  *   t_j - t_i = relative_translation_ij
  *
- * The system is solved using Eigen's sparse linear solvers (QR or LU decomposition).
- * Gauge freedom is resolved by pinning the best-connected translation pair.
+ * The system is solved by its normal equations (a weighted graph Laplacian) and a sparse
+ * Cholesky factorization. Gauge freedom is resolved by pinning the node the caller names, and
+ * the best-connected node of the pairs when it names none or one the pairs do not hold; a component of the pairs that holds
+ * no gauge node is placed with its lowest node at the origin.
  */
 class SFM_API GlobalTranslationEstimator
 {
@@ -51,13 +54,33 @@ public:
 	 * @brief Estimate global translations from pairwise relative translations
 	 * @param pairwiseTranslations Vector of pairwise translation constraints
 	 * @param numIndices Total number of indices (scenes/images)
+	 * @param fixedIdx Fixed gauge index (NO_ID = auto-select best-connected index)
 	 * @param outTranslations Output vector of global translations (indexed by scene/image ID)
 	 * @return true if estimation successful
 	 */
 	bool EstimateTranslations(
 		const std::vector<TranslationPair>& pairwiseTranslations,
 		const uint32_t numIndices,
+		const uint32_t fixedIdx,
 		std::vector<Point3>& outTranslations);
+
+	bool EstimateTranslations(
+		const std::vector<TranslationPair>& pairwiseTranslations,
+		const uint32_t numIndices,
+		std::vector<Point3>& outTranslations) {
+		return EstimateTranslations(pairwiseTranslations, numIndices, NO_ID, outTranslations);
+	}
+
+	/// the system the last solve factored: the normal equations (both triangles, the weighted graph
+	/// Laplacian of the free nodes: the pinned ones eliminated), and the node of each of its rows
+	struct NormalEquations {
+		Eigen::SparseMatrix<double> matrix;
+		std::vector<uint32_t> nodeOfRow;
+	};
+	const NormalEquations& GetNormalEquations() const { return normal; }
+
+private:
+	NormalEquations normal;
 };
 /*----------------------------------------------------------------*/
 

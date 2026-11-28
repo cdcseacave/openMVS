@@ -56,7 +56,7 @@ template <typename TYPE, typename ARG_TYPE, int useConstruct, int grow, typename
 namespace MVS {
 
 class Platform;
-typedef SEACAVE::cList<Platform, const Platform&, 1, 16, uint32_t> PlatformArr;
+typedef SEACAVE::cList<Platform, const Platform&, 2, 16, uint32_t> PlatformArr;
 struct DepthData;
 struct ConfAdjustRequest; // ConfidenceGPU.h (fused confidence recalibration)
 

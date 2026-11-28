@@ -6,7 +6,9 @@
 
 #include "Common.h"
 #include "GlobalTranslationAveraging.h"
-#include <Eigen/SparseQR>
+#include "RobustAveraging.h"
+#include <Eigen/SparseCholesky>
+#include "../Math/DisjointSet.h"
 
 using namespace SFM;
 
@@ -26,115 +28,107 @@ DEFINE_LOG_NAME(lt, _T("GlbTrsAg"));
 bool GlobalTranslationEstimator::EstimateTranslations(
 	const std::vector<TranslationPair>& pairwiseTranslations,
 	const uint32_t numIndices,
+	const uint32_t fixedIdx,
 	std::vector<Point3>& outTranslations)
 {
 	if (pairwiseTranslations.empty() || numIndices == 0) {
 		VERBOSE("warning: no pairwise translations provided");
 		return false;
 	}
+	ASSERT(fixedIdx == NO_ID || fixedIdx < numIndices);
 
-	// Collect unique node indices
+	// Collect unique node indices in deterministic first-appearance order
 	std::unordered_set<uint32_t> idxSet;
+	std::vector<uint32_t> orderedNodes;
 	idxSet.reserve(pairwiseTranslations.size());
-	for (const auto& transPair : pairwiseTranslations) {
-		idxSet.emplace(transPair.idxA);
-		idxSet.emplace(transPair.idxB);
+	for (const TranslationPair& transPair : pairwiseTranslations) {
+		ASSERT(transPair.idxA < numIndices && transPair.idxB < numIndices);
+		ASSERT(transPair.idxA != transPair.idxB);
+		ASSERT(transPair.weight > 0.f && ISFINITE(transPair.weight));
+		if (idxSet.insert(transPair.idxA).second)
+			orderedNodes.push_back(transPair.idxA);
+		if (idxSet.insert(transPair.idxB).second)
+			orderedNodes.push_back(transPair.idxB);
 	}
 
-	const int N = (int)idxSet.size(); // number of nodes with translation unknowns
-	const int M = (int)pairwiseTranslations.size(); // number of equations
+	const int N = (int)orderedNodes.size();
+	const int M = (int)pairwiseTranslations.size();
 	if (N < 2) {
 		VERBOSE("warning: insufficient indices for translation estimation");
 		return false;
 	}
 
-	// Find the best-connected node as exact gauge (fixed to origin)
-	std::unordered_map<uint32_t, float> nodeWeights;
-	nodeWeights.reserve(N);
-	float maxWeight = 0.f;
-	uint32_t gaugeIdx = NO_ID;
-	for (const auto& transPair : pairwiseTranslations) {
-		nodeWeights[transPair.idxA] += transPair.weight;
-		nodeWeights[transPair.idxB] += transPair.weight;
-	}
-	for (const auto& [idx, weight] : nodeWeights) {
-		if (weight > maxWeight) {
-			maxWeight = weight;
-			gaugeIdx = idx;
-		}
-	}
-	ASSERT(gaugeIdx != NO_ID);
+	const uint32_t gaugeIdx = SelectGaugeNode(pairwiseTranslations, fixedIdx);
+	ASSERT(gaugeIdx != NO_ID && gaugeIdx < numIndices);
 
-	// Build final map excluding the gauge node; this enforces t_gauge = 0 exactly.
+	// Pin gaugeIdx in its component and the lowest node in every other component
+	DisjointSet<uint32_t> components(numIndices);
+	for (const TranslationPair& transPair : pairwiseTranslations)
+		components.UnionMin(transPair.idxA, transPair.idxB);
+	std::unordered_map<uint32_t, uint32_t> pinOfComponent;
+	if (idxSet.count(gaugeIdx))
+		pinOfComponent.emplace(components.Find(gaugeIdx), gaugeIdx);
+	for (const uint32_t idx : orderedNodes)
+		pinOfComponent.emplace(components.Find(idx), components.Find(idx));
+
+	// Map free (unpinned) nodes to column indices in deterministic order
 	std::unordered_map<uint32_t, int> idxToVar;
 	idxToVar.reserve((size_t)N - 1);
-	for (const uint32_t idx : idxSet) {
-		if (idx == gaugeIdx)
+	normal.nodeOfRow.clear();
+	normal.nodeOfRow.reserve((size_t)N - 1);
+	for (const uint32_t idx : orderedNodes) {
+		if (pinOfComponent.at(components.Find(idx)) == idx)
 			continue;
-		idxToVar.emplace(idx, (int)idxToVar.size());
+		idxToVar.emplace(idx, (int)normal.nodeOfRow.size());
+		normal.nodeOfRow.push_back(idx);
 	}
-	const int V = (int)idxToVar.size();
+	const int V = (int)normal.nodeOfRow.size();
 
-	// Build sparse linear system for each coordinate (X, Y, Z separately)
-	// System: A * t = b
-	// Equations: t_j - t_i = relative_translation_ij
-	typedef Eigen::Triplet<double> T;
-	std::vector<T> triplets;
+	// Build incidence matrix A and 3-column RHS B for t_B - t_A = relativeTranslation
+	std::vector<Eigen::Triplet<double>> triplets;
 	triplets.reserve((size_t)M * 2);
-
-	// Add pairwise constraints
-	Eigen::VectorXd bX = Eigen::VectorXd::Zero(M);
-	Eigen::VectorXd bY = Eigen::VectorXd::Zero(M);
-	Eigen::VectorXd bZ = Eigen::VectorXd::Zero(M);
+	Eigen::MatrixX3d B(M, 3);
 	for (int i = 0; i < M; ++i) {
 		const TranslationPair& transPair = pairwiseTranslations[i];
 		const double weight = (double)transPair.weight;
-
-		// Equation: t_B - t_A = relative_translation, with t_gauge fixed to zero.
 		auto itA = idxToVar.find(transPair.idxA);
 		auto itB = idxToVar.find(transPair.idxB);
 		if (itA != idxToVar.end())
 			triplets.emplace_back(i, itA->second, -weight);
 		if (itB != idxToVar.end())
 			triplets.emplace_back(i, itB->second, weight);
-
-		bX(i) = weight * (double)transPair.relativeTranslation.x;
-		bY(i) = weight * (double)transPair.relativeTranslation.y;
-		bZ(i) = weight * (double)transPair.relativeTranslation.z;
+		B(i, 0) = weight * (double)transPair.relativeTranslation.x;
+		B(i, 1) = weight * (double)transPair.relativeTranslation.y;
+		B(i, 2) = weight * (double)transPair.relativeTranslation.z;
 	}
 
-	// Build sparse matrix
 	Eigen::SparseMatrix<double> A(M, V);
 	A.setFromTriplets(triplets.begin(), triplets.end());
 
-	// Solve using Sparse QR
-	Eigen::SparseQR<Eigen::SparseMatrix<double>, Eigen::COLAMDOrdering<int>> solver;
-	solver.compute(A);
+	// Solve the weighted graph Laplacian via sparse Cholesky with one refinement step
+	const Eigen::SparseMatrix<double> At = A.transpose();
+	normal.matrix = At * A;
+	Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver(normal.matrix);
 	if (solver.info() != Eigen::Success) {
 		VERBOSE("error: solver decomposition failed");
 		return false;
 	}
-
-	Eigen::VectorXd xX = solver.solve(bX);
-	Eigen::VectorXd xY = solver.solve(bY);
-	Eigen::VectorXd xZ = solver.solve(bZ);
-	if (solver.info() != Eigen::Success) {
+	DEBUG_EXTRA("Global translation normal equations: %d unknowns, %zu non-zeros, factor %zu (incidence %d x %d)",
+		V, (size_t)normal.matrix.nonZeros(), (size_t)solver.matrixL().nestedExpression().nonZeros(), M, V);
+	Eigen::MatrixX3d X = solver.solve(At * B);
+	X += solver.solve(At * (B - A * X));
+	if (solver.info() != Eigen::Success || !X.array().isFinite().all()) {
 		VERBOSE("error: solver failed");
 		return false;
 	}
 
-	// Convert results to output translations
-	outTranslations.resize(numIndices, Point3::ZERO);
-	outTranslations[gaugeIdx] = Point3::ZERO;
-	for (const auto& [idx, varIdx] : idxToVar) {
-		ASSERT(idx < numIndices);
-		outTranslations[idx] = Point3(
-			(REAL)xX(varIdx),
-			(REAL)xY(varIdx),
-			(REAL)xZ(varIdx));
-	}
+	outTranslations.assign(numIndices, Point3::ZERO);
+	for (int varIdx = 0; varIdx < V; ++varIdx)
+		outTranslations[normal.nodeOfRow[varIdx]] = Point3((REAL)X(varIdx, 0), (REAL)X(varIdx, 1), (REAL)X(varIdx, 2));
 
 	DEBUG("Global translation averaging completed: %u indices, %u pairs (gauge idx %u fixed at origin)", N, M, gaugeIdx);
 	return true;
 }
 /*----------------------------------------------------------------*/
+
+#pragma pop_macro("VERBOSE")

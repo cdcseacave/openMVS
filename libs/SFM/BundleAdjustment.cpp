@@ -8,6 +8,8 @@
 #include "Common.h"
 #include "BundleAdjustment.h"
 #include "Scene.h"
+#include "Link2D3D.h"
+#include "PoseLink.h"
 #include "../Math/GeodeticTransforms.h"
 #include "BundleAdjustmentCostFunctions.h"
 
@@ -15,9 +17,20 @@
 #include <ceres/covariance.h>
 #include <Eigen/Sparse>
 
+#include <atomic>
+#include <random>
+
 using namespace SFM;
 
 // D E F I N E S ///////////////////////////////////////////////////
+
+#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 1)
+#define CERES_HAS_MANIFOLD 1
+using CeresManifold = ceres::Manifold;
+#else
+#define CERES_HAS_MANIFOLD 0
+using CeresManifold = ceres::LocalParameterization;
+#endif
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -32,15 +45,6 @@ void SFM::QuaternionAndCenterToPose3D(const double* params, Pose3D& pose) {
 	pose.C = Eigen::Map<const Point3d::EVec>(params + 4);
 }
 
-// Convert OpenMVS pose to/from Ceres angle-axis parameterization [ax, ay, az, Cx, Cy, Cz]
-void SFM::Pose3DToAngleAxisAndCenter(const Pose3D& pose, double* params) {
-	ceres::RotationMatrixToAngleAxis(ceres::RowMajorAdapter3x3(pose.R.val), params);
-	Eigen::Map<Point3d::EVec>(params + 3) = (const Point3d::EVec)pose.C;
-}
-void SFM::AngleAxisAndCenterToPose3D(const double* params, Pose3D& pose) {
-	ceres::AngleAxisToRotationMatrix(params, ceres::RowMajorAdapter3x3(pose.R.val));
-	pose.C = Eigen::Map<const Point3d::EVec>(params + 3);
-}
 /*----------------------------------------------------------------*/
 
 
@@ -57,11 +61,74 @@ void SFM::AngleAxisAndCenterToPose3D(const double* params, Pose3D& pose) {
 namespace {
 
 inline int CeresTangentSize(const ceres::Problem& problem, const double* block) {
-	#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 1)
+	#if CERES_HAS_MANIFOLD
 	return problem.ParameterBlockTangentSize(block);
 	#else
 	return problem.ParameterBlockLocalSize(block);
 	#endif
+}
+
+inline void SetBlockManifold(ceres::Problem& problem, double* block, CeresManifold* manifold) {
+	#if CERES_HAS_MANIFOLD
+	problem.SetManifold(block, manifold);
+	#else
+	problem.SetParameterization(block, manifold);
+	#endif
+}
+
+struct UncertaintyPoseRef {
+	IIndex imageID;
+	double* block;
+	int start;
+	int size;
+};
+
+// Collect active pose blocks for covariance estimation and select a datum pose if the
+// problem has neither fixed poses nor GPS priors. When holdDatumInProblem is true, the
+// chosen datum is temporarily marked constant in problem and appended to tempFixed.
+bool CollectUncertaintyPoses(
+	ceres::Problem& problem, const Scene& scene, std::vector<double>& poseParams,
+	const UnsignedArr& numReprojResidualsPerImage, uint32_t numGPSResiduals,
+	std::vector<UncertaintyPoseRef>& poses, IIndexArr& datumIDs,
+	bool holdDatumInProblem, std::vector<double*>& tempFixed)
+{
+	poses.clear();
+	datumIDs.clear();
+	FOREACH(i, scene.images) {
+		if (!scene.images[i].IsValid())
+			continue;
+		double* block = poseParams.data() + i * 7;
+		if (!problem.HasParameterBlock(block))
+			continue;
+		if (problem.IsParameterBlockConstant(block)) {
+			datumIDs.push_back(i);
+			continue;
+		}
+		poses.push_back({ (IIndex)i, block, 0, CeresTangentSize(problem, block) });
+	}
+	if (poses.size() < 2)
+		return false;
+	if (datumIDs.empty() && numGPSResiduals == 0) {
+		size_t best = 0;
+		for (size_t k = 1; k < poses.size(); ++k)
+			if (numReprojResidualsPerImage[poses[k].imageID] > numReprojResidualsPerImage[poses[best].imageID])
+				best = k;
+		datumIDs.push_back(poses[best].imageID);
+		if (holdDatumInProblem) {
+			problem.SetParameterBlockConstant(poses[best].block);
+			tempFixed.push_back(poses[best].block);
+		}
+		poses.erase(poses.begin() + best);
+	}
+	return poses.size() >= 2;
+}
+
+inline PoseUncertaintyArr MakeInvalidPoseUncertainty(size_t count) {
+	PoseUncertaintyArr uncertainty(count);
+	const PoseUncertainty invalid{Point3f(-1.f, -1.f, -1.f), Point3f(-1.f, -1.f, -1.f), Point3f(-1.f, -1.f, -1.f)};
+	FOREACH(i, uncertainty)
+		uncertainty[i] = invalid;
+	return uncertainty;
 }
 
 // Sparse selected inverse Z of an SPD sparse matrix S, on the pattern of L+L^T, via the
@@ -81,14 +148,14 @@ bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
 	// residual gauge null space left by the caller (datum removal or GPS-prior anchoring) is
 	// absorbed by this damping, instead of failing outright.
 	double maxDiag = 0.0;
-	for (int i = 0; i < S.rows(); ++i) maxDiag = std::max(maxDiag, std::abs(S.coeff(i, i)));
+	for (int i = 0; i < S.rows(); ++i) maxDiag = MAXF(maxDiag, std::abs(S.coeff(i, i)));
 	// Start near the numerical-zero scale and grow only until the factor is positive-definite, so
 	// the regularization touches just the gauge null space and does not cap (saturate) the
 	// covariance of genuinely weakly-constrained poses at 1/damping. When condFloorRel>0 the
 	// pivots are additionally driven above pivotFloor: this bounds the conditioning so a residual
 	// gauge null space (e.g. the global-scale mode) yields a finite variance instead of an inf.
 	const double pivotFloor = condFloorRel * maxDiag; // 0 when condFloorRel==0
-	double damping = std::max(1e-15 * maxDiag, 1e-300), applied = 0.0;
+	double damping = MAXF(1e-15 * maxDiag, 1e-300), applied = 0.0;
 	Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> ldlt;
 	Eigen::VectorXd D;
 	bool ok = false;
@@ -120,7 +187,7 @@ bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
 	Zout.makeCompressed();
 	Eigen::SparseMatrix<double>& Z = Zout;
 
-	const double dFloor = std::max(damping, pivotFloor);
+	const double dFloor = MAXF(damping, pivotFloor);
 	for (int j = n - 1; j >= 0; --j) {
 		std::vector<int> nz;
 		for (Eigen::SparseMatrix<double>::InnerIterator it(Lstrict, j); it; ++it)
@@ -133,7 +200,7 @@ bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
 			Z.coeffRef(i, j) = zij;
 			Z.coeffRef(j, i) = zij;
 		}
-		double zjj = 1.0 / std::max(D(j), dFloor);
+		double zjj = 1.0 / MAXF(D(j), dFloor);
 		for (int k : nz)
 			zjj -= Lstrict.coeff(k, j) * Z.coeff(k, j);
 		Z.coeffRef(j, j) = zjj;
@@ -153,34 +220,12 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 	constexpr double damping = 1e-8; // regularization for the 3x3 point blocks of the Schur complement
 	if (!problem)
 		return PoseUncertaintyArr();
-	struct PoseRef { IIndex imageID; const double* block; int start; int size; };
-	std::vector<PoseRef> poses;
+	std::vector<UncertaintyPoseRef> poses;
 	IIndexArr datumIDs; // valid poses BA held constant: gauge references, perfectly known here
-	FOREACH(i, scene.images) {
-		if (!scene.images[i].IsValid())
-			continue;
-		const double* block = poseParams.data() + i * 7;
-		if (!problem->HasParameterBlock(const_cast<double*>(block)))
-			continue;
-		if (problem->IsParameterBlockConstant(const_cast<double*>(block))) { datumIDs.push_back(i); continue; }
-		poses.push_back({ (IIndex)i, block, 0, CeresTangentSize(*problem, block) });
-	}
-	if (poses.size() < 2)
+	std::vector<double*> tempFixed;
+	if (!CollectUncertaintyPoses(*problem, scene, poseParams, numReprojResidualsPerImage, numGPSResiduals,
+			poses, datumIDs, false, tempFixed))
 		return PoseUncertaintyArr();
-	// If BA did not fix the gauge, choose the best-connected pose as the datum and exclude it
-	// from the covariance system, removing the 6-DOF rotation+translation gauge null space
-	// (residual scale DOF is absorbed by damping). GPS priors already anchor the gauge, so in
-	// that case every pose stays in the system and the covariances are absolute (ENU).
-	if (datumIDs.empty() && numGPSResiduals == 0) {
-		size_t best = 0;
-		for (size_t k = 1; k < poses.size(); ++k)
-			if (numReprojResidualsPerImage[poses[k].imageID] > numReprojResidualsPerImage[poses[best].imageID])
-				best = k;
-		datumIDs.push_back(poses[best].imageID);
-		poses.erase(poses.begin() + best);
-		if (poses.size() < 2)
-			return PoseUncertaintyArr();
-	}
 	std::vector<const double*> points;
 	for (const Track& track : scene.tracks) {
 		const double* xyz = track.position.ptr();
@@ -189,13 +234,13 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 			points.push_back(xyz);
 	}
 	int poseNum = 0;
-	for (PoseRef& p : poses) { p.start = poseNum; poseNum += p.size; }
+	for (UncertaintyPoseRef& p : poses) { p.start = poseNum; poseNum += p.size; }
 	const int pointNum = (int)points.size() * 3;
 
 	// Evaluate the Jacobian in the order [poses, points] (intrinsics excluded -> held fixed).
 	ceres::Problem::EvaluateOptions eopts;
 	eopts.parameter_blocks.reserve(poses.size() + points.size());
-	for (const PoseRef& p : poses) eopts.parameter_blocks.push_back(const_cast<double*>(p.block));
+	for (const UncertaintyPoseRef& p : poses) eopts.parameter_blocks.push_back(p.block);
 	for (const double* b : points) eopts.parameter_blocks.push_back(const_cast<double*>(b));
 	double cost; ceres::CRSMatrix Jcrs;
 	if (!problem->Evaluate(eopts, &cost, nullptr, nullptr, &Jcrs)) {
@@ -247,12 +292,9 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 	// where Z is the selected inverse of L*D*L^T -- index Z with the FORWARD permutation.
 	const Eigen::PermutationMatrix<Eigen::Dynamic>::IndicesType& permIdx = perm.indices();
 
-	PoseUncertaintyArr uncertainty(scene.images.size());
-	const PoseUncertainty invalid{Point3f(-1.f, -1.f, -1.f), Point3f(-1.f, -1.f, -1.f), Point3f(-1.f, -1.f, -1.f)};
-	FOREACH(i, uncertainty)
-		uncertainty[i] = invalid;
+	PoseUncertaintyArr uncertainty = MakeInvalidPoseUncertainty(scene.images.size());
 	MeanStdMinMax<float> statR, statT;
-	for (const PoseRef& p : poses) {
+	for (const UncertaintyPoseRef& p : poses) {
 		if (p.size < 6)
 			continue; // partially-fixed pose (subset manifold): leave not-computed
 		const auto Zat = [&Z, &permIdx, &p](int r, int c) {
@@ -287,37 +329,14 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertaintyCeres()
 	TD_TIMER_STARTD();
 	if (!problem)
 		return PoseUncertaintyArr();
-	struct PoseRef { IIndex imageID; double* block; int size; };
-	std::vector<PoseRef> poses;
+	std::vector<UncertaintyPoseRef> poses;
 	IIndexArr datumIDs;
-	FOREACH(i, scene.images) {
-		if (!scene.images[i].IsValid())
-			continue;
-		double* block = poseParams.data() + i * 7;
-		if (!problem->HasParameterBlock(block))
-			continue;
-		if (problem->IsParameterBlockConstant(block)) { datumIDs.push_back(i); continue; }
-		poses.push_back({ (IIndex)i, block, CeresTangentSize(*problem, block) });
-	}
-	if (poses.size() < 2)
-		return PoseUncertaintyArr();
-	// Match ComputePoseUncertainty()'s gauge handling: with no GPS priors and no BA-fixed pose,
-	// hold the best-connected pose constant so the reduced system is (all but the scale mode)
-	// full rank; DENSE_SVD's null-space thresholding absorbs the residual gauge freedom.
 	std::vector<double*> tempFixed;
-	if (datumIDs.empty() && numGPSResiduals == 0) {
-		size_t best = 0;
-		for (size_t k = 1; k < poses.size(); ++k)
-			if (numReprojResidualsPerImage[poses[k].imageID] > numReprojResidualsPerImage[poses[best].imageID])
-				best = k;
-		datumIDs.push_back(poses[best].imageID);
-		problem->SetParameterBlockConstant(poses[best].block);
-		tempFixed.push_back(poses[best].block);
-		poses.erase(poses.begin() + best);
-	}
+	const bool ready = CollectUncertaintyPoses(*problem, scene, poseParams, numReprojResidualsPerImage, numGPSResiduals,
+		poses, datumIDs, true, tempFixed);
 
 	PoseUncertaintyArr uncertainty;
-	if (poses.size() >= 2) {
+	if (ready) {
 		ceres::Covariance::Options options;
 		options.algorithm_type = ceres::DENSE_SVD; // slow reference; robust to rank deficiency (gauge)
 		options.null_space_rank = -1;              // drop only the numerically-zero (gauge) modes
@@ -326,14 +345,11 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertaintyCeres()
 		ceres::Covariance covariance(options);
 		std::vector<std::pair<const double*, const double*>> blocks;
 		blocks.reserve(poses.size());
-		for (const PoseRef& p : poses)
+		for (const UncertaintyPoseRef& p : poses)
 			blocks.emplace_back(p.block, p.block);
 		if (covariance.Compute(blocks, problem.get())) {
-			uncertainty.resize(scene.images.size());
-			const PoseUncertainty invalid{Point3f(-1.f,-1.f,-1.f), Point3f(-1.f,-1.f,-1.f), Point3f(-1.f,-1.f,-1.f)};
-			FOREACH(i, uncertainty)
-				uncertainty[i] = invalid;
-			for (const PoseRef& p : poses) {
+			uncertainty = MakeInvalidPoseUncertainty(scene.images.size());
+			for (const UncertaintyPoseRef& p : poses) {
 				if (p.size < 6)
 					continue;
 				double cov[36];
@@ -370,16 +386,7 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 	if (!os.is_open())
 		return 0;
 
-	// Per-image inlier observation counts
-	UnsignedArr numObsPerImage(scene.images.size());
-	numObsPerImage.Memset(0);
-	for (const Track& track : scene.tracks) {
-		if (!track.IsInlier())
-			continue;
-		for (const Observation& obs : track)
-			if (obs.imageID < numObsPerImage.size())
-				++numObsPerImage[obs.imageID];
-	}
+	const std::vector<TrackObservationCount> obsCounts = CountTrackObservations(scene);
 
 	const bool geoAligned = scene.status.nState.isSet(Scene::Status::STATE::GEO_ALIGN);
 	const auto isDatum = [](const PoseUncertainty& u) {
@@ -431,7 +438,7 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 		   << sigmaPos.x << ',' << sigmaPos.y << ',' << sigmaPos.z << ','
 		   << covPos.x << ',' << covPos.y << ',' << covPos.z << ','
 		   << sigmaRot.x << ',' << sigmaRot.y << ',' << sigmaRot.z << ','
-		   << numObsPerImage[i] << ','
+		   << obsCounts[i].inliers << ','
 		   << meta.positionAccuracy << ',' << meta.positionAccuracyZ << '\n';
 	}
 
@@ -448,6 +455,56 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 			"cube-map faces produced by the MVS export (pose uncertainty is validated for pinhole cameras)",
 			numSpherical);
 	return numValid;
+}
+/*----------------------------------------------------------------*/
+
+// 1/k^2 for k the ratio of the two populations' robust reprojection sigmas, measured on the scene
+// this solve is about to fit. Both sigmas are read off the RAW pixel residuals, so the estimate does
+// not carry the weighting the previous solve ran under, and it is recomputed at the head of every
+// solve -- a reconstruction runs fifty or more of them, so it settles.
+//
+// Measured rather than configured because k is a property of the CAPTURE, not of the dense matcher:
+// across captures the dense sigma barely moves (it is the warp's sampling scale) while the described
+// sigma varies several-fold, from small where the texture is rich to large where it is not. No
+// constant is right in both places.
+//
+// Clamped to [MIN_DENSE_OBSERVATION_WEIGHT, 1]: a dense correspondence is never a MORE precise
+// measurement than a described one, and never worth nothing -- on a capture where the descriptor
+// matcher is very good the ratio can run away, and a weight of zero would discard the only evidence
+// a textureless region has. Falls back to the fixed DENSE_OBSERVATION_WEIGHT when either population
+// is under MIN_SIGMA_OBSERVATIONS -- the honest answer for an early incremental step whose scene is a
+// handful of tracks -- or when either sigma is zero, which is what a scene that fits itself exactly
+// (a synthetic one, or a solve that has converged onto its own measurements) would divide by.
+constexpr size_t MIN_SIGMA_OBSERVATIONS = 100;
+constexpr double MIN_DENSE_OBSERVATION_WEIGHT = 0.01;
+
+double SFM::EstimateDenseObservationWeight(const Scene& scene, const BAConfig& config,
+	DenseObservationSigmas* sigmas)
+{
+	if (sigmas)
+		*sigmas = DenseObservationSigmas();
+	if (config.denseObservationWeight >= 0.0)
+		return config.denseObservationWeight;
+	// nothing to weight means nothing to measure, and this is the shipped default: --dense-match is
+	// off, so a descriptor-only reconstruction carries no dense keypoint and SelectReprojectionLoss
+	// never multiplies by the weight. The test is O(1) per image, against the full reprojection of
+	// every observation of every inlier track it saves -- once per Adjust(), and once per local BA,
+	// which incremental reconstruction runs once per registered image.
+	if (!std::any_of(scene.images.begin(), scene.images.end(),
+			[](const Image& img) { return img.HasDenseKeypoints(); }))
+		return DENSE_OBSERVATION_WEIGHT;
+	double sigmaDescribed = 0, sigmaDense = 0;
+	size_t numDescribed = 0, numDense = 0;
+	ComputeObservationSigmas(scene, sigmaDescribed, numDescribed, sigmaDense, numDense);
+	if (sigmas)
+		*sigmas = DenseObservationSigmas{sigmaDescribed, sigmaDense, numDescribed, numDense, false};
+	if (numDescribed < MIN_SIGMA_OBSERVATIONS || numDense < MIN_SIGMA_OBSERVATIONS ||
+		sigmaDescribed <= 0.0 || sigmaDense <= 0.0)
+		return DENSE_OBSERVATION_WEIGHT;
+	if (sigmas)
+		sigmas->measured = true;
+	const double k = sigmaDense/sigmaDescribed;
+	return CLAMP(1.0/(k*k), MIN_DENSE_OBSERVATION_WEIGHT, 1.0);
 }
 /*----------------------------------------------------------------*/
 
@@ -506,19 +563,495 @@ inline void AddPinholeIntrinsics(std::unordered_map<const Camera*, DoubleArr>& i
 	ExtractPinholeIntrinsics(static_cast<const PinholeCamera*>(img.pCamera), it.first->second.data());
 }
 
-// Pick the (possibly confidence-scaled) loss for a keypoint observation. Returns false if the
-// keypoint is below the confidence threshold and the observation should be skipped.
-inline bool SelectReprojectionLoss(const BAConfig& config, const cv::KeyPoint& kp,
-	ceres::LossFunction* baseLoss, ceres::LossFunction*& outLoss) {
+// Which observations of an over-budget image a solve keeps.
+//
+// What a bundle adjustment costs is the number of observations it fits, whatever their kind: a
+// scene of a few hundred dense-matched images carries millions of them, and so does one of
+// thousands of described-only images. Bounding what one image contributes is what keeps that cost
+// in hand, and WHICH of its observations survive decides whether the budget is free: an even cover
+// of the frame constrains the image's pose as the full set did, while an arbitrary prefix of it
+// would leave whole regions of the image unmeasured and let the pose rotate into them.
+//
+// Empty = every observation is kept (the scene is under the threshold the budget applies from, or
+// no image in this solve is over the budget); otherwise one flag per keypoint of every image taking
+// part -- an under-budget image gets its flags too, all set, since the pass that holds a track's
+// views together may still have to drop one of them.
+class ObservationCap
+{
+public:
+	// Whether the solve keeps the observation of keypoint featureID in image imgID
+	inline bool Keeps(IIndex imgID, uint32_t featureID) const {
+		if (keep.empty())
+			return true;
+		const std::vector<bool>& imgKeep = keep[imgID];
+		ASSERT(imgKeep.empty() || featureID < imgKeep.size());
+		return imgKeep.empty() || imgKeep[featureID];
+	}
+
+	std::vector<std::vector<bool>> keep; // per image, per keypoint
+};
+
+// What the budget did to a solve, for the caller to report: what the solve would have fit, what it
+// fits, and what was left out of each keypoint kind. `applied` is false where the budget did not
+// run at all, so that the caller reports nothing rather than a row of zeros.
+struct ObservationCapStats
+{
+	uint32_t numObservations = 0;     // observations the solve would fit uncapped
+	uint32_t numKept = 0;             // of those, the ones it fits
+	uint32_t numDescribedDropped = 0; // described observations the budget left out
+	uint32_t numDenseDropped = 0;     // and dense ones
+	bool applied = false;             // whether the budget ran on this solve
+};
+
+// Observations the scene would fit into a global solve of it: every inlier track's observations
+// in every registered image, summed over the whole of scene.tracks. Whether the per-image budget
+// applies at all is decided from this count and not from any one solve's own (see
+// BuildObservationCap), so that a local window -- which alone rarely holds enough observations to
+// reach the threshold -- is budgeted once the scene it belongs to has grown large. The sum is plain
+// (no allocation) and cheap enough, a few milliseconds even on a scene of millions of observations,
+// that a caller can afford to redo it for every solve rather than cache it.
+inline uint32_t CountSceneObservations(const Scene& scene) {
+	uint32_t numObservations = 0;
+	for (const Track& track : scene.tracks) {
+		if (!track.IsInlier())
+			continue;
+		for (const Observation& obs : track)
+			if (scene.images[obs.imageID].IsValid())
+				++numObservations;
+	}
+	return numObservations;
+}
+
+// Grid cell of a keypoint in an image split into gridSize x gridSize cells
+inline uint32_t ObservationCapCell(const Image& img, const cv::KeyPoint& kp, unsigned gridSize) {
+	const int width = img.pCamera->GetWidth(), height = img.pCamera->GetHeight();
+	if (width <= 0 || height <= 0)
+		return 0; // no image size to spread over: one cell, so the track length alone orders them
+	const unsigned x = MINF((unsigned)MAXF(kp.pt.x*gridSize/width, 0.f), gridSize-1);
+	const unsigned y = MINF((unsigned)MAXF(kp.pt.y*gridSize/height, 0.f), gridSize-1);
+	return y*gridSize + x;
+}
+
+// Seed of the tie-break drawn below, advanced on every solve: successive adjustments of one
+// reconstruction then take different subsets of the equally ranked observations, so that over a
+// whole reconstruction most of them take part in some solve rather than the same ones every time.
+std::atomic<uint32_t> observationCapSeed{0};
+
+// Decide which observations of each over-budget image take part in the solve: bucket the image's
+// observations on a sqrt(cap) x sqrt(cap) grid scaled to the image and take them round-robin across
+// the cells, which is what spreads the survivors over the frame instead of leaving whole regions of
+// it unmeasured.
+//
+// The round-robin runs per KIND, the described observations first: a detected position is the
+// precise measurement, so the image keeps every described observation it has unless those alone
+// exceed the budget, and the warp samples fill what is left -- most of the budget on an image with
+// few detections, little of it on one with many, so the budget balances the two kinds by itself.
+// Running one round-robin over both kinds together would not do this: the grid holds about as many
+// cells as the budget, so a single round over the cells already spends it, and a cell that carries
+// several described observations would keep one of them and lose the rest to cells that carry only
+// warp samples. Inside a cell the longest track comes first, because an observation of a point many
+// images see is the one that ties them together, and what is equal at that point is ordered by a key
+// drawn for this solve alone.
+//
+// The budget runs only once the SCENE's observations reach minObservations, not this solve's own
+// (sceneObservations, from CountSceneObservations): a scene small enough to be solved whole is
+// solved whole, since dropping observations there costs accuracy to save time that was not being
+// spent, but once a scene has grown past that point every solve of it is budgeted, a local window
+// included even though a window alone rarely holds enough observations to reach the threshold by
+// itself.
+//
+// visitTracks(fn) calls fn(track) for every track the solve builds residuals from and
+// inSolve(imageID) answers whether an observation's image takes part: both mirror the residual
+// loop, whose filtering this pre-pass reproduces.
+template <typename TVisitTracks, typename TInSolve>
+ObservationCapStats BuildObservationCap(const Scene& scene, unsigned cap, unsigned minObservations,
+	uint32_t sceneObservations, const TVisitTracks& visitTracks, const TInSolve& inSolve, ObservationCap& obsCap, float minAngleDeg)
+{
+	obsCap.keep.clear();
+	ObservationCapStats stats;
+	if (cap == 0 || sceneObservations < minObservations)
+		return stats; // uncapped, or the scene has not grown large enough for the budget to apply yet
+	const auto forEachObservation = [&](const auto& fn) {
+		visitTracks([&](const Track& track) {
+			for (const Observation& obs : track) {
+				if (inSolve(obs.imageID))
+					fn(track, obs, scene.images[obs.imageID]);
+			}
+		});
+	};
+	// what the solve would fit, and how much of it every image brings, so that only the images
+	// actually over the budget are given a decision
+	const IIndex numImages = scene.images.size();
+	std::vector<uint32_t> numObservations(numImages, 0);
+	forEachObservation([&](const Track&, const Observation& obs, const Image&) {
+		++numObservations[obs.imageID];
+		++stats.numObservations;
+	});
+	stats.applied = true;
+	stats.numKept = stats.numObservations;
+	bool anyOverCap = false;
+	for (IIndex imgID = 0; imgID < numImages && !anyOverCap; ++imgID)
+		anyOverCap = numObservations[imgID] > cap;
+	if (!anyOverCap)
+		return stats;
+
+	// gather the candidates of every over-budget image, one sort key per observation:
+	// [dense | cell | inverted track length | drawn key | keypoint index], so sorting it splits an
+	// image's candidates by kind, groups each kind by cell, and orders each cell as described above
+	const unsigned gridSize = CLAMP((unsigned)CEIL2INT(SQRT((float)cap)), 1u, 256u);
+	std::mt19937 rnd(observationCapSeed.fetch_add(1));
+	obsCap.keep.resize(numImages);
+	std::vector<std::vector<uint64_t>> candidates(numImages);
+	FOREACH(imgID, scene.images) {
+		if (numObservations[imgID] == 0)
+			continue;
+		obsCap.keep[imgID].assign(scene.images[imgID].keypoints.size(), numObservations[imgID] <= cap);
+		if (numObservations[imgID] > cap)
+			candidates[imgID].reserve(numObservations[imgID]);
+	}
+	forEachObservation([&](const Track& track, const Observation& obs, const Image& img) {
+		if (numObservations[obs.imageID] <= cap)
+			return; // image under the budget: it keeps everything
+		const uint64_t cell = ObservationCapCell(img, img.keypoints[obs.featureID], gridSize);
+		const uint64_t dense = img.IsDenseKeypoint(obs.featureID) ? 1 : 0;
+		const uint64_t invLength = 0xff - MINF(track.GetNumInliers(), 0xffu);
+		const uint64_t drawn = rnd() & 0x7fff;
+		ASSERT(cell < (1u<<16) && obs.featureID < (1u<<24));
+		candidates[obs.imageID].push_back((dense << 63) | (cell << 47) | (invLength << 39) |
+			(drawn << 24) | obs.featureID);
+	});
+
+	// take them round-robin across the cells, the described observations first and the dense ones on
+	// what is left of the budget
+	std::vector<uint32_t> cellStart, active;
+	FOREACH(imgID, scene.images) {
+		std::vector<uint64_t>& imgCandidates = candidates[imgID];
+		if (imgCandidates.empty())
+			continue;
+		std::sort(imgCandidates.begin(), imgCandidates.end());
+		// the sorted candidates of one cell of one kind are contiguous; remember where each run
+		// starts, the described runs coming before the dense ones
+		cellStart.clear();
+		for (size_t i = 0; i < imgCandidates.size(); ++i)
+			if (i == 0 || (imgCandidates[i] >> 47) != (imgCandidates[i-1] >> 47))
+				cellStart.push_back((uint32_t)i);
+		cellStart.push_back((uint32_t)imgCandidates.size()); // sentinel: end of the last run
+		const uint32_t numRuns = (uint32_t)cellStart.size()-1;
+		uint32_t numDescribedRuns = 0;
+		while (numDescribedRuns < numRuns && (imgCandidates[cellStart[numDescribedRuns]] >> 63) == 0)
+			++numDescribedRuns;
+		std::vector<bool>& imgKeep = obsCap.keep[imgID];
+		unsigned numKept = 0;
+		// one kind's runs, taken one candidate per cell per round until the budget is spent or the
+		// runs are exhausted: what a cell keeps is spread over the frame, and a kind that fits the
+		// budget entirely is kept entirely
+		const auto takeRoundRobin = [&](uint32_t firstRun, uint32_t lastRun) {
+			active.resize(lastRun - firstRun);
+			std::iota(active.begin(), active.end(), firstRun);
+			for (uint32_t round = 0; numKept < cap && !active.empty(); ++round) {
+				size_t numAlive = 0;
+				for (uint32_t run : active) {
+					const uint32_t begin = cellStart[run], end = cellStart[run+1];
+					if (begin + round >= end)
+						continue; // this cell ran out of candidates
+					imgKeep[(uint32_t)(imgCandidates[begin + round] & 0xffffff)] = true;
+					active[numAlive++] = run;
+					if (++numKept == cap)
+						break;
+				}
+				active.resize(numAlive);
+			}
+		};
+		takeRoundRobin(0, numDescribedRuns);
+		takeRoundRobin(numDescribedRuns, numRuns);
+		ASSERT(numKept <= imgCandidates.size());
+	}
+
+	// A point one view sees is not determined by it, so a track takes two observations into the
+	// solve or none. A track the budget cut to a single view is given a dropped observation back, a
+	// described one before a dense one as everywhere else: such a track is a short one -- the
+	// round-robin takes the long ones first -- and the view is cheaper to pay for than the track is
+	// to lose. A track left with nothing stays out of the solve, its position standing until the
+	// next triangulation recomputes it from the cameras this solve moved.
+	visitTracks([&](const Track& track) {
+		unsigned numInSolve = 0, numKept = 0;
+		for (const Observation& obs : track) {
+			if (!inSolve(obs.imageID))
+				continue;
+			++numInSolve;
+			numKept += obsCap.Keeps(obs.imageID, obs.featureID);
+		}
+		if (numKept != 1 || numInSolve < 2)
+			return;
+		for (const bool described : {true, false}) {
+			for (const Observation& obs : track) {
+				if (numKept >= 2)
+					return;
+				if (!inSolve(obs.imageID) || obsCap.Keeps(obs.imageID, obs.featureID))
+					continue;
+				if (scene.images[obs.imageID].IsDenseKeypoint(obs.featureID) == described)
+					continue;
+				obsCap.keep[obs.imageID][obs.featureID] = true;
+				++numKept;
+			}
+		}
+	});
+
+	// A track whose kept views all lie closer than minAngleDeg to one another is not determined in
+	// depth: the point slides along their rays and drags every view that sees it wide, the ones the
+	// budget dropped included, off by many pixels. It gets back the dropped view that spans the
+	// widest angle with a kept one when that angle reaches the bar, and stays out of the solve when
+	// no dropped view does, as a track the budget left with no view does.
+	{
+		ASSERT(minAngleDeg > 0.f);
+		const REAL minCos = COS(D2R(REAL(minAngleDeg)));
+		std::vector<const Observation*> keptObs, droppedObs;
+		visitTracks([&](const Track& track) {
+			keptObs.clear();
+			droppedObs.clear();
+			for (const Observation& obs : track) {
+				if (!inSolve(obs.imageID))
+					continue;
+				(obsCap.Keeps(obs.imageID, obs.featureID) ? keptObs : droppedObs).push_back(&obs);
+			}
+			if (keptObs.size() < 2)
+				return; // one view or none: settled by the pass above
+			const auto Ray = [&](const Observation* obs) { return scene.images[obs->imageID].C - track.position; };
+			// the widest angle two kept views span is the smallest cosine
+			REAL keptCos = REAL(1);
+			for (size_t i = 0; i < keptObs.size(); ++i) {
+				const Point3 ray1 = Ray(keptObs[i]);
+				for (size_t j = i + 1; j < keptObs.size(); ++j) {
+					const Point3 ray2 = Ray(keptObs[j]);
+					keptCos = MINF(keptCos, ComputeAngle(ray1.ptr(), ray2.ptr()));
+				}
+			}
+			if (keptCos <= minCos)
+				return; // the kept views reach the bar
+			const Observation* widest = NULL;
+			REAL widestCos = REAL(1);
+			for (const Observation* dropped : droppedObs) {
+				const Point3 ray1 = Ray(dropped);
+				for (const Observation* kept : keptObs) {
+					const Point3 ray2 = Ray(kept);
+					const REAL cosAngle = ComputeAngle(ray1.ptr(), ray2.ptr());
+					if (cosAngle < widestCos) {
+						widestCos = cosAngle;
+						widest = dropped;
+					}
+				}
+			}
+			if (widest != NULL && widestCos <= minCos) {
+				obsCap.keep[widest->imageID][widest->featureID] = true;
+			} else {
+				for (const Observation* kept : keptObs)
+					obsCap.keep[kept->imageID][kept->featureID] = false;
+			}
+		});
+	}
+
+	// what the solve is left with, counted on the flags every pass above settled
+	stats.numKept = 0;
+	forEachObservation([&](const Track&, const Observation& obs, const Image& img) {
+		if (obsCap.Keeps(obs.imageID, obs.featureID))
+			++stats.numKept;
+		else if (img.IsDenseKeypoint(obs.featureID))
+			++stats.numDenseDropped;
+		else
+			++stats.numDescribedDropped;
+	});
+	return stats;
+}
+
+// What the budget did, as one line: a keypoint kind that lost nothing is left out of it
+inline String FormatObservationCapReport(const ObservationCapStats& stats) {
+	String dropped;
+	if (stats.numDescribedDropped > 0)
+		dropped = String::FormatString("%u described", stats.numDescribedDropped);
+	if (stats.numDenseDropped > 0) {
+		if (!dropped.empty())
+			dropped += " and ";
+		dropped += String::FormatString("%u dense", stats.numDenseDropped);
+	}
+	if (dropped.empty())
+		dropped = "nothing";
+	return String::FormatString("%s dropped by the per-image cap (%u of %u observations kept)",
+		dropped.c_str(), stats.numKept, stats.numObservations);
+}
+
+// The order the inner iterations refine the free parameter blocks of problem in: the order Ceres
+// builds when it is given none -- rounds of mutually independent blocks peeled off the graph of the
+// blocks that share a residual, each round taken greedily from the blocks still left, fewest
+// neighbours first, and the rounds visited from the last found to the first -- with one difference.
+// Ceres breaks the ties between blocks of as many neighbours by the address of its own record of each
+// block, so where the allocator happened to place those records decided which blocks were refined
+// together, and the same problem solved twice in one process, or once under another environment,
+// could end apart; here a tie goes to the block a residual of the problem named first.
+std::shared_ptr<ceres::ParameterBlockOrdering> ComputeInnerIterationOrdering(const ceres::Problem& problem)
+{
+	// the free blocks, numbered as the residuals first name them (the problem lists its residuals
+	// in the order they were added, but its parameter blocks in the order of their addresses)
+	std::vector<ceres::ResidualBlockId> residualBlocks;
+	problem.GetResidualBlocks(&residualBlocks);
+	std::vector<double*> blocks;
+	std::unordered_map<const double*, uint32_t> blockIndices;
+	blockIndices.reserve(problem.NumParameterBlocks());
+	std::vector<std::vector<uint32_t>> neighbors;
+	std::vector<double*> residualParams;
+	std::vector<uint32_t> residualBlockIndices;
+	for (const ceres::ResidualBlockId residualBlock : residualBlocks) {
+		problem.GetParameterBlocksForResidualBlock(residualBlock, &residualParams);
+		residualBlockIndices.clear();
+		for (double* block : residualParams) {
+			if (problem.IsParameterBlockConstant(block))
+				continue;
+			const auto [it, inserted] = blockIndices.emplace(block, (uint32_t)blocks.size());
+			if (inserted) {
+				blocks.push_back(block);
+				neighbors.emplace_back();
+			}
+			residualBlockIndices.push_back(it->second);
+		}
+		for (size_t i = 0; i < residualBlockIndices.size(); ++i) {
+			for (size_t j = i + 1; j < residualBlockIndices.size(); ++j) {
+				neighbors[residualBlockIndices[i]].push_back(residualBlockIndices[j]);
+				neighbors[residualBlockIndices[j]].push_back(residualBlockIndices[i]);
+			}
+		}
+	}
+	const uint32_t numBlocks = (uint32_t)blocks.size();
+	std::vector<uint32_t> degrees(numBlocks);
+	for (uint32_t b = 0; b < numBlocks; ++b) {
+		std::vector<uint32_t>& adjacent = neighbors[b];
+		std::sort(adjacent.begin(), adjacent.end());
+		adjacent.erase(std::unique(adjacent.begin(), adjacent.end()), adjacent.end());
+		degrees[b] = (uint32_t)adjacent.size();
+	}
+
+	// peel independent sets off the graph until every block is in one
+	enum : uint8_t { FREE = 0, NEIGHBOR, TAKEN, REMOVED };
+	std::vector<uint8_t> states(numBlocks, FREE);
+	std::vector<uint32_t> remaining(numBlocks);
+	for (uint32_t b = 0; b < numBlocks; ++b)
+		remaining[b] = b;
+	std::vector<std::vector<uint32_t>> rounds;
+	while (!remaining.empty()) {
+		std::sort(remaining.begin(), remaining.end(), [&degrees](uint32_t a, uint32_t b) {
+			return degrees[a] < degrees[b] || (degrees[a] == degrees[b] && a < b);
+		});
+		std::vector<uint32_t> independentSet;
+		for (const uint32_t b : remaining) {
+			if (states[b] != FREE)
+				continue;
+			independentSet.push_back(b);
+			states[b] = TAKEN;
+			for (const uint32_t n : neighbors[b])
+				if (states[n] == FREE)
+					states[n] = NEIGHBOR;
+		}
+		for (const uint32_t b : independentSet) {
+			states[b] = REMOVED;
+			for (const uint32_t n : neighbors[b])
+				if (states[n] != REMOVED)
+					--degrees[n];
+		}
+		size_t numLeft = 0;
+		for (const uint32_t b : remaining) {
+			if (states[b] == REMOVED)
+				continue;
+			states[b] = FREE;
+			remaining[numLeft++] = b;
+		}
+		remaining.resize(numLeft);
+		rounds.emplace_back(std::move(independentSet));
+	}
+
+	auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
+	const int numRounds = (int)rounds.size();
+	for (int r = 0; r < numRounds; ++r)
+		for (const uint32_t b : rounds[r])
+			ordering->AddElementToGroup(blocks[b], numRounds - 1 - r);
+	return ordering;
+}
+
+// Solve, retrying once with the iterative solver if a sparse solve failed: the sparse
+// factorization of the reduced camera system gives up outright on an ill-conditioned problem,
+// while the iterative solver never factorizes it, so the failure costs a retry rather than the
+// whole adjustment.
+inline void SolveBundle(ceres::Solver::Options& options, ceres::Problem& problem, ceres::Solver::Summary& summary) {
+	ceres::Solve(options, &problem, &summary);
+	if (summary.IsSolutionUsable() || options.linear_solver_type != ceres::SPARSE_SCHUR)
+		return;
+	VERBOSE("warning: the sparse bundle adjustment failed (%s); solving it iteratively", summary.BriefReport().c_str());
+	options.linear_solver_type = ceres::ITERATIVE_SCHUR;
+	options.preconditioner_type = ceres::SCHUR_JACOBI;
+	ceres::Solve(options, &problem, &summary);
+}
+
+// Pick the (possibly confidence-scaled) loss for the observation of keypoint featureID of img.
+// Sets bDense for the caller's summary. Returns false if the keypoint is below the confidence
+// threshold and the observation should be skipped.
+//
+// A dense (descriptor-less) keypoint's residual is scaled by denseObservationWeight: its
+// position was sampled from a low-resolution warp, while a described keypoint's is sub-pixel at
+// full resolution, so the two are not equally precise measurements and BA must not weight them
+// alike. The weight follows the KEYPOINT, not the match that created it -- after the described-wins
+// dedup of PairsMatcher::FilterRedundantKeypoints an observation created by a dense match can
+// reference a described keypoint, and its measured position is then the sub-pixel one, so it takes
+// full weight. This models measurement precision only: a wrong correspondence is the robust loss's
+// and FilterTracks' job, and charging it here as well would model the same thing twice.
+//
+// EXCLUSIVE WITH config.useKeypointConfidence, which expresses the same statement by another route:
+// ComputeKeypointPrecision's SQUARE(2/max(size,1)) term already reads measurement precision off the
+// sampling scale, and the dense `size` convention (Image.h) was chosen precisely so that it reports a
+// dense point as the less precise measurement. Multiplying the two charges that once for the size and
+// once for the flat factor -- on the documented values it takes the effective ratio to ~116x
+// (k ~ 10.8), against the k = 1.55-4.02 the captures actually measure. So exactly one of them applies.
+inline bool SelectReprojectionLoss(const BAConfig& config, double denseObservationWeight,
+	const Image& img, uint32_t featureID,
+	ceres::LossFunction* baseLoss, ceres::LossFunction*& outLoss, bool& bDense) {
 	outLoss = baseLoss;
-	if (!config.useKeypointConfidence)
-		return true;
-	const double weight = Image::ComputeKeypointPrecision(kp, config.minKeypointResponse);
-	if (weight <= 0.0)
-		return false; // skip low-confidence keypoint
+	double weight = 1.0;
+	if (config.useKeypointConfidence) {
+		weight = Image::ComputeKeypointPrecision(img.keypoints[featureID], config.minKeypointResponse);
+		if (weight <= 0.0)
+			return false; // skip low-confidence keypoint
+	}
+	bDense = img.IsDenseKeypoint(featureID);
+	// only when the confidence term did not already say it: the two express the same statement (see
+	// the comment above), so applying both would charge the dense sampling scale twice
+	if (bDense && !config.useKeypointConfidence)
+		weight *= denseObservationWeight;
 	if (weight != 1.0)
 		outLoss = new ceres::ScaledLoss(baseLoss, weight, ceres::DO_NOT_TAKE_OWNERSHIP);
 	return true;
+}
+
+// The dense weight each image's dense residuals carry: denseObservationWeight scaled by N / (N + n),
+// N = config.denseHalfWeightObservations and n the image's described observations in the scene's
+// inlier tracks, counted over the whole scene so that a local window weighs an image as the global
+// solve does (the same weight for every image when N is 0), and held to
+// config.maxDenseObservationWeight when that is set.
+inline std::vector<double> DenseWeightPerImage(const Scene& scene, const BAConfig& config, double denseObservationWeight) {
+	ASSERT(config.maxDenseObservationWeight >= 0.0);
+	std::vector<double> weights(scene.images.size(), denseObservationWeight);
+	if (config.denseHalfWeightObservations > 0) {
+		std::vector<unsigned> numDescribed(scene.images.size(), 0u);
+		for (const Track& track : scene.tracks) {
+			if (!track.IsInlier())
+				continue;
+			for (const Observation& obs : track)
+				if (!scene.images[obs.imageID].IsDenseKeypoint(obs.featureID))
+					++numDescribed[obs.imageID];
+		}
+		const double halfWeight = (double)config.denseHalfWeightObservations;
+		FOREACH(i, weights)
+			weights[i] *= halfWeight / (halfWeight + (double)numDescribed[i]);
+	}
+	if (config.maxDenseObservationWeight > 0.0)
+		for (double& weight : weights)
+			weight = MINF(weight, config.maxDenseObservationWeight);
+	return weights;
 }
 
 // Add a reprojection residual for keypoint kp of img, wiring its pose and point blocks (and,
@@ -529,11 +1062,10 @@ inline void AddReprojectionResidual(ceres::Problem& problem, ceres::LossFunction
 	switch (img.GetCameraType()) {
 	case CameraType::PINHOLE:
 		problem.AddResidualBlock(
-			#if 0
+			// the hand-written Jacobians of PinholeReprojectionError, an order of magnitude cheaper
+			// to evaluate than differentiating the projection through 22 dual numbers, and equal to
+			// what that differentiation gives (PinholeReprojectionJacobianTest)
 			new PinholeReprojectionErrorAnalytic(kp.pt.x, kp.pt.y),
-			#else
-			PinholeReprojectionError::Create(kp.pt.x, kp.pt.y),
-			#endif
 			loss,
 			posePtr,                                  // Pose params
 			intrinsicParams.at(img.pCamera).data(),   // Intrinsic params
@@ -550,46 +1082,187 @@ inline void AddReprojectionResidual(ceres::Problem& problem, ceres::LossFunction
 	}
 }
 
-// Collect the constant indices of a 7-param pose block [qw,qx,qy,qz,Cx,Cy,Cz] for the given
-// refinement flags: rotation occupies indices 0-3, position 4-6.
-inline void CollectConstantPoseParams(const BAConfig& config, std::vector<int>& constantParams) {
-	constantParams.clear();
-	if (!config.refinePosesRotation) {
-		constantParams.push_back(0);
-		constantParams.push_back(1);
-		constantParams.push_back(2);
-		constantParams.push_back(3);
-	}
-	if (!config.refinePosesPosition) {
-		constantParams.push_back(4);
-		constantParams.push_back(5);
-		constantParams.push_back(6);
-	}
-}
-
-// Restrict a 7-param pose block to the non-constant subset given by constantParams (Ceres version-aware).
-inline void SetPoseSubsetConstant(ceres::Problem& problem, double* pose, const std::vector<int>& constantParams) {
-	#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
-	problem.SetManifold(pose, new ceres::SubsetManifold(7, constantParams));
+// Create a fresh SE(3) manifold for a 7-param pose block (quaternion rotation + Euclidean
+// translation, 6 DOF tangent space). Ceres takes ownership once it is attached to a block.
+inline CeresManifold* CreateSE3PoseManifold() {
+	#if CERES_HAS_MANIFOLD
+	return new ceres::ProductManifold<ceres::QuaternionManifold, ceres::EuclideanManifold<3>>{
+		ceres::QuaternionManifold{}, ceres::EuclideanManifold<3>{}};
 	#else
-	problem.SetParameterization(pose, new ceres::SubsetParameterization(7, constantParams));
+	return new ceres::ProductParameterization(
+		new ceres::QuaternionParameterization, new ceres::IdentityParameterization(3));
 	#endif
 }
 
-// Create a fresh SE(3) manifold for a 7-param pose block (quaternion rotation + Euclidean
-// translation, 6 DOF tangent space). Ceres takes ownership once it is attached to a block.
-#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
-inline ceres::Manifold* CreateSE3PoseManifold() {
-	return new ceres::ProductManifold<ceres::QuaternionManifold, ceres::EuclideanManifold<3>>{
-		ceres::QuaternionManifold{}, ceres::EuclideanManifold<3>{}};
+// The SE(3) manifold of a pose block whose centre keeps one coordinate (0-2) where it is: the quaternion's own
+// manifold for the rotation, the other two centre coordinates free
+inline CeresManifold* CreateSE3PoseManifoldHoldingCenterCoordinate(int coordinate) {
+	#if CERES_HAS_MANIFOLD
+	return new ceres::ProductManifold<ceres::QuaternionManifold, ceres::SubsetManifold>{
+		ceres::QuaternionManifold{}, ceres::SubsetManifold(3, {coordinate})};
+	#else
+	return new ceres::ProductParameterization(new ceres::QuaternionParameterization,
+		new ceres::SubsetParameterization(3, {coordinate}));
+	#endif
 }
-#else
-inline ceres::LocalParameterization* CreateSE3PoseManifold() {
-	auto* quaternion_param = new ceres::QuaternionParameterization;
-	auto* identity_param = new ceres::IdentityParameterization(3);
-	return new ceres::ProductParameterization(quaternion_param, identity_param);
+
+// Create a manifold that refines either rotation (preserving unit quaternion norm) or position alone.
+inline CeresManifold* CreatePartialPoseManifold(bool refineRot, bool refinePos) {
+	ASSERT(refineRot != refinePos);
+	#if CERES_HAS_MANIFOLD
+	if (refineRot)
+		return new ceres::ProductManifold<ceres::QuaternionManifold, ceres::SubsetManifold>{
+			ceres::QuaternionManifold{}, ceres::SubsetManifold(3, {0, 1, 2})};
+	return new ceres::SubsetManifold(7, {0, 1, 2, 3});
+	#else
+	if (refineRot)
+		return new ceres::ProductParameterization(new ceres::QuaternionParameterization,
+			new ceres::SubsetParameterization(3, {0, 1, 2}));
+	return new ceres::SubsetParameterization(7, {0, 1, 2, 3});
+	#endif
 }
-#endif
+
+// Attach a shared manifold to every active pose block visited by visitImages, deleting it if unused.
+template <typename TVisitImages>
+void AttachPoseManifold(ceres::Problem& problem, std::vector<double>& poseParams,
+	const TVisitImages& visitImages, CeresManifold* manifold)
+{
+	bool used = false;
+	visitImages([&](IIndex imgID) {
+		double* pose = poseParams.data() + imgID * 7;
+		if (!problem.HasParameterBlock(pose))
+			return;
+		SetBlockManifold(problem, pose, manifold);
+		used = true;
+	});
+	if (!used)
+		delete manifold;
+}
+
+// Apply optional pose fixation (all fixed or rotation/position only) to active pose blocks.
+template <typename TVisitImages>
+void ApplyPoseFixation(ceres::Problem& problem, const BAConfig& config, std::vector<double>& poseParams,
+	const TVisitImages& visitImages, const char* suffix)
+{
+	if (!config.IsRefiningPoses()) {
+		visitImages([&](IIndex imgID) {
+			SetParameterBlockConstantIfPresent(problem, poseParams.data() + imgID * 7);
+		});
+		DEBUG("Views poses%s: FIXED", suffix);
+	} else if (!config.refinePosesRotation || !config.refinePosesPosition) {
+		AttachPoseManifold(problem, poseParams, visitImages,
+			CreatePartialPoseManifold(config.refinePosesRotation, config.refinePosesPosition));
+		DEBUG("Views poses%s: rotation=%s, position=%s", suffix,
+		      config.refinePosesRotation ? "OPTIMIZED" : "FIXED",
+		      config.refinePosesPosition ? "OPTIMIZED" : "FIXED");
+	}
+}
+
+inline void LogDenseResiduals(const char* label, uint32_t numDense, uint32_t numReproj,
+	double denseWeight, const DenseObservationSigmas& denseSigmas)
+{
+	if (numDense == 0)
+		return;
+	if (denseSigmas.measured) {
+		DEBUG("%s: %u/%u reprojection residuals are on dense keypoints, weighted %g "
+			"(sigma described %g px over %u obs / dense %g px over %u obs)",
+			label, numDense, numReproj, denseWeight,
+			denseSigmas.sigmaDescribed, (unsigned)denseSigmas.numDescribed,
+			denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense);
+	} else {
+		DEBUG("%s: %u/%u reprojection residuals are on dense keypoints, weighted %g",
+			label, numDense, numReproj, denseWeight);
+	}
+}
+
+inline ceres::Solver::Options BuildSolverOptions(const BAConfig& config, unsigned nMaxThreads,
+	ceres::LinearSolverType solverType, const ceres::Problem* innerOrderingProblem)
+{
+	ceres::Solver::Options options;
+	options.linear_solver_type = solverType;
+	if (solverType == ceres::DENSE_SCHUR) {
+		options.preconditioner_type = ceres::IDENTITY;
+	} else if (innerOrderingProblem != nullptr) {
+		options.use_inner_iterations = true;
+		options.inner_iteration_ordering = ComputeInnerIterationOrdering(*innerOrderingProblem);
+	}
+	options.minimizer_progress_to_stdout = false;
+	options.max_num_iterations = config.maxIterations;
+	options.num_threads = (int)MINF(config.numThreads > 0 ? config.numThreads : std::thread::hardware_concurrency(), nMaxThreads);
+	options.function_tolerance = config.functionTolerance;
+	return options;
+}
+
+// Threshold of the robust loss the two halves of a pair residual share, in sigmas: past three
+// standard deviations the pair and the model disagree about more than measurement noise, and the
+// residual's pull stops growing rather than dragging a correct model onto a wrong pair.
+constexpr double PAIR_CONSTRAINT_HUBER_SIGMAS = 3.0;
+// Confidence a pair's inliers lend its relative pose, as the factor its two sigmas are divided by:
+// the square root of the weighted inlier count against a reference of 100, the count capped first.
+// A pair of 500 inliers then counts sqrt(5) times a pair of 100 and a pair of 25 counts half, while
+// the cap keeps the heaviest pairs of a graph from overwhelming the reprojections they complement.
+constexpr unsigned MAX_PAIR_CONSTRAINT_INLIERS = 500;
+constexpr double PAIR_CONSTRAINT_REFERENCE_INLIERS = 100;
+inline double PairConstraintConfidence(unsigned numInliers) {
+	return SQRT(MINF(numInliers, MAX_PAIR_CONSTRAINT_INLIERS)/PAIR_CONSTRAINT_REFERENCE_INLIERS);
+}
+
+// One relative-pose residual per verified pair whose two images are both part of the solve: the
+// pair's relative rotation and baseline direction against the model's, the two halves sharing one
+// robust loss. inSolve() answers whether an image takes part; poseParams is the flat
+// [qw,qx,qy,qz,Cx,Cy,Cz] array indexed by image ID. Returns how many residuals were added.
+//
+// A verified pair is a measurement of two images' relative pose from hundreds of correspondences
+// that the reprojection residuals never see: they fit the tracks, and where the tracks joining two
+// parts of the model are few or two-view only the joint between them is free to bend while every
+// pair across it says by how much. Adding the pairs is what holds it straight.
+template <typename TInSolve>
+uint32_t AddRelativePoseResiduals(ceres::Problem& problem, const Scene& scene,
+	const BAConfig& config, double* poseParams, const TInSolve& inSolve)
+{
+	if (!config.IsUsingPairConstraints())
+		return 0;
+	const double weightRotation = config.relativeRotationSigma > 0.f ? 1.0/config.relativeRotationSigma : 0.0;
+	const double weightTranslation = config.relativeTranslationSigma > 0.f ? 1.0/config.relativeTranslationSigma : 0.0;
+	// one loss shared by every pair residual, created with the first of them so that a solve adding
+	// none does not leak it; the problem reference-counts the losses it owns
+	ceres::LossFunction* pairLoss = NULL;
+	uint32_t numResiduals = 0;
+	for (const ImagePair& pair : scene.pairs) {
+		if (!IsPoseLinkPair(pair))
+			continue;
+		ASSERT(pair.ID1 < scene.images.size() && pair.ID2 < scene.images.size());
+		if (!inSolve(pair.ID1) || !inSolve(pair.ID2))
+			continue;
+		const double confidence = PairConstraintConfidence(pair.GetNumWeightedInliers());
+		if (confidence <= 0)
+			continue;
+		const Pose3D& relPose = pair.relativePose.value();
+		// the pair's own baseline direction, in its first image's frame; a pair whose two images
+		// share a viewpoint measured no direction at all, and only its rotation is evidence
+		double direction[3] = { relPose.C.x, relPose.C.y, relPose.C.z };
+		const double baseline = norm(relPose.C);
+		double weightDirection = 0.0;
+		if (baseline > ZEROTOLERANCE<double>()) {
+			direction[0] /= baseline; direction[1] /= baseline; direction[2] /= baseline;
+			weightDirection = weightTranslation;
+		}
+		if (weightRotation <= 0.0 && weightDirection <= 0.0)
+			continue;
+		double quatRelative[4];
+		ceres::RotationMatrixToQuaternion(ceres::RowMajorAdapter3x3(relPose.R.val), quatRelative);
+		if (!pairLoss)
+			pairLoss = new ceres::HuberLoss(PAIR_CONSTRAINT_HUBER_SIGMAS);
+		problem.AddResidualBlock(
+			RelativePoseError::Create(quatRelative, direction,
+				weightRotation*confidence, weightDirection*confidence),
+			pairLoss,
+			poseParams + pair.ID1*7,   // Pose params of the pair's first image
+			poseParams + pair.ID2*7);  // Pose params of its second image
+		++numResiduals;
+	}
+	return numResiduals;
+}
 } // namespace
 /*----------------------------------------------------------------*/
 
@@ -638,22 +1311,27 @@ bool BundleAdjustment::Adjust()
 	ceres::LossFunction* loss_function = config.robustThreshold > 0.f ?
 		new ceres::HuberLoss(config.robustThreshold) : nullptr;
 
-	// Set the SE(3) manifold on every valid pose block (shared instance; Ceres owns it once attached)
-	auto* se3_manifold = CreateSE3PoseManifold();
-	FOREACH(i, scene.images) {
-		if (!scene.images[i].IsValid())
-			continue;
-		#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
-		problem.AddParameterBlock(poseParams.data() + i * 7, 7, se3_manifold);
-		#else
-		problem.AddParameterBlock(poseParams.data() + i * 7, 7);
-		problem.SetParameterization(poseParams.data() + i * 7, se3_manifold);
-		#endif
-	}
+	DenseObservationSigmas denseSigmas;
+	const double denseWeight = config.useKeypointConfidence ? 1.0 :
+		EstimateDenseObservationWeight(scene, config, &denseSigmas);
+	const std::vector<double> denseWeights = DenseWeightPerImage(scene, config, denseWeight);
+
+	ObservationCap obsCap;
+	const ObservationCapStats capStats = BuildObservationCap(scene, config.maxObservationsPerImage,
+		config.minObservationsForCap, CountSceneObservations(scene),
+		[this](const auto& fn) {
+			for (const Track& track : scene.tracks)
+				if (track.IsInlier())
+					fn(track);
+		},
+		[this](IIndex imgID) { return scene.images[imgID].IsValid(); }, obsCap, config.minTriangulationAngle);
+	if (capStats.applied)
+		DEBUG("Bundle adjustment: %s", FormatObservationCapReport(capStats).c_str());
 
 	// Add reprojection residuals
 	uint32_t numReprojResiduals = 0;
 	uint32_t numSkippedLowConfidence = 0;
+	uint32_t numDenseResiduals = 0;
 	numReprojResidualsPerImage.resize(scene.images.size());
 	numReprojResidualsPerImage.Memset(0);
 	for (Track& track : scene.tracks) {
@@ -665,17 +1343,19 @@ bool BundleAdjustment::Adjust()
 			if (!img.IsValid())
 				continue;
 			ASSERT(obs.featureID < img.keypoints.size());
-			const cv::KeyPoint& kp = img.keypoints[obs.featureID];
-			// Compute weight from keypoint response / size (if enabled)
+			if (!obsCap.Keeps(imgID, obs.featureID))
+				continue;
 			ceres::LossFunction* residual_loss_function;
-			if (!SelectReprojectionLoss(config, kp, loss_function, residual_loss_function)) {
+			bool bDense = false;
+			if (!SelectReprojectionLoss(config, denseWeights[imgID], img, obs.featureID, loss_function, residual_loss_function, bDense)) {
 				++numSkippedLowConfidence;
-				continue; // skip low-confidence keypoints
+				continue;
 			}
-			AddReprojectionResidual(problem, residual_loss_function, img, kp,
+			AddReprojectionResidual(problem, residual_loss_function, img, img.keypoints[obs.featureID],
 				poseParams.data() + imgID * 7, track.position.ptr(), intrinsicParams);
 			++numReprojResidualsPerImage[imgID];
 			++numReprojResiduals;
+			numDenseResiduals += bDense;
 		}
 	}
 	if (config.useKeypointConfidence) {
@@ -684,10 +1364,24 @@ bool BundleAdjustment::Adjust()
 	} else {
 		DEBUG_EXTRA("Created %u reprojection residuals", numReprojResiduals);
 	}
+	LogDenseResiduals("Bundle adjustment", numDenseResiduals, numReprojResiduals, denseWeight, denseSigmas);
+
+	// Add relative-pose residuals from the verified pairs joining two registered images
+	const uint32_t numPairResiduals = AddRelativePoseResiduals(problem, scene, config, poseParams.data(),
+		[this](IIndex imgID) { return scene.images[imgID].IsValid(); });
+	if (config.IsUsingPairConstraints())
+		DEBUG("Created %u relative-pose residuals from the verified pairs", numPairResiduals);
+
+	// Set the SE(3) manifold on every active pose block
+	const auto visitValidImages = [this](const auto& fn) {
+		FOREACH(i, scene.images)
+			if (scene.images[i].IsValid())
+				fn(i);
+	};
+	AttachPoseManifold(problem, poseParams, visitValidImages, CreateSE3PoseManifold());
 
 	// Set intrinsic parameter constraints (if refining intrinsics)
 	if (config.IsRefiningIntrinsics() && !intrinsicParams.empty()) {
-		// Build subset manifold for each camera based on refinement flags
 		// Intrinsic layout: [fx, fy/fx, cx, cy, k1, k2, k3, p1, p2, k4, k5, k6]
 		std::vector<int> constantParams;
 		constantParams.reserve(12);
@@ -701,9 +1395,11 @@ bool BundleAdjustment::Adjust()
 			constantParams.push_back(2);  // cx
 			constantParams.push_back(3);  // cy
 		}
-		if (!config.refineRadialDistortion123) {
+		if (!config.refineRadialDistortion12) {
 			constantParams.push_back(4);  // k1
 			constantParams.push_back(5);  // k2
+		}
+		if (!config.refineRadialDistortion3) {
 			constantParams.push_back(6);  // k3
 		}
 		if (!config.refineTangentialDistortion) {
@@ -722,32 +1418,26 @@ bool BundleAdjustment::Adjust()
 			internConstantParams.push_back(11);  // k6
 		}
 
-		#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
-		auto* intrinsicManifold = new ceres::SubsetManifold(12, constantParams);
-		auto* internIntrinsicManifold = new ceres::SubsetManifold(12, internConstantParams);
+		#if CERES_HAS_MANIFOLD
+		CeresManifold* intrinsicManifold = new ceres::SubsetManifold(12, constantParams);
+		CeresManifold* internIntrinsicManifold = new ceres::SubsetManifold(12, internConstantParams);
 		#else
-		auto* intrinsicManifold = new ceres::SubsetParameterization(12, constantParams);
-		auto* internIntrinsicManifold = new ceres::SubsetParameterization(12, internConstantParams);
+		CeresManifold* intrinsicManifold = new ceres::SubsetParameterization(12, constantParams);
+		CeresManifold* internIntrinsicManifold = new ceres::SubsetParameterization(12, internConstantParams);
 		#endif
 		bool bIntrinsicManifoldUsed = false;
 		bool bInternIntrinsicManifoldUsed = false;
 		for (auto& pair : intrinsicParams) {
 			ASSERT(!pair.second.empty());
-			// Skip cameras whose intrinsic block was never added to the problem (no
-			// PINHOLE residual referenced it); SetManifold would otherwise LOG(FATAL).
 			if (!problem.HasParameterBlock(pair.second.data()))
 				continue;
-			auto intrManifold = (pair.first->GetType() == CameraType::PINHOLE && !static_cast<const PinholeCamera*>(pair.first)->useAdditionalDistortion ?
+			CeresManifold* intrManifold = (pair.first->GetType() == CameraType::PINHOLE && !static_cast<const PinholeCamera*>(pair.first)->useAdditionalDistortion ?
 				internIntrinsicManifold : intrinsicManifold);
 			if (intrManifold == intrinsicManifold)
 				bIntrinsicManifoldUsed = true;
 			else
 				bInternIntrinsicManifoldUsed = true;
-			#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
-			problem.SetManifold(pair.second.data(), intrManifold);
-			#else
-			problem.SetParameterization(pair.second.data(), intrManifold);
-			#endif
+			SetBlockManifold(problem, pair.second.data(), intrManifold);
 		}
 		if (!bIntrinsicManifoldUsed)
 			delete intrinsicManifold;
@@ -766,7 +1456,6 @@ bool BundleAdjustment::Adjust()
 		}
 		#endif
 	} else if (!intrinsicParams.empty()) {
-		// Not refining intrinsics: set all intrinsic blocks constant
 		for (auto& pair : intrinsicParams) {
 			ASSERT(!pair.second.empty());
 			SetParameterBlockConstantIfPresent(problem, pair.second.data());
@@ -777,7 +1466,6 @@ bool BundleAdjustment::Adjust()
 	// Add GPS position constraints (if enabled)
 	numGPSResiduals = 0;
 	if (config.IsRefiningGPS() && scene.status.nState.isSet(Scene::Status::STATE::GEO_ALIGN)) {
-		// Estimate median distance from tracks
 		DoubleArr distances;
 		distances.reserve(scene.tracks.size());
 		for (const Track& track : scene.tracks) {
@@ -787,34 +1475,29 @@ bool BundleAdjustment::Adjust()
 				ASSERT(obs.imageID < scene.images.size());
 				const Image& img = scene.images[obs.imageID];
 				ASSERT(img.IsValid());
-				double dist = norm(track.position - img.C);
-				if (dist > 0.1) // filter out degenerate points
+				const double dist = norm(track.position - img.C);
+				if (dist > 0.1)
 					distances.push_back(dist);
-				break; // only need one observation per track
+				break;
 			}
 		}
-		// Compute scene scale for unit-aware weighting
 		ASSERT(!distances.empty());
 		const double median_depth = distances.GetMedian();
-		// Estimate median focal length
 		DoubleArr focals;
 		for (const Image& img : scene.images) {
 			if (img.IsValid() && img.GetCameraType() == CameraType::PINHOLE) {
-				const PinholeCamera* pc = dynamic_cast<const PinholeCamera*>(img.pCamera);
+				const PinholeCamera* pc = static_cast<const PinholeCamera*>(img.pCamera);
 				focals.push_back((pc->fx + pc->fy) / 2.0);
 			}
 		}
-		double median_focal = 1.0; // default fallback
-		if (!focals.empty())
-			median_focal = focals.GetMedian();
-		// Compute pixel-to-meter scale
+		ASSERT(!focals.empty());
+		const double median_focal = focals.GetMedian();
 		const double pixel_scale = median_depth / median_focal;
 		const double weight_h_scaled = SQRT(config.gpsPositionWeight * config.gpsWeightScaleFactor * pixel_scale);
 		const double weight_v_scaled = SQRT(config.gpsPositionWeightZ * config.gpsWeightScaleFactor * pixel_scale);
 		DEBUG_EXTRA("GPS weight scaling: median_depth %.2f m, median_focal %.1f px, pixel_scale %.4f m/px",
 		    median_depth, median_focal, pixel_scale);
 		DEBUG_EXTRA("Effective GPS weights: horizontal %.4f, vertical %.4f", weight_h_scaled, weight_v_scaled);
-		// Collect GPS observations and create GPS residuals
 		const Point3d centerECEF = scene.GetCenterECEF();
 		double lat0, lon0, alt0;
 		ECEFToWGS84(centerECEF.x, centerECEF.y, centerECEF.z, lat0, lon0, alt0);
@@ -829,10 +1512,6 @@ bool BundleAdjustment::Adjust()
 			WGS84ToENU(meta.latitude, meta.longitude, meta.altitude,
 						lat0, lon0, alt0,
 						enu_east, enu_north, enu_up);
-			// Create GPS residual
-			// Camera coordinate convention: X=East, Y=North, Z=Up (adjust if scene uses different convention)
-			// EXIF GPS frequently lacks accuracy tags; the residual divides by the accuracy,
-			// so substitute typical consumer-GPS accuracies when unknown
 			const double accuracyH = meta.positionAccuracy > 0.f ? meta.positionAccuracy : 10.0;
 			const double accuracyV = meta.positionAccuracyZ > 0.f ? meta.positionAccuracyZ : 20.0;
 			ceres::CostFunction* gps_cost = GPSPositionError::Create(
@@ -842,7 +1521,7 @@ bool BundleAdjustment::Adjust()
 			);
 			problem.AddResidualBlock(
 				gps_cost,
-				nullptr, // No robust loss for GPS (already weighted by accuracy)
+				nullptr,
 				poseParams.data() + i * 7
 			);
 			++numGPSResiduals;
@@ -852,6 +1531,7 @@ bool BundleAdjustment::Adjust()
 	}
 
 	// Fix best connected camera (gauge freedom) - unless we have GPS constraints
+	IIndex scaleImgID = NO_ID;
 	if (numGPSResiduals == 0) {
 		IIndex bestImgID = NO_ID;
 		FOREACH(i, scene.images) {
@@ -861,84 +1541,61 @@ bool BundleAdjustment::Adjust()
 				bestImgID = i;
 		}
 		if (bestImgID != NO_ID) {
-			problem.SetParameterBlockConstant(poseParams.data() + bestImgID * 7);
+			SetParameterBlockConstantIfPresent(problem, poseParams.data() + bestImgID * 7);
 			DEBUG("Fixed view %u (reference, no GPS)", bestImgID);
+			// Hold one centre coordinate of a well-measured distant camera to anchor scale (COLMAP style)
+			if (config.refinePosesRotation && config.refinePosesPosition) {
+				const Point3 refCenter(scene.images[bestImgID].C);
+				const auto inSolve = [&](IIndex i) {
+					return i != bestImgID && scene.images[i].IsValid() && problem.HasParameterBlock(poseParams.data() + i * 7);
+				};
+				DoubleArr distances;
+				FOREACH(i, scene.images)
+					if (inSolve(i))
+						distances.push_back(norm(Point3(scene.images[i].C) - refCenter));
+				if (!distances.empty()) {
+					const double medianDistance = distances.GetNth(distances.size() / 2);
+					FOREACH(i, scene.images) {
+						if (!inSolve(i) || norm(Point3(scene.images[i].C) - refCenter) < medianDistance)
+							continue;
+						if (scaleImgID == NO_ID || numReprojResidualsPerImage[scaleImgID] < numReprojResidualsPerImage[i])
+							scaleImgID = i;
+					}
+				}
+				if (scaleImgID != NO_ID) {
+					const Point3 offset(Point3(scene.images[scaleImgID].C) - refCenter);
+					const int coordinate = ABS(offset.x) >= ABS(offset.y) ?
+						(ABS(offset.x) >= ABS(offset.z) ? 0 : 2) : (ABS(offset.y) >= ABS(offset.z) ? 1 : 2);
+					if (offset[coordinate] == 0) {
+						scaleImgID = NO_ID;
+					} else {
+						SetBlockManifold(problem, poseParams.data() + scaleImgID * 7,
+							CreateSE3PoseManifoldHoldingCenterCoordinate(coordinate));
+						DEBUG("Held centre coordinate %d of view %u (scale, no GPS)", coordinate, scaleImgID);
+					}
+				}
+			}
 		}
 	}
 
-	// Optionally disable pose/point refinement
-	if (!config.IsRefiningPoses()) {
-		// Disable all pose refinement
-		FOREACH(i, scene.images)
-			if (scene.images[i].IsValid())
-				problem.SetParameterBlockConstant(poseParams.data() + i * 7);
-		DEBUG("Views poses: FIXED");
-	} else if (!config.refinePosesRotation || !config.refinePosesPosition) {
-		// Selectively disable rotation and/or position refinement
-		std::vector<int> constantParams;
-		CollectConstantPoseParams(config, constantParams);
-		FOREACH(i, scene.images)
-			if (scene.images[i].IsValid())
-				SetPoseSubsetConstant(problem, poseParams.data() + i * 7, constantParams);
-		DEBUG("Views poses: rotation=%s, position=%s",
-		      config.refinePosesRotation ? "OPTIMIZED" : "FIXED",
-		      config.refinePosesPosition ? "OPTIMIZED" : "FIXED");
-	}
+	// Optionally disable pose/point refinement (only for the blocks the residuals created)
+	ApplyPoseFixation(problem, config, poseParams, visitValidImages, "");
 	if (!config.refinePoints) {
-		// Disable all point refinement (a point block exists only if a residual referenced it;
-		// non-inlier tracks and tracks whose observations were all skipped are never added)
 		for (Track& track : scene.tracks)
 			SetParameterBlockConstantIfPresent(problem, track.position.ptr());
 		DEBUG("3D points: FIXED");
 	}
 
-	// Configure solver
-	ceres::Solver::Options options;
-	if (numReprojResiduals < 500000) {
-		options.linear_solver_type = ceres::DENSE_SCHUR;
-		options.preconditioner_type = ceres::IDENTITY; // Not used with DENSE_SCHUR
-	} else {
-		// For large problems, use SPARSE_SCHUR or ITERATIVE_SCHUR
-		// Use ITERATIVE_SCHUR for better numerical stability, especially on macOS Apple Accelerate
-		// SPARSE_SCHUR can fail with "Numeric factorisation failed" on poorly conditioned problems
-		options.linear_solver_type = ceres::ITERATIVE_SCHUR;
-		options.preconditioner_type = ceres::SCHUR_JACOBI; // Robust preconditioner
-		options.use_inner_iterations = true; // Improves convergence
-		#if 0 && (CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2))
-		// DISABLED: Power Bundle Adjustment (Weber et al., CVPR 2022) via the
-		// SCHUR_POWER_SERIES_EXPANSION preconditioner, gated on a large camera count (the reduced
-		// camera system it is meant to accelerate). Benchmarked against the SCHUR_JACOBI default and
-		// it loses at every scale tested, so it is left off. On an i7-13700KF (16C/24T) / RTX 4070 /
-		// 32GB / Win11, Ceres 2.2.0 + CUDA 13.0: House (83 cameras) ran 1.2-3.9x slower; Tanks&Temples
-		// Courthouse (1106 cameras) ran 1.6-1.7x slower on the 4-5.6M-residual bundles and HUNG for
-		// >81 min on a 6.3M-residual bundle (never converged), while SCHUR_JACOBI completed the whole
-		// reconstruction in ~54 min. CG convergence was erratic (non-monotonic in problem size).
-		// Re-enable/re-tune (e.g. without use_spse_initialization) only with a fresh benchmark on a
-		// scene with far more cameras than we had available.
-		if (scene.status.nCalibratedImages > 1000) {
-			options.preconditioner_type = ceres::SCHUR_POWER_SERIES_EXPANSION;
-			options.use_spse_initialization = true;
-		}
-		#endif
-	}
-	#ifndef _RELEASE
-	options.minimizer_progress_to_stdout = true;
-	#else
-	options.minimizer_progress_to_stdout = false;
-	#endif
-	options.max_num_iterations = config.maxIterations;
-	// numThreads 0 = auto; either way stay within the scene's thread budget, as
-	// clustered sub-scenes solve concurrently
-	options.num_threads = (int)MINF(config.numThreads > 0 ? config.numThreads : std::thread::hardware_concurrency(), scene.nMaxThreads);
-	options.function_tolerance = config.functionTolerance;
-
-	// Solve
+	// Configure and solve
+	const bool useSparse = numReprojResiduals >= config.minResidualsForSparseSolver;
+	ceres::Solver::Options options = BuildSolverOptions(config, scene.nMaxThreads,
+		useSparse ? ceres::SPARSE_SCHUR : ceres::DENSE_SCHUR, useSparse ? &problem : nullptr);
 	ceres::Solver::Summary summary;
-	ceres::Solve(options, &problem, &summary);
+	SolveBundle(options, problem, summary);
 	DEBUG("BA Summary: %s", summary.BriefReport().c_str());
 	if (!summary.IsSolutionUsable()) {
 		VERBOSE("error: bundle adjustment failed");
-		this->problem.reset(); // no valid solution to estimate uncertainty from
+		this->problem.reset();
 		return false;
 	}
 
@@ -946,13 +1603,16 @@ bool BundleAdjustment::Adjust()
 	FOREACH(i, scene.images)
 		if (scene.images[i].IsValid())
 			QuaternionAndCenterToPose3D(poseParams.data() + i * 7, scene.images[i]);
+	// Restore the full SE(3) manifold on the scale-anchor camera for post-solve pose covariance
+	if (scaleImgID != NO_ID)
+		SetBlockManifold(problem, poseParams.data() + scaleImgID * 7, CreateSE3PoseManifold());
 
 	// Update camera intrinsics if refined
 	if (config.IsRefiningIntrinsics() && !intrinsicParams.empty()) {
 		for (auto& pair : intrinsicParams) {
-			PinholeCamera* pinholeCamera = dynamic_cast<PinholeCamera*>(const_cast<Camera*>(pair.first));
-			if (!pinholeCamera)
+			if (pair.first->GetType() != CameraType::PINHOLE)
 				continue;
+			PinholeCamera* pinholeCamera = static_cast<PinholeCamera*>(const_cast<Camera*>(pair.first));
 			ApplyPinholeIntrinsics(pair.second.data(), pinholeCamera);
 			DEBUG_EXTRA("Camera intrinsics updated: %s", pinholeCamera->GetIntrinsicsString().c_str());
 		}
@@ -962,8 +1622,10 @@ bool BundleAdjustment::Adjust()
 	DEBUG("Bundle adjustment complete: %u reprojection residuals, %u GPS residuals, %.4g -> %.4g cost (%s)",
 	    numReprojResiduals, numGPSResiduals, summary.initial_cost, summary.final_cost, TD_TIMER_GET_FMT().c_str());
 
-	// Report average reprojection errors
-	ComputeTracksMeanReprojectionError(scene);
+	if (capStats.applied)
+		ComputeTracksMeanReprojectionError(scene, [&obsCap](uint32_t imgID, uint32_t featureID) { return obsCap.Keeps(imgID, featureID); });
+	else
+		ComputeTracksMeanReprojectionError(scene);
 	return true;
 }
 
@@ -972,7 +1634,7 @@ bool BundleAdjustment::AdjustLocal(
 	const IIndexArr& fixedViewIDs)
 {
 	TD_TIMER_STARTD();
-	numGPSResiduals = 0; // local BA adds no GPS priors
+	numGPSResiduals = 0;
 
 	// 1. Set local window
 	ASSERT(!viewIDs.empty());
@@ -982,7 +1644,7 @@ bool BundleAdjustment::AdjustLocal(
 
 	// 2. Collect relevant points (observed by at least one local image)
 	std::vector<uint32_t> activePoints;
-	activePoints.reserve(scene.tracks.size() / 10); // heuristic
+	activePoints.reserve(scene.tracks.size() / 10);
 	FOREACH(i, scene.tracks) {
 		const Track& track = scene.tracks[i];
 		if (!track.IsInlier())
@@ -1001,32 +1663,47 @@ bool BundleAdjustment::AdjustLocal(
 	DEBUG_EXTRA("Local bundle adjustment with %u cameras, %u (%u local, %u fixed) images, %u tracks",
 		scene.cameras.size(), allImages.size(), viewIDs.size(), fixedViewIDs.size(), (unsigned)activePoints.size());
 
-	// Pose parameters: [qw, qx, qy, qz, Cx, Cy, Cz] x nImages, indexed by image ID like global
-	// BA. Only window images (local + fixed) receive a parameter block; the flat layout lets
-	// ComputePoseUncertainty() read the solved pose blocks with the same imageID*7 addressing.
+	// Pose parameters indexed by image ID (matching global BA for ComputePoseUncertainty)
 	poseParams.assign(scene.images.size() * 7, 0.0);
 	for (IIndex imgID : allImages) {
 		ASSERT(scene.images[imgID].IsValid());
 		Pose3DToQuaternionAndCenter(scene.images[imgID], poseParams.data() + imgID * 7);
 	}
 
-	// Intrinsic parameters: always fixed in local BA (not refined). Member storage so the
-	// intrinsic blocks outlive the solve for post-Adjust covariance evaluation.
+	// Intrinsic parameters (always fixed in local BA)
 	intrinsicParams.clear();
 	for (IIndex imgID : allImages)
 		if (scene.images[imgID].IsValid())
 			AddPinholeIntrinsics(intrinsicParams, scene.images[imgID]);
 
-	// 3. Build the Ceres problem as a member (kept alive past the solve so
-	// ComputePoseUncertainty() can evaluate the Jacobian on the final state)
+	// 3. Build Ceres problem
 	this->problem = std::make_unique<ceres::Problem>();
 	ceres::Problem& problem = *this->problem;
-	// Use standard Huber loss (threshold in pixels)
 	ceres::LossFunction* loss_function = config.robustThreshold > 0.f ?
 		new ceres::HuberLoss(config.robustThreshold) : nullptr;
 
-	// Add reprojection residuals (only observations from window images: local or fixed)
+	DenseObservationSigmas denseSigmas;
+	const double denseWeight = config.useKeypointConfidence ? 1.0 :
+		EstimateDenseObservationWeight(scene, config, &denseSigmas);
+	const std::vector<double> denseWeights = DenseWeightPerImage(scene, config, denseWeight);
+
+	const auto inWindow = [&localImages, &fixedImages](IIndex imgID) {
+		return localImages.find(imgID) != localImages.end() || fixedImages.find(imgID) != fixedImages.end();
+	};
+	ObservationCap obsCap;
+	const ObservationCapStats capStats = BuildObservationCap(scene, config.maxObservationsPerImage,
+		config.minObservationsForCap, CountSceneObservations(scene),
+		[this, &activePoints](const auto& fn) {
+			for (const uint32_t pointID : activePoints)
+				fn(scene.tracks[pointID]);
+		},
+		inWindow, obsCap, config.minTriangulationAngle);
+	if (capStats.applied)
+		DEBUG("Local bundle adjustment: %s", FormatObservationCapReport(capStats).c_str());
+
+	// Add reprojection residuals (window images only)
 	uint32_t numReprojResiduals = 0;
+	uint32_t numDenseResiduals = 0;
 	numReprojResidualsPerImage.resize(scene.images.size());
 	numReprojResidualsPerImage.Memset(0);
 	for (const IIndex pointID : activePoints) {
@@ -1034,44 +1711,36 @@ bool BundleAdjustment::AdjustLocal(
 		ASSERT(track.IsInlier());
 		for (const Observation& obs : track) {
 			const IIndex imgID = obs.imageID;
-			// Only consider observations in local or fixed images
-			if (localImages.find(imgID) == localImages.end() &&
-			    fixedImages.find(imgID) == fixedImages.end())
+			if (!inWindow(imgID))
 				continue;
 			const Image& img = scene.images[imgID];
 			ASSERT(obs.featureID < img.keypoints.size());
-			const cv::KeyPoint& kp = img.keypoints[obs.featureID];
-			// Compute weight from keypoint response / size (if enabled)
+			if (!obsCap.Keeps(imgID, obs.featureID))
+				continue;
 			ceres::LossFunction* residual_loss_function;
-			if (!SelectReprojectionLoss(config, kp, loss_function, residual_loss_function))
-				continue; // skip low-confidence keypoints
-			AddReprojectionResidual(problem, residual_loss_function, img, kp,
+			bool bDense = false;
+			if (!SelectReprojectionLoss(config, denseWeights[imgID], img, obs.featureID, loss_function, residual_loss_function, bDense))
+				continue;
+			AddReprojectionResidual(problem, residual_loss_function, img, img.keypoints[obs.featureID],
 				poseParams.data() + imgID * 7, track.position.ptr(), intrinsicParams);
 			++numReprojResidualsPerImage[imgID];
 			++numReprojResiduals;
+			numDenseResiduals += bDense;
 		}
 	}
+	LogDenseResiduals("Local bundle adjustment", numDenseResiduals, numReprojResiduals, denseWeight, denseSigmas);
 
-	// Set the SE(3) manifold on every pose block that was actually added to the problem.
-	// Ceres takes ownership of the manifold only once it is attached to a block, so if no
-	// pose block exists (all observations skipped) we must free it ourselves to avoid a leak.
-	auto* se3_manifold = CreateSE3PoseManifold();
-	bool poseManifoldUsed = false;
-	for (IIndex imgID : allImages) {
-		double* pose = poseParams.data() + imgID * 7;
-		if (problem.HasParameterBlock(pose)) {
-			#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
-			problem.SetManifold(pose, se3_manifold);
-			#else
-			problem.SetParameterization(pose, se3_manifold);
-			#endif
-			poseManifoldUsed = true;
-		}
-	}
-	if (!poseManifoldUsed)
-		delete se3_manifold;
+	const uint32_t numPairResiduals = AddRelativePoseResiduals(problem, scene, config, poseParams.data(), inWindow);
+	if (config.IsUsingPairConstraints())
+		DEBUG("Created %u relative-pose residuals from the verified pairs (local BA)", numPairResiduals);
 
-	// 4. Set fixed parameters (only for blocks that were actually added via a residual)
+	const auto visitWindowImages = [&allImages](const auto& fn) {
+		for (IIndex imgID : allImages)
+			fn(imgID);
+	};
+	AttachPoseManifold(problem, poseParams, visitWindowImages, CreateSE3PoseManifold());
+
+	// 4. Set fixed parameters
 	if (!intrinsicParams.empty()) {
 		for (auto& pair : intrinsicParams) {
 			ASSERT(!pair.second.empty());
@@ -1080,7 +1749,6 @@ bool BundleAdjustment::AdjustLocal(
 		DEBUG("Fixed all intrinsic parameters");
 	}
 
-	// Fixed images
 	bool bFixedAny = false;
 	for (IIndex imgID : fixedViewIDs)
 		if (SetParameterBlockConstantIfPresent(problem, poseParams.data() + imgID * 7))
@@ -1101,53 +1769,21 @@ bool BundleAdjustment::AdjustLocal(
 		}
 	}
 
-	// Optionally disable pose/point refinement
-	if (!config.IsRefiningPoses()) {
-		for (IIndex imgID : allImages)
-			SetParameterBlockConstantIfPresent(problem, poseParams.data() + imgID * 7);
-		DEBUG("Views poses (local BA): FIXED");
-	} else if (!config.refinePosesRotation || !config.refinePosesPosition) {
-		// Selectively disable rotation and/or position refinement
-		std::vector<int> constantParams;
-		CollectConstantPoseParams(config, constantParams);
-		for (IIndex imgID : allImages) {
-			double* pose = poseParams.data() + imgID * 7;
-			if (problem.HasParameterBlock(pose))
-				SetPoseSubsetConstant(problem, pose, constantParams);
-		}
-		DEBUG("Views poses (local BA): rotation=%s, position=%s",
-		      config.refinePosesRotation ? "OPTIMIZED" : "FIXED",
-		      config.refinePosesPosition ? "OPTIMIZED" : "FIXED");
-	}
+	ApplyPoseFixation(problem, config, poseParams, visitWindowImages, " (local BA)");
 	if (!config.refinePoints) {
-		// Fix all active points (a point block exists only if a residual referenced it;
-		// an active point can have all its in-window observations skipped, e.g. as
-		// low-confidence keypoints, leaving its block unadded)
 		for (uint32_t pointID : activePoints)
 			SetParameterBlockConstantIfPresent(problem, scene.tracks[pointID].position.ptr());
 		DEBUG("3D points (local BA): FIXED");
 	}
 
 	// Solve
-	ceres::Solver::Options options;
-	options.linear_solver_type = ceres::SPARSE_SCHUR;
-	#ifndef _RELEASE
-	options.minimizer_progress_to_stdout = true;
-	#else
-	options.minimizer_progress_to_stdout = false;
-	#endif
-	options.max_num_iterations = config.maxIterations;
-	// numThreads 0 = auto; either way stay within the scene's thread budget, as
-	// clustered sub-scenes solve concurrently
-	options.num_threads = (int)MINF(config.numThreads > 0 ? config.numThreads : std::thread::hardware_concurrency(), scene.nMaxThreads);
-	options.function_tolerance = config.functionTolerance;
-
+	ceres::Solver::Options options = BuildSolverOptions(config, scene.nMaxThreads, ceres::SPARSE_SCHUR, nullptr);
 	ceres::Solver::Summary summary;
-	ceres::Solve(options, &problem, &summary);
+	SolveBundle(options, problem, summary);
 	DEBUG("Local BA Summary: %s", summary.BriefReport().c_str());
 	if (!summary.IsSolutionUsable()) {
 		VERBOSE("error: local bundle adjustment failed");
-		this->problem.reset(); // no valid solution to estimate uncertainty from
+		this->problem.reset();
 		return false;
 	}
 
@@ -1158,198 +1794,103 @@ bool BundleAdjustment::AdjustLocal(
 	DEBUG("Local bundle adjustment complete: %u reprojection residuals, %.4g -> %.4g cost (%s)",
 	    numReprojResiduals, summary.initial_cost, summary.final_cost, TD_TIMER_GET_FMT().c_str());
 
-	// Report average reprojection errors for local window
 	ComputeTracksMeanReprojectionError(scene);
 	return true;
 }
 /*----------------------------------------------------------------*/
 
 
+// Lives in the library, not in the Tests app: it needs the Ceres headers, and a second copy of the
+// statically linked Ceres/glog in the Tests executable aborts it at start-up (glog flags registered twice)
 bool SFM::PinholeReprojectionJacobianTest()
 {
 	TD_TIMER_START();
-	VERBOSE("\n--- Testing PinholeReprojectionErrorAnalytic Jacobians ---");
+	// The analytic and the auto-diff reprojection functors are two derivations of the same
+	// projection, and auto-diff differentiates it exactly, so the two Jacobians must agree to
+	// numerical precision -- not to a finite-difference tolerance. Every parameter is randomized
+	// over many trials with the whole distortion model live (k3, p1, p2 and the rational
+	// denominator k4-k6 all non-zero), since a hand-written derivative goes wrong in the terms a
+	// single hand-picked test case leaves at zero.
+	//
+	// The quaternion columns are the one exception: both functors extend the rotation off the unit
+	// sphere, by different amounts along the radial direction, and Ceres never sees that direction
+	// (the quaternion manifold projects it out), so the auto-diff block is projected onto the
+	// tangent space before the comparison -- which is what the solver differentiates.
+	// "Relative" is per parameter block: the largest entry-wise difference over the largest entry
+	// of the block, so a block whose entries span orders of magnitude is judged on its own scale.
+	constexpr double maxRelativeError = 1e-6;
+	constexpr unsigned numTrials = 256;
+	std::mt19937 rng(20260909u);
+	const auto rnd = [&rng](double lo, double hi) {
+		return std::uniform_real_distribution<double>(lo, hi)(rng);
+	};
+	double worstRelativeError = 0, worstResidualError = 0;
+	for (unsigned trial = 0; trial < numTrials; ++trial) {
+		// random pose
+		double pose[7] = { rnd(-1.0, 1.0), rnd(-1.0, 1.0), rnd(-1.0, 1.0), rnd(-1.0, 1.0),
+			rnd(-3.0, 3.0), rnd(-3.0, 3.0), rnd(-3.0, 3.0) };
+		Eigen::Map<Eigen::Vector4d> quat(pose);
+		if (quat.norm() < 0.1)
+			continue; // too close to zero to normalize into a rotation
+		quat.normalize();
+		// random point in front of the camera, placed through the camera-space point it projects
+		// to, so that the trial is never spent on a point behind it
+		const double pointCamera[3] = { rnd(-4.0, 4.0), rnd(-4.0, 4.0), rnd(1.0, 10.0) };
+		const double quatInverse[4] = { pose[0], -pose[1], -pose[2], -pose[3] };
+		double point[3];
+		ceres::UnitQuaternionRotatePoint(quatInverse, pointCamera, point);
+		point[0] += pose[4]; point[1] += pose[5]; point[2] += pose[6];
+		// random intrinsics: [fx, fy/fx, cx, cy, k1, k2, k3, p1, p2, k4, k5, k6]
+		const double intrinsics[12] = { rnd(400.0, 2000.0), rnd(0.95, 1.05), rnd(300.0, 340.0), rnd(220.0, 260.0),
+			rnd(-0.3, 0.3), rnd(-0.2, 0.2), rnd(-0.1, 0.1), rnd(-0.01, 0.01), rnd(-0.01, 0.01),
+			rnd(-0.2, 0.2), rnd(-0.1, 0.1), rnd(-0.05, 0.05) };
+		const double* parameters[3] = { pose, intrinsics, point };
 
-	// Create synthetic test data
-	const double observed_x = 320.5;
-	const double observed_y = 240.7;
-
-	// Test parameters
-	double pose[7] = {0.1, 0.2, 0.05, 0.97, 1.0, 0.5, 3.0}; // quat + center
-	double intrinsics[12] = {500.0, 1.0, 320.0, 240.0, 0.1, -0.05, 0.01, 0.001, -0.001, 0.0, 0.0, 0.0};
-	double point[3] = {2.0, 1.5, 5.0};
-
-	// Normalize quaternion
-	Eigen::Map<Eigen::Vector4d>(pose).normalize();
-
-	// Evaluate analytic cost function
-	PinholeReprojectionErrorAnalytic analytic_cost(observed_x, observed_y);
-	double analytic_residuals[2];
-	double* analytic_jacobians[3];
-	double analytic_J_pose[2*7];
-	double analytic_J_intrinsics[2*12];
-	double analytic_J_point[2*3];
-	analytic_jacobians[0] = analytic_J_pose;
-	analytic_jacobians[1] = analytic_J_intrinsics;
-	analytic_jacobians[2] = analytic_J_point;
-	const double* params[3] = {pose, intrinsics, point};
-	const double* const* params_const = params;
-	if (!analytic_cost.Evaluate(params_const, analytic_residuals, analytic_jacobians)) {
-		VERBOSE("FAILED: Analytic cost evaluation failed");
-		return false;
-	}
-
-	// Evaluate auto-diff cost function for comparison
-	std::unique_ptr<ceres::CostFunction> autodiff_cost(PinholeReprojectionError::Create(observed_x, observed_y));
-	double autodiff_residuals[2];
-	double* autodiff_jacobians[3];
-	double autodiff_J_pose[2*7];
-	double autodiff_J_intrinsics[2*12];
-	double autodiff_J_point[2*3];
-	autodiff_jacobians[0] = autodiff_J_pose;
-	autodiff_jacobians[1] = autodiff_J_intrinsics;
-	autodiff_jacobians[2] = autodiff_J_point;
-	if (!autodiff_cost->Evaluate(params_const, autodiff_residuals, autodiff_jacobians)) {
-		VERBOSE("FAILED: Auto-diff cost evaluation failed");
-		return false;
-	}
-
-	// Compute numeric Jacobians using finite differences
-	const double epsilon = 1e-8;
-	double numeric_J_pose[2*7];
-	double numeric_J_intrinsics[2*12];
-	double numeric_J_point[2*3];
-
-	// Jacobian w.r.t. pose (7 params)
-	for (int i = 0; i < 7; ++i) {
-		double pose_plus[7], pose_minus[7];
-		std::memcpy(pose_plus, pose, 7 * sizeof(double));
-		std::memcpy(pose_minus, pose, 7 * sizeof(double));
-		pose_plus[i] += epsilon;
-		pose_minus[i] -= epsilon;
-
-		// Renormalize quaternion if perturbing quaternion components
-		if (i < 4) {
-			Eigen::Map<Eigen::Vector4d>(pose_plus).normalize();
-			Eigen::Map<Eigen::Vector4d>(pose_minus).normalize();
+		const double observedX = rnd(0.0, 640.0), observedY = rnd(0.0, 480.0);
+		PinholeReprojectionErrorAnalytic analytic(observedX, observedY);
+		double analyticResiduals[2], analyticPose[2*7], analyticIntrinsics[2*12], analyticPoint[2*3];
+		double* analyticJacobians[3] = { analyticPose, analyticIntrinsics, analyticPoint };
+		std::unique_ptr<ceres::CostFunction> autodiff(PinholeReprojectionError::Create(observedX, observedY));
+		double autodiffResiduals[2], autodiffPose[2*7], autodiffIntrinsics[2*12], autodiffPoint[2*3];
+		double* autodiffJacobians[3] = { autodiffPose, autodiffIntrinsics, autodiffPoint };
+		if (!analytic.Evaluate(parameters, analyticResiduals, analyticJacobians) ||
+			!autodiff->Evaluate(parameters, autodiffResiduals, autodiffJacobians)) {
+			VERBOSE("PinholeReprojectionJacobianTest FAILED: cost evaluation failed");
+			return false;
 		}
-
-		double res_plus[2], res_minus[2];
-		const double* params_plus[3] = {pose_plus, intrinsics, point};
-		const double* params_minus[3] = {pose_minus, intrinsics, point};
-		analytic_cost.Evaluate(params_plus, res_plus, nullptr);
-		analytic_cost.Evaluate(params_minus, res_minus, nullptr);
-
-		numeric_J_pose[0*7 + i] = (res_plus[0] - res_minus[0]) / (2.0 * epsilon);
-		numeric_J_pose[1*7 + i] = (res_plus[1] - res_minus[1]) / (2.0 * epsilon);
-	}
-
-	// Jacobian w.r.t. intrinsics (12 params)
-	for (int i = 0; i < 12; ++i) {
-		double intr_plus[12], intr_minus[12];
-		std::memcpy(intr_plus, intrinsics, 12 * sizeof(double));
-		std::memcpy(intr_minus, intrinsics, 12 * sizeof(double));
-		intr_plus[i] += epsilon;
-		intr_minus[i] -= epsilon;
-
-		double res_plus[2], res_minus[2];
-		const double* params_plus[3] = {pose, intr_plus, point};
-		const double* params_minus[3] = {pose, intr_minus, point};
-		analytic_cost.Evaluate(params_plus, res_plus, nullptr);
-		analytic_cost.Evaluate(params_minus, res_minus, nullptr);
-
-		numeric_J_intrinsics[0*12 + i] = (res_plus[0] - res_minus[0]) / (2.0 * epsilon);
-		numeric_J_intrinsics[1*12 + i] = (res_plus[1] - res_minus[1]) / (2.0 * epsilon);
-	}
-
-	// Jacobian w.r.t. point (3 params)
-	for (int i = 0; i < 3; ++i) {
-		double point_plus[3], point_minus[3];
-		std::memcpy(point_plus, point, 3 * sizeof(double));
-		std::memcpy(point_minus, point, 3 * sizeof(double));
-		point_plus[i] += epsilon;
-		point_minus[i] -= epsilon;
-
-		double res_plus[2], res_minus[2];
-		const double* params_plus[3] = {pose, intrinsics, point_plus};
-		const double* params_minus[3] = {pose, intrinsics, point_minus};
-		analytic_cost.Evaluate(params_plus, res_plus, nullptr);
-		analytic_cost.Evaluate(params_minus, res_minus, nullptr);
-
-		numeric_J_point[0*3 + i] = (res_plus[0] - res_minus[0]) / (2.0 * epsilon);
-		numeric_J_point[1*3 + i] = (res_plus[1] - res_minus[1]) / (2.0 * epsilon);
-	}
-
-	// Compare Jacobians (analytic vs numeric vs auto-diff)
-	const double jacobian_tol = 2.2e-5; // Tolerance for manifold-aware numerical differentiation
-	double max_diff_numeric = 0.0;
-	double max_diff_autodiff = 0.0;
-
-	// Check pose Jacobian (2x7)
-	for (int i = 0; i < 2; ++i) {
-		// Project quaternion part of autodiff Jacobian [i*7, i*7+4) onto tangent space
-		// to match manifold-aware derivatives (numeric/analytic)
-		double dot = 0.0;
-		for (int k = 0; k < 4; ++k) dot += autodiff_J_pose[i*7 + k] * pose[k];
-		for (int k = 0; k < 4; ++k) autodiff_J_pose[i*7 + k] -= dot * pose[k];
-
-		for (int j = 0; j < 7; ++j) {
-			const int idx = i*7 + j;
-			const double diff_numeric = ABS(analytic_J_pose[idx] - numeric_J_pose[idx]);
-			const double diff_autodiff = ABS(analytic_J_pose[idx] - autodiff_J_pose[idx]);
-			max_diff_numeric = MAX(max_diff_numeric, diff_numeric);
-			max_diff_autodiff = MAX(max_diff_autodiff, diff_autodiff);
-			if (diff_numeric > jacobian_tol) {
-				VERBOSE("FAILED: Pose Jacobian[%d] mismatch (numeric): analytic=%.6e, numeric=%.6e, diff=%.6e",
-				        idx, analytic_J_pose[idx], numeric_J_pose[idx], diff_numeric);
-				return false;
+		// project the auto-diff quaternion columns onto the manifold's tangent space
+		for (int i = 0; i < 2; ++i) {
+			Eigen::Map<Eigen::Vector4d> jacobianQuat(autodiffPose + i*7);
+			jacobianQuat -= jacobianQuat.dot(quat)*quat;
+		}
+		for (int i = 0; i < 2; ++i)
+			worstResidualError = MAXF(worstResidualError,
+				ABS(analyticResiduals[i] - autodiffResiduals[i])/MAXF(ABS(autodiffResiduals[i]), 1.0));
+		const int blockSizes[3] = { 2*7, 2*12, 2*3 };
+		const char* const blockNames[3] = { "pose", "intrinsics", "point" };
+		for (int block = 0; block < 3; ++block) {
+			double maxDifference = 0, maxValue = 0;
+			for (int i = 0; i < blockSizes[block]; ++i) {
+				maxDifference = MAXF(maxDifference, ABS(analyticJacobians[block][i] - autodiffJacobians[block][i]));
+				maxValue = MAXF(maxValue, MAXF(ABS(analyticJacobians[block][i]), ABS(autodiffJacobians[block][i])));
 			}
-			if (diff_autodiff > jacobian_tol) {
-				VERBOSE("FAILED: Pose Jacobian[%d] mismatch (auto-diff): analytic=%.6e, autodiff=%.6e, diff=%.6e",
-				        idx, analytic_J_pose[idx], autodiff_J_pose[idx], diff_autodiff);
+			const double relativeError = maxValue > 0 ? maxDifference/maxValue : maxDifference;
+			worstRelativeError = MAXF(worstRelativeError, relativeError);
+			if (relativeError > maxRelativeError) {
+				VERBOSE("PinholeReprojectionJacobianTest FAILED: trial %u %s Jacobian differs by %g relative (max entry %g)",
+					trial, blockNames[block], relativeError, maxValue);
 				return false;
 			}
 		}
 	}
-
-	// Check intrinsics Jacobian (2x12)
-	for (int i = 0; i < 2*12; ++i) {
-		const double diff_numeric = ABS(analytic_J_intrinsics[i] - numeric_J_intrinsics[i]);
-		const double diff_autodiff = ABS(analytic_J_intrinsics[i] - autodiff_J_intrinsics[i]);
-		max_diff_numeric = MAX(max_diff_numeric, diff_numeric);
-		max_diff_autodiff = MAX(max_diff_autodiff, diff_autodiff);
-		if (diff_numeric > jacobian_tol) {
-			VERBOSE("FAILED: Intrinsics Jacobian[%d] mismatch (numeric): analytic=%.6e, numeric=%.6e, diff=%.6e",
-			        i, analytic_J_intrinsics[i], numeric_J_intrinsics[i], diff_numeric);
-			return false;
-		}
-		if (diff_autodiff > jacobian_tol) {
-			VERBOSE("FAILED: Intrinsics Jacobian[%d] mismatch (auto-diff): analytic=%.6e, autodiff=%.6e, diff=%.6e",
-			        i, analytic_J_intrinsics[i], autodiff_J_intrinsics[i], diff_autodiff);
-			return false;
-		}
+	// the analytic functor evaluates the projection itself, so its residual is held to the auto-diff one too
+	constexpr double maxResidualError = 1e-9;
+	if (worstResidualError > maxResidualError) {
+		VERBOSE("PinholeReprojectionJacobianTest FAILED: residuals differ by %g relative", worstResidualError);
+		return false;
 	}
-
-	// Check point Jacobian (2x3)
-	for (int i = 0; i < 2*3; ++i) {
-		const double diff_numeric = ABS(analytic_J_point[i] - numeric_J_point[i]);
-		const double diff_autodiff = ABS(analytic_J_point[i] - autodiff_J_point[i]);
-		max_diff_numeric = MAX(max_diff_numeric, diff_numeric);
-		max_diff_autodiff = MAX(max_diff_autodiff, diff_autodiff);
-		if (diff_numeric > jacobian_tol) {
-			VERBOSE("FAILED: Point Jacobian[%d] mismatch (numeric): analytic=%.6e, numeric=%.6e, diff=%.6e",
-			        i, analytic_J_point[i], numeric_J_point[i], diff_numeric);
-			return false;
-		}
-		if (diff_autodiff > jacobian_tol) {
-			VERBOSE("FAILED: Point Jacobian[%d] mismatch (auto-diff): analytic=%.6e, autodiff=%.6e, diff=%.6e",
-			        i, analytic_J_point[i], autodiff_J_point[i], diff_autodiff);
-			return false;
-		}
-	}
-
-	VERBOSE("PASSED: All Jacobians match within tolerance (numeric max diff=%.2e, auto-diff max diff=%.2e) %s",
-	        max_diff_numeric, max_diff_autodiff, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("PinholeReprojectionJacobianTest PASSED: %u trials, worst relative Jacobian difference %.2e, residual %.2e (%s)",
+		numTrials, worstRelativeError, worstResidualError, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

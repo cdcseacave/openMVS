@@ -78,4 +78,25 @@ private:
 };
 /*----------------------------------------------------------------*/
 
+// While one is alive, every block of up to MAX_BLOCK bytes the program allocates with new comes from a
+// pool handed out from its top down, so each lies below the one allocated before it: the reverse of the
+// order a fresh heap gives, for a test showing that a result does not hang on where the allocator puts
+// things. Deleting a pooled block gives nothing back (the pool lasts as long as the program), and a
+// request the pool can no longer hold goes to the allocator as usual. Effective where the libraries
+// under test take their memory from this program's operator new, as shared objects do on Linux.
+class ScopedDescendingHeap {
+public:
+	static constexpr size_t MAX_BLOCK = 256;       // bytes; larger blocks keep coming from the allocator
+	static constexpr size_t POOL_SIZE = 256 << 20; // bytes, reserved at the first use
+	ScopedDescendingHeap();
+	~ScopedDescendingHeap();
+	ScopedDescendingHeap(const ScopedDescendingHeap&) = delete;
+	ScopedDescendingHeap& operator=(const ScopedDescendingHeap&) = delete;
+	// how many bytes the pool has handed out since this scope began
+	size_t BytesHandedOut() const;
+private:
+	const char* startTop;
+};
+/*----------------------------------------------------------------*/
+
 #endif // _TESTS_H_

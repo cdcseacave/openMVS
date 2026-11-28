@@ -28,6 +28,8 @@
 #include "FeaturesExtractor.h"
 #include "PairsWeighting.h"
 #include "VocabularyTree.h"
+#include "GlobalDescriptors.h"
+#include "ViewGraphTriplets.h"
 #include <PoseLib/poselib.h>
 
 #ifdef _USE_SIFTGPU
@@ -63,9 +65,15 @@ public:
 	SiftGPUMatchCoordinator(PairsMatcher& _pairsMatcher)
 		: pairsMatcher(_pairsMatcher) {}
 
-	// Initialize SiftMatchGPU context (returns false on failure)
-	bool Initialize() {
-		const int maxNumMatches = 32768;
+	// Initialize SiftMatchGPU context (returns false on failure); the matcher is sized to the largest feature count
+	// among the images of the pairs to match, so no feature is ever dropped (SiftMatchCU::SetDescriptors keeps only
+	// the first max_sift); a fixed 32768 dropped 30-55% of the features of 50-80k-feature panoramas. Pairs whose full
+	// product does not fit in one GPU tile are matched tile by tile (SiftMatchCU::GetTiledSiftMatch), with the same result.
+	bool Initialize(const PairIdxArr& pairsToMatch) {
+		const Scene& scene = pairsMatcher.GetScene();
+		int maxNumMatches = 4096;
+		for (const PairIdx& p: pairsToMatch)
+			maxNumMatches = MAXF(maxNumMatches, MAXF(scene.images[p.i].descriptors.rows, scene.images[p.j].descriptors.rows));
 		gpu.reset(CreateNewSiftMatchGPU(maxNumMatches));
 		if (!gpu) {
 			VERBOSE("error: failed to create SiftMatchGPU");
@@ -92,7 +100,7 @@ public:
       		VERBOSE("warning: OpenGL version of SiftGPU only supports a maximum of %d matches; try switching to CUDA to avoid this limitation",
 				gpu->GetMaxSift());
 		}
-		DEBUG_EXTRA("SiftGPU matcher initialized: %s mode", gpu->GetLanguage() == SiftMatchGPU::SIFTMATCH_CUDA ? "CUDA" : "GLSL");
+		DEBUG_EXTRA("SiftGPU matcher initialized: %s mode, up to %d features an image", gpu->GetLanguage() == SiftMatchGPU::SIFTMATCH_CUDA ? "CUDA" : "GLSL", gpu->GetMaxSift());
 		return true;
 	}
 
@@ -114,7 +122,7 @@ public:
 		IIndex prevImageID1 = NO_ID, prevImageID2 = NO_ID;
 		const int batchSize = 1000;
 		for (size_t batchStart = 0; batchStart < pairsToMatch.size(); batchStart += batchSize) {
-			const size_t batchEnd = std::min(batchStart + batchSize, pairsToMatch.size());
+			const size_t batchEnd = MINF(batchStart + batchSize, pairsToMatch.size());
 			// Main thread: GPU matching
 			for (size_t _idx = batchStart; _idx < batchEnd; ++_idx) {
 				++progress;
@@ -143,9 +151,7 @@ public:
 				}
 
 				// Setup pair
-				ImagePair pair(pairIDs.i, pairIDs.j);
-				if (existingFound) pair = std::move(existingPair);
-				else { pair.ID1 = pairIDs.i; pair.ID2 = pairIDs.j; }
+				ImagePair pair = existingFound ? std::move(existingPair) : ImagePair(pairIDs.i, pairIDs.j);
 				pair.matches.clear();
 
 				const Image& img1 = scene.images[pair.ID1];
@@ -234,6 +240,10 @@ private:
 #endif // _USE_SIFTGPU
 
 
+MatchConfig::MatchConfig() {
+	DefaultsForFeatureType(FeatureType::DEFAULT);
+}
+
 MatchConfig& MatchConfig::DefaultsForFeatureType(FeatureType type) {
 	switch (type) {
 	case FeatureType::AKAZE:
@@ -242,7 +252,6 @@ MatchConfig& MatchConfig::DefaultsForFeatureType(FeatureType type) {
 		matchDistance = 100.f;
 		matchRatio = 0.9f;
 		minMatches = 50;
-		weightingCfg.sigmaInlierPerMatches = 0.6f; // AKAZE typically have around 70% inliers among matches
 		break;
 	case FeatureType::ORB:
 		descriptorsAreBinary = true;
@@ -250,7 +259,6 @@ MatchConfig& MatchConfig::DefaultsForFeatureType(FeatureType type) {
 		matchDistance = 64.f;
 		matchRatio = 0.9f;
 		minMatches = 50;
-		weightingCfg.sigmaInlierPerMatches = 0.6f; // ORB typically have around 70% inliers among matches
 		break;
 	case FeatureType::SIFT:
 	case FeatureType::SIFTGPU:
@@ -259,7 +267,6 @@ MatchConfig& MatchConfig::DefaultsForFeatureType(FeatureType type) {
 		matchDistance = FLT_MAX; // disable distance test for SIFT
 		matchRatio = 0.8f;
 		minMatches = 15;
-		weightingCfg.sigmaInlierPerMatches = 0.77f; // SIFT typically have around 90% inliers among matches
 		break;
 	default:
 		ASSERT("Unknown feature type for match config defaults" == NULL);
@@ -271,7 +278,7 @@ MatchConfig& MatchConfig::DefaultsForFeatureType(FeatureType type) {
 
 
 PairsMatcher::PairsMatcher(Scene& _scene, const MatchConfig& _config)
-	: scene(_scene), config(_config)
+	: scene(_scene), config(_config), sequence(SequenceNeighbours::FromConfig(_scene, _config))
 {
 	// Determine norm type from descriptor kind (binary vs quantized float)
 	// Both are stored as CV_8U, but binary uses Hamming distance, quantized uses L2
@@ -305,6 +312,26 @@ PairsMatcher::PairsMatcher(Scene& _scene, const MatchConfig& _config)
 PairsMatcher::~PairsMatcher() = default;
 
 
+void PairsMatcher::KnnMatch(
+	const cv::Mat& queryDesc,
+	const cv::Mat& trainDesc,
+	std::vector<std::vector<cv::DMatch>>& knnMatches,
+	int k,
+	unsigned threadIdx)
+{
+	ASSERT(threadIdx < matchers.size());
+	ASSERT(!config.crossCheck || k == 1);
+	cv::DescriptorMatcher& matcher = *matchers[threadIdx];
+	if (config.descriptorsAreBinary) {
+		matcher.knnMatch(queryDesc, trainDesc, knnMatches, k);
+	} else {
+		cv::Mat queryF, trainF;
+		queryDesc.convertTo(queryF, CV_32F);
+		trainDesc.convertTo(trainF, CV_32F);
+		matcher.knnMatch(queryF, trainF, knnMatches, k);
+	}
+}
+
 void PairsMatcher::MatchFeatures(
 	const cv::Mat& desc1,
 	const cv::Mat& desc2,
@@ -314,39 +341,54 @@ void PairsMatcher::MatchFeatures(
 	matches.clear();
 	if (desc1.rows < (int)config.minMatches || desc2.rows < (int)config.minMatches)
 		return;
-	// Reuse pre-initialized matcher for this thread
 	ASSERT(threadIdx < matchers.size());
-	cv::Ptr<cv::DescriptorMatcher>& matcher = matchers[threadIdx];
 	if (config.crossCheck) {
 		// BF matching (supports cross-check)
 		std::vector<cv::DMatch> bfMatches;
-		matcher->match(desc1, desc2, bfMatches);
+		matchers[threadIdx]->match(desc1, desc2, bfMatches);
 		matches.reserve(bfMatches.size());
 		for (const auto& m : bfMatches)
 			matches.emplace_back(m);
 	} else {
 		// BF/FLANN KNN matching with Lowe's ratio test
 		std::vector<std::vector<cv::DMatch>> knnMatches;
-		if (config.descriptorsAreBinary) {
-			matcher->knnMatch(desc1, desc2, knnMatches, 2);
-		} else {
-			cv::Mat desc1f, desc2f;
-			desc1.convertTo(desc1f, CV_32F);
-			desc2.convertTo(desc2f, CV_32F);
-			matcher->knnMatch(desc1f, desc2f, knnMatches, 2);
-		}
+		KnnMatch(desc1, desc2, knnMatches, 2, threadIdx);
 		for (const auto& m : knnMatches)
 			if (m.size() == 2 && m[0].distance < config.matchDistance && m[0].distance < config.matchRatio * m[1].distance)
 				matches.push_back(m[0]);
 	}
 }
 
+PairsMatcher::GeometryBranch PairsMatcher::SelectGeometryBranch(const MatchConfig& cfg, const Image& img1, const Image& img2)
+{
+	// Shared-focal F estimation for an uncalibrated pair that shares one pinhole camera
+	if (cfg.forceFundamentalWithFocal && img1.pCamera == img2.pCamera && img1.pCamera->GetType() == CameraType::PINHOLE)
+		return GeometryBranch::SHARED_FOCAL;
+	// Calibrated bearings: 5-DoF relative pose with the cheirality check
+	if (!cfg.forceFundamental && img1.TrustIntrinsics() && img2.TrustIntrinsics())
+		return GeometryBranch::ESSENTIAL;
+	// Everything else: 7-DoF fundamental matrix
+	return GeometryBranch::FUNDAMENTAL;
+}
+
+
 bool PairsMatcher::GeometricFilter(
 	const Image& img1,
 	const Image& img2,
 	ImagePair& pair) const
 {
-	// Start with no outliers; we'll partition after RANSAC
+	return GeometricFilter(img1, img2, pair, config.maxEpipolarError);
+}
+
+
+bool PairsMatcher::GeometricFilter(
+	const Image& img1,
+	const Image& img2,
+	ImagePair& pair,
+	float maxEpipolarError) const
+{
+	// Start from no geometry: RANSAC is not seeded with a pose or F the pair may still hold (re-verified
+	// under new intrinsics, such a seed is stale)
 	pair.ResetInlierMatches();
 	pair.ResetGeometry();
 	if (pair.matches.size() < 8) {
@@ -355,27 +397,19 @@ bool PairsMatcher::GeometricFilter(
 	}
 	ASSERT(img1.HasCamera() && img2.HasCamera());
 
-	// Configure RANSAC options.
-	// PoseLib master: RelativePoseOptions wraps RansacOptions + BundleOptions and
-	// holds the inlier threshold (max_error) directly. The estimate_* free functions
-	// no longer take a separate BundleOptions parameter.
 	poselib::RelativePoseOptions opt;
-	opt.max_error = config.maxEpipolarError; // reprojection error threshold
-	opt.ransac.min_iterations = 100; // min iterations
-	opt.ransac.max_iterations = 10000; // max iterations
+	opt.max_error = maxEpipolarError;
+	opt.ransac.min_iterations = 100;
+	opt.ransac.max_iterations = 10000;
 	std::vector<char> inliers;
 
-	// Lambda to fetch matched points from the pair
 	const auto FetchPoints = [&]() {
-		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
 		std::vector<poselib::Point2D> pts1, pts2;
 		pts1.reserve(pair.matches.size());
 		pts2.reserve(pair.matches.size());
 		for (const auto& m : pair.matches) {
 			const cv::Point2f& pt1 = img1.keypoints[m.queryIdx].pt;
 			const cv::Point2f& pt2 = img2.keypoints[m.trainIdx].pt;
-			if (minFeatureDistanceSq > 0 && normSq(pt1 - pt2) < minFeatureDistanceSq)
-				continue; // skip matches that are too close
 			pts1.emplace_back(pt1.x, pt1.y);
 			pts2.emplace_back(pt2.x, pt2.y);
 		}
@@ -391,20 +425,14 @@ bool PairsMatcher::GeometricFilter(
 		size_t numInliers) -> bool
 	{
 		ASSERT(numInliers >= config.minMatches);
-		// Partition matches into inliers and outliers
 		pair.PartitionMatchesByMask(inliersMask, (int)numInliers);
-		// Fill relative pose
 		Pose3D& rel = pair.relativePose.emplace();
 		rel.R = pl_pose.R();
 		rel.SetT(pl_pose.t);
-		// Compose E matrix from relative pose
 		pair.E = ImagePair::ComposeEssentialMatrix(rel);
-		if (pK1 && pK2 && !pair.F.has_value()) {
-			// Compose F matrix from E and K matrices
+		if (pK1 && pK2 && !pair.F.has_value())
 			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), *pK1, *pK2);
-		}
 		if (config.IsMatchesFilterOn()) {
-			// Further filter matches based on triangulation angle, reprojection error, epipole proximity
 			const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, config.minTriangulationAngle, config.reprojThreshold, config.epipoleFilterThreshold);
 			if (numFilteredInliers < config.minMatches) {
 				pair.InvalidateMatches();
@@ -414,15 +442,15 @@ bool PairsMatcher::GeometricFilter(
 		return true;
 	};
 
-	// Check if we should estimate focal length using shared-focal estimator
-	// This is for uncalibrated scenarios where both images use the same (unknown) focal length
-	if (config.forceFundamentalWithFocal && img1.pCamera == img2.pCamera && img1.pCamera->GetType() == CameraType::PINHOLE) {
+	const GeometryBranch branch = SelectGeometryBranch(config, img1, img2);
+
+	// Shared-focal estimator: uncalibrated scenario where both images use the same unknown focal
+	if (branch == GeometryBranch::SHARED_FOCAL) {
 		const Camera& cam = *img1.pCamera;
 		KMatrix K = cam.GetK();
-		const Point2 pp(K(0,2), K(1,2)); // Principal point
+		const Point2 pp(K(0,2), K(1,2));
 		const auto [pts1, pts2] = FetchPoints();
 
-		// Use shared-focal relative pose estimator
 		poselib::ImagePair plImagePair;
 		opt.real_focal_check = true;
 		poselib::RansacStats stats = poselib::estimate_shared_focal_relative_pose(
@@ -432,65 +460,25 @@ bool PairsMatcher::GeometricFilter(
 			return false;
 		}
 
-		// Extract estimated focal length
 		const double estimatedFocal = plImagePair.camera1.focal();
 		DEBUG_ULTIMATE("GeometricFilter: shared-focal estimator succeeded with %zu inliers, f=%.2f",
 			stats.num_inliers, estimatedFocal);
 
-		// Build K matrix with estimated focal
 		K(0,0) = K(1,1) = estimatedFocal;
-		// Finalize with shared-focal pose
 		return FinalizeRelative(plImagePair.pose, &K, &K, inliers, stats.num_inliers);
 	}
 
-	// Calibrated branch: if both cameras trust intrinsics, estimate relative pose
-	if (!config.forceFundamental && img1.TrustIntrinsics() && img2.TrustIntrinsics()) {
+	// Calibrated branch: both cameras trust their intrinsics, so estimate relative pose on unit bearings
+	if (branch == GeometryBranch::ESSENTIAL) {
 		const Camera& cam1 = *img1.pCamera;
 		const Camera& cam2 = *img2.pCamera;
 		const KMatrix K1 = cam1.GetK();
 		const KMatrix K2 = cam2.GetK();
 
-		// Unified bearing-vector relative pose path: works for any central camera
-		// model. Convert the pixel-space Sampson threshold to an angular threshold
-		// by averaging the per-camera angular equivalents (the Sampson-on-sphere
-		// residual is measured in radians, so the average is a valid combined
-		// threshold for a stereo pair with possibly different pixel resolutions):
-		//   angle_k = cam_k.PixelErrorToAngular(pixel_threshold)
-		//   angle   = 0.5 * (angle_1 + angle_2)
-		// For pinhole this reduces to 0.5/focal_1 + 0.5/focal_2 in the small-angle
-		// limit (previous hand-rolled scaling). The bearing estimator interprets
-		// opt.max_error as an angle in radians (converted internally to sin(angle),
-		// the unit of its unit-norm symmetric Sampson residual).
-		const REAL pxErr = opt.max_error;
-		const REAL angle1 = cam1.PixelErrorToAngular(pxErr);
-		const REAL angle2 = cam2.PixelErrorToAngular(pxErr);
-		opt.max_error = 0.5 * (angle1 + angle2);
-
-		// Extract matched keypoints and convert directly to 3D unit bearing vectors
-		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
-		std::vector<poselib::Point3D> bearings1, bearings2;
-		bearings1.reserve(pair.matches.size());
-		bearings2.reserve(pair.matches.size());
-		for (const auto& m : pair.matches) {
-			const cv::Point2f& pt1 = img1.keypoints[m.queryIdx].pt;
-			const cv::Point2f& pt2 = img2.keypoints[m.trainIdx].pt;
-			if (minFeatureDistanceSq > 0 && normSq(pt1 - pt2) < minFeatureDistanceSq)
-				continue; // skip matches that are too close
-			bearings1.emplace_back(cam1.UnprojectNormalized(Cast<REAL>(pt1)));
-			bearings2.emplace_back(cam2.UnprojectNormalized(Cast<REAL>(pt2)));
-		}
+		opt.max_error = (double)PairPixelErrorToAngular(cam1, cam2, (REAL)opt.max_error);
+		const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2, true);
 
 		poselib::CameraPose plPose;
-		if (pair.relativePose.has_value()) {
-			// Initialize with existing pose (from PreMatch) to guide RANSAC
-			plPose = poselib::CameraPose(pair.relativePose->R, pair.relativePose->GetT());
-			opt.ransac.score_initial_model = true;
-		}
-		// Cheirality check stays at its default (enabled) — it's bearing-native and
-		// works for both pinhole and spherical back-hemisphere features. Without it,
-		// the four (R, ±t), (R', ±t) decompositions of the essential matrix all have
-		// identical Sampson scores and RANSAC picks whichever one the 5-point solver
-		// returned first.
 		poselib::RansacStats stats = poselib::estimate_relative_pose_bearings(
 			bearings1, bearings2,
 			opt,
@@ -500,40 +488,51 @@ bool PairsMatcher::GeometricFilter(
 			pair.InvalidateMatches();
 			return false;
 		}
-		// F is only geometrically meaningful when BOTH cameras are pinhole —
-		// SphericalCamera::GetK() returns IDENTITY, so composing F from a mixed
-		// pair yields garbage. Pass null Ks unless both sides are pinhole; the
-		// downstream consumers that rely on F (e.g. MatchGeometric descriptor
-		// filtering, ViewGraphCalibrator) check pair.F.has_value() and take
-		// the bearing/E path when F is absent.
+		// F is only geometrically meaningful when both cameras are pinhole
 		const bool bothPinhole(cam1.GetType() == CameraType::PINHOLE && cam2.GetType() == CameraType::PINHOLE);
-		const KMatrix *pK1 = bothPinhole ? &K1 : nullptr;
-		const KMatrix *pK2 = bothPinhole ? &K2 : nullptr;
-		return FinalizeRelative(plPose, pK1, pK2, inliers, stats.num_inliers);
+		return FinalizeRelative(plPose, bothPinhole ? &K1 : nullptr, bothPinhole ? &K2 : nullptr, inliers, stats.num_inliers);
 	}
 
 	// Uncalibrated branch: estimate fundamental matrix
 	const auto [pts1, pts2] = FetchPoints();
 	Eigen::Matrix3d F;
-	if (pair.F.has_value()) {
-		// Initialize with existing fundamental matrix (from PreMatch) to guide RANSAC
-		F = pair.F.value();
-		opt.ransac.score_initial_model = true;
-	}
 	poselib::RansacStats stats = poselib::estimate_fundamental(pts1, pts2, opt, &F, &inliers);
 	if (stats.num_inliers < config.minMatches) {
 		pair.InvalidateMatches();
 		return false;
 	}
 	pair.PartitionMatchesByMask(inliers, (int)stats.num_inliers);
-
-	// Update F on the pair
 	pair.F = F.cast<REAL>();
 
-	// Decompose F into E and relative pose if intrinsics are trusted
-	// note: if intrinsics are not accurate, the decomposition will result in very few filtered inliers
 	if (config.forceFundamentalDecomposition || (img1.TrustIntrinsics() && img2.TrustIntrinsics()))
 		return DecomposeFundamentalToPose(img1, img2, pair);
+	return true;
+}
+
+
+bool PairsMatcher::RefineRelativePose(
+	const Image& img1,
+	const Image& img2,
+	ImagePair& pair,
+	const std::vector<double>& weights) const
+{
+	ASSERT(pair.relativePose.has_value());
+	ASSERT(weights.size() == pair.matches.size());
+	if (SelectGeometryBranch(config, img1, img2) != GeometryBranch::ESSENTIAL)
+		return false;
+	const Camera& cam1 = *img1.pCamera;
+	const Camera& cam2 = *img2.pCamera;
+	const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2, true);
+	poselib::BundleOptions bundle;
+	bundle.loss_scale = std::sin((double)PairPixelErrorToAngular(cam1, cam2, (REAL)config.maxEpipolarError));
+	poselib::CameraPose pose(pair.relativePose->R, pair.relativePose->GetT());
+	poselib::refine_relpose_bearing(bearings1, bearings2, &pose, bundle, weights);
+	Pose3D& rel = pair.relativePose.value();
+	rel.R = pose.R();
+	rel.SetT(pose.t);
+	pair.E = ImagePair::ComposeEssentialMatrix(rel);
+	if (cam1.GetType() == CameraType::PINHOLE && cam2.GetType() == CameraType::PINHOLE)
+		pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), cam1.GetK(), cam2.GetK());
 	return true;
 }
 
@@ -544,32 +543,18 @@ bool PairsMatcher::DecomposeFundamentalToPose(const Image& img1, const Image& im
 	ASSERT(pair.ID2 == img2.ID);
 	ASSERT(img1.HasCamera() && img2.HasCamera());
 	ASSERT(pair.F.has_value());
-	const KMatrix K1 = img1.GetK();
-	const KMatrix K2 = img2.GetK();
-	// Decompose F into E
-	pair.E = ImagePair::DecomposeFundamentalMatrix(pair.F.value(), K1, K2);
-	// Decompose E into relative pose using cheirality check
-	// (only if same image size, a limitation of cv::recoverPose which assumes same K)
-	if (img1.GetWidth() == img2.GetWidth() && img1.GetHeight() == img2.GetHeight()) {
-		const auto [points1, points2] = pair.GetMatchedPoints(img1, img2);
-		const unsigned numInliers = ImagePair::RecoverPose(
-			pair.E.value(),
-			points1, points2,
-			K1,
-			pair.relativePose.emplace());
-		if (numInliers < config.minMatches) {
-			// Failed to recover a valid pose
-			pair.relativePose.reset();
+	pair.E = ImagePair::DecomposeFundamentalMatrix(pair.F.value(), img1.GetK(), img2.GetK());
+	const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2);
+	if (ImagePair::RecoverPose(pair.E.value(), bearings1, bearings2, pair.relativePose.emplace()) < config.minMatches) {
+		pair.relativePose.reset();
+		pair.InvalidateMatches();
+		return false;
+	}
+	if (config.IsMatchesFilterOn()) {
+		const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, config.minTriangulationAngle, config.reprojThreshold, config.epipoleFilterThreshold);
+		if (numFilteredInliers < config.minMatches) {
 			pair.InvalidateMatches();
 			return false;
-		}
-		if (config.IsMatchesFilterOn()) {
-			// Apply strict outlier filtering (cheirality, angle, epipole)
-			const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, config.minTriangulationAngle, config.reprojThreshold, config.epipoleFilterThreshold);
-			if (numFilteredInliers < config.minMatches) {
-				pair.InvalidateMatches();
-				return false;
-			}
 		}
 	}
 	return true;
@@ -582,6 +567,7 @@ unsigned PairsMatcher::ComputeRelativePoses(bool onlyTrustedIntrinsics, bool onl
 	std::atomic<size_t> numMatches{0};
 	std::atomic<size_t> numInliers{0};
 	std::atomic<size_t> numFilteredInliers{0};
+	std::atomic<size_t> numDenseInliers{0};
 
 	cv::setNumThreads(1); // temporary turn off multi-threading for OpenCV functions
 	scene.threadPool.detach_loop(0u, scene.pairs.size(), [&](unsigned i) {
@@ -594,18 +580,22 @@ unsigned PairsMatcher::ComputeRelativePoses(bool onlyTrustedIntrinsics, bool onl
 			return;
 		if (!updatedCameras.empty() && updatedCameras.count(img1.pCamera) == 0 && updatedCameras.count(img2.pCamera) == 0)
 			return;
-		// Recompute relative pose with the new intrinsics
-		GeometricFilter(img1, img2, pair);
+		if (pair.IsDense(img1, img2))
+			ReverifyPairDense(*this, img1, img2, denseCfg, pair);
+		else
+			GeometricFilter(img1, img2, pair);
 		numMatches += pair.GetNumMatches();
 		numInliers += pair.GetNumInliers();
 		numFilteredInliers += pair.GetNumFilteredInliers();
+		numDenseInliers += pair.GetNumDenseInliers();
 		++numPairsUpdated;
 	});
 	scene.threadPool.wait();
 	cv::setNumThreads(scene.nMaxThreads);
 
-	DEBUG("Relative pose updated for %u/%u pairs: %zu matches, %zu inliers, %zu filtered inliers (%s)",
-		numPairsUpdated.load(), scene.pairs.size(), numMatches.load(), numInliers.load(), numFilteredInliers.load(), TD_TIMER_GET_FMT().c_str());
+	DEBUG("Relative pose updated for %u/%u pairs: %zu matches, %zu inliers, %zu filtered inliers, %zu dense inliers (%s)",
+		numPairsUpdated.load(), scene.pairs.size(), numMatches.load(), numInliers.load(), numFilteredInliers.load(),
+		numDenseInliers.load(), TD_TIMER_GET_FMT().c_str());
 	if (numPairsUpdated.load()) {
 		// Recompute pair weights
 		ComputePairsWeights(scene, config.weightingCfg);
@@ -625,10 +615,19 @@ bool PairsMatcher::MatchPair(
 		ASSERT(img1.ID < img2.ID);
 		pair.ID1 = img1.ID;
 		pair.ID2 = img2.ID;
-		// Match features using thread-local matcher
-		const static thread_local unsigned threadIdx = std::hash<std::thread::id>{}(std::this_thread::get_id()) % matchers.size();
-		ASSERT(img1.descriptors.rows == (int)img1.keypoints.size());
-		ASSERT(img2.descriptors.rows == (int)img2.keypoints.size());
+		// Match features using the matcher owned by this thread: matchers.size() is the pool's own
+		// thread count (both are scene.nMaxThreads), so the pool index is a collision-free slot,
+		// unlike a hashed thread id folded into the same range.
+		// MatchPair is also called directly on the caller's thread (a single pair matched outside
+		// any pool, as the tests do); there is no pool index then, and that caller is the only
+		// user of the matchers, so slot 0 is free for it.
+		const std::optional<size_t> poolIdx = BS::this_thread::get_index();
+		ASSERT(!poolIdx || *poolIdx < matchers.size());
+		const unsigned threadIdx = poolIdx ? (unsigned)*poolIdx : 0u;
+		// the descriptors index the described prefix, which is all this matcher ever sees: an image
+		// already supplemented with dense keypoints carries more keypoints than descriptor rows
+		ASSERT(img1.descriptors.rows == (int)img1.NumDescribedKeypoints());
+		ASSERT(img2.descriptors.rows == (int)img2.NumDescribedKeypoints());
 		MatchFeatures(img1.descriptors, img2.descriptors, pair.matches, threadIdx);
 		if (pair.GetNumMatches() < config.minMatches) {
 			pair.InvalidateMatches();
@@ -651,6 +650,52 @@ bool PairsMatcher::MatchPair(
 	return true;
 }
 
+void PairsMatcher::SetDense(DenseMatcher* model, const DenseMatchConfig& cfg)
+{
+	denseMatcher = model;
+	denseCfg = cfg;
+	// the ranking backend may change, so drop the index built for the previous configuration
+	globalDescriptors.reset();
+}
+
+bool PairsMatcher::BuildGlobalDescriptorsIndex()
+{
+	TD_TIMER_STARTD();
+	globalDescriptors = std::make_unique<GlobalDescriptors>();
+	if (!globalDescriptors->Build(scene)) {
+		globalDescriptors.reset();
+		return false;
+	}
+	DEBUG("Global-descriptor retrieval index built from %u images (%d-D) in %s",
+	      scene.images.size(), globalDescriptors->Dim(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+bool PairsMatcher::EnsureGlobalDescriptorsIndex()
+{
+	// no opt-in gate and no vocabulary-tree fallback: RETRIEVAL mode is itself the explicit
+	// opt-in, and a scene not fully described is an error here rather than a silently
+	// different ranking algorithm
+	if (globalDescriptors)
+		return globalDescriptors->IsValid();
+	if (!BuildGlobalDescriptorsIndex()) {
+		// GlobalDescriptors::Build already named the offending image and the descriptor shape
+		// it expected; nothing to add here except that this mode will not fall back
+		VERBOSE("error: RETRIEVAL matching needs a global descriptor on every image (see above)");
+		return false;
+	}
+	return true;
+}
+
+std::vector<std::pair<uint32_t, float>> PairsMatcher::QueryRetrieval(IIndex idx, unsigned maxResults) const
+{
+	if (globalDescriptors && globalDescriptors->IsValid())
+		return globalDescriptors->Query(idx, maxResults);
+	if (vocabularyTree && vocabularyTree->IsValid())
+		return vocabularyTree->Query(scene.images[idx], maxResults);
+	return {};
+}
+
 void PairsMatcher::EnsureVocabularyTree()
 {
 	if (vocabularyTree)
@@ -665,6 +710,7 @@ void PairsMatcher::EnsureVocabularyTree()
 	if (!vocabularyTree->Build(scene, vcfg)) {
 		VERBOSE("error: failed to build vocabulary tree");
 		vocabularyTree.reset();
+		return;
 	}
 	DEBUG("Vocabulary tree built from %u images in %s",
 	      scene.images.size(), TD_TIMER_GET_FMT().c_str());
@@ -672,12 +718,25 @@ void PairsMatcher::EnsureVocabularyTree()
 
 PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 {
-	PairIdxArr result;
-	// Ensure vocabulary tree is ready
+	// VOCABULARY mode: the vocabulary tree over the local descriptors only
 	EnsureVocabularyTree();
-	if (!vocabularyTree || !vocabularyTree->IsValid())
-		return result;
+	if (!vocabularyTree)
+		return PairIdxArr();
+	return CollectFusedRetrievalPairs(topK);
+}
 
+PairIdxArr PairsMatcher::CollectRetrievalPairs(unsigned topK)
+{
+	// RETRIEVAL mode: the global-descriptor index only, no vocabulary-tree fallback (design
+	// decision 10 — see EnsureGlobalDescriptorsIndex)
+	if (!EnsureGlobalDescriptorsIndex())
+		return PairIdxArr();
+	return CollectFusedRetrievalPairs(topK);
+}
+
+PairIdxArr PairsMatcher::CollectFusedRetrievalPairs(unsigned topK)
+{
+	PairIdxArr result;
 	TD_TIMER_STARTD();
 
 	const IIndex nImages = scene.images.size();
@@ -695,7 +754,7 @@ PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 	std::vector<IIndexArr> rankedPerImage(nImages); // candidate image indices, best first
 	scene.threadPool.detach_loop(0u, nImages, [&](IIndex i) {
 		const Image& img = scene.images[i];
-		const auto candidates = vocabularyTree->Query(img, queryDepth + 1);
+		const auto candidates = QueryRetrieval(i, queryDepth + 1);
 		IIndexArr& ranked = rankedPerImage[i];
 		ranked.reserve((IIndex)candidates.size());
 		for (const auto& kv : candidates) {
@@ -788,7 +847,11 @@ PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 			}
 		}
 	}
-	DEBUG("Vocabulary-based matching: %u candidate pairs, %u mutual top-%u and %u connectivity bridges (%.2f/%u pairs/image) in %s",
+	// config.mode is fixed at construction and is itself the thing that decides the backend
+	// (one backend per match mode, permanently) -- name the caller from that, not from which
+	// index the heap happens to hold right now
+	DEBUG("%s-based matching: %u candidate pairs, %u mutual top-%u and %u connectivity bridges (%.2f/%u pairs/image) in %s",
+		config.mode == MatchConfig::VOCABULARY ? _T("Vocabulary") : _T("Global-descriptor"),
 		result.size(), numMutualPairs, topK, result.size() - numMutualPairs,
 		(float)result.size() / nImages, config.maxPairsPerImage, TD_TIMER_GET_FMT().c_str());
 	// keep the fused retrieval scores for the verification-feedback round
@@ -847,7 +910,9 @@ struct PosePairScorer {
 	Score operator()(const Image& imgA, const Point3& directionA, const Image& imgB) const {
 		Score s;
 		s.distance = norm(imgA.C - imgB.C);
-		s.viewAngle = ACOS(CLAMP(directionA.dot(imgB.Direction()), REAL(-1), REAL(1)));
+		const REAL cosViewAngle = directionA.dot(imgB.Direction());
+		ASSERT(ABS(cosViewAngle) <= REAL(1) + REAL(1e-6)); // a dot product of two unit optical axes, up to rounding
+		s.viewAngle = ACOS(CLAMP(cosViewAngle, REAL(-1), REAL(1))); // the clamp is rounding only
 		s.score = s.viewAngle > maxViewAngle ?
 			REAL(-1) : ScoreBaseline(s.distance) * (REAL(1) - s.viewAngle/maxViewAngle);
 		return s;
@@ -1050,12 +1115,12 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 				unposedImages.push_back(i);
 		PairIdxArr unposedCandidates;
 		EnsureVocabularyTree();
-		if (vocabularyTree && vocabularyTree->IsValid()) {
+		if (vocabularyTree) {
 			const unsigned queryDepth = (unsigned)MINF(requestedTopK, nImages - 1);
 			std::vector<PairIdxArr> pairsPerImage(unposedImages.size());
 			scene.threadPool.detach_loop(0u, unposedImages.size(), [&](IIndex u) {
 				const Image& img = scene.images[unposedImages[u]];
-				const auto candidates = vocabularyTree->Query(img, queryDepth + 1);
+				const auto candidates = QueryRetrieval(unposedImages[u], queryDepth + 1);
 				PairIdxArr& pairs = pairsPerImage[u];
 				pairs.reserve((IIndex)candidates.size());
 				for (const auto& kv : candidates)
@@ -1095,7 +1160,7 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& attemptedPairs)
 {
 	PairIdxArr result;
-	ASSERT(config.mode == MatchConfig::VOCABULARY || config.mode == MatchConfig::KNOWN_POSES);
+	ASSERT(config.mode == MatchConfig::VOCABULARY || config.mode == MatchConfig::KNOWN_POSES || config.mode == MatchConfig::RETRIEVAL);
 	const bool poseGuided(config.mode == MatchConfig::KNOWN_POSES);
 	const IIndex nImages = scene.images.size();
 
@@ -1158,6 +1223,15 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 			return a.score > b.score || (a.score == b.score && a.idx < b.idx);
 		});
 	};
+	const auto TrimCandidates = [](CLISTDEF0(ScoredCandidate)& candidates, IIndex keepCount) {
+		const auto cmp = [](const ScoredCandidate& a, const ScoredCandidate& b) {
+			return a.score > b.score || (a.score == b.score && a.idx < b.idx);
+		};
+		if (candidates.size() > keepCount) {
+			std::nth_element(candidates.begin(), candidates.begin() + keepCount, candidates.end(), cmp);
+			candidates.Resize(keepCount);
+		}
+	};
 	if (poseGuided) {
 		// close the triangles of the verified graph: two images sharing verified neighbors
 		// most likely overlap too, no matter how the pose-based score ranks them (the strongest
@@ -1191,8 +1265,6 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 		// enough past the first-round candidate lists to always offer unattempted pairs
 		if (proposals.size() < budget) {
 			const IIndex refillDepth = MINF(config.maxPairsPerImage*4/3 + 8, nEligible - 1);
-			// bound the per-image candidate list (see CollectKnownPosePairs): compacting to
-			// the current top ranking on overflow is exact and keeps the memory O(N*depth)
 			const IIndex maxCandidates = MAXF(IIndex(16), refillDepth*4);
 			scene.threadPool.detach_loop(0u, nEligible, [&](IIndex a) {
 				const Image& imgA = scene.images[posedImages[a]];
@@ -1206,14 +1278,11 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 					if (s.IsGated())
 						continue;
 					candidates.push_back({posedImages[b], (float)s.score});
-					if (candidates.size() >= maxCandidates) {
-						SortCandidates(candidates);
-						candidates.Resize(refillDepth);
-					}
+					if (candidates.size() >= maxCandidates)
+						TrimCandidates(candidates, refillDepth);
 				}
+				TrimCandidates(candidates, refillDepth);
 				SortCandidates(candidates);
-				if (candidates.size() > refillDepth)
-					candidates.Resize(refillDepth);
 			});
 			scene.threadPool.wait();
 		}
@@ -1222,7 +1291,7 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 		// a candidate retrieved high by one endpoint of a verified pair most likely overlaps
 		// the other endpoint too (the retrieval analogue of closing verified triangles)
 		if (fusedRetrievalScores.empty()) {
-			DEBUG("Verification-feedback matching: no retrieval scores kept from the vocabulary round");
+			DEBUG("Verification-feedback matching: no retrieval scores kept from the first round");
 			return result;
 		}
 		for (const auto& [pairIndex, score] : fusedRetrievalScores) {
@@ -1313,6 +1382,35 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 	return result;
 }
 
+unsigned PairsMatcher::AddSequentialPairs(const Scene& scene, unsigned overlap, PairIdxArr& pairs)
+{
+	// the neighbour pairs of a sequence without a break
+	return AddNeighbourPairs(scene, SequenceNeighbours({}, overlap), pairs);
+}
+
+unsigned PairsMatcher::AddNeighbourPairs(const Scene& scene, const SequenceNeighbours& neighbours, PairIdxArr& pairs)
+{
+	const IIndex nImages = (IIndex)scene.images.size();
+	const unsigned overlap = neighbours.Overlap();
+	std::unordered_set<PairIdx::PairIndex> present;
+	present.reserve(pairs.size() + (size_t)nImages*overlap);
+	for (const PairIdx& pair : pairs)
+		present.emplace(pair.idx);
+	unsigned numAdded = 0;
+	for (IIndex i = 0; i < nImages; ++i) {
+		for (unsigned k = 1; k <= overlap && i+k < nImages; ++k) {
+			if (!neighbours.AreNeighbours(i, i+k))
+				continue;
+			const PairIdx pair(MakePairIdx(scene.images[i].ID, scene.images[i+k].ID));
+			if (present.emplace(pair.idx).second) {
+				pairs.emplace_back(pair);
+				++numAdded;
+			}
+		}
+	}
+	return numAdded;
+}
+
 void PairsMatcher::OptimizePairsOrder(PairIdxArr& pairsToMatch)
 {
 	if (pairsToMatch.empty())
@@ -1346,7 +1444,7 @@ void PairsMatcher::OptimizePairsOrder(PairIdxArr& pairsToMatch)
 
 void PairsMatcher::FilterRedundantKeypoints()
 {
-	TD_TIMER_STARTD();
+	TD_TIMER_START();
 	const IIndex numImages = scene.images.size();
 	std::vector<Unsigned32Arr> remaps(numImages);
 	const auto IsDuplicate = [](const cv::KeyPoint& ka, const cv::KeyPoint& kb) {
@@ -1354,57 +1452,169 @@ void PairsMatcher::FilterRedundantKeypoints()
 		return normSq(ka.pt - kb.pt) < maxDistSq;
 	};
 
-	// 1. Identify redundant keypoints per image
+	// 1. Identify redundant keypoints per image. Two segments -- the described prefix
+	// [0, NumDescribedKeypoints()) and the dense suffix past it -- are sorted and deduplicated
+	// independently, then merged by a one-directional cross-segment prune. A segment never mixes
+	// kinds, so its own dedup pass needs no notion of "kind" at all: the described prefix staying a
+	// leading, contiguous run of the compacted array is then structural, not a property the
+	// compaction has to arrange by choosing an order. With no dense keypoints the second segment is
+	// empty, the cross-prune has nothing to do, and this is exactly the single-segment filter that
+	// predates dense supplementation.
 	std::atomic<size_t> atomicNumRemoved{0};
+	std::atomic<size_t> atomicNumRemovedDense{0};
 	std::atomic<size_t> atomicNumTotal{0};
 	scene.threadPool.detach_loop(0u, numImages, [&](IIndex i) {
 		Image& img = scene.images[i];
 		const size_t numKPs = img.keypoints.size();
 		if (numKPs == 0)
 			return;
-		// Sort keypoints by position -> response -> size
-		std::vector<uint32_t> idxs(numKPs);
-		std::iota(idxs.begin(), idxs.end(), 0);
-		std::sort(idxs.begin(), idxs.end(), [&](uint32_t a, uint32_t b) {
-			const cv::KeyPoint& ka = img.keypoints[a];
-			const cv::KeyPoint& kb = img.keypoints[b];
-			if (!IsDuplicate(ka, kb)) return ka.pt.x < kb.pt.x || (ka.pt.x == kb.pt.x && ka.pt.y < kb.pt.y);
-			return ka.response*ka.size > kb.response*kb.size; // larger response*size first
-		});
-		// Identify duplicates
-		Unsigned32Arr& remap = remaps[i];
-		std::vector<cv::KeyPoint> newKeypoints;
-		newKeypoints.reserve(numKPs);
+		ASSERT(img.descriptors.empty());
 		atomicNumTotal += numKPs;
-		// We need to map old indices to new indices
-		// Initialize remap with invalid value
-		remap.assign(numKPs, NO_ID);
-		for (size_t j = 0; j < numKPs; ) {
-			const uint32_t bestIdx = idxs[j];
-			const cv::KeyPoint& bestKP = img.keypoints[bestIdx];
-			// This keypoint is kept
-			const uint32_t newIdx = (uint32_t)newKeypoints.size();
-			newKeypoints.push_back(bestKP);
-			remap[bestIdx] = newIdx;
-			// Skip all duplicates (they appear immediately after because of sort)
-			while (++j < numKPs) {
-				const uint32_t otherIdx = idxs[j];
-				const cv::KeyPoint& otherKP = img.keypoints[otherIdx];
-				// Check equality
-				if (!IsDuplicate(otherKP, bestKP))
-					break;
-				// Map duplicate to the kept keypoint
-				remap[otherIdx] = newIdx;
+		const bool bHasDense = img.HasDenseKeypoints();
+		const uint32_t numDescribedBefore = img.NumDescribedKeypoints();
+
+		// survivor[k] is the keypoint index old index k collapses onto, itself for a keypoint that
+		// is kept. Sort a segment by position and group the runs it creates: consecutive keypoints
+		// within 0.1px (IsDuplicate) are one run, and its highest response*size member is every
+		// member's survivor -- the leader-based grouping, run once per segment instead of once over
+		// the whole array.
+		std::vector<uint32_t> survivor(numKPs, NO_ID);
+		const auto DedupSegment = [&](uint32_t begin, uint32_t end) {
+			std::vector<uint32_t> order(end - begin);
+			std::iota(order.begin(), order.end(), begin);
+			// The comparator MUST remain a strict weak ordering: std::sort's precondition is that
+			// its "equivalent" relation is transitive, and violating it is undefined behaviour --
+			// libstdc++'s insertion sort can then run off the end of the range, not merely return an
+			// unspecified order. This is why the comparator is pure lexicographic position (and the
+			// index, so exactly coincident keypoints still order deterministically) with no
+			// duplicate-aware branch: "within 0.1px" is NOT transitive -- (0,0) ~ (0.08,0) and
+			// (0.08,0) ~ (0.16,0) while (0,0) !~ (0.16,0) -- so a comparator that switches to a
+			// response*size comparison for near-coincident pairs can report a < b, b < c and c < a
+			// on such a triple, and a dense warp draw makes near-coincident samples the rule. The
+			// response*size preference lives in the grouping pass below instead, where the rescan
+			// picks each run's best member outright; for any input on which a duplicate-aware
+			// comparator would be well defined (duplicate groups cleanly separated) the runs formed here
+			// and the survivors chosen from them are identical.
+			std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+				const cv::KeyPoint& ka = img.keypoints[a];
+				const cv::KeyPoint& kb = img.keypoints[b];
+				if (ka.pt.x != kb.pt.x) return ka.pt.x < kb.pt.x;
+				if (ka.pt.y != kb.pt.y) return ka.pt.y < kb.pt.y;
+				return a < b;
+			});
+			for (size_t j = 0; j < order.size(); ) {
+				const size_t jFirst = j;
+				const uint32_t firstIdx = order[j];
+				const cv::KeyPoint& firstKP = img.keypoints[firstIdx];
+				// gather the duplicates: within 0.1px of the run's leader they are adjacent in
+				// position order, so the run is the maximal following stretch that IsDuplicate it
+				while (++j < order.size() && IsDuplicate(img.keypoints[order[j]], firstKP));
+				// and the run's most confident member is the survivor of all of it: this rescan is
+				// where the response*size preference lives, so the sort above does not have to
+				// encode it (and must not -- see the strict-weak-ordering note on the comparator)
+				uint32_t bestIdx = firstIdx;
+				for (size_t k = jFirst + 1; k < j; ++k) {
+					const uint32_t idx = order[k];
+					const cv::KeyPoint& kp = img.keypoints[idx];
+					const cv::KeyPoint& best = img.keypoints[bestIdx];
+					if (kp.response*kp.size > best.response*best.size)
+						bestIdx = idx;
+				}
+				for (size_t k = jFirst; k < j; ++k)
+					survivor[order[k]] = bestIdx;
+			}
+			return order;
+		};
+		const std::vector<uint32_t> describedOrder = DedupSegment(0, numDescribedBefore);
+		const std::vector<uint32_t> denseOrder = DedupSegment(numDescribedBefore, (uint32_t)numKPs);
+
+		// The position-ordered survivors of each segment: what the cross-segment prune walks below,
+		// and, past that, exactly the compaction order of each half of the output.
+		std::vector<uint32_t> describedSurvivors, denseSurvivors;
+		describedSurvivors.reserve(describedOrder.size());
+		for (const uint32_t idx : describedOrder)
+			if (survivor[idx] == idx)
+				describedSurvivors.push_back(idx);
+		denseSurvivors.reserve(denseOrder.size());
+		for (const uint32_t idx : denseOrder)
+			if (survivor[idx] == idx)
+				denseSurvivors.push_back(idx);
+
+		// Cross-segment prune, one-directional: a dense survivor that is IsDuplicate of a described
+		// survivor is that described keypoint reused, never the other way round -- the described one
+		// carries the descriptor and the sub-pixel position, and a dense keypoint cannot be promoted
+		// into the described prefix at all. Only dense entries are ever removed here, so the described
+		// segment is untouched by this pass. Both lists are already in position order, so this is a
+		// linear merge with a small window, not a search: the described pointer only ever advances,
+		// past a described survivor too far left of the current dense one to still be within 0.1px.
+		{
+			size_t descPtr = 0;
+			for (const uint32_t denseIdx : denseSurvivors) {
+				const cv::KeyPoint& dkp = img.keypoints[denseIdx];
+				while (descPtr < describedSurvivors.size() &&
+					   img.keypoints[describedSurvivors[descPtr]].pt.x < dkp.pt.x - 0.1f)
+					++descPtr;
+				for (size_t k = descPtr; k < describedSurvivors.size(); ++k) {
+					const uint32_t describedIdx = describedSurvivors[k];
+					const cv::KeyPoint& skp = img.keypoints[describedIdx];
+					if (skp.pt.x > dkp.pt.x + 0.1f)
+						break; // past the window that could still be within 0.1px
+					if (IsDuplicate(skp, dkp)) {
+						survivor[denseIdx] = describedIdx;
+						break;
+					}
+				}
 			}
 		}
+		// The prune above can leave a two-hop chain: a dense duplicate pointing at its intra-segment
+		// leader, that leader itself just reused into a described survivor. Flatten it to one hop --
+		// every original index's survivor must be a final survivor directly, since the remap fixup
+		// below is a single dereference (remap[survivor[k]]), not a chase. Only the dense segment
+		// can have gained a second hop here; a described leader is never reassigned past this point.
+		for (uint32_t k = numDescribedBefore; k < (uint32_t)numKPs; ++k) {
+			const uint32_t s = survivor[k];
+			if (s != k && survivor[s] != s)
+				survivor[k] = survivor[s];
+		}
+
+		// Compact described survivors first, then dense survivors, no gap between them: the new
+		// boundary is the number of surviving described keypoints, counted directly rather than
+		// derived from a remap.
+		Unsigned32Arr& remap = remaps[i];
+		remap.assign(numKPs, NO_ID);
+		std::vector<cv::KeyPoint> newKeypoints;
+		newKeypoints.reserve(numKPs);
+		for (const uint32_t idx : describedSurvivors) {
+			remap[idx] = (uint32_t)newKeypoints.size();
+			newKeypoints.push_back(img.keypoints[idx]);
+		}
+		const uint32_t numDescribed = (uint32_t)newKeypoints.size();
+		for (const uint32_t idx : denseSurvivors) {
+			if (survivor[idx] != idx)
+				continue; // cross-pruned above: reused the described keypoint it duplicates
+			remap[idx] = (uint32_t)newKeypoints.size();
+			newKeypoints.push_back(img.keypoints[idx]);
+		}
+		for (uint32_t k = 0; k < (uint32_t)numKPs; ++k)
+			if (survivor[k] != k)
+				remap[k] = remap[survivor[k]];
 		if (newKeypoints.size() == numKPs) {
 			// Clear remap to indicate no changes needed for this image
 			remap.clear();
 			return;
 		}
 		// Update keypoints
-		ASSERT(img.descriptors.empty());
+		const size_t numDenseBefore = numKPs - numDescribedBefore;
 		img.keypoints = std::move(newKeypoints);
+		// and move the boundary through the same removal: the two-segment compaction above always
+		// puts the surviving described keypoints at the front, so their count is the new boundary. A
+		// stale count here would misclassify keypoints in exactly the silent way the stored boundary
+		// exists to prevent. Only meaningful for an image that ever carried dense keypoints --
+		// numDescribedKeypoints must stay NO_ID for one that never did.
+		if (bHasDense) {
+			img.SetNumDescribedKeypoints(numDescribed);
+			atomicNumRemovedDense += numDenseBefore - img.NumDenseKeypoints();
+		}
 		atomicNumRemoved += (numKPs - img.keypoints.size());
 	});
 	scene.threadPool.wait();
@@ -1449,6 +1659,8 @@ void PairsMatcher::FilterRedundantKeypoints()
 	// 3. Filter duplicate matches that arose from remapping
 	// When multiple features at the same location matched different features in another image,
 	// after remapping they become duplicate matches. Keep only the match with highest combined weight.
+	// The compaction is order-preserving and recomputes the `matches` partition by counting survivors
+	// per original segment, so the segment bounds this leaves behind are exact rather than estimated.
 	std::atomic<size_t> atomicNumDuplicateMatches{0};
 	scene.threadPool.detach_loop(0u, scene.pairs.size(), [&](unsigned i) {
 		ImagePair& pair = scene.pairs[i];
@@ -1460,50 +1672,114 @@ void PairsMatcher::FilterRedundantKeypoints()
 		const Image& img1 = scene.images[pair.ID1];
 		const Image& img2 = scene.images[pair.ID2];
 
-		// Helper to filter duplicates in a match vector (bidirectional check)
-		const auto FilterDuplicates = [&](std::vector<DMatch>& matches) {
+		// Helper to filter duplicates in a match vector (bidirectional check).
+		// `bounds` are the exclusive end positions of the leading segments of `matches`, in order --
+		// for pair.matches the sparse-inlier end and the dense-supplement end (ImagePair.h documents
+		// the partition); empty for a vector that carries no partition, such as outlierMatches. Each
+		// pass rewrites every bound to the number of survivors that came from below it, so the
+		// partition is exact by construction instead of being guessed from a removal count that
+		// cannot know which segment lost a match.
+		const auto FilterDuplicates = [&](std::vector<DMatch>& matches, std::vector<size_t>& bounds) {
 			unsigned numDuplicateMatches = 0;
 			if (matches.empty())
 				return numDuplicateMatches;
 
-			// Lambda to remove duplicates by a specific index (queryIdx or trainIdx)
+			// Lambda to remove duplicates by a specific index (queryIdx or trainIdx).
+			// ORDER-PRESERVING: detection sorts an index array, compaction walks `data` in its
+			// original order. Sorting `data` itself would move matches across the segment bounds --
+			// dense keypoints hold the largest indices by construction, so every dense match sorts to
+			// the end and the strict-filter rejects migrate into the prefix, which silently makes
+			// part of the supplement inert in BuildTracks and lets an equal number of deliberately
+			// rejected matches form tracks.
 			const auto RemoveDuplicatesByIndex = [&](
 				std::vector<DMatch>& data,
 				auto getIndex) -> unsigned
 			{
-				unsigned numRemoved = 0;
-				std::sort(data.begin(), data.end(), [&](const DMatch& a, const DMatch& b) {
-					return getIndex(a) < getIndex(b);
+				std::vector<uint32_t> order(data.size());
+				std::iota(order.begin(), order.end(), 0u);
+				// stable, so that within a duplicate group the candidates are visited in original
+				// order and an exact tie resolves to the earliest one
+				std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+					return getIndex(data[a]) < getIndex(data[b]);
 				});
 
-				std::vector<DMatch> filtered;
-				filtered.reserve(data.size());
-				for (size_t j = 0; j < data.size(); ) {
-					const DMatch& first = data[j];
+				unsigned numRemoved = 0;
+				std::vector<char> keep(data.size(), 1);
+				for (size_t j = 0; j < order.size(); ) {
 					const size_t start = j;
+					const DMatch& first = data[order[j]];
 					const auto firstIndex = getIndex(first);
-					while (++j < data.size() && getIndex(data[j]) == firstIndex);
-
-					if (j - start == 1) {
-						filtered.push_back(first);
-					} else {
-						// Multiple matches with same index - keep best by combined weight
-						size_t bestIdx = start;
-						float bestWeight = Image::ComputeKeypointWeight(img1.keypoints[first.queryIdx]) *
-						                   Image::ComputeKeypointWeight(img2.keypoints[first.trainIdx]);
-						for (size_t m = start + 1; m < j; ++m) {
-							const float weight = Image::ComputeKeypointWeight(img1.keypoints[data[m].queryIdx]) *
-							                     Image::ComputeKeypointWeight(img2.keypoints[data[m].trainIdx]);
-							if (weight > bestWeight) {
-								bestWeight = weight;
-								bestIdx = m;
-							}
+					while (++j < order.size() && getIndex(data[order[j]]) == firstIndex);
+					if (j - start == 1)
+						continue;
+					// Multiple matches with same index - keep the one that is track-forming first,
+					// then the one with the fewest dense endpoints, then the best combined weight.
+					//
+					// TRACK-FORMING FIRST, because the segment a candidate sits in outranks what
+					// kind of keypoints it joins: a match past the track-forming bound is a RANSAC
+					// inlier the strict cheirality/angle/reprojection filter deliberately rejected,
+					// so keeping it costs a track-forming observation and gains nothing -- the
+					// survivor would sit in the reject segment and never be unioned. Reachable on
+					// any supplemented pair with both rejects and a cross-pruned dense endpoint,
+					// i.e. the normal case once cross-pair dense reuse fires: a reject described at
+					// both ends (0 dense endpoints) would otherwise outrank a supplement match whose
+					// query endpoint collapsed onto a described survivor (1 dense endpoint).
+					// Then DESCRIBED-WINS among track-forming candidates, stated explicitly rather
+					// than arranged through response*size: a described correspondence measured at
+					// sub-pixel accuracy must not lose the keypoint it shares to a warp sample.
+					// With no dense keypoints in the scene every count below is 0 and, since a
+					// partition-less vector has no bounds either, this is the plain weight
+					// comparison it has always been.
+					const auto NumDenseEnds = [&](const DMatch& m) {
+						return (unsigned)img1.IsDenseKeypoint(m.queryIdx) + (unsigned)img2.IsDenseKeypoint(m.trainIdx);
+					};
+					// `bounds` are positions in `data` as it stands now (the compaction that
+					// rewrites them runs after this loop), and `order` holds those positions, so
+					// this is exact rather than an estimate
+					const auto IsReject = [&bounds](size_t pos) {
+						return !bounds.empty() && pos >= bounds.back() ? 1u : 0u;
+					};
+					size_t bestPos = start;
+					unsigned bestReject = IsReject(order[start]);
+					unsigned bestDense = NumDenseEnds(first);
+					float bestWeight = Image::ComputeKeypointWeight(img1.keypoints[first.queryIdx]) *
+					                   Image::ComputeKeypointWeight(img2.keypoints[first.trainIdx]);
+					for (size_t m = start + 1; m < j; ++m) {
+						const DMatch& candidate = data[order[m]];
+						const unsigned reject = IsReject(order[m]);
+						const unsigned numDense = NumDenseEnds(candidate);
+						const float weight = Image::ComputeKeypointWeight(img1.keypoints[candidate.queryIdx]) *
+						                     Image::ComputeKeypointWeight(img2.keypoints[candidate.trainIdx]);
+						if (reject < bestReject ||
+							(reject == bestReject && (numDense < bestDense ||
+							 (numDense == bestDense && weight > bestWeight)))) {
+							bestReject = reject;
+							bestDense = numDense;
+							bestWeight = weight;
+							bestPos = m;
 						}
-						filtered.push_back(data[bestIdx]);
-						numRemoved += j - start - 1;
 					}
+					for (size_t m = start; m < j; ++m)
+						if (m != bestPos)
+							keep[order[m]] = 0;
+					numRemoved += (unsigned)(j - start - 1);
 				}
-				data = std::move(filtered);
+				if (numRemoved == 0)
+					return numRemoved;
+				// Recompute each segment bound as its survivor count, then compact in place: both
+				// read the same `keep` array, so a bound can never disagree with the compaction.
+				for (size_t& bound : bounds) {
+					ASSERT(bound <= data.size());
+					size_t numSurvivors = 0;
+					for (size_t r = 0; r < bound; ++r)
+						numSurvivors += (size_t)keep[r];
+					bound = numSurvivors;
+				}
+				size_t w = 0;
+				for (size_t r = 0; r < data.size(); ++r)
+					if (keep[r])
+						data[w++] = data[r];
+				data.resize(w);
 				return numRemoved;
 			};
 
@@ -1516,22 +1792,51 @@ void PairsMatcher::FilterRedundantKeypoints()
 			return numDuplicateMatches;
 		};
 
-		const unsigned numDuplicateMatches = FilterDuplicates(pair.matches);
-		atomicNumDuplicateMatches += numDuplicateMatches + FilterDuplicates(pair.outlierMatches);
-		if (pair.matches.size() < config.minMatches) {
-			pair.InvalidateMatches();
-		} else if (pair.numFilteredInliers > 0) {
-			// Update the number of filtered inliers if applicable
-			pair.numFilteredInliers -= (int)numDuplicateMatches;
-			if (pair.numFilteredInliers < 0)
-				pair.numFilteredInliers = pair.matches.size();
+		// the partition carried through the compaction as positions and read back as counts; a pair
+		// with numFilteredInliers < 0 never ran the strict filter and has no partition to carry
+		const bool bPartitioned = pair.numFilteredInliers >= 0;
+		std::vector<size_t> bounds;
+		if (bPartitioned) {
+			ASSERT((size_t)pair.numFilteredInliers + (size_t)pair.numDenseInliers <= pair.matches.size());
+			bounds = {(size_t)pair.numFilteredInliers,
+			          (size_t)pair.numFilteredInliers + (size_t)pair.numDenseInliers};
 		}
+		std::vector<size_t> noBounds;
+		const unsigned numDuplicateMatches = FilterDuplicates(pair.matches, bounds);
+		atomicNumDuplicateMatches += numDuplicateMatches + FilterDuplicates(pair.outlierMatches, noBounds);
+		if (pair.matches.size() < config.minMatches) {
+			// the dense keypoints this pair appended to both images are now unreferenced: still
+			// serialized and still walked, but never observed. Cost only -- BuildTracks' step 3
+			// makes each of them a singleton root that step 4's "< 2 views" filter drops.
+			pair.InvalidateMatches();
+		} else if (bPartitioned) {
+			pair.numFilteredInliers = (int)bounds[0];
+			pair.numDenseInliers = (int)(bounds[1] - bounds[0]);
+			// the discounted evidence summarised the partition this just recounted; invalidate it
+			// with the counts it described rather than trusting that ComputePairsWeights happens to
+			// run after this pass (it does today, and the accessor's fallback is the sparse count,
+			// which is what a stale value must never silently be)
+			pair.weightedInliers = -1.f;
+		}
+		// this is the second of the two sites that maintain the partition (FilterMatches is the
+		// other), and the one the F1/F2 failure modes went through: a dense match drifting into the
+		// sparse count. Debug-only, one-directional -- see the declaration.
+		// Checked only while the strict matches filter is on. With it off nothing re-partitions a
+		// re-verified pair, so dense matches legitimately sit inside numFilteredInliers and count as
+		// descriptor evidence -- the disclosed gap documented in docs/design/DenseMatching.md, whose
+		// size is a measurement question, not a broken invariant. An assertion that fires on a
+		// configuration the design declines to protect stops meaning "a bug happened".
+		if (config.IsMatchesFilterOn())
+			pair.CheckSparseSegmentIsDescribed(img1, img2);
 	});
 	scene.threadPool.wait();
 
 	const size_t numDuplicateMatches = atomicNumDuplicateMatches.load();
-	VERBOSE("Filtered %u redundant keypoints from %u total keypoints, removed %u duplicate matches (%s)",
-		numRemoved, numTotal, numDuplicateMatches, TD_TIMER_GET_FMT().c_str());
+	const size_t numRemovedDense = atomicNumRemovedDense.load();
+	// the dense count is what says whether the cross-pair reuse of exact-position dense samples is
+	// firing at all: it is the only mechanism that can give a dense track more than two views
+	VERBOSE("Filtered %u redundant keypoints (%u dense) from %u total keypoints, removed %u duplicate matches (%s)",
+		numRemoved, numRemovedDense, numTotal, numDuplicateMatches, TD_TIMER_GET_FMT().c_str());
 }
 
 void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
@@ -1541,6 +1846,12 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
 		return;
 	}
 	TD_TIMER_STARTD();
+	// a neighbour pair of a sequence run is always matched: the pre-match filter may still store
+	// its geometry, but never removes it (the pair IDs index scene.images, as everywhere below);
+	// one the scene already holds verified leaves the list below like any other pair
+	const auto IsKept = [this](const PairIdx& p) {
+		return sequence && sequence->AreNeighbours(p.i, p.j);
+	};
 
 	// Filter out already verified pairs from the list
 	{
@@ -1566,22 +1877,30 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
 	std::mutex pairsMutex;
 	scene.threadPool.detach_loop(0u, pairsToMatch.size(), [&](unsigned idx) {
 		PairIdx& p = pairsToMatch[idx];
+		const bool bKept = IsKept(p);
+		const auto Remove = [&]() {
+			if (bKept)
+				return;
+			p = PairIdx(NO_ID, NO_ID);
+			++atomicNumRemoved;
+		};
 		const Image& img1 = scene.images[p.i];
 		const Image& img2 = scene.images[p.j];
 		// Use cached top descriptors
 		const cv::Mat& desc1 = vocabularyTree->GetTopDescriptors(img1);
 		const cv::Mat& desc2 = vocabularyTree->GetTopDescriptors(img2);
 		if (desc1.empty() || desc2.empty()) {
-			p = PairIdx(NO_ID, NO_ID);
-			++atomicNumRemoved;
+			Remove();
 			return;
 		}
-		const static thread_local unsigned threadIdx = std::hash<std::thread::id>{}(std::this_thread::get_id()) % matchers.size();
+		// always a pool thread: this lambda only ever runs through detach_loop below
+		const std::optional<size_t> poolIdx = BS::this_thread::get_index();
+		ASSERT(poolIdx && *poolIdx < matchers.size());
+		const unsigned threadIdx = (unsigned)*poolIdx;
 		std::vector<DMatch> matches;
 		MatchFeatures(desc1, desc2, matches, threadIdx);
 		if (matches.size() < config.preMatchThreshold) {
-			p = PairIdx(NO_ID, NO_ID);
-			++atomicNumRemoved;
+			Remove();
 			return;
 		}
 		// Geometric verification for PreMatch
@@ -1590,8 +1909,7 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
 			pair.matches = std::move(matches);
 			if (!GeometricFilter(img1, img2, pair)) {
 				// Failed geometric verification
-				p = PairIdx(NO_ID, NO_ID);
-				++atomicNumRemoved;
+				Remove();
 				return;
 			}
 			// Succeeded: Store pair with geometry, but clear matches to force rematch
@@ -1642,7 +1960,7 @@ bool PairsMatcher::MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progr
 	// SiftGPU branch (only if using CUDA, even if SiftGPU can use GLSL for matching, is slower than modern CPU)
 	if (scene.status.nFeaturesType == FeatureType::SIFTGPU) {
 		SiftGPUMatchCoordinator coordinator(*this);
-		if (!coordinator.Initialize()) {
+		if (!coordinator.Initialize(pairsToMatch)) {
 			VERBOSE("error: SiftMatchGPU coordinator initialization failed");
 			GET_LOGCONSOLE().Play();
 			progress.close();
@@ -1721,10 +2039,13 @@ bool PairsMatcher::MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progr
 	return true;
 }
 
-unsigned PairsMatcher::Match()
+unsigned PairsMatcher::Match(bool& bFatal)
 {
+	bFatal = false;
 	const IIndex nImages = scene.images.size();
 	if (nImages < 2) {
+		// not a fatal round failure: a scene too small to hold a single pair produces none
+		// legitimately, which is exactly the case Scene::MatchPairs excludes from its own check
 		VERBOSE("error: need at least 2 images for matching");
 		return 0;
 	}
@@ -1739,14 +2060,16 @@ unsigned PairsMatcher::Match()
 	// only for the selective modes, and only when the budget is large enough for the
 	// first-round verified graph to carry a useful signal
 	bool verificationFeedback = config.verificationFeedback && config.maxPairsPerImage >= 10 &&
-		(matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::KNOWN_POSES);
+		(matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::KNOWN_POSES || matchMode == MatchConfig::RETRIEVAL);
 	// Per-image candidate-list length for the selective modes: in single-round matching the
 	// list is inflated because the mutual-agreement rule is stricter than a one-sided top-K
 	// union (at the configured setting it then selects about the configured volume of pairs,
 	// just distributed by two-sided preference); with verification feedback the first round
 	// instead uses a deflated list (80% of the target, uninflated) and the second round
-	// fills the rest of the maxPairsPerImage*N/2 pair budget guided by the verified matches
-	const unsigned vocabularyTopK = verificationFeedback ?
+	// fills the rest of the maxPairsPerImage*N/2 pair budget guided by the verified matches.
+	// Shared by VOCABULARY and RETRIEVAL: the fusion and the budget are properties of the
+	// ranking (CollectFusedRetrievalPairs), not of which backend ranked the candidates.
+	const unsigned retrievalTopK = verificationFeedback ?
 		config.maxPairsPerImage*4/5 : config.maxPairsPerImage*8/5;
 	const unsigned knownPosesTopK = verificationFeedback ?
 		config.maxPairsPerImage*4/5 : config.maxPairsPerImage*4/3;
@@ -1767,12 +2090,15 @@ unsigned PairsMatcher::Match()
 		break;
 	}
 	case MatchConfig::VOCABULARY: {
-		// Build vocabulary candidates from the tree retrieval ranking
-		pairsToMatch = CollectVocabularyPairs(vocabularyTopK);
-		if (pairsToMatch.empty()) {
-			VERBOSE("error: vocabulary produced no new candidate pairs");
+		pairsToMatch = CollectVocabularyPairs(retrievalTopK);
+		if (!vocabularyTree)
 			return 0;
-		}
+		break;
+	}
+	case MatchConfig::RETRIEVAL: {
+		pairsToMatch = CollectRetrievalPairs(retrievalTopK);
+		if (!globalDescriptors || !globalDescriptors->IsValid())
+			return 0;
 		break;
 	}
 	case MatchConfig::KNOWN_POSES: {
@@ -1808,65 +2134,104 @@ unsigned PairsMatcher::Match()
 	}
 	default:
 		ASSERT("Invalid match mode" == NULL);
+		bFatal = true;
 		return 0;
 	}
-	ASSERT(!pairsToMatch.empty());
 
-	// Run a matching round: pre-match filter if requested, GPU-friendly ordering, then
-	// parallel feature matching and geometric verification of all the candidate pairs
+	// The consecutive pairs, added here, before the snapshot the verification-feedback round
+	// attempts against, so that round never re-proposes or double-counts them.
+	// In a sequence run the neighbour pairs are always matched, in every mode: the missing ones are
+	// added to the candidates, and pre-matching never removes one. In any other run, the sequential
+	// prior: the consecutive-frame pairs a visual ranking that picked some pairs is most likely to
+	// leave out (see AddSequentialPairs); it would also add the pairs across a name break.
+	const unsigned numCandidates = (unsigned)pairsToMatch.size();
+	if (sequence) {
+		const unsigned numAdded = AddNeighbourPairs(scene, *sequence, pairsToMatch);
+		DEBUG("Image sequence: %u neighbour pairs added to the %u candidates (overlap %u, %u name breaks)",
+			numAdded, numCandidates, sequence->Overlap(), sequence->NumBreaks());
+	} else if (numCandidates > 0 && (matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::RETRIEVAL)) {
+		const unsigned numAdded = AddSequentialPairs(scene, config.matchSequenceOverlap, pairsToMatch);
+		if (numAdded > 0)
+			DEBUG("Sequential prior: %u consecutive pairs added to the %u retrieved (overlap %u)",
+				numAdded, numCandidates, config.matchSequenceOverlap);
+	}
+	if (pairsToMatch.empty()) {
+		VERBOSE("error: no candidate pairs to match");
+		return 0;
+	}
+
+	// Run a matching round, in one of its two shapes: the dense one pass when the dense matcher
+	// is enabled, otherwise the descriptor round -- pre-match filter if requested, GPU-friendly
+	// ordering, then parallel feature matching and geometric verification of all the candidates
 	MatchStats stats;
 	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption) {
-		// Pre-match the pairs if requested
-		// Pre-matching needs the vocabulary-tree descriptors, so it runs only when candidate
-		// collection built the tree (VOCABULARY, or KNOWN_POSES with unposed images).
+		// One-pass dense pair matching (opt-in): the whole round is the dense pass, which judges
+		// every candidate from its bidirectional warp alone, guides the sparse matching of the
+		// admitted ones through that warp, fills them densely and stores them. A pair the warp
+		// rejects is dropped: there is no descriptor-matching round to fall back to, and no union
+		// of SIFT-verified and warp-verified pairs
+		if (denseMatcher && denseCfg.useMatching) {
+			unsigned numStored = 0;
+			if (!MatchPairsDense(*this, *denseMatcher, pairs, denseCfg, numStored))
+				return false;
+			stats.densePairs += numStored;
+			return true;
+		}
 		if (vocabularyTree) {
 			if (config.preMatchThreshold > 0)
 				PreMatch(pairs);
-			// Clear descriptors cache
+			// the tree's descriptor copies are only read by PreMatch: free them before the matching
 			vocabularyTree->ClearDescriptorsCache();
 		}
 		// Reorder pairs to minimize GPU transfers and improve load balancing
 		OptimizePairsOrder(pairs);
-		return MatchPairsBatch(pairs, progressCaption, stats);
+		if (!MatchPairsBatch(pairs, progressCaption, stats))
+			return false;
+		return true;
 	};
-	// Snapshot the candidate list before the round runs: PreMatch prunes rejected pairs from
-	// it in place (and they are not stored in scene.pairs either), so the feedback round must
-	// see the original list or it re-proposes exactly the pairs pre-matching already rejected
+	// Snapshot the candidate list before the round runs so verification feedback does not re-propose rejected pairs
 	PairIdxArr attemptedPairs;
 	if (verificationFeedback)
 		attemptedPairs = pairsToMatch;
-	if (!MatchRound(pairsToMatch, _T("Match image pairs")))
+	if (!MatchRound(pairsToMatch, _T("Match image pairs"))) {
+		bFatal = true;
 		return 0;
+	}
 
-	// Second round: spend the held-back pair budget on the pairs suggested by the
-	// geometrically verified matches of the first round
+	// Second round: spend the held-back pair budget on pairs suggested by verified round-1 matches
 	if (verificationFeedback) {
 		PairIdxArr feedbackPairs = CollectVerificationFeedbackPairs(attemptedPairs);
-		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs")))
+		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs"))) {
+			bFatal = true;
 			return 0;
+		}
 	}
+	if (vocabularyTree)
+		vocabularyTree->ClearDescriptorsCache(); // anything cached since (the dense round skips the clear above)
 	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
 
-	const unsigned numProcessedPairs = stats.newPairs + stats.updatedPairs;
-	DEBUG("Images matched: created %u/%u new/updated pairs (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",
-		stats.newPairs, stats.updatedPairs, scene.pairs.size(), numExhaustivePairs, stats.numFilteredInliers, stats.numInliers, stats.numMatches,
-		numProcessedPairs ? static_cast<double>(stats.numFilteredInliers) / numProcessedPairs : 0.0,
-		numProcessedPairs ? static_cast<double>(stats.numInliers) / numProcessedPairs : 0.0,
-		numProcessedPairs ? static_cast<double>(stats.numMatches) / numProcessedPairs : 0.0,
-		TD_TIMER_GET_FMT().c_str());
+	if (denseMatcher && denseCfg.useMatching) {
+		DEBUG("Images matched: %u dense pairs stored (%u total from %u exhaustive) in %s",
+			stats.densePairs, scene.pairs.size(), numExhaustivePairs, TD_TIMER_GET_FMT().c_str());
+	} else {
+		const unsigned numProcessedPairs = stats.newPairs + stats.updatedPairs;
+		DEBUG("Images matched: created %u/%u new/updated pairs (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",
+			stats.newPairs, stats.updatedPairs, scene.pairs.size(), numExhaustivePairs, stats.numFilteredInliers, stats.numInliers, stats.numMatches,
+			numProcessedPairs ? static_cast<double>(stats.numFilteredInliers) / numProcessedPairs : 0.0,
+			numProcessedPairs ? static_cast<double>(stats.numInliers) / numProcessedPairs : 0.0,
+			numProcessedPairs ? static_cast<double>(stats.numMatches) / numProcessedPairs : 0.0,
+			TD_TIMER_GET_FMT().c_str());
+	}
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
-		// Log pairs statistics:
-		//  - number of valid pairs per image
-		//  - number of matches and inliers per pair
 		MeanStdMinMax<unsigned,REAL> pairsPerImage;
 		MeanStdMinMax<unsigned,REAL> matchesPerPair;
 		MeanStdMinMax<unsigned,REAL> inliersPerPair;
 		MeanStdMinMax<unsigned,REAL> filteredInliersPerPair;
 		IIndexArr imagePairCounts(scene.images.size());
 		imagePairCounts.Memset(0);
-		unsigned nMatches = 0, nInliers = 0, nFilteredInliers = 0;
+		size_t nMatches = 0, nInliers = 0, nFilteredInliers = 0;
 		for (const ImagePair& pair : scene.pairs) {
 			if (!pair.HasMatches())
 				continue;
@@ -1883,16 +2248,16 @@ unsigned PairsMatcher::Match()
 		VERBOSE("Pairs per image: mean %.2f, std %.2f, range [%u, %u]",
 				pairsPerImage.GetMean(), pairsPerImage.GetStdDev(),
 				pairsPerImage.GetMin(), pairsPerImage.GetMax());
-		VERBOSE("Matches per pair: mean %.2f, std %.2f, range [%u, %u], total %u",
+		VERBOSE("Matches per pair: mean %.2f, std %.2f, range [%u, %u], total %zu",
 				matchesPerPair.GetMean(), matchesPerPair.GetStdDev(),
 				matchesPerPair.GetMin(), matchesPerPair.GetMax(), nMatches);
 		if (nInliers > 0) {
-			VERBOSE("Inliers per pair: mean %.2f, std %.2f, range [%u, %u], total %u",
+			VERBOSE("Inliers per pair: mean %.2f, std %.2f, range [%u, %u], total %zu",
 					inliersPerPair.GetMean(), inliersPerPair.GetStdDev(),
 					inliersPerPair.GetMin(), inliersPerPair.GetMax(), nInliers);
 		}
 		if (nFilteredInliers > 0) {
-			VERBOSE("Filtered inliers per pair: mean %.2f, std %.2f, range [%u, %u], total %u",
+			VERBOSE("Filtered inliers per pair: mean %.2f, std %.2f, range [%u, %u], total %zu",
 					filteredInliersPerPair.GetMean(), filteredInliersPerPair.GetStdDev(),
 					filteredInliersPerPair.GetMin(), filteredInliersPerPair.GetMax(), nFilteredInliers);
 		}
@@ -1900,23 +2265,17 @@ unsigned PairsMatcher::Match()
 	#endif
 
 	if (config.releaseDescriptors) {
-		// Release descriptors to save memory
 		for (Image& img : scene.images)
 			img.descriptors.release();
-
-		// Filter redundant keypoints to avoid artificial track breaks
-		// (only if descriptors are released as the filter can not process descriptors)
 		FilterRedundantKeypoints();
 	}
 
-	// Compute pair weights
 	ComputePairsWeights(scene, config.weightingCfg);
-
 	return scene.pairs.size();
 }
 
 
-bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight)
+bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minYield, const PairsWeightingConfig& weighting)
 {
 	std::ofstream ofs(fileName);
 	if (!ofs.is_open()) {
@@ -1924,17 +2283,69 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 		return false;
 	}
 	const String basePath = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
-	ofs << "ImageA,ImageB,NumMatches,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle\n";
-	for (const ImagePair& pair : scene.pairs) {
+	// the triplet disambiguation score of every pair (ViewGraphTriplets.h), the score the filter
+	// acts on; it does not depend on the minimum score, only the threshold derived from it does,
+	// so the column can be re-thresholded offline; the Coverage column beside the raw NumMatches
+	// count lets the pair strength (their product) be replayed offline too
+	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f, minYield, weighting);
+	// the columns of what the dense matcher said about the pairs besides its warps (ImagePair::covisibility and posePrior), in the
+	// layout of the Rel* columns (the pose prior's rotation and direction in the pair's own convention), only when some pair has them
+	const bool hasMatcherColumns = std::any_of(scene.pairs.begin(), scene.pairs.end(), [](const ImagePair& pair) { return pair.covisibility.has_value(); });
+	// a pose as the seven cells of the Rel* and Prior* blocks: the quaternion (w,x,y,z, from a Quat's (x,y,z,w) storage) and the unit baseline direction
+	const auto WritePose = [&ofs](double qw, double qx, double qy, double qz, double tx, double ty, double tz) {
+		const std::streamsize oldPrecision = ofs.precision(7);
+		ofs << qw << "," << qx << "," << qy << "," << qz << "," << tx << "," << ty << "," << tz;
+		ofs.precision(oldPrecision);
+	};
+	ofs << "ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore,"
+		   "RelQw,RelQx,RelQy,RelQz,RelTx,RelTy,RelTz";
+	if (hasMatcherColumns)
+		ofs << ",Covisibility,PriorQw,PriorQx,PriorQy,PriorQz,PriorTx,PriorTy,PriorTz";
+	ofs << "\n";
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
 		const String relImageNameA = MAKE_PATH_REL(basePath, scene.images[pair.ID1].fileName);
 		const String relImageNameB = MAKE_PATH_REL(basePath, scene.images[pair.ID2].fileName);
 		ofs << relImageNameA << "," << relImageNameB << ","
 		    << pair.GetNumFilteredInliers() << ","
+			<< ComputePairCoverage(pair, scene.images[pair.ID1], scene.images[pair.ID2], weighting.gridSize) << ","
 			<< pair.GetCompositeWeight() << ","
 			<< pair.weightSpatial << ","
 			<< pair.weightConnectivity << ","
 			<< pair.weightTriplet << ","
-			<< R2D(pair.meanRayAngle) << "\n";
+			<< R2D(pair.meanRayAngle) << ",";
+		if (tripletScores.scores[idxPair] >= 0.f)
+			ofs << tripletScores.scores[idxPair]; // an unscored pair leaves the cell empty
+		ofs << ",";
+		bool hasPose = false;
+		if (pair.relativePose.has_value()) {
+			// relativePose->R, C store the pose in the pair's own convention (x2 = R*x1 + t);
+			// Pose3D stores the camera centre C, not the translation, so t = -R*C = GetT()
+			const RMatrix::Quat q(pair.relativePose->R.GetQuaternion());
+			CMatrix t(pair.relativePose->GetT());
+			const REAL tLen = cv::norm(t);
+			if (tLen > REAL(0)) {
+				t *= REAL(1) / tLen; // the scale of a two-view pose is arbitrary: normalize t; a zero baseline has no direction and exports no pose
+				WritePose(q.val[3], q.val[0], q.val[1], q.val[2], t.x, t.y, t.z);
+				hasPose = true;
+			}
+		}
+		if (!hasPose)
+			ofs << ",,,,,,"; // no relative pose: all seven cells stay empty
+		if (hasMatcherColumns) {
+			ofs << ",";
+			if (pair.covisibility)
+				ofs << *pair.covisibility;
+			ofs << ",";
+			if (pair.posePrior) {
+				const RMatrixBaseF::Quat q(RMatrixBaseF(pair.posePrior->R).GetQuaternion());
+				const Point3f& t = pair.posePrior->t;
+				WritePose(q.val[3], q.val[0], q.val[1], q.val[2], t.x, t.y, t.z);
+			} else {
+				ofs << ",,,,,,";
+			}
+		}
+		ofs << "\n";
 	}
 	ofs.close();
 	VERBOSE("Exported %u pairs to '%s'",

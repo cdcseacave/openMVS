@@ -18,6 +18,9 @@
 
 namespace SFM {
 
+// Standard deviation along each principal axis of a 3D point cloud, in ascending order
+SFM_API Eigen::Vector3d ComputePrincipalSpread(const Point3Arr& points);
+
 /**
  * @brief Estimate similarity transform from 3D point correspondences
  * @param srcPoints Source 3D points
@@ -67,10 +70,6 @@ SFM_API unsigned EstimateSimilarityTransformWithRotations(
 	double threshold = 0.0);
 /*----------------------------------------------------------------*/
 
-
-// Similarity transform refinement unit test
-SFM_API bool TestSimilarityTransform();
-/*----------------------------------------------------------------*/
 
 } // namespace SFM
 

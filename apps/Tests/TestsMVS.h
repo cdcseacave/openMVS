@@ -64,6 +64,9 @@ bool ImageResizeCameraTest();
 bool MeshBipyramidFixtureTest();
 bool MeshTetraInteriorPointFixtureTest();
 
+// regression test for PlatformArr's cList growth/relocation ownership of Platform::name
+bool PlatformArrGrowOwnershipTest();
+
 // test the camera-model patch warp and depth geometry against the cached pinhole homography and
 // closed forms of the CPU PatchMatch estimator
 bool PatchWarpModelTest();

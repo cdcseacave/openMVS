@@ -27,9 +27,14 @@
 
 // Image matching and pairing
 #include "SFM/VocabularyTree.h"
+#include "SFM/GlobalDescriptors.h"
 #include "SFM/PairsMatcher.h"
+#include "SFM/SequenceNeighbours.h"
+#include "SFM/LensFit.h"
 #include "SFM/PairsWeighting.h"
 #include "SFM/RelativePoseRefine.h"
+#include "SFM/MatchDense.h"
+#include "SFM/DenseWarp.h"
 
 // Track building and triangulation
 #include "SFM/Track.h"
@@ -37,6 +42,7 @@
 
 // Scene clustering
 #include "SFM/SceneCluster.h"
+#include "SFM/SceneBlocks.h"
 
 // Incremental reconstruction
 #include "SFM/StarInitializer.h"
@@ -50,8 +56,6 @@
 // Interface to external formats/tools
 #include "SFM/InterfaceMVS.h"
 #include "SFM/PoseIO.h"
-#include "SFM/ImportCOLMAP.h"
-#include "SFM/ImportROMA2.h"
 
 // D E F I N E S ///////////////////////////////////////////////////
 

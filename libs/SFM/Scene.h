@@ -23,7 +23,8 @@
 #include "SceneCluster.h"
 #include "BundleAdjustment.h"
 #include "GlobalAlignment.h"
-#include "ImportROMA2.h"
+#include "MatchDense.h"
+#include "ViewGraphTriplets.h"
 #include "PoseIO.h"
 
 
@@ -38,8 +39,11 @@ namespace SFM {
  * @brief Configuration for importing images and initializing cameras
  */
 struct SFM_API ImportConfig {
-	bool useExif = true;             // attempt to parse EXIF (tinyexif) if available
 	float defaultFocalRatio = 1.2f;  // fallback focal = ratio * max(width,height)
+	// camera model of every image: UNDEFINED reads it from the image metadata (an equirectangular
+	// projection tag makes a spherical camera, anything else a pinhole), PINHOLE or SPHERICAL forces it
+	// (an equirectangular panorama whose file carries no projection tag)
+	CameraType cameraType = CameraType::UNDEFINED;
 	float focalLength = 0.f;         // force focal length (in pixels) for specified images (0 = disabled)
 	float k1 = 0.f;                  // force k1 distortion coefficient (0 = not used)
 	float k2 = 0.f;                  // force k2 distortion coefficient (0 = not used)
@@ -54,11 +58,11 @@ struct SFM_API ImportConfig {
 };
 
 /**
- * @brief Lightweight reconstruction configuration
+ * @brief Reconstruction configuration
  *
- * This struct avoids depending on other SFM headers to prevent
- * circular includes. The values are later converted to the
- * internal typed configurations inside Scene::Reconstruct().
+ * Holds the configuration of every stage of Scene::Reconstruct() (import, features, matching,
+ * view graph, tracks, clustering, initialization, resection, alignment, bundle adjustment) and the
+ * options that cut across them; each stage reads its own member.
  */
 struct SFM_API ReconstructionConfig {
 	// Import configuration
@@ -67,23 +71,48 @@ struct SFM_API ReconstructionConfig {
 	// Feature extraction configuration
 	FeatureExtractionConfig featuresCfg;
 
-	// ROMA2 configuration
-	ROMA2Config roma2Cfg;
+	// dense matcher configuration
+	DenseMatchConfig denseCfg;
 
 	// Matching parameters (will be translated to MatchConfig)
 	MatchConfig matchCfg;
-	bool matchImagesOnly{false}; // only match image pairs and save scene without reconstruction
+	// only match the image pairs and filter their view graph (the triplet filter and the contradiction
+	// cut below), then stop: the scene is left at PAIRS_FILTERED, the state a reconstruction that loads
+	// it starts from without matching or filtering again
+	bool matchImagesOnly{false};
+
+	// The pairs CSV written right after pair matching, before any reconstruction step can drop
+	// images or pairs (empty = no export)
+	String exportPairsCSV;
+
+	// Triplet-based view-graph disambiguation, applied right after that CSV is written, so it
+	// still describes the whole matched graph and carries the score of every pair
+	TripletFilterConfig tripletFilterCfg;
+	// Then the contradiction cut (FilterPairsByContradiction), weighted by those scores: its rotation
+	// stage removes every pair whose rotation is not the one the global rotation averaging of the pairs
+	// gives, and its translation stage removes every pair whose baseline direction is more than this
+	// many degrees from the camera centres the pairs place; 0 = no translation stage, the rotation
+	// stage alone
+	float maxPairDirectionResidual{45.f};
+	// Repair instead of remove: a pair the cut removed comes back, with a relative pose refitted
+	// at the averaged rotation, when its matches agree with that pose and the camera centres confirm
+	// its baseline direction (FilterPairsByContradiction); part of the translation stage, so it does
+	// not act when maxPairDirectionResidual is 0
+	bool repairContradictedPairs{true};
 
 	// View graph calibration parameters
 	ViewGraphCalibratorConfig viewgraphCfg;
 
 	// Tracks parameters
-	float minPairWeight{3.f}; // minimum weight for a pair to be used in creating tracks (0 = disabled)
+	float minPairWeight{1.22f}; // minimum composite weight for a pair to form tracks and to enter the contradiction cut's averaging (a pair must exceed it: 0 drops only the pairs without weight); 0.9, the value of the other two bars, is the more aggressive setting: it lets more pairs in, equal on perspective captures but with many images wrong on a panorama capture (docs/design/PairWeight.md)
+	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled
 	float maxReprojError{4.f}; // Reprojection error for coarse triangulation and filtering
 	float maxFineReprojError{2.f}; // Reprojection error for fine triangulation and filtering
-	float minAngleThreshold{1.5f}; // Minimum triangulation angle (degrees)
-	float multDepthNear{0.05f}; // Near depth threshold multiplier
-	float multDepthFar{20.f}; // Far depth threshold multiplier
+	float minAngleThreshold{1.5f}; // Minimum triangulation angle (degrees) of the merged scene's and the final triangulations and filters; a block starts and grows at the 1.0 of StarInitConfig and ResectionConfig
+	// constant: near and far depth threshold multipliers of the track filter, the resection's (one value
+	// for the reconstruction's filtering and the resection's)
+	static constexpr float multDepthNear = ResectionConfig::multDepthNear;
+	static constexpr float multDepthFar = ResectionConfig::multDepthFar;
 
 	// Clustering parameters
 	ClusterConfig clusterCfg;
@@ -104,17 +133,26 @@ struct SFM_API ReconstructionConfig {
 		INTRINSIC_FOCAL_LENGTH = 1 << 0,              // Refine fx, fy
 		INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO = 1 << 1, // Refine fx, fy while keeping aspect ratio constant
 		INTRINSIC_PRINCIPAL_POINT = 1 << 2,           // Refine cx, cy
-		INTRINSIC_RADIAL_DIST_123 = 1 << 3,           // Refine k1, k2, k3
+		INTRINSIC_RADIAL_DIST_12 = 1 << 3,            // Refine k1, k2
 		INTRINSIC_TANGENTIAL_DIST = 1 << 4,           // Refine p1, p2
 		INTRINSIC_RADIAL_DIST_456 = 1 << 5,           // Refine k4, k5, k6
-		INTRINSIC_MAIN = INTRINSIC_FOCAL_LENGTH | INTRINSIC_RADIAL_DIST_123,
-		INTRINSIC_MAIN_EXTRA = INTRINSIC_FOCAL_LENGTH | INTRINSIC_RADIAL_DIST_123 |
+		INTRINSIC_RADIAL_DIST_3 = 1 << 6,             // Refine k3
+		INTRINSIC_MAIN = INTRINSIC_FOCAL_LENGTH | INTRINSIC_RADIAL_DIST_12,
+		INTRINSIC_MAIN_EXTRA = INTRINSIC_MAIN | INTRINSIC_RADIAL_DIST_3 |
 						INTRINSIC_PRINCIPAL_POINT | INTRINSIC_TANGENTIAL_DIST,
-		INTRINSIC_ALL = INTRINSIC_FOCAL_LENGTH | INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO |
-						INTRINSIC_PRINCIPAL_POINT | INTRINSIC_RADIAL_DIST_123 |
-						INTRINSIC_TANGENTIAL_DIST | INTRINSIC_RADIAL_DIST_456
+		INTRINSIC_ALL = INTRINSIC_MAIN_EXTRA | INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO |
+						INTRINSIC_RADIAL_DIST_456
 	};
-	unsigned baIntrinsicFlags{INTRINSIC_MAIN_EXTRA}; // which intrinsics to refine
+	unsigned baIntrinsicFlags{INTRINSIC_MAIN}; // which intrinsics to refine
+	// Relative-pose constraints from the verified pairs, in degrees (0 disables them): how far the
+	// bundle adjustment lets the model's relative rotation sit from what a pair measured, and its
+	// baseline direction relativeTranslationSigmaFactor times as far. Copied onto every BAConfig the
+	// reconstruction derives.
+	float relativeRotationSigma{1.f};
+	// constant: the baseline direction of a verified pair is the weaker of the two measurements the
+	// pair makes, so the bundle adjustment lets it sit this many times as far from the model's as the
+	// relative rotation (the baseline direction's sigma is this times relativeRotationSigma)
+	static constexpr float relativeTranslationSigmaFactor = 2.f;
 	BAConfig baConfig;  // detailed BA configuration
 
 	float thAlignGPS{5.f}; // threshold for aligning to GPS (meters)
@@ -130,6 +168,15 @@ struct SFM_API ReconstructionConfig {
 	}
 };
 
+// Translate ReconstructionConfig's intrinsic flags (baIntrinsicFlags) into the matching
+// bundle-adjustment switches on the given BAConfig
+SFM_API void SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags);
+
+// Copy ReconstructionConfig's relative-pose sigma onto the given BAConfig, the baseline direction's
+// following at ReconstructionConfig::relativeTranslationSigmaFactor times it, so that every bundle
+// adjustment the reconstruction derives hears the verified pairs on the same terms
+SFM_API void SetBAPairConstraints(BAConfig& baCfg, float relativeRotationSigma);
+
 
 // Scene contains all data for a Structure-from-Motion reconstruction:
 // cameras, images, image pairs, and optionally a 3D point cloud
@@ -144,6 +191,11 @@ public:
 
 	// Image pair array (relationships between images)
 	ImagePairArr pairs;
+
+	// The images the star initializer chooses its reference view among: the largest piece the triplet
+	// filter's ceiling leaves (FilterPairsByTriplets), written by the view-graph filters with the
+	// PAIRS_FILTERED state; empty, every image (the triplet filter off, or the filters not run yet)
+	IIndexArr seedViews;
 
 	// 3D point tracks (observations + triangulated positions)
 	TrackArr tracks;
@@ -174,10 +226,15 @@ public:
 			FEATURES_EXTRACTED = 1,
 			MATCHED = 2,
 			CALIBRATED = 4,
-			GEO_ALIGN = 8
+			GEO_ALIGN = 8,
+			GLOBAL_DESCRIPTORS = 16,
+			// the view-graph filters (the triplet filter, the contradiction cut and its repair) ran on the matched
+			// pairs: the pairs, their repair marks and the seed views are the ones the reconstruction starts from,
+			// and a scene loaded in this state is neither matched nor filtered again
+			PAIRS_FILTERED = 32
 		};
 		Flags nState{STATE::EMPTY}; // current state (now type-safe with STATE enum)
-		FeatureType nFeaturesType{FeatureType::NONE}; // type of features extracted (0=none,1=AKAZE,2=ORB,3=SIFT)
+		FeatureType nFeaturesType{FeatureType::NONE}; // type of features extracted (0=none,1=AKAZE,2=ORB,3=SIFT,4=SIFTGPU)
 		uint32_t nCalibratedImages{0}; // number of calibrated images
 		uint32_t nTracks{0}; // number of inlier tracks
 
@@ -266,9 +323,20 @@ public:
 	/**
 	 * @brief Match image pairs to find correspondences
 	 * @param config Matching configuration
+	 * @param denseCfg In-process dense matcher configuration
+	 * @param vgConfig View-graph calibration configuration
 	 * @return true if matching completed successfully
 	 */
-	bool MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg = ROMA2Config(), const ViewGraphCalibratorConfig& vgConfig = ViewGraphCalibratorConfig());
+	bool MatchPairs(const MatchConfig& config, const DenseMatchConfig& denseCfg = DenseMatchConfig(), const ViewGraphCalibratorConfig& vgConfig = ViewGraphCalibratorConfig());
+
+	/**
+	 * @brief Describe every image with the in-process dense matcher and pool the result into
+	 * each image's global retrieval descriptor (a no-op returning true if the scene is already
+	 * marked GLOBAL_DESCRIPTORS). Sets the flag only once every image was successfully described.
+	 * @param matcher an already-loaded dense matcher (RoMa2Onnx or FlexGlueMatcher)
+	 * @return true if every image now carries a global descriptor
+	 */
+	bool ComputeGlobalDescriptors(DenseMatcher& matcher);
 
 	/**
 	 * @brief Run a full reconstruction from a folder or semicolon-separated list
@@ -281,6 +349,8 @@ public:
 	/**
 	 * @brief Run hierarchical reconstruction
 	 * @param config Reconstruction configuration
+	 * @param seeds the images the star initializer chooses its reference view among, in this
+	 * scene's indices; empty, every image
 	 * @return true if reconstruction completed
 	 *
 	 * Pipeline:
@@ -288,7 +358,7 @@ public:
 	 * 2. Reconstruct each cluster
 	 * 3. Merge/align sub-scenes
 	 */
-	bool ReconstructHierarchical(const ReconstructionConfig& config);
+	bool ReconstructHierarchical(const ReconstructionConfig& config, const IIndexArr& seeds);
 
 	/**
 	 * @brief Run global reconstruction
@@ -361,7 +431,7 @@ public:
 	bool AlignToPriorPoses(float thresholdRatio = 0.5f);
 
 	/**
-	 * @brief Get ECEF centroid stored in trasform if the scene is aligned to GPS
+	 * @brief Get ECEF centroid stored in transform if the scene is aligned to GPS
 	 * @return ECEF centroid
 	 */
 	const Point3 GetCenterECEF() const {
@@ -395,22 +465,6 @@ public:
 		std::unordered_map<const Camera*, KMatrix>* undistortedIntrinsics = NULL) const;
 
 	/**
-	 * @brief Precompute neighbor views based on shared tracks
-	 *
-	 * For each image, identifies all other images that share track observations
-	 * and computes connectivity metrics:
-	 * - Number of shared tracks (points visible in both images)
-	 * - Average angle between viewing rays for shared tracks
-	 * - Overlap area (fraction of reference image covered by shared points)
-	 *
-	 * Results are sorted by number of shared tracks (descending).
-	 *
-	 * @param neighbors Output array of neighbor scores per image (indexed by image ID)
-	 *                  Must be pre-allocated with size == images.size()
-	 */
-	void PrecomputeTrackBasedNeighbors(std::vector<ViewScoreArr>& neighbors) const;
-
-	/**
 	 * @brief Export tracks and optionally image positions to PLY format
 	 *
 	 * Exports the reconstructed 3D positions of tracks to a PLY file.
@@ -433,6 +487,7 @@ public:
 		ar & cameras;
 		ar & images;
 		ar & pairs;
+		ar & seedViews;
 		ar & tracks;
 		ar & colors;
 		ar & poseUncertainty;
@@ -464,6 +519,17 @@ SFM_API bool CompareScenes(const Scene& scene, const String& gtFile, bool matchB
  * @return 0 when fewer than two centers are given or they all coincide
  */
 SFM_API REAL MedianNearestCameraDistance(BS::light_thread_pool& threadPool, const Point3Arr& centers);
+/*----------------------------------------------------------------*/
+
+/**
+ * @brief The adjustment a merged model takes before the reconstruction's own final one
+ *
+ * The merge joins the correspondences of its block pairs at GlobalAlignmentConfig::looseSeamFactor
+ * times the reprojection bar: the tracks are filtered at that loose bar, triangulated again and
+ * adjusted once, so a block bent within the merge's bars keeps the matches of its far end until the
+ * adjustment has straightened it, and the final adjustment then filters at the bar.
+ */
+SFM_API void AdjustMergedScene(Scene& scene, const ReconstructionConfig& cfg);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

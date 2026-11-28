@@ -149,7 +149,8 @@ public:
 	}
 	#endif
 };
-typedef CLISTDEFIDX(Platform,uint32_t) PlatformArr;
+// Platform owns a String (not trivially relocatable under libstdc++ SSO), so useConstruct=2 is required.
+typedef CLISTDEF2IDX(Platform,uint32_t) PlatformArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

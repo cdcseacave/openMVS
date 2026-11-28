@@ -9,48 +9,246 @@
 #include "Scene.h"
 #include "Triangulation.h"
 #include "BundleAdjustment.h"
-#include "GlobalRotationAveraging.h"
 #include "GlobalScaleAveraging.h"
+#include "PoseLink.h"
+#include <numeric>
 
 using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-IIndex StarInitializer::SelectReferenceView(const Scene& scene)
+// Matching noise expressed as a fraction of the longer image side (0.65 px at 2880 px)
+constexpr float kArmMatchNoisePixels = 0.65f;
+constexpr float kArmMatchNoiseImageSide = 2880.f;
+// Maximum baseline-direction sigma (degrees) allowed for a star arm
+constexpr float kMaxArmDirectionSigma = 0.09f;
+
+// True if the pair's baseline direction is too poorly constrained to place a star arm
+static bool FixesNoBaselineDirection(const ImagePair& pair, const Scene& scene)
 {
-	// Select view with highest connectivity (most matches)
-	IIndex bestView = NO_ID;
-	unsigned maxDegree = 0;
+	ASSERT(pair.meanRayAngle >= 0.f);
+	ASSERT(pair.relativePose.has_value());
+	if (pair.meanRayAngle <= 0.f)
+		return false;
+	const Image& img1 = scene.images[pair.ID1];
+	const Image& img2 = scene.images[pair.ID2];
+	const cv::Size& size1 = img1.pCamera->GetSize();
+	const cv::Size& size2 = img2.pCamera->GetSize();
+	ASSERT(size1.area() > 0 && size2.area() > 0);
+	const REAL pixelAngle = PairPixelErrorToAngular(*img1.pCamera, *img2.pCamera, REAL(1));
+	const REAL longerSide = REAL(0.5) * (MAXF(size1.width, size1.height) + MAXF(size2.width, size2.height));
+	const REAL noiseAngle = kArmMatchNoisePixels * (longerSide / kArmMatchNoiseImageSide) * pixelAngle;
+	return pair.ComputeBaselineDirectionSigma(img1, img2, noiseAngle) > D2R(REAL(kMaxArmDirectionSigma));
+}
 
-	// Count connections per view
-	UnsignedArr degree(scene.images.size());
-	degree.Memset(0);
-	for (const ImagePair& pair : scene.pairs) {
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+// The star evidence of the pairs that join the reference view to another view: the pair's weighted
+// inliers times the share of its inliers that triangulate at its own relative pose with a ray angle
+// of at least minAngle degrees, the inliers that measure a distance (a pair of far points fixes no
+// distance, whatever its inlier count; its unit baseline only guesses one); 0 for every other pair
+// and for a pair without a pose or a valid weight, the star does not use them
+static UnsignedArr ComputeStarEvidence(const Scene& scene, IIndex refID, float minAngle)
+{
+	UnsignedArr evidence(scene.pairs.size());
+	evidence.Memset(0);
+	#pragma omp parallel for schedule(dynamic)
+	for (int_t i = 0; i < (int_t)scene.pairs.size(); ++i) {
+		const ImagePair& pair = scene.pairs[i];
+		if (pair.ID1 != refID && pair.ID2 != refID)
 			continue;
-		degree[pair.ID1] += pair.GetNumFilteredInliers();
-		degree[pair.ID2] += pair.GetNumFilteredInliers();
+		if (!IsPoseLinkPair(pair))
+			continue;
+		const float share = pair.ComputeShareAboveAngle(scene.images[pair.ID1], scene.images[pair.ID2], minAngle);
+		evidence[i] = ROUND2INT<unsigned>(pair.GetNumWeightedInliers() * share);
 	}
+	return evidence;
+}
 
-	// Find view with max degree
-	FOREACH(i, scene.images) {
-		if (degree[i] > maxDegree) {
-			maxDegree = degree[i];
-			bestView = i;
+IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs,
+	const PairsWeightingConfig& weighting)
+{
+	// weighted inliers and valid pairs per view, dense supplement discounted and included: a
+	// dense-only pair is a real connection of both its images, and the star initializer must see
+	// the same graph the weights that let it through were computed on
+	UnsignedArr degree(scene.images.size()), numPairs(scene.images.size());
+	// a near-duplicate pair adds to a view's weight only when the view has no other pair (degreeAll)
+	UnsignedArr degreeAll(scene.images.size());
+	degree.Memset(0);
+	degreeAll.Memset(0);
+	numPairs.Memset(0);
+	for (const ImagePair& pair : scene.pairs) {
+		if (!IsPoseLinkPair(pair))
+			continue;
+		const unsigned w = pair.GetNumWeightedInliers();
+		degreeAll[pair.ID1] += w;
+		degreeAll[pair.ID2] += w;
+		if (!weighting.IsNearDuplicate(pair)) {
+			degree[pair.ID1] += w;
+			degree[pair.ID2] += w;
 		}
+		++numPairs[pair.ID1];
+		++numPairs[pair.ID2];
 	}
+	FOREACH(i, degree)
+		if (degree[i] == 0)
+			degree[i] = degreeAll[i];
+	// the heaviest of the given views with at least minArms valid pairs: the star built around the
+	// reference view has one arm per valid pair and the initializer refuses a star smaller than
+	// its minimum, so a heavier view with fewer arms is no use -- on a sparse kept graph (a chain
+	// of 19 images and 20 pairs) the heaviest seed view had two
+	const auto Heaviest = [&degree, &numPairs](const auto& views, unsigned minArms, IIndex& bestView) {
+		unsigned maxDegree = 0;
+		for (IIndex i : views) {
+			if (numPairs[i] >= minArms && degree[i] > maxDegree) {
+				maxDegree = degree[i];
+				bestView = i;
+			}
+		}
+		return maxDegree;
+	};
+	const unsigned minArms = MAXF(minPairs, 1u);
+	IIndex bestView = NO_ID;
+	unsigned maxDegree = Heaviest(seedViews, minArms, bestView);
+	if (maxDegree > 0) {
+		VERBOSE("Selected reference view %u with %u connections over %u pairs among %u seed views",
+			bestView, maxDegree, numPairs[bestView], seedViews.size());
+		return bestView;
+	}
+	if (!seedViews.empty())
+		VERBOSE("warning: none of the %u seed views has %u valid pairs, choosing the reference view among every image",
+			seedViews.size(), minArms);
+	std::vector<IIndex> every(scene.images.size());
+	std::iota(every.begin(), every.end(), IIndex(0));
+	maxDegree = Heaviest(every, minArms, bestView);
+	if (maxDegree == 0) // no image has enough pairs: the heaviest image, and the caller reports the shortfall
+		maxDegree = Heaviest(every, 1u, bestView);
 	if (bestView == NO_ID) {
 		VERBOSE("error: no valid reference view found");
 		return NO_ID;
 	}
-	VERBOSE("Selected reference view %u with %u connections", bestView, maxDegree);
+	VERBOSE("Selected reference view %u with %u connections over %u pairs", bestView, maxDegree, numPairs[bestView]);
 	return bestView;
+}
+
+std::vector<ScalePair> SFM::ComputePairScales(const Scene& scene, const IIndexArr& pairIndices, const std::vector<bool>* anchors)
+{
+	ASSERT(anchors == NULL || anchors->size() == scene.pairs.size());
+	// 1. Triangulate the matches of each pair in its unit frame (in parallel): the distances of every
+	// point that passes the checks from the pair's two cameras, with its feature in each view
+	struct PairPoint { uint32_t feature1, feature2; double dist1, dist2; };
+	std::vector<std::vector<PairPoint>> pairPoints(pairIndices.size());
+	const REAL maxCosAngle = COS(D2R(0.5));
+	const REAL reprojPixelThreshold = 6;
+	#pragma omp parallel for schedule(dynamic, 16)
+	for (int_t k = 0; k < (int_t)pairIndices.size(); ++k) {
+		const ImagePair& pair = scene.pairs[pairIndices[k]];
+		ASSERT(pair.relativePose.has_value());
+		const Image& img1 = scene.images[pair.ID1];
+		const Image& img2 = scene.images[pair.ID2];
+		const Camera& cam1 = *img1.pCamera;
+		const Camera& cam2 = *img2.pCamera;
+		const Pose3D& relPose = pair.relativePose.value();
+		const REAL cosReprojAngle = COS(PairPixelErrorToAngular(cam1, cam2, reprojPixelThreshold));
+		std::vector<PairPoint>& points = pairPoints[k];
+		points.reserve(pair.matches.size());
+		for (const DMatch& match : pair.matches) {
+			Point3 Xlocal;
+			REAL cosAngle;
+			if (!ImagePair::TriangulateVerifiedMatch(relPose, cam1, cam2,
+					img1.keypoints[match.queryIdx].pt, img2.keypoints[match.trainIdx].pt,
+					cosReprojAngle, maxCosAngle, Xlocal, cosAngle))
+				continue;
+			points.push_back({(uint32_t)match.queryIdx, (uint32_t)match.trainIdx, (double)norm(Xlocal), (double)norm(Xlocal - relPose.C)});
+		}
+	}
+
+	// 2. Build system of equations
+	// Variables: log(Scale_p) for each active pair p
+	// Equations: log(S_p) - log(S_q) = log(dist_q / dist_p)
+	// For each view and feature, if we have measurements from multiple pairs, they should agree.
+	// Two pairs share at most one view, so each pair of pairs gets all its ratios from one view and
+	// the views are independent (in parallel): per view, the distances of every pair that triangulated
+	// each of its features, then the ratios of every two pairs, grouped per pair of pairs
+	struct FeatureDist { uint32_t feature, pair, order; double dist; }; // pair = index in the scene's pairs
+	struct Ratio { uint32_t pair1, pair2; double ratio; }; // pair1 < pair2
+	struct Equation { uint32_t pair1, pair2; double meanRatio; float weight; };
+	std::vector<std::vector<std::pair<uint32_t, bool>>> pairsOfView(scene.images.size()); // index in pairIndices, view is ID2
+	FOREACH(k, pairIndices) {
+		const ImagePair& pair = scene.pairs[pairIndices[k]];
+		pairsOfView[pair.ID1].emplace_back((uint32_t)k, false);
+		pairsOfView[pair.ID2].emplace_back((uint32_t)k, true);
+	}
+	std::vector<std::vector<Equation>> equationsOfView(scene.images.size());
+	#pragma omp parallel for schedule(dynamic, 1)
+	for (int_t v = 0; v < (int_t)pairsOfView.size(); ++v) {
+		if (pairsOfView[v].size() < 2)
+			continue;
+		std::vector<FeatureDist> dists;
+		for (const auto& [k, isSecond] : pairsOfView[v]) {
+			const std::vector<PairPoint>& points = pairPoints[k];
+			FOREACH(i, points)
+				dists.push_back(isSecond ?
+					FeatureDist{points[i].feature2, pairIndices[k], (uint32_t)i, points[i].dist2} :
+					FeatureDist{points[i].feature1, pairIndices[k], (uint32_t)i, points[i].dist1});
+		}
+		// a feature a pair lists twice (no cross-checking in the matching) keeps its first distance
+		std::sort(dists.begin(), dists.end(), [](const FeatureDist& a, const FeatureDist& b) {
+			return a.feature != b.feature ? a.feature < b.feature : (a.pair != b.pair ? a.pair < b.pair : a.order < b.order);
+		});
+		std::vector<Ratio> ratios;
+		std::vector<const FeatureDist*> features; // the first distance of each pair of one feature
+		for (size_t i = 0; i < dists.size(); ) {
+			features.clear();
+			for (; i < dists.size() && (features.empty() || dists[i].feature == features.front()->feature); ++i)
+				if (features.empty() || features.back()->pair != dists[i].pair)
+					features.push_back(&dists[i]);
+			// S_1 / S_2 = dist_2 / dist_1 for every two pairs that triangulated the feature (pair 1 < pair 2),
+			// with anchors only for an anchor and a pair that is none
+			for (size_t a = 0; a + 1 < features.size(); ++a)
+				for (size_t b = a + 1; b < features.size(); ++b)
+					if (anchors == NULL || (*anchors)[features[a]->pair] != (*anchors)[features[b]->pair])
+						ratios.push_back({features[a]->pair, features[b]->pair, features[b]->dist / features[a]->dist});
+		}
+		std::sort(ratios.begin(), ratios.end(), [](const Ratio& a, const Ratio& b) {
+			return a.pair1 != b.pair1 ? a.pair1 < b.pair1 : a.pair2 < b.pair2;
+		});
+		// the 10%-trimmed mean of the ratios of each pair of pairs, weighted by how many it averages
+		DoubleArr pairRatios; // the ratios of one pair of pairs
+		for (size_t i = 0; i < ratios.size(); ) {
+			pairRatios.clear();
+			size_t end = i;
+			for (; end < ratios.size() && ratios[end].pair1 == ratios[i].pair1 && ratios[end].pair2 == ratios[i].pair2; ++end)
+				pairRatios.push_back(ratios[end].ratio);
+			if (pairRatios.size() >= 15) { // Require minimum common points
+				DoubleArr::IDX numKept;
+				const double meanRatio = DoubleArr::GetTrimmedMean(pairRatios.begin(), pairRatios.end(), 0.1f, 0.1f, 0, &numKept);
+				equationsOfView[v].push_back({ratios[i].pair1, ratios[i].pair2, meanRatio, (float)SQRT(static_cast<double>(numKept))});
+			}
+			i = end;
+		}
+	}
+	std::vector<Equation> equations;
+	for (const std::vector<Equation>& viewEquations : equationsOfView)
+		equations.insert(equations.end(), viewEquations.begin(), viewEquations.end());
+	const auto lessPairs = [](const Equation& a, const Equation& b) {
+		return a.pair1 != b.pair1 ? a.pair1 < b.pair1 : a.pair2 < b.pair2;
+	};
+	std::sort(equations.begin(), equations.end(), lessPairs);
+	// two distinct pairs share at most one view, so a pair of pairs has one equation: a scene pair
+	// listed twice would give it two
+	ASSERT(std::adjacent_find(equations.begin(), equations.end(),
+		[&lessPairs](const Equation& a, const Equation& b) { return !lessPairs(a, b); }) == equations.end());
+	std::vector<ScalePair> scalePairs;
+	scalePairs.reserve(equations.size());
+	for (const Equation& equation : equations)
+		scalePairs.emplace_back(equation.pair2, equation.pair1, equation.meanRatio, equation.weight);
+	return scalePairs;
 }
 
 bool StarInitializer::EstimateGlobalScale(
 	Scene& scene,
 	IIndex refViewID,
-	const IIndexArr& connectedViews)
+	const IIndexArr& connectedViews,
+	const PairsWeightingConfig& weighting)
 {
 	if (connectedViews.empty())
 		return true;
@@ -60,142 +258,26 @@ bool StarInitializer::EstimateGlobalScale(
 	validViews.insert(refViewID);
 	validViews.insert(connectedViews.begin(), connectedViews.end());
 
-	// Map: ViewID -> { FeatureID -> List of (PairIndex, DistanceFromView) }
-	// This stores the distance of a triangulated point from a specific view, derived from a specific pair
-	typedef std::pair<uint32_t, double> PairDist; // PairIndex, Distance
-	typedef CLISTDEF0(PairDist) PairDistArr;
-	typedef std::unordered_map<uint32_t, PairDistArr> FeatureDistMap; // FeatureID -> List
-	std::unordered_map<uint32_t, FeatureDistMap> viewFeatureDists; // ViewID -> FeatureDistMap
-
-	// Track if any valid pair contributes to scale estimation
-	bool hasValidPairs = false;
-
-	// 1. Iterate all pairs in the scene
-	const REAL maxCosAngle = COS(D2R(0.5));
-	const REAL reprojPixelThreshold = 6;
+	// The pairs joining two of them with a usable relative pose
+	IIndexArr pairIndices;
 	FOREACH(pairIdx, scene.pairs) {
-		// Only consider pairs where both views are in our set
 		const ImagePair& pair = scene.pairs[pairIdx];
 		if (validViews.find(pair.ID1) == validViews.end() ||
 			validViews.find(pair.ID2) == validViews.end())
 			continue;
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+		if (!IsPoseLinkPair(pair))
 			continue;
-		// Triangulate all matches
-		const Image& img1 = scene.images[pair.ID1];
-		const Image& img2 = scene.images[pair.ID2];
-		const Camera& cam1 = *img1.pCamera;
-		const Camera& cam2 = *img2.pCamera;
-		const Pose3D& relPose = pair.relativePose.value();
-		// Angular reprojection threshold (works for both pinhole and spherical; pixel metric breaks on equirectangular)
-		const REAL cosReprojAngle = COS(REAL(0.5) * (cam1.PixelErrorToAngular(reprojPixelThreshold) + cam2.PixelErrorToAngular(reprojPixelThreshold)));
-		for (const DMatch& match : pair.matches) {
-			const Point2f& pt1 = img1.keypoints[match.queryIdx].pt;
-			const Point2f& pt2 = img2.keypoints[match.trainIdx].pt;
-			// Observed unit bearings (works for both camera types)
-			const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(pt1));
-			const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(pt2));
-			// Triangulate in Camera 1 frame (midpoint on unit bearings)
-			Point3 Xlocal;
-			if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, Xlocal))
-				continue;
-			// Cheirality + angular reprojection in Cam1
-			const REAL nX = norm(Xlocal);
-			if (nX < ZEROTOLERANCE<REAL>())
-				continue;
-			const REAL cosErr1 = b1.dot(Xlocal / nX);
-			if (cosErr1 < cosReprojAngle)
-				continue;
-			// Cheirality + angular reprojection in Cam2
-			const Point3 Xcam2 = relPose.TransformPointW2C(Xlocal);
-			const REAL nXc2 = norm(Xcam2);
-			if (nXc2 < ZEROTOLERANCE<REAL>())
-				continue;
-			const REAL cosErr2 = b2.dot(Xcam2 / nXc2);
-			if (cosErr2 < cosReprojAngle)
-				continue;
-			// Angle check
-			const Point3 V1 = Xlocal; // ray from C1 to X
-			const Point3 V2 = Xlocal - relPose.C; // ray from C2 to X
-			REAL cosAngle = ComputeAngle(V1.ptr(), V2.ptr());
-			if (cosAngle > maxCosAngle)
-				continue;
-			// Compute distances from camera centers
-			// Dist from Cam 1 (Origin): |Xlocal - 0|
-			double dist1 = cv::norm(Xlocal);
-			// Dist from Cam 2 (relPose.C): |Xlocal - relPose.C|
-			// Note: relPose.C is the position of Cam 2 in Cam 1 frame
-			double dist2 = cv::norm(Xlocal - relPose.C);
-			// Store distances
-			// View1 (ID1), Feature (queryIdx)
-			PairDistArr& arr1 = viewFeatureDists[pair.ID1][match.queryIdx];
-			if (arr1.FindFunc([pairIdx](const auto& elem) { return elem.first == pairIdx; }) == PairDistArr::NO_INDEX)
-				arr1.emplace_back(pairIdx, dist1); // should not happen
-			// View2 (ID2), Feature (trainIdx)
-			PairDistArr& arr2 = viewFeatureDists[pair.ID2][match.trainIdx];
-			if (arr2.FindFunc([pairIdx](const auto& elem) { return elem.first == pairIdx; }) == PairDistArr::NO_INDEX)
-				arr2.emplace_back(pairIdx, dist2); // possible if no cross-checking matching was used
-		}
-		hasValidPairs = true;
+		pairIndices.push_back((IIndex)pairIdx);
 	}
-	if (!hasValidPairs)
+	if (pairIndices.empty())
 		return true;
 
-	// 2. Build system of equations
-	// Variables: log(Scale_p) for each active pair p
-	// Equations: log(S_p) - log(S_q) = log(dist_q / dist_p)
-	// For each view and feature, if we have measurements from multiple pairs, they should agree
-	std::vector<ScalePair> scalePairs;
+	// 1-2. The pair-scale equations
+	const std::vector<ScalePair> scalePairs = ComputePairScales(scene, pairIndices);
 	std::unordered_set<uint32_t> constrainedPairs;
-
-	// Map: PairIdx1 -> { PairIdx2 -> List of log-ratios }
-	std::map<uint32_t, std::map<uint32_t, DoubleArr>> pairRatios;
-	for (const auto& viewIt : viewFeatureDists) {
-		for (const auto& featIt : viewIt.second) {
-			const PairDistArr& obs = featIt.second;
-			if (obs.size() < 2)
-				continue;
-			// We have multiple pairs observing the same feature from the same view.
-			// For each pair (i, j), S_i * dist_i = S_j * dist_j => S_i / S_j = dist_j / dist_i
-			// We can link all to the first one, or all pairs.
-			// Linking to the first one is sufficient (spanning tree).
-			// Or all combinations for robustness.
-			// Let's do all combinations (n*(n-1)/2) but n is usually small (2-4).
-			for (size_t i = 0; i + 1 < obs.size(); ++i) {
-				for (size_t j = i + 1; j < obs.size(); ++j) {
-					uint32_t pairIdx1 = obs[i].first;
-					double dist1 = obs[i].second;
-					uint32_t pairIdx2 = obs[j].first;
-					double dist2 = obs[j].second;
-					ASSERT(pairIdx1 != pairIdx2);
-					// Ensure pairIdx1 < pairIdx2 for consistent storage
-					if (pairIdx1 > pairIdx2) {
-						std::swap(pairIdx1, pairIdx2);
-						std::swap(dist1, dist2);
-					}
-					// log(S1) - log(S2) = log(dist2 / dist1)
-					double ratio = dist2 / dist1;
-					pairRatios[pairIdx1][pairIdx2].push_back(ratio);
-				}
-			}
-		}
-	}
-	// Compute the mean of the ratios for each pair of image pairs
-	for (auto& it1 : pairRatios) {
-		uint32_t pairIdx1 = it1.first;
-		for (auto& it2 : it1.second) {
-			uint32_t pairIdx2 = it2.first;
-			ASSERT(pairIdx1 < pairIdx2);
-			DoubleArr& ratios = it2.second;
-			if (ratios.size() < 15) // Require minimum common points
-				continue;
-			// mean of the ratios excluding the top/bottom 10%, weighted by how many it averages
-			DoubleArr::IDX numValid;
-			const double meanRatio(ratios.GetTrimmedMean<double>(0.1f, 0.1f, 0, &numValid));
-			scalePairs.emplace_back(pairIdx2, pairIdx1, meanRatio, (float)SQRT(static_cast<double>(numValid)));
-			constrainedPairs.insert(pairIdx1);
-			constrainedPairs.insert(pairIdx2);
-		}
+	for (const ScalePair& scalePair : scalePairs) {
+		constrainedPairs.insert(scalePair.idxB); // pairIdx1 first, as the equations were built
+		constrainedPairs.insert(scalePair.idxA);
 	}
 	if (scalePairs.empty()) {
 		VERBOSE("warning: no overlapping constraints for global scale");
@@ -203,19 +285,14 @@ bool StarInitializer::EstimateGlobalScale(
 	}
 
 	// 3. Solve system using shared global scale averaging
-	// Fix one pair scale to 1.0: choose the pair connected to Ref with most matches.
-	uint32_t fixedPairIdx = NO_ID;
-	unsigned maxMatches = 0;
+	// Fix one pair scale to 1.0: the pair connected to Ref with the most weighted inliers, a near-duplicate only when Ref has no other
+	Yardstick gauge;
 	for (const uint32_t pairIdx : constrainedPairs) {
 		const ImagePair& pair = scene.pairs[pairIdx];
-		// Check if connected to Ref
-		if (pair.ID1 == refViewID || pair.ID2 == refViewID) {
-			if (pair.GetNumInliers() > maxMatches) {
-				maxMatches = pair.GetNumInliers();
-				fixedPairIdx = pairIdx;
-			}
-		}
+		if (pair.ID1 == refViewID || pair.ID2 == refViewID)
+			gauge.Add(pair.GetNumWeightedInliers(), weighting.IsNearDuplicate(pair), pairIdx);
 	}
+	const uint32_t fixedPairIdx = gauge.Pair();
 
 	std::vector<REAL> pairScales;
 	GlobalScaleEstimator scaleEstimator;
@@ -232,27 +309,14 @@ bool StarInitializer::EstimateGlobalScale(
 		DEBUG_ULTIMATE("Pair (%u,%u) scale: %.4f", pair.ID1, pair.ID2, scale);
 	}
 
-	// 5. Update absolute poses of connected views
-	// We assume Ref is at Identity.
-	// We update neighbors of Ref using the updated relative poses.
-	// Note: We only update views that are directly connected to Ref in the star graph.
-	// Other views (if any in connectedViews but not directly connected? Star implies direct connection)
-	// StarInitializer::Initialize ensures connectedViews are directly connected.
-	for (uint32_t viewID : connectedViews) {
-		const ImagePair* pPair(refViewID < viewID ? scene.FindPair(refViewID, viewID) : scene.FindPair(viewID, refViewID));
-		if (!pPair || !pPair->relativePose.has_value())
+	// 5. Update absolute poses of connected views directly linked to Ref (at Identity)
+	for (const IIndex pairIdx : pairIndices) {
+		const ImagePair& pair = scene.pairs[pairIdx];
+		if (pair.ID1 != refViewID && pair.ID2 != refViewID)
 			continue;
-		Image& img = scene.images[viewID];
-		// Re-compute absolute pose from Ref (Identity) and scaled RelativePose
-		if (pPair->ID1 == refViewID) {
-			// T_view_ref = RelPose
-			// ViewPose = RelPose * RefPose(Identity) = RelPose
-			static_cast<Pose3D&>(img) = pPair->relativePose.value();
-		} else {
-			// T_ref_view = RelPose
-			// ViewPose = RelPose^-1 * RefPose(Identity)
-			static_cast<Pose3D&>(img) = pPair->relativePose.value().Inverse();
-		}
+		const IIndex viewID = pair.ID1 == refViewID ? pair.ID2 : pair.ID1;
+		static_cast<Pose3D&>(scene.images[viewID]) = pair.ID1 == refViewID ?
+			pair.relativePose.value() : pair.relativePose.value().Inverse();
 	}
 	return true;
 }
@@ -262,38 +326,36 @@ bool StarInitializer::Initialize(
 	const StarInitConfig& config)
 {
 	TD_TIMER_START();
-	ASSERT(!scene.IsEmpty() && !scene.pairs.empty() && !scene.tracks.empty())
+	ASSERT(!scene.IsEmpty() && !scene.pairs.empty() && !scene.tracks.empty());
+	ASSERT(config.minViews >= 2);
 
 	// 1. Select reference view (highest connectivity)
-	const IIndex refID = SelectReferenceView(scene);
+	const IIndex refID = SelectReferenceView(scene, config.seedViews, config.minViews - 1, config.pairsWeighting);
 	if (refID == NO_ID)
 		return false;
 	// Set reference view to identity pose
 	Image& refImg = scene.images[refID];
-	reinterpret_cast<Pose3D&>(refImg) = Pose3D::Identity();
+	static_cast<Pose3D&>(refImg) = Pose3D::Identity();
 	DEBUG("Reference view %u set to identity pose", refID);
 
 	// 2. Register connected views from relative poses
 	struct ConnectedView {
 		IIndex viewID = NO_ID; // ID of the connected target view
-		unsigned numInliers = 0; // number of inliers in the pair
+		unsigned numEvidence = 0; // the inliers of the pair that fix a distance (see ComputeStarEvidence)
 		Pose3D relPose; // relative pose to reference
+		bool nearDuplicate; // the pair is a near-duplicate (PairsWeightingConfig::IsNearDuplicate): never the floor's yardstick
+		bool noDirection; // the pair fixes no baseline direction (FixesNoBaselineDirection): no arm, once the floor and the cap have chosen
 	};
 	CLISTDEF0IDX(ConnectedView, IIndex) candidates;
-	for (const ImagePair& pair : scene.pairs) {
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+	const UnsignedArr pairEvidence(ComputeStarEvidence(scene, refID, config.evidenceMinAngle));
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
+		if (!IsPoseLinkPair(pair))
 			continue;
-		IIndex sourceID = NO_ID, targetID = NO_ID;
-		// Determine which view is the reference
-		if (pair.ID1 == refID) {
-			sourceID = refID;
-			targetID = pair.ID2;
-		} else if (pair.ID2 == refID) {
-			sourceID = refID;
-			targetID = pair.ID1;
-		} else {
-			continue; // neither view is reference
-		}
+		if (pairEvidence[idxPair] == 0)
+			continue; // no inlier fixes a distance (or the pair does not touch the reference): the view is left to the resection
+		ASSERT(pair.ID1 == refID || pair.ID2 == refID); // the evidence of a pair that does not join the reference is 0
+		const IIndex sourceID = refID, targetID = pair.ID1 == refID ? pair.ID2 : pair.ID1;
 		Image& targetImg = scene.images[targetID];
 		if (targetImg.HasPose())
 			continue; // already registered
@@ -302,60 +364,67 @@ bool StarInitializer::Initialize(
 		// Absolute: target pose relative to source (which is identity)
 		// If source is ID2, we need inverse transform
 		Pose3D pose(sourceID == pair.ID1 ? pair.relativePose.value() : pair.relativePose->Inverse());
-		candidates.push_back({targetID, pair.GetNumFilteredInliers(), pose});
+		candidates.push_back({targetID, pairEvidence[idxPair], pose, config.pairsWeighting.IsNearDuplicate(pair), FixesNoBaselineDirection(pair, scene)});
 	}
 	if (candidates.size() < config.minViews-1) {
 		VERBOSE("error: insufficient initial views (%u < %u)",
 			candidates.size(), config.minViews-1);
 		return false;
 	}
-	// Sort candidates by number of inliers (descending)
+	// Sort candidates by evidence (descending)
 	candidates.Sort([](const ConnectedView& a, const ConnectedView& b) {
-		return a.numInliers > b.numInliers;
+		return a.numEvidence > b.numEvidence;
 	});
-	// Filter candidates by minimum inliers per view
+	// Filter candidates by minimum evidence per view
 	if (config.ratioInliersFilter > 0) {
-		// Compute robust threshold top 3 views
-		unsigned avgInliers = 0;
+		ASSERT(config.ratioInliersFilter <= 1); // a share of the strongest candidates' evidence, which the strongest one then passes
+		// the floor a view's evidence must pass: a share of the mean evidence of the three strongest candidates
+		// (the first three, as sorted) that are not near-duplicates, of the three strongest when every candidate is one
+		const bool allNearDuplicates = std::all_of(candidates.begin(), candidates.end(), [](const ConnectedView& cv) { return cv.nearDuplicate; });
+		unsigned sumEvidence = 0, count = 0;
+		for (const ConnectedView& cv : candidates) {
+			if (cv.nearDuplicate && !allNearDuplicates)
+				continue;
+			sumEvidence += cv.numEvidence;
+			if (++count == 3)
+				break;
+		}
+		ASSERT(count > 0); // the check above left a candidate (the star needs at least one neighbour)
 		const IIndex numCandidates = candidates.size();
-		IIndex count = MINF(3u, numCandidates);
-		for (unsigned i = 0; i < count; ++i)
-			avgInliers += candidates[i].numInliers;
-		avgInliers /= count;
-		const unsigned thInliers = ROUND2INT<unsigned>(avgInliers * config.ratioInliersFilter);
+		const unsigned thEvidence = ROUND2INT<unsigned>(sumEvidence / count * config.ratioInliersFilter);
 		IIndex size = numCandidates;
-		while (size-- > 0 && candidates[size].numInliers < thInliers);
+		while (size-- > 0 && candidates[size].numEvidence < thEvidence);
 		candidates.resize(size + 1);
-		DEBUG_EXTRA("Filtered connected views by inlier matches: kept %u/%u views with at least %u inliers",
-			candidates.size(), numCandidates, thInliers);
+		DEBUG_EXTRA("Filtered connected views by evidence: kept %u/%u views with at least %u inliers of evidence",
+			candidates.size(), numCandidates, thEvidence);
+		ASSERT(!candidates.empty()); // the strongest candidate passes a floor of at most its own evidence
 	}
 	// Keep only up to maxViews
 	if (candidates.size() > config.maxViews)
 		candidates.resize(config.maxViews);
+	// The arms of the pairs that fix no baseline direction are not placed: the floor and the cap chose the arms as they
+	// would without this, and a removed arm leaves a gap, never a weaker arm in its place; the view is left to the resection
+	IIndex numArms = 0;
+	FOREACH(i, candidates)
+		if (!candidates[i].noDirection)
+			candidates[numArms++] = candidates[i];
+	candidates.resize(numArms);
+	if (candidates.empty()) {
+		VERBOSE("error: no neighbour of the reference view fixes a baseline direction");
+		return false;
+	}
 	// Set absolute poses for connected views
 	IIndexArr connectedViews(0, candidates.size());
 	for (const ConnectedView& cv : candidates) {
 		static_cast<Pose3D&>(scene.images[cv.viewID]) = cv.relPose;
 		connectedViews.push_back(cv.viewID);
-		DEBUG_ULTIMATE("Registered view %u (%u matches)", cv.viewID, cv.numInliers);
+		DEBUG_ULTIMATE("Registered view %u (%u inliers of evidence)", cv.viewID, cv.numEvidence);
 	}
 	DEBUG("Registered %u views from relative poses", candidates.size());
 
-	// 2.a. Finetune rotations with global rotation averaging (optional)
-	if (config.globalRotations) {
-		DEBUG("Refining initial rotations with global rotation averaging");
-		GlobalRotationEstimatorOptions rotOptions;
-		rotOptions.skipInitialization = true; // rotations are already initialized
-		GlobalRotationEstimator rotEstimator(rotOptions);
-		if (!rotEstimator.EstimateRotations(scene)) {
-			VERBOSE("error: initializer global rotation averaging failed");
-			return false;
-		}
-	}
-
 	// 3. Estimate global scale
-	if (!EstimateGlobalScale(scene, refID, connectedViews)) {
-		VERBOSE("error: global scale estimation failed (proceeding without scaling)");
+	if (!EstimateGlobalScale(scene, refID, connectedViews, config.pairsWeighting)) {
+		VERBOSE("error: global scale estimation failed");
 		return false;
 	}
 
@@ -367,8 +436,9 @@ bool StarInitializer::Initialize(
 	}
 
 	// 5. Mini bundle adjustment (refine initial reconstruction)
-	BAConfig baConfig;
+	BAConfig baConfig = config.baConfig;
 	baConfig.maxIterations = 10; // default mini BA iterations
+	baConfig.minTriangulationAngle = config.minAngleThreshold;
 	if (!BundleAdjustment::Adjust(scene, baConfig)) {
 		VERBOSE("error: mini bundle adjustment failed");
 		return false;
@@ -384,8 +454,15 @@ bool StarInitializer::Initialize(
 		return false;
 	}
 
-	// 7. Bundle adjustment with intrinsics refinement
-	baConfig.RefineMainIntrinsics();
+	// 7. Bundle adjustment with focal-length refinement: distortion is left to the resection's
+	// global bundle adjustments once the model is large enough to constrain it
+	// (ResectionConfig::minRefineExtIntrs and the final one, both of which already free it) --
+	// on a star of a handful of views it is unconstrained, and a converged focal can still be
+	// bent by a solve free to also absorb error into k1-k3. A forced or otherwise known focal
+	// (config.refineFocalLength == false) is left untouched: the bundle adjustment below runs
+	// with the intrinsics flags baConfig already carries (none, so all of them fixed).
+	if (config.refineFocalLength)
+		baConfig.refineFocalLength = true;
 	baConfig.maxIterations = 25;
 	if (!BundleAdjustment::Adjust(scene, baConfig)) {
 		VERBOSE("error: bundle adjustment with intrinsics refinement failed");

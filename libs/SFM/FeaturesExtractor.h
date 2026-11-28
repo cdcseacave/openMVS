@@ -46,6 +46,8 @@ enum class FeatureType : uint8_t {
 	ORB = 2,
 	SIFT = 3,
 	SIFTGPU = 4,
+	// the detector every configuration starts with (FeatureExtractionConfig, KeyframeConfig, MatchConfig's thresholds,
+	// the --detector-type option): SiftGPU where it is built in, the CPU SIFT otherwise
 	#ifdef _USE_SIFTGPU
 	DEFAULT = SIFTGPU
 	#else
@@ -53,10 +55,6 @@ enum class FeatureType : uint8_t {
 	#endif
 };
 
-
-inline bool IsBinaryDescriptor(FeatureType type) {
-	return (type == FeatureType::AKAZE || type == FeatureType::ORB);
-}
 
 inline String FeatureTypeToString(FeatureType type) {
 	switch (type) {
@@ -68,7 +66,9 @@ inline String FeatureTypeToString(FeatureType type) {
 	}
 }
 
-inline FeatureType FeatureTypeFromString(const String& str) {
+// the words are matched in any letter case
+inline FeatureType FeatureTypeFromString(const String& name) {
+	const String str(name.ToUpper());
 	if (str == "AKAZE") return FeatureType::AKAZE;
 	if (str == "ORB") return FeatureType::ORB;
 	if (str == "SIFT") return FeatureType::SIFT;
@@ -82,7 +82,7 @@ inline FeatureType FeatureTypeFromString(const String& str) {
  * @brief Configuration for feature extraction
  */
 struct SFM_API FeatureExtractionConfig {
-	FeatureType detectorType = FeatureType::AKAZE; // feature detector: AKAZE/ORB/SIFT/SIFTGPU
+	FeatureType detectorType = FeatureType::DEFAULT; // feature detector: AKAZE/ORB/SIFT/SIFTGPU
 	int maxFeaturesPerCell = 3000; // maximum features per grid cell (3x3 grid; SiftGPU selects GetMaxNumFeatures() on a finer adaptive grid)
 	int minFeaturesPerCell = 500;  // minimum features per cell before adjusting sensitivity
 	bool releaseImagePixels = true; // release image pixel data after feature extraction to save memory
@@ -97,6 +97,7 @@ struct SFM_API FeatureExtractionConfig {
 	int   cubemapFaces = 6;             // 4 | 6 | 8 | 12 | 20
 	int   cubemapFaceSize = 0;          // 0 = auto: max(1024, equirect_width/4)
 	float cubemapDedupAngleDeg = 0.25f; // angular-NMS threshold across face seams
+	float sphericalBottomBand = 0.2f;   // [0,1): fraction of the image height, counted from the bottom, whose features are discarded (the operator, the tripod); 0 = off
 
 	int GetMaxNumFeatures() const {
 		// Total max features per image = maxFeaturesPerCell * 3 * 3 grid
@@ -182,6 +183,11 @@ private:
 	// recursively run the pinhole ExtractImage on each face with skipIO=true,
 	// then reproject + angular-NMS-dedup back to equirectangular coordinates.
 	bool ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO);
+
+	// Whether a keypoint of a spherical image, at pixel pt of the equirectangular image, lies in
+	// a region that must give no features. The one place that decides it: today the bottom band
+	// of config.sphericalBottomBand, later a per-image mask image read here.
+	bool IsMasked(const Image& image, const cv::Point2f& pt) const;
 
 	Scene& scene;
 	FeatureExtractionConfig config;

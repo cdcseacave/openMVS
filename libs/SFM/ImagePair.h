@@ -47,6 +47,23 @@ struct SFM_API DMatch
 	#endif
 };
 
+// A dense matcher's coarse guess of a pair's relative pose, to be checked or guided by, never taken as the pose:
+// the rotation and the unit baseline direction in the pair's own convention (x2 = R*x1 + s*t, s > 0 unknown,
+// the one ImagePair::relativePose stores, whose GetT() is t up to scale)
+struct SFM_API PosePrior {
+	Matrix3x3f R;
+	Point3f t;
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & R;
+		ar & t;
+	}
+	#endif
+};
+
 // ImagePair stores data for two images: matches, relative pose, etc.
 class SFM_API ImagePair
 {
@@ -57,7 +74,25 @@ public:
 	// Feature matches between the two images
 	std::vector<DMatch> matches; // inliers (after geometric verification and filtering)
 	std::vector<DMatch> outlierMatches; // outlier (split from initial matches)
+	// `matches` carries a three-way partition, and each segment means something different:
+	//   [0, numFilteredInliers)                                   sparse (descriptor-matched)
+	//                                                             correspondences that passed the
+	//                                                             strict filter -- track-forming,
+	//                                                             and the pair's DESCRIPTOR EVIDENCE
+	//   [numFilteredInliers, numFilteredInliers+numDenseInliers)   the dense (warp) supplement
+	//                                                             -- track-forming, but no evidence
+	//                                                             of the pair's authority
+	//   [numFilteredInliers+numDenseInliers, matches.size())       RANSAC inliers the strict filter
+	//                                                             rejected -- not track-forming
+	// GetNumFilteredInliers() is the first segment only: the pair's DESCRIPTOR evidence, which is what
+	// the estimation bars (minMatches, the strict filter's own return) and the diagnostics that report
+	// "how many correspondences did the descriptor matcher verify" mean. What the view graph ranks on
+	// is GetNumWeightedInliers(), sparse + dense scaled to the matcher's frame target: the supplement
+	// is real evidence about the pair, weighed as a share of a whole frame's draw rather than ignored
+	// or counted as descriptor evidence. What forms tracks is the union of the first two segments,
+	// GetNumTrackFormingMatches().
 	int numFilteredInliers; // number of inliers after filtering (cheirality, angle, epipole), as the first N of `matches`
+	int numDenseInliers;    // number of dense supplement matches, stored right after those
 
 	// Relative pose from image1 to image2 (optional)
 	std::optional<Pose3D> relativePose;
@@ -70,27 +105,48 @@ public:
 
 	// Homography matrix (optional) - useful for overlap computation
 	std::optional<Matrix3x3> H;
+	// What the dense matcher that matched the pair says about it besides its warps (FlexGlue; RoMa2 gives neither):
+	// the covisibility score in [0,1] ("do the two images show the same place") and a coarse relative pose.
+	// Not geometry: no Reset clears them
+	std::optional<float> covisibility;
+	std::optional<PosePrior> posePrior;
+	// The contradiction cut's repair brought this pair back (RepairContradictedPairs): it carries the averaged rotation, so
+	// its triangles close by construction and say nothing; ComputePairsWeights lets it form none. Serialized with the pair,
+	// so a scene saved after the view-graph filters weighs its repaired pairs as the run that filtered it did
+	bool returnedByRepair{false};
 
 	// Overlap metrics
 	float overlapRatio;       // ratio of tracked/matched features
-	float overlapArea;        // overlap area computed from homography (0-1)
-	float meanRayAngle;       // median angle between viewing rays of inlier matches in radians (pseudo-baseline)
+	float overlapArea;        // the share of the frame the pair's TRACK-FORMING matches cover, the smaller of the two
+	                          // images' (ComputePairCoverage, 0-1); every weighting pass (ComputePairsWeights) rewrites
+	                          // it, so it describes the pair's current matches (the keyframe extractor writes its
+	                          // homography overlap here first, and its own weighting pass replaces it)
+	float meanRayAngle;       // median angle between viewing rays of the TRACK-FORMING matches in
+	                          // radians (pseudo-baseline): the dense supplement is included, because a
+	                          // ray angle is a geometric quantity a warp-sampled position measures
+	                          // just as well, and this feeds ComputeIntrinsicWeight -- the one term
+	                          // that can demote a degenerate baseline must be available on a pair
+	                          // whose evidence is dense. 0 = never measured (no relative pose)
 
 	// Composite weighting scores
 	float weightSpatial;      // Intrinsic: geometric spread/conditioning (0-1)
 	float weightConnectivity; // Extrinsic: local connectivity strength (0-1)
 	float weightTriplet;      // Extrinsic: cycle consistency support (0-1)
+	// Effective inlier evidence: sparse + (denseFrameInliers / denseMatchesPerFrame) * dense,
+	// written by ComputePairsWeights (-1 until weighted, falling back to sparse count). Cleared
+	// whenever the match partition changes.
+	float weightedInliers;
 
 public:
 	ImagePair()
-		: ID1(NO_ID), ID2(NO_ID), numFilteredInliers(-1),
+		: ID1(NO_ID), ID2(NO_ID), numFilteredInliers(-1), numDenseInliers(0),
 		  overlapRatio(0.f), overlapArea(0.f), meanRayAngle(0.f),
-		  weightSpatial(0.f), weightConnectivity(0.f), weightTriplet(0.f) {}
+		  weightSpatial(0.f), weightConnectivity(0.f), weightTriplet(0.f), weightedInliers(-1.f) {}
 
 	ImagePair(IIndex _ID1, IIndex _ID2)
-		: ID1(_ID1), ID2(_ID2), numFilteredInliers(-1),
+		: ID1(_ID1), ID2(_ID2), numFilteredInliers(-1), numDenseInliers(0),
 		  overlapRatio(0.f), overlapArea(0.f), meanRayAngle(0.f),
-		  weightSpatial(0.f), weightConnectivity(0.f), weightTriplet(0.f)
+		  weightSpatial(0.f), weightConnectivity(0.f), weightTriplet(0.f), weightedInliers(-1.f)
 	{
 		if (ID1 > ID2)
 			std::swap(ID1, ID2);
@@ -106,12 +162,16 @@ public:
 		matches = std::vector<DMatch>();
 		outlierMatches = std::vector<DMatch>();
 		numFilteredInliers = -1;
+		numDenseInliers = 0;
+		weightedInliers = -1.f; // it describes matches the pair has dropped
 	}
 	// Reset inlier matches by merging all matches back
 	void ResetInlierMatches() {
 		matches.insert(matches.end(), outlierMatches.begin(), outlierMatches.end());
 		outlierMatches = std::vector<DMatch>();
 		numFilteredInliers = -1;
+		numDenseInliers = 0;
+		weightedInliers = -1.f; // the partition it counted is gone
 	}
 	// Reset geometric data
 	void ResetGeometry() {
@@ -125,11 +185,14 @@ public:
 		weightSpatial = 0.f;
 		weightConnectivity = 0.f;
 		weightTriplet = 0.f;
+		weightedInliers = -1.f;
 	}
 
 	// Invalidate pair matches setting them all as outliers
 	void InvalidateMatches() {
 		numFilteredInliers = -1;
+		numDenseInliers = 0;
+		weightedInliers = -1.f;
 		if (matches.empty())
 			return;
 		outlierMatches.insert(outlierMatches.end(), matches.begin(), matches.end());
@@ -137,6 +200,13 @@ public:
 	}
 	// Check if pair has matches
 	inline bool HasMatches() const { return !matches.empty(); }
+	// Is the pair a NEAR-DUPLICATE: its two frames see nearly the same view (overlapArea above maxOverlap) from nearly the
+	// same spot (a measured meanRayAngle under maxRayAngle, radians), so it fixes no distance. maxOverlap 0 turns the test
+	// off; maxRayAngle 0 leaves the overlap alone to decide
+	inline bool IsNearDuplicate(float maxOverlap, float maxRayAngle) const {
+		return maxOverlap > 0.f && overlapArea > maxOverlap &&
+			(maxRayAngle <= 0.f || (meanRayAngle > 0.f && meanRayAngle < maxRayAngle));
+	}
 	// Check if pair has geometric verification
 	inline bool HasGeometricVerification() const {
 		return relativePose.has_value() || F.has_value() || E.has_value() || H.has_value();
@@ -145,19 +215,56 @@ public:
 	// Get number of matches/inliers
 	unsigned GetNumMatches() const { return (unsigned)matches.size() + (unsigned)outlierMatches.size(); }
 	unsigned GetNumInliers() const { return (unsigned)matches.size(); }
-	unsigned GetNumFilteredInliers() const { return numFilteredInliers >= 0 ? (unsigned)numFilteredInliers : GetNumInliers(); }
+	// The pair's descriptor evidence: geometrically verified SPARSE correspondences only, the first
+	// segment of `matches`. This is what every view-graph weight, gate and diagnostic reads, and it
+	// deliberately does not count the dense supplement -- see the partition comment on the members.
+	unsigned GetNumFilteredInliers() const {
+		// a dense segment only ever exists past a materialised sparse count (AppendDenseMatches
+		// closes it before inserting), so the -1 "no strict filter ran" case cannot carry one
+		ASSERT(numFilteredInliers >= 0 || numDenseInliers == 0);
+		return numFilteredInliers >= 0 ? (unsigned)numFilteredInliers : GetNumInliers();
+	}
+	// Number of dense (warp) supplement matches, the second segment of `matches`
+	unsigned GetNumDenseInliers() const {
+		ASSERT(numDenseInliers >= 0 && (numFilteredInliers < 0 ? numDenseInliers == 0 :
+			(size_t)numFilteredInliers + (size_t)numDenseInliers <= matches.size()));
+		return (unsigned)numDenseInliers;
+	}
+	// Track-forming prefix (sparse inliers + dense supplement) unioned by BuildTracks
+	// (clamped to the stored matches, so a release build reading the prefix stays in range even if a
+	// writer broke the counts the ASSERT above guards)
+	unsigned GetNumTrackFormingMatches() const { return MINF(GetNumFilteredInliers() + GetNumDenseInliers(), GetNumInliers()); }
+	// Effective inlier evidence: sparse + w * dense (rounded), or sparse count before weighting
+	unsigned GetNumWeightedInliers() const {
+		return weightedInliers >= 0.f ? ROUND2INT<unsigned>(weightedInliers) : GetNumFilteredInliers();
+	}
+	// True if this pair carries dense matches or either endpoint image has dense keypoints
+	bool IsDense(const Image& img1, const Image& img2) const;
+	// Relative rotation R_from_to (x_to = R * x_from) for an oriented pair endpoint order
+	inline Matrix3x3 GetRelativeRotation(IIndex from, IIndex to) const {
+		ASSERT(relativePose.has_value());
+		ASSERT((from == ID1 && to == ID2) || (from == ID2 && to == ID1));
+		return from == ID1 ? Matrix3x3(relativePose->R) : Matrix3x3(relativePose->R.t());
+	}
+
+	// Debug-only check that [0, GetNumFilteredInliers()) contains only described keypoints
+	void CheckSparseSegmentIsDescribed(const Image& img1, const Image& img2) const;
 
 	// Compute composite weight from components:
-	// W = numInliers * cbrt(weightSpatial * weightConnectivity * (0.5 + weightTriplet))
-	// The quality factors are combined by geometric mean instead of a raw product: each lives
-	// in [0,1] and a raw product spans many orders of magnitude, so one weak (or noisy) factor
-	// annihilates a pair with hundreds of verified inliers and disconnects valid sub-blocks
-	// from the track graph; the geometric mean preserves the ordering while keeping the weight
-	// commensurate with the inlier evidence.
+	// W = numInliers * coverage * cbrt(angle * weightConnectivity) * (0.25 + weightTriplet)
+	// with weightSpatial = coverage (overlapArea) * angle (the baseline term), so the product below
+	// is cbrt(weightSpatial * overlapArea^2 * weightConnectivity) = coverage * cbrt(angle * connectivity).
+	// The coverage and the triangle consistency count in full, the two terms that rank how well a pair
+	// is matched against the references; the angle and the connectivity keep their geometric mean,
+	// so neither weak term alone annihilates a pair with hundreds of verified inliers.
 	inline float GetCompositeWeight() const {
-		const unsigned nCappedInliers = MINF(GetNumFilteredInliers(), 1000u); // cap inliers to avoid excessive weight
-		const float wQuality = weightSpatial * weightConnectivity * (0.5f + weightTriplet);
-		return nCappedInliers * CBRT(wQuality);
+		const unsigned nCappedInliers = MINF(GetNumWeightedInliers(), 1000u); // cap inliers to avoid excessive weight
+		return nCappedInliers * CBRT(weightSpatial * SQUARE(overlapArea) * weightConnectivity) * (0.25f + weightTriplet);
+	}
+	// The one comparison of a pair-weight bar (ReconstructionConfig, ClusterConfig and ViewGraphCalibratorConfig minPairWeight):
+	// a pair is used only when it exceeds the bar, so a bar of 0 drops exactly the pairs without weight
+	inline bool ExceedsWeightBar(float bar) const {
+		return GetCompositeWeight() > bar;
 	}
 	inline bool HasValidWeight() const {
 		return GetCompositeWeight() > 0.f;
@@ -175,15 +282,61 @@ public:
 	unsigned PartitionMatchesByMask(const std::vector<char>& mask, int numInliers = -1, bool reorderOnly = false);
 
 	// Return all matched points (either inliers only or all matches)
-	//  - allInliers: if true, returns both filtered and inlier matched points
+	//  - default: only the GetNumFilteredInliers() prefix, i.e. the pair's sparse descriptor
+	//    evidence -- neither the dense supplement nor the strict filter's rejects
+	//  - allInliers: if true, returns every point of `matches` (rejects and dense included), which
+	//    is what a caller iterating `matches` element by element needs
 	//  - allMatches: if true, returns all matched points (inliers + outliers)
 	std::pair<std::vector<Point2f>, std::vector<Point2f>> GetMatchedPoints(
 		const Image& img1, const Image& img2, bool allInliers = false, bool allMatches = false) const;
+	// The unit bearings of the same matched points (the inliers selected as GetMatchedPoints selects them),
+	// each keypoint unprojected by its own image's camera: the input of every relative pose estimate
+	std::pair<std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector3d>> GetMatchedBearings(
+		const Image& img1, const Image& img2, bool allInliers = false) const;
+
+	// The points of the TRACK-FORMING prefix: the sparse inliers plus the dense supplement, i.e.
+	// exactly the matches BuildTracks unions, and nothing the strict filter rejected. What a
+	// question about the pair's spatial COVERAGE has to be asked over -- a dense supplement covers
+	// the frame it was drawn over whether or not it counts as descriptor evidence.
+	std::pair<std::vector<Point2f>, std::vector<Point2f>> GetTrackFormingPoints(
+		const Image& img1, const Image& img2) const;
+
+	// The median triangulation angle over that same TRACK-FORMING prefix, in radians: what
+	// meanRayAngle holds, measured rather than filtered. FilterMatches computes it as a by-product
+	// of its accept loop; this is for the caller that CHANGED the prefix without re-filtering the
+	// pair -- AppendDenseMatches, which must not put the dense supplement through the strict
+	// geometric filter (that is the whole design of the supplement) but must not leave the pair
+	// claiming a baseline measured before the supplement was added either.
+	// 0 when the pair has no relative pose to triangulate against, i.e. no measurable baseline.
+	float ComputeMeanRayAngle(const Image& img1, const Image& img2) const;
+	// The cosine of the triangulation angle of each track-forming match that triangulates at the
+	// pair's relative pose (empty without one): what the median above is taken over.
+	FloatArr ComputeRayAngleCosines(const Image& img1, const Image& img2) const;
+	// The uncertainty of the pair's baseline direction, in radians: the matching noise (noiseAngle, radians of one match's
+	// position) over the square root of the weaker eigenvalue of the parallax energy of the track-forming matches across the
+	// baseline. The energy of a match is the squared sensitivity of its epipolar residual to a rotation of the baseline
+	// direction (the pair's rotation taken as known); it is the sum over the matches in the plane across the baseline, so it
+	// folds in the parallax of every match, how many there are and how they are spread, and the weaker eigenvalue is the
+	// direction the matches fix worst. Infinite when the matches fix no direction at all (no match, or a zero energy).
+	// Requires the pair's relative pose.
+	REAL ComputeBaselineDirectionSigma(const Image& img1, const Image& img2, REAL noiseAngle) const;
+	// The share of the track-forming matches that triangulate at the pair's relative pose with a ray
+	// angle of at least minAngle degrees: the share of the pair's inliers that measure a distance.
+	float ComputeShareAboveAngle(const Image& img1, const Image& img2, float minAngle) const;
 
 	// Filter matches using cheirality, triangulation angle, and epipole distance constraints
 	// minAngle: minimum triangulation angle in degrees
 	// epipoleThresh: minimum distance to epipole in pixels (if > 0)
 	// reprojThreshold: maximum reprojection error in pixels (if > 0)
+	// Rebuilds the whole partition and returns the SPARSE count, i.e. what GetNumFilteredInliers()
+	// reports afterwards -- callers compare it against a minimum-matches bar, which is a
+	// descriptor-evidence bar. The surviving dense supplement is re-derived into its own segment.
+	// (Or matches.size(), unchanged, on the early return when there is no relative pose to filter
+	// against; such a pair carries no dense segment either.)
+	// meanRayAngle is updated over the whole accepted set, sparse and dense together, unlike the
+	// SPARSE count this function returns: it feeds ComputeIntrinsicWeight through
+	// ComputeAngleBaselineWeight, which scores a geometric quantity a warp-sampled position measures
+	// just as well as a described one.
 	unsigned FilterMatches(
 		const Image& img1,
 		const Image& img2,
@@ -194,27 +347,48 @@ public:
 	// Check inliers based on epipolar constraint; returns number of inliers
 	//  - threshold: inlier distance threshold in pixels (for fundamental/essential) or symmetric transfer error (for homography)
 	//  - forceEpipolarType: -1=auto, 0=relativePose, 1=E, 2=F, 3=H
+	// The count and inlierMask cover ALL of `matches` -- the dense supplement and the strict filter's
+	// rejects included -- which is what the mask's matches.size() length promises, whether or
+	// not the pair is partitioned.
 	unsigned CheckEpipolarInliers(const Image& img1, const Image& img2, float threshold = 3.f, int forceEpipolarType = -1,
 		cv::InputOutputArray inlierMask = cv::noArray()) const;
+
+	// True when both images are pinhole and at least one lacks trusted intrinsics (use F instead of E)
+	static bool UseFundamentalForPair(const Image& img1, const Image& img2);
+
+	// Triangulate and verify a single match under a relative pose (cheirality, angular reprojection,
+	// minimum parallax angle, and optional epipole exclusion). Returns true and writes X, cosAngle on pass.
+	static bool TriangulateVerifiedMatch(
+		const Pose3D& relPose,
+		const Camera& cam1,
+		const Camera& cam2,
+		const Point2f& pt1,
+		const Point2f& pt2,
+		REAL cosReprojAngle,
+		REAL maxCosAngle,
+		Point3& X,
+		REAL& cosAngle,
+		REAL epipoleCosAngle = REAL(2),
+		const Point3& epipoleDir1 = Point3::ZERO,
+		const Point3& epipoleDir2 = Point3::ZERO);
 
 	// static functions for composing the essential matrix from relative pose and vice-versa
 	static Matrix3x3 ComposeEssentialMatrix(const Pose3D& pose);
 	static Pose3D DecomposeEssentialMatrix(const Matrix3x3& E);
-	// static function to compute epipole from essential matrix (in homogeneous coordinates)
-	static Point3 EpipoleFromEssentialMatrix(const Matrix3x3& E, bool leftImage);
 
 	// static functions for composing the fundamental matrix from essential + camera matrices and vice-versa
 	static Matrix3x3 ComposeFundamentalMatrix(const Matrix3x3& E, const Matrix3x3& K1, const Matrix3x3& K2, bool normalize = false);
 	static Matrix3x3 DecomposeFundamentalMatrix(const Matrix3x3& F, const Matrix3x3& K1, const Matrix3x3& K2, bool normalize = false);
 
-	// Recover the unique relative pose from essential matrix and matched points using cheirality check
+	// Recover the relative pose from the essential matrix: of its four factorizations, the one that puts the most
+	// correspondences in front of both cameras; the correspondences are unit bearings, each unprojected by its own
+	// camera, so the two cameras may differ in intrinsics, image size and model; returns that number of
+	// correspondences (0, the pose left as it was, when none is in front of both cameras for any factorization)
 	static unsigned RecoverPose(
 		const Matrix3x3& E,
-		const std::vector<Point2f>& points1,
-		const std::vector<Point2f>& points2,
-		const Matrix3x3& K,
-		Pose3D& pose,
-		cv::InputOutputArray inliers = cv::noArray());
+		const std::vector<Eigen::Vector3d>& bearings1,
+		const std::vector<Eigen::Vector3d>& bearings2,
+		Pose3D& pose);
 
 	// The Mathematics of Angle Baseline Weighting
 	// The average ray angle θ_avg provides:
@@ -232,9 +406,10 @@ public:
 	void save(Archive& ar, const unsigned int /*version*/) const {
 		ar & ID1 & ID2;
 		ar & matches & outlierMatches;
-		ar & numFilteredInliers;
+		ar & numFilteredInliers & numDenseInliers;
 		ar & overlapRatio & overlapArea & meanRayAngle;
-		ar & weightSpatial & weightConnectivity & weightTriplet;
+		ar & weightSpatial & weightConnectivity & weightTriplet & weightedInliers;
+		ar & returnedByRepair;
 
 		// Serialize std::optional fields
 		const bool hasRelativePose = relativePose.has_value();
@@ -256,15 +431,30 @@ public:
 		ar & hasHomography;
 		if (hasHomography)
 			ar & H.value();
+
+		const bool hasCovisibility = covisibility.has_value();
+		ar & hasCovisibility;
+		if (hasCovisibility)
+			ar & covisibility.value();
+
+		const bool hasPosePrior = posePrior.has_value();
+		ar & hasPosePrior;
+		if (hasPosePrior)
+			ar & posePrior.value();
 	}
 
 	template<class Archive>
 	void load(Archive& ar, const unsigned int /*version*/) {
 		ar & ID1 & ID2;
 		ar & matches & outlierMatches;
-		ar & numFilteredInliers;
+		ar & numFilteredInliers & numDenseInliers;
 		ar & overlapRatio & overlapArea & meanRayAngle;
-		ar & weightSpatial & weightConnectivity & weightTriplet;
+		// weightedInliers travels with the three weights it belongs to, so a loaded scene is complete
+		// as it was matched: they reflect the weighting config it was matched with, and the
+		// reconstruction does not trust them, it computes them again with its own config before
+		// anything reads them (WeighAndExportPairs in Scene.cpp)
+		ar & weightSpatial & weightConnectivity & weightTriplet & weightedInliers;
+		ar & returnedByRepair;
 
 		// Deserialize std::optional fields
 		bool hasRelativePose;
@@ -297,6 +487,22 @@ public:
 			Matrix3x3 mat;
 			ar & mat;
 			H = mat;
+		}
+
+		bool hasCovisibility;
+		ar & hasCovisibility;
+		if (hasCovisibility) {
+			float score;
+			ar & score;
+			covisibility = score;
+		}
+
+		bool hasPosePrior;
+		ar & hasPosePrior;
+		if (hasPosePrior) {
+			PosePrior prior;
+			ar & prior;
+			posePrior = prior;
 		}
 	}
 

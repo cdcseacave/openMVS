@@ -485,7 +485,10 @@ private:
 		const FeatureExtractionConfig& cfg = extractor.GetConfig();
 		// Grid-based feature filtering
 		const std::vector<uint32_t> selected(SelectFeatures(keys, size, gridCellSize, (size_t)cfg.GetMaxNumFeatures()));
-		// Store keypoints and descriptors
+		// Store keypoints and descriptors, replacing whatever the image carried, boundary included:
+		// unlike the CPU path this one is entered directly from the SiftGPU drivers (ExtractImage's
+		// dispatch and the bulk ProcessImages), so it is the only place that can clear a stale boundary here
+		img.ReleaseFeatures();
 		img.keypoints.resize(selected.size());
 		img.descriptors.create((int)selected.size(), 128, CV_8U);
 		FOREACH(k, selected) {
@@ -579,6 +582,12 @@ size_t FeaturesExtractor::Extract()
 
 bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO)
 {
+	// Extraction produces described keypoints only, and every path below starts by dropping whatever
+	// the image already carried (ReleaseFeatures, or the OpenMVG import overwriting the arrays), so
+	// re-extracting on a supplemented image would discard its dense keypoints while scene.pairs'
+	// matches still reference their indices. Asserted here, before the first of those resets: past
+	// any of them HasDenseKeypoints() is provably false and an assertion could no longer see it.
+	ASSERT(!image.HasDenseKeypoints());
 	if (!skipIO && ImportImage(image))
 		return true;
 
@@ -601,9 +610,9 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 		return false;
 	}
 
-	// Clear existing features
-	image.keypoints.clear();
-	image.descriptors.release();
+	// Clear existing features, described-keypoint boundary included: everything extracted below is
+	// described, so a boundary left over from an earlier dense supplementation would be stale
+	image.ReleaseFeatures();
 
 	// Create the feature detector based on type
 	if (!detector) {
@@ -719,6 +728,8 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 			}
 
 			// Copy selected keypoints and descriptors to output arrays (only once)
+			// everything appended here is described, and ExtractImage asserted on entry that the
+			// image carried no dense keypoints, so this stays inside the described prefix
 			ASSERT(image.keypoints.size() == vecDescriptors.size());
 			const size_t offset = image.keypoints.size();
 			for (int idx : selectedIndices) {
@@ -731,18 +742,10 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 				}
 			}
 
-			// Normalize keypoint responses to linear scale
-			// - SIFT: already linear (DoG value)
-			// - AKAZE: quadratic (det(Hessian)) -> apply sqrt()
-			// - ORB: quadratic by default (HARRIS_SCORE) -> apply sqrt()
-			// This ensures responses scale linearly with image contrast for proper weighting
-			auto NormalizeResponses = [](std::vector<cv::KeyPoint>& kps, size_t offset, FeatureType type) {
-				if (type == FeatureType::AKAZE || type == FeatureType::ORB)
-					for (size_t i = offset; i < kps.size(); ++i)
-						kps[i].response = SQRT(MAXF(0.f, kps[i].response));
-			};
-			// Normalize responses after detection (whether initial or retry)
-			NormalizeResponses(image.keypoints, offset, config.detectorType);
+			// Normalize quadratic responses (AKAZE/ORB) to linear scale
+			if (config.detectorType == FeatureType::AKAZE || config.detectorType == FeatureType::ORB)
+				for (size_t i = offset; i < image.keypoints.size(); ++i)
+					image.keypoints[i].response = SQRT(MAXF(0.f, image.keypoints[i].response));
 		}
 	}
 	cv::vconcat(vecDescriptors, image.descriptors);
@@ -800,6 +803,14 @@ cv::Mat FeaturesExtractor::ConvertToRootSIFT(const cv::Mat& siftDesc)
 /*----------------------------------------------------------------*/
 
 
+bool FeaturesExtractor::IsMasked(const Image& image, const cv::Point2f& pt) const
+{
+	ASSERT(!image.pixels.empty() && image.pixels.rows == image.GetHeight());
+	return image.IsInSphericalBottomBand(pt, config.sphericalBottomBand);
+}
+/*----------------------------------------------------------------*/
+
+
 bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO)
 {
 	// Spherical driver: render N tangent-pinhole faces via the unified
@@ -810,6 +821,7 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 	// sphere↔face geometry, the per-face wrapping, and the angular-NMS dedup
 	// across face seams.
 	ASSERT(image.pCamera && image.pCamera->GetType() == CameraType::SPHERICAL);
+	ASSERT(config.sphericalBottomBand >= 0.f && config.sphericalBottomBand < 1.f);
 	if (!image.HasPixels() && !image.LoadPixels(false)) {
 		VERBOSE("FeaturesExtractor::ExtractImageSpherical: no pixels loaded for image %u", image.ID);
 		return false;
@@ -886,6 +898,9 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 			const auto [eq_pt, ok] = sphCam.Project(b_body);
 			if (!ok)
 				continue;
+			const cv::Point2f eq_xy((float)eq_pt.x, (float)eq_pt.y);
+			if (IsMasked(image, eq_xy))
+				continue;
 			cv::KeyPoint eq_kp((float)eq_pt.x, (float)eq_pt.y,
 			                   fkp.size, fkp.angle, fkp.response, k /*octave=faceID*/);
 			all.push_back({normalized(b_body), eq_kp, faceImage.descriptors.row((int)i).clone()});
@@ -894,8 +909,7 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 		// rows (cloned above) are released.
 	}
 
-	image.keypoints.clear();
-	image.descriptors.release();
+	image.ReleaseFeatures();
 	if (all.empty()) {
 		if (config.releaseImagePixels)
 			image.ReleasePixels();
@@ -971,14 +985,19 @@ bool FeaturesExtractor::ExportFeaturesOpenMVG(const String& outputDir, const Ima
 	const String descPath = basePath + ".desc";
 
 	// Export keypoints (x y scale orientation)
+	// the described prefix only: the OpenMVG format pairs a .feat line with a .desc row by index,
+	// so a dense keypoint -- which has no row -- has nowhere to go in it
+	const unsigned numDescribed = image.NumDescribedKeypoints();
 	{
 		std::ofstream file(featPath, std::ios::trunc);
 		if (!file.is_open()) {
 			VERBOSE("error: failed to open feature file: %s", featPath.c_str());
 			return false;
 		}
-		for (const auto& kp : image.keypoints)
+		for (unsigned i = 0; i < numDescribed; ++i) {
+			const cv::KeyPoint& kp = image.keypoints[i];
 			file << kp.pt.x << ' ' << kp.pt.y << ' ' << kp.size << ' ' << kp.angle << '\n';
+		}
 	}
 
 	// Export descriptors as binary (size_t count + raw bytes)
@@ -998,7 +1017,7 @@ bool FeaturesExtractor::ExportFeaturesOpenMVG(const String& outputDir, const Ima
 		}
 	}
 
-	DEBUG_ULTIMATE("Image % 4u exported %zu OpenMVG features: %s, %s", image.ID, image.keypoints.size(), featPath.c_str(), descPath.c_str());
+	DEBUG_ULTIMATE("Image % 4u exported %u OpenMVG features: %s, %s", image.ID, numDescribed, featPath.c_str(), descPath.c_str());
 	return true;
 }
 
@@ -1008,8 +1027,8 @@ bool FeaturesExtractor::ImportFeaturesOpenMVG(const String& inputDir, Image& ima
 	const String featPath = basePath + ".feat";
 	const String descPath = basePath + ".desc";
 
-	image.keypoints.clear();
-	image.descriptors.release();
+	// boundary included: every keypoint this import produces is described
+	image.ReleaseFeatures();
 
 	// Load keypoints (x y scale orientation)
 	std::ifstream featFile(featPath);
@@ -1060,8 +1079,11 @@ bool FeaturesExtractor::ImportFeaturesOpenMVG(const String& inputDir, Image& ima
 				return false;
 			}
 		}
-		if (image.keypoints.size() != numDesc)
+		if (image.keypoints.size() != numDesc) {
 			VERBOSE("error: descriptor/keypoint count mismatch: %zu descriptors vs %zu keypoints", numDesc, image.keypoints.size());
+			image.ReleaseFeatures();
+			return false;
+		}
 		DEBUG_LEVEL(3, "Image % 4u imported %zu OpenMVG features and descriptors: %s, %s",
 			image.ID, image.keypoints.size(), featPath.c_str(), descPath.c_str());
 		return true;

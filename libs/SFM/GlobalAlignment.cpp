@@ -9,11 +9,15 @@
 #include "GlobalRotationAveraging.h"
 #include "GlobalScaleAveraging.h"
 #include "GlobalTranslationAveraging.h"
+#include "Link2D3D.h"
+#include "PoseLink.h"
+#include "RobustAveraging.h"
+#include "Resection.h"
 #include "Scene.h"
 #include "SimilarityTransform.h"
 #include "Track.h"
 #include "Triangulation.h"
-#include "InterfaceMVS.h"
+#include <PoseLib/poselib.h>
 #pragma push_macro("VERBOSE")
 #undef VERBOSE
 #pragma push_macro("LOG")
@@ -32,704 +36,1305 @@ using namespace SFM;
 #undef VERBOSE
 #define VERBOSE(...) LOG(lt, __VA_ARGS__)
 
-// enable to export intermediate aligned sub-scenes for debugging
-#define GLOBALALIGNMENT_DEBUG 0
-
 
 // S T R U C T S ///////////////////////////////////////////////////
 
 DEFINE_LOG_NAME(lt, _T("GlbAlign"));
 
 
-GlobalAlignment::GlobalAlignment(Scene& _scene, const GlobalAlignmentConfig& _config)
-	: scene(_scene), config(_config)
+GlobalAlignment::GlobalAlignment(Scene& _scene, const GlobalAlignmentConfig& _config, const std::unordered_set<IIndex>& _poolImages)
+	: scene(_scene), config(_config), poolImages(_poolImages)
 {
+	ASSERT(std::all_of(poolImages.begin(), poolImages.end(), [this](IIndex image) { return image < scene.images.size(); }));
 }
 
 void GlobalAlignment::BuildGlobalToLocalMap(const std::vector<IIndexArr>& localToGlobals)
 {
-	globalToLocal.clear();
+	globalToLocal.assign(scene.images.size(), PairIdx(NO_ID, NO_ID));
 	for (uint32_t sceneIdx = 0; sceneIdx < localToGlobals.size(); ++sceneIdx) {
 		const IIndexArr& mapping = localToGlobals[sceneIdx];
 		for (IIndex localID = 0; localID < mapping.size(); ++localID) {
 			const IIndex globalID = mapping[localID];
 			if (globalID == NO_ID)
 				continue;
-			[[maybe_unused]] const auto [it, inserted] = globalToLocal.emplace(globalID, std::make_pair(sceneIdx, localID));
-			ASSERT(inserted, "global image %u appears in multiple sub-scenes (%u:%u and %u:%u)",
-				globalID, it->second.first, it->second.second, sceneIdx, localID);
+			ASSERT(globalID < globalToLocal.size());
+			ASSERT(globalToLocal[globalID].i == NO_ID, "global image %u appears in multiple sub-scenes (%u:%u and %u:%u)",
+				globalID, globalToLocal[globalID].i, globalToLocal[globalID].j, sceneIdx, localID);
+			globalToLocal[globalID] = PairIdx(sceneIdx, localID);
 		}
 	}
 }
 
-// index of the sub-scene holding the most calibrated images, among those flagged eligible
-// (all of them when no mask is given); NO_ID if none is eligible
-static uint32_t FindLargestSubScene(const std::vector<Scene>& subScenes, const std::vector<bool>* eligible = NULL)
+// The spread of a set of camera centres: the distance between the two farthest apart
+static REAL CentresSpread(const std::vector<Point3>& centres)
 {
-	uint32_t best = NO_ID;
-	FOREACH(sceneIdx, subScenes)
-		if ((eligible == NULL || (*eligible)[sceneIdx]) &&
-			(best == NO_ID || subScenes[sceneIdx].status.nCalibratedImages > subScenes[best].status.nCalibratedImages))
-			best = (uint32_t)sceneIdx;
-	return best;
+	REAL spread = 0;
+	FOREACH(i, centres)
+		for (size_t j = i + 1; j < centres.size(); ++j)
+			spread = MAXF(spread, norm(centres[i] - centres[j]));
+	return spread;
 }
 
-bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals)
+namespace {
+
+// The bars of the merge that are not configurable, each with the rule it belongs to.
+// (kRobustRounds, the rounds of the cut every averaging of the block graph is judged by, is
+// RobustAveraging.h's.)
+// The reweighting of the scales and the translations of the block graph, every reading's weight
+// times the inverse of its error as the estimators' row scale (their normal equations weigh its
+// square, which settles on one reading rather than the L1 median): its rounds, and the error a
+// reading is never weighed as below -- in log-scale, and in the spread of the reading's seam cameras
+constexpr unsigned kReweightRounds = 40;
+constexpr REAL kReweightScaleFloor = REAL(1e-4);
+constexpr REAL kReweightTranslationFloor = REAL(1e-3);
+
+// One cross-sub-scene image pair, with the sub-scene each of its two images belongs to already
+// resolved, so feature indices (queryIdx/trainIdx) can be mapped consistently.
+struct PairLink {
+	const ImagePair* pair;
+	IIndex localIdA;
+	IIndex localIdB;
+	IIndex globalIdA;
+	IIndex globalIdB;
+	bool aIsQuery; // true if pair.ID1 belongs to sub-scene A (i.e. uses queryIdx)
+};
+
+// The cross pairs of one sub-scene pair, resolved so that side A is sub-scene `a`
+void ResolvePairLinks(
+	const Scene& scene, const std::vector<PairIdx>& globalToLocal,
+	const std::vector<uint32_t>& pairIndices, uint32_t a, std::vector<PairLink>& links)
 {
-	TD_TIMER_STARTD();
-
-	ASSERT(!subScenes.empty());
-	ASSERT(subScenes.size() == localToGlobals.size());
-	const uint32_t numSubScenes = (uint32_t)subScenes.size();
-	VERBOSE("Merging %u sub-scenes into global scene", numSubScenes);
-
-	#if GLOBALALIGNMENT_DEBUG
-	// Export sub-scenes before alignment for debugging
-	FOREACH(i, subScenes)
-		subScenes[i].ExportPLY(String::FormatString("subscene_%u.ply", i));
-	#endif
-
-	BuildGlobalToLocalMap(localToGlobals);
-
-	// Run the staged alignment pipeline; any stage failing breaks out to the fallback below.
-	// Every failure occurs before the merge stage (Stage 5) consumes sub-scenes, so on failure
-	// all sub-scenes are still intact and the fallback can keep the largest one.
-	do {
-		// Stage 1: Estimate relative poses between connected sub-scenes
-		std::vector<ScenePair> scenePairs;
-		if (!EstimateRelativePoses(subScenes, scenePairs)) {
-			VERBOSE("error: failed to estimate relative poses");
-			break;
-		}
-
-		// If only one sub-scene or no connections, just copy directly
-		if (numSubScenes == 1 || scenePairs.empty()) {
-			VERBOSE("Single sub-scene or no connections, copying directly");
-			for (uint32_t sceneIdx = 0; sceneIdx < numSubScenes; ++sceneIdx)
-				MergeSingleScene(subScenes[sceneIdx], localToGlobals[sceneIdx], true);
-			DEBUG("Single-scene merge completed (%s)", TD_TIMER_GET_FMT().c_str());
-			return true;
-		}
-
-		// Stage 2: Rotation averaging. Robustly rejects rotation-inconsistent sub-scene pairs and
-		// prunes them from scenePairs in place; solves only its largest connected component and
-		// leaves every sub-scene it could not place at Point3::INF.
-		std::vector<Point3d> globalRotations;
-		if (!EstimateGlobalRotations(scenePairs, numSubScenes, globalRotations)) {
-			VERBOSE("error: failed to estimate global rotations");
-			break;
-		}
-
-		// Merge only the sub-scenes the rotation estimator actually placed (finite rotation).
-		// Deriving the merge set directly from the estimator's output is authoritative: it cannot
-		// disagree with what rotation averaging solved (no separately-recomputed component, no
-		// tie-break or filtered-edge mismatch), so an unplaced (INF) rotation can never reach
-		// RMatrix() and inject NaN poses (the crash this guards against). Sub-scenes left at INF
-		// — those with no rotation-consistent link into the solved component — stay unregistered
-		// for the subsequent resection to recover individually.
-		std::vector<bool> mergeMask(numSubScenes, false);
-		unsigned numMergeScenes = 0;
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			if (globalRotations[s] != Point3::INF) { mergeMask[s] = true; ++numMergeScenes; }
-		if (numMergeScenes == 0) {
-			VERBOSE("error: rotation averaging placed no sub-scenes");
-			break;
-		}
-		if (numMergeScenes < numSubScenes)
-			VERBOSE("Merging the rotation-consistent component: %u/%u sub-scenes (%u unalignable, left for resection)",
-				numMergeScenes, numSubScenes, numSubScenes - numMergeScenes);
-
-		// Keep only pairs internal to the merged (finite-rotation) component, so scale and
-		// translation averaging — whose gauge is fixed to the strongest-weighted node — anchor
-		// inside the kept component rather than in a discarded one (which would leave the kept
-		// component's translation block unconstrained).
-		scenePairs.erase(std::remove_if(scenePairs.begin(), scenePairs.end(),
-			[&mergeMask](const ScenePair& sp) { return !mergeMask[sp.sceneA] || !mergeMask[sp.sceneB]; }),
-			scenePairs.end());
-
-		// Stage 3: Scale averaging (over the rotation-consistent pairs surviving in scenePairs)
-		std::vector<REAL> globalScales;
-		if (!EstimateGlobalScales(scenePairs, numSubScenes, globalScales)) {
-			VERBOSE("error: failed to estimate global scales");
-			break;
-		}
-
-		// Stage 4: Translation averaging (over the rotation-consistent pairs surviving in scenePairs)
-		std::vector<Point3> globalTranslations;
-		if (!EstimateGlobalTranslations(scenePairs, globalRotations, globalScales, numSubScenes, globalTranslations)) {
-			VERBOSE("error: failed to estimate global translations");
-			break;
-		}
-
-		// Stage 4.5: validate the averaged alignment via Sim(3) cycle residuals, then re-average
-		// the survivors until the verdict is stable
-		std::vector<bool> demoted = ValidateAlignment(subScenes, mergeMask, scenePairs,
-			globalRotations, globalScales, globalTranslations);
-		const unsigned numUnplaced = numSubScenes - numMergeScenes;
-		if ((unsigned)std::count(demoted.begin(), demoted.end(), true) > numUnplaced &&
-			!RefineDemotedAlignment(subScenes, scenePairs, globalRotations, globalScales, globalTranslations, demoted))
-			break;
-
-		// Stage 5: Merge sub-scenes with global transforms (largest connected component only)
-		if (!MergeTransformedScenes(subScenes, localToGlobals, globalRotations, globalScales, globalTranslations, demoted)) {
-			VERBOSE("error: failed to merge transformed scenes");
-			break;
-		}
-
-		#if GLOBALALIGNMENT_DEBUG
-		// Export merged scene for debugging
-		ExportMVS(MAKE_PATH("scene_merged_reconstruction.mvs"), scene);
-		#endif
-
-		DEBUG("Global alignment completed: merged %u/%u sub-scenes (%s)",
-			numSubScenes - (unsigned)std::count(demoted.begin(), demoted.end(), true),
-			numSubScenes, TD_TIMER_GET_FMT().c_str());
-		return true;
-	} while (0);
-
-	// Fallback: alignment could not complete. Keep the largest successfully-reconstructed
-	// sub-scene rather than discarding a good partial reconstruction (downstream BA/resection
-	// then refine it in place). Safe because every failure above precedes sub-scene consumption.
-	const uint32_t bestIdx = FindLargestSubScene(subScenes);
-	VERBOSE("warning: sub-scene merge failed; keeping largest sub-scene %u (%u/%u images)",
-		bestIdx, subScenes[bestIdx].status.nCalibratedImages, (unsigned)subScenes[bestIdx].images.size());
-	scene.Release();
-	scene = std::move(subScenes[bestIdx]);
-	return false;
-}
-/*----------------------------------------------------------------*/
-
-
-bool GlobalAlignment::EstimateRelativePoses(
-	const std::vector<Scene>& subScenes,
-	std::vector<ScenePair>& scenePairs)
-{
-	ASSERT(!globalToLocal.empty());
-	const uint32_t numSubScenes = (uint32_t)subScenes.size();
-
-	// Per-sub-scene cache: PairIdx(localImageID, featureID) -> 3D inlier-track position.
-	// Only observations belonging to inlier tracks are indexed; outliers are excluded
-	// because their triangulated positions are unreliable.
-	std::vector<std::unordered_map<PairIdx, Point3>> sceneObsToTrackPos(numSubScenes);
-	for (uint32_t sceneIdx = 0; sceneIdx < numSubScenes; ++sceneIdx) {
-		const Scene& subScene = subScenes[sceneIdx];
-		size_t numInlierObservations = 0;
-		for (const Track& track : subScene.tracks)
-			if (track.IsInlier())
-				numInlierObservations += track.GetNumInliers();
-		auto& obsToTrackPos = sceneObsToTrackPos[sceneIdx];
-		obsToTrackPos.reserve(numInlierObservations);
-		for (const Track& track : subScene.tracks) {
-			if (track.IsInlier())
-				for (const Observation& obs : track)
-					obsToTrackPos.emplace(PairIdx(obs.imageID, obs.featureID), track.position);
-		}
-	}
-
-	// Group cross-sub-scene image pairs by sub-scene pair. Each link remembers which
-	// side of the image pair corresponds to sub-scene A vs B so feature indices
-	// (queryIdx/trainIdx) can be mapped consistently.
-	struct PairLink {
-		const ImagePair* pair;
-		IIndex localIdA;
-		IIndex localIdB;
-		bool aIsQuery; // true if pair.ID1 belongs to sub-scene A (i.e. uses queryIdx)
-	};
-	std::unordered_map<PairIdx, CLISTDEF0IDX(PairLink, uint32_t)> linksByScenePair;
-	linksByScenePair.reserve(numSubScenes * 2);
-	for (const ImagePair& pair : scene.pairs) {
-		if (pair.GetNumFilteredInliers() < config.minCommonTracks)
-			continue;
-		auto it1 = globalToLocal.find(pair.ID1);
-		auto it2 = globalToLocal.find(pair.ID2);
-		if (it1 == globalToLocal.end() || it2 == globalToLocal.end())
-			continue;
-		const uint32_t scene1 = it1->second.first;
-		const uint32_t scene2 = it2->second.first;
-		if (scene1 == scene2)
-			continue;
+	links.clear();
+	links.reserve(pairIndices.size());
+	for (uint32_t idx : pairIndices) {
+		const ImagePair& pair = scene.pairs[idx];
+		const PairIdx loc1 = globalToLocal[pair.ID1];
+		const PairIdx loc2 = globalToLocal[pair.ID2];
+		ASSERT(loc1.i != NO_ID && loc2.i != NO_ID);
 		PairLink link;
 		link.pair = &pair;
-		if (scene1 < scene2) {
-			link.localIdA = it1->second.second;
-			link.localIdB = it2->second.second;
-			link.aIsQuery = true;
-		} else {
-			link.localIdA = it2->second.second;
-			link.localIdB = it1->second.second;
-			link.aIsQuery = false;
-		}
-		linksByScenePair[MakePairIdx(scene1, scene2)].emplace_back(link);
+		link.aIsQuery = loc1.i == a;
+		link.localIdA = link.aIsQuery ? loc1.j : loc2.j;
+		link.localIdB = link.aIsQuery ? loc2.j : loc1.j;
+		link.globalIdA = link.aIsQuery ? pair.ID1 : pair.ID2;
+		link.globalIdB = link.aIsQuery ? pair.ID2 : pair.ID1;
+		links.push_back(link);
+	}
+}
+
+// Seven parameters for one block's similarity: unit quaternion, translation, log-scale.
+struct BlockParameters
+{
+	double q[4], t[3], logScale;
+
+	explicit BlockParameters(const Transform& T) {
+		const Eigen::Quaterniond quat(static_cast<RMatrix::CEMatMap>(T.R));
+		q[0] = quat.w(); q[1] = quat.x(); q[2] = quat.y(); q[3] = quat.z();
+		t[0] = T.t.x; t[1] = T.t.y; t[2] = T.t.z;
+		logScale = LOGN(T.scale);
 	}
 
-	scenePairs.clear();
-	unsigned numEstimated = 0;
-	unsigned numSkippedPairs = 0;
-	for (const auto& [pairIdx, links] : linksByScenePair) {
-		const Scene& subSceneA = subScenes[pairIdx.i];
-		const Scene& subSceneB = subScenes[pairIdx.j];
-		const auto& obsToTrackPosA = sceneObsToTrackPos[pairIdx.i];
-		const auto& obsToTrackPosB = sceneObsToTrackPos[pairIdx.j];
-
-		// Collect 3D-3D correspondences: for each cross-sub-scene match whose
-		// endpoints both lie on an existing inlier track, push the two 3D
-		// positions (each in its own sub-scene's local frame).
-		Point3Arr srcPoints, dstPoints;
-		for (const PairLink& link : links) {
-			ASSERT(link.localIdA < subSceneA.images.size() && link.localIdB < subSceneB.images.size());
-			const Image& imgA = subSceneA.images[link.localIdA];
-			const Image& imgB = subSceneB.images[link.localIdB];
-			if (!imgA.IsValid() || !imgB.IsValid())
-				continue;
-
-			const unsigned numInliers = link.pair->GetNumFilteredInliers();
-			for (unsigned i = 0; i < numInliers; ++i) {
-				const DMatch& match = link.pair->matches[i];
-				const uint32_t featureA = link.aIsQuery ? match.queryIdx : match.trainIdx;
-				const uint32_t featureB = link.aIsQuery ? match.trainIdx : match.queryIdx;
-				const auto itA = obsToTrackPosA.find(PairIdx(link.localIdA, featureA));
-				if (itA == obsToTrackPosA.end())
-					continue;
-				const auto itB = obsToTrackPosB.find(PairIdx(link.localIdB, featureB));
-				if (itB == obsToTrackPosB.end())
-					continue;
-				srcPoints.emplace_back(itA->second);
-				dstPoints.emplace_back(itB->second);
-			}
-		}
-
-		if (srcPoints.size() < config.minCommonTracks) {
-			DEBUG_ULTIMATE("Sub-scene pair (%u, %u): skipped (only %u 3D-3D correspondences, need >= %u)",
-				pairIdx.i, pairIdx.j, (unsigned)srcPoints.size(), config.minCommonTracks);
-			++numSkippedPairs;
-			continue;
-		}
-
-		// Characteristic length scale for the RANSAC threshold: a fraction (default 1%) of the
-		// destination point cloud's bounding-box diagonal. Using a relative scale keeps the
-		// criterion invariant to each sub-scene's arbitrary units.
-		AABB3 dstBbox(true);
-		for (const Point3& p : dstPoints)
-			dstBbox.InsertFull(p);
-		if (dstBbox.IsEmpty()) {
-			++numSkippedPairs;
-			continue;
-		}
-		const double threshold = config.simInlierThresholdFactor * dstBbox.GetSize().norm();
-
+	Transform ToTransform() const {
+		const Eigen::Quaterniond quat(q[0], q[1], q[2], q[3]);
 		Transform T;
-		const unsigned numInliers = EstimateSimilarityTransform(srcPoints, dstPoints, T, threshold, true, config.simRansacMaxIters);
-		if (numInliers == 0) {
-			DEBUG_ULTIMATE("warning: sub-scene pair (%u, %u): Sim(3) RANSAC failed (%u correspondences)",
-				pairIdx.i, pairIdx.j, (unsigned)srcPoints.size());
-			++numSkippedPairs;
-			continue;
-		}
-		if (numInliers < config.minCommonTracks) {
-			DEBUG_ULTIMATE("warning: sub-scene pair (%u, %u): skipped (too few inliers %u/%u)",
-				pairIdx.i, pairIdx.j, numInliers, (unsigned)srcPoints.size());
-			++numSkippedPairs;
-			continue;
-		}
-		const double inlierRatio = (double)numInliers / (double)srcPoints.size();
-		if (inlierRatio < config.minSimInlierRatio) {
-			DEBUG_ULTIMATE("warning: sub-scene pair (%u, %u): skipped (low inlier ratio %.1f%% = %u/%u)",
-				pairIdx.i, pairIdx.j, inlierRatio * 100.0, numInliers, (unsigned)srcPoints.size());
-			++numSkippedPairs;
-			continue;
-		}
-
-		ScenePair sp;
-		sp.sceneA = pairIdx.i;
-		sp.sceneB = pairIdx.j;
-		sp.relativeTransform = T;
-		sp.numInliers = numInliers;
-		scenePairs.push_back(sp);
-		++numEstimated;
-		DEBUG_ULTIMATE("Sub-scene pair (%u, %u) Sim(3): scale=%.4g, inliers %u/%u (%.1f%%)",
-			pairIdx.i, pairIdx.j, T.scale, numInliers, (unsigned)srcPoints.size(), inlierRatio * 100.0);
+		T.R = Eigen::Matrix3d(quat.normalized().toRotationMatrix());
+		T.t = Point3(t[0], t[1], t[2]);
+		T.scale = EXP(logScale);
+		return T;
 	}
+};
 
-	std::sort(scenePairs.begin(), scenePairs.end(), [](const ScenePair& a, const ScenePair& b) {
-		return a.sceneA < b.sceneA || (a.sceneA == b.sceneA && a.sceneB < b.sceneB);
-	});
-
-	DEBUG("Estimated %u relative Sim(3) transforms between sub-scenes (%u skipped)",
-		numEstimated, numSkippedPairs);
-	return !scenePairs.empty();
-}
-/*----------------------------------------------------------------*/
-
-bool GlobalAlignment::EstimateGlobalRotations(
-	std::vector<ScenePair>& scenePairs,
-	const uint32_t numSubScenes,
-	std::vector<Point3d>& globalRotations)
+// Reprojection chord residual of one seam observation through its two block similarities, scaled to pixels.
+struct BlockSeamReprojectionError
 {
-	// Convert scene pairs to rotation pairs (kept 1:1 with scenePairs by index)
-	std::vector<RotationPair> rotationPairs;
-	rotationPairs.reserve(scenePairs.size());
+	Point3 X, C, b;
+	RMatrix R;
+	double pixelPerRadian;
 
-	for (const ScenePair& sp : scenePairs) {
-		RotationPair rp;
-		rp.idxA = sp.sceneA;
-		rp.idxB = sp.sceneB;
-		rp.relativeRotation = sp.relativeTransform.R;
-		rp.weight = (float)sp.numInliers;
-		rotationPairs.push_back(rp);
+	explicit BlockSeamReprojectionError(const SeamObservation& obs)
+		: X(obs.X), C(obs.C), b(obs.bearing), R(obs.R), pixelPerRadian(obs.pixelPerRadian)
+	{
+		ASSERT(ABS(normSq(b) - REAL(1)) < REAL(1e-4));
 	}
 
-	// Use global rotation estimator
-	GlobalRotationEstimatorOptions rotOptions;
-	rotOptions.skipInitialization = false;
-	rotOptions.useWeight = true;
-
-	GlobalRotationEstimator rotEstimator(rotOptions);
-	if (!rotEstimator.EstimateRotations(rotationPairs, numSubScenes, globalRotations)) {
-		VERBOSE("error: rotation averaging failed");
-		return false;
-	}
-
-	// Filter relative rotations inconsistent with global estimates and re-solve
-	const unsigned numFiltered = GlobalRotationEstimator::FilterRelativeRotations(globalRotations, rotationPairs);
-	if (numFiltered > 0) {
-		DEBUG("Re-estimating global rotations after filtering %u pairs", numFiltered);
-		globalRotations.clear();
-		if (!rotEstimator.EstimateRotations(rotationPairs, numSubScenes, globalRotations)) {
-			VERBOSE("error: rotation averaging failed after filtering");
+	template <typename T>
+	bool operator()(
+		const T* const qPoint, const T* const tPoint, const T* const logScalePoint,
+		const T* const qCamera, const T* const tCamera, const T* const logScaleCamera,
+		T* residuals) const
+	{
+		using std::exp;
+		using std::sqrt;
+		const T Xb[3] = {T(X.x), T(X.y), T(X.z)};
+		T p[3];
+		ceres::QuaternionRotatePoint(qPoint, Xb, p);
+		const T sPoint = exp(logScalePoint[0]);
+		for (int i = 0; i < 3; ++i)
+			p[i] = sPoint * p[i] + tPoint[i];
+		const T dModel[3] = {p[0] - tCamera[0], p[1] - tCamera[1], p[2] - tCamera[2]};
+		const T qInv[4] = {qCamera[0], -qCamera[1], -qCamera[2], -qCamera[3]};
+		T pBlock[3];
+		ceres::QuaternionRotatePoint(qInv, dModel, pBlock);
+		const T invScale = exp(-logScaleCamera[0]);
+		const T d[3] = {invScale * pBlock[0] - T(C.x), invScale * pBlock[1] - T(C.y), invScale * pBlock[2] - T(C.z)};
+		T c[3];
+		for (int i = 0; i < 3; ++i)
+			c[i] = T(R(i, 0)) * d[0] + T(R(i, 1)) * d[1] + T(R(i, 2)) * d[2];
+		const T len = sqrt(c[0]*c[0] + c[1]*c[1] + c[2]*c[2]);
+		if (len <= T(0))
 			return false;
-		}
-	}
-
-	// Prune rotation-inconsistent pairs from scenePairs in place. FilterRelativeRotations zeroes
-	// (does not remove) the weight of pairs whose relative rotation disagrees with the averaged
-	// global rotations, and rotationPairs stays 1:1 with scenePairs, so a single index compaction
-	// keeps only the survivors. Downstream scale/translation averaging then use only these.
-	ASSERT(rotationPairs.size() == scenePairs.size());
-	const unsigned numInputPairs = (unsigned)scenePairs.size();
-	unsigned numKept = 0;
-	FOREACH(i, scenePairs)
-		if (rotationPairs[i].weight > 0)
-			scenePairs[numKept++] = scenePairs[i];
-	scenePairs.resize(numKept);
-
-	DEBUG("Estimated %u global rotations (%u/%u rotation-consistent pairs)",
-		(unsigned)globalRotations.size(), numKept, numInputPairs);
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-bool GlobalAlignment::EstimateGlobalScales(
-	const std::vector<ScenePair>& scenePairs,
-	const uint32_t numSubScenes,
-	std::vector<REAL>& globalScales)
-{
-	// Each relativeTransform satisfies p_B = (s_A/s_B) * R * p_A + t, so its
-	// scale field is s_A/s_B. ScalePair expects the ratio in the opposite
-	// direction (s_B/s_A), hence the reciprocal below.
-	std::vector<ScalePair> scalePairs;
-	scalePairs.reserve(scenePairs.size());
-	for (const ScenePair& sp : scenePairs) {
-		if (sp.relativeTransform.scale <= 0)
-			continue;
-		ScalePair scalePair;
-		scalePair.idxA = sp.sceneA;
-		scalePair.idxB = sp.sceneB;
-		scalePair.scaleRatio = REAL(1) / sp.relativeTransform.scale;
-		scalePair.weight = (float)sp.numInliers;
-		scalePairs.push_back(scalePair);
-	}
-
-	if (scalePairs.empty()) {
-		// No scale information, use unit scales
-		VERBOSE("warning: no scale pairs found, using unit scales");
-		globalScales.resize(numSubScenes, REAL(1));
+		residuals[0] = T(pixelPerRadian) * (c[0] / len - T(b.x));
+		residuals[1] = T(pixelPerRadian) * (c[1] / len - T(b.y));
+		residuals[2] = T(pixelPerRadian) * (c[2] / len - T(b.z));
 		return true;
 	}
+};
 
-	// Estimate global scales
-	GlobalScaleEstimator scaleEstimator;
-	if (!scaleEstimator.EstimateScales(scalePairs, numSubScenes, globalScales)) {
-		VERBOSE("error: scale averaging failed");
-		return false;
+// The correspondences of one direction of the camera alignment: one sub-scene's cameras are the
+// rig, the other sub-scene's inlier tracks are the points. The estimator wants them grouped per
+// rig camera, so only the images that received a correspondence enter the rig and localIDs keeps
+// the mapping back to the sub-scene.
+struct RigCorrespondences
+{
+	std::vector<CameraCorrespondences> cameras;          // per rig camera, its bearings and the other sub-scene's points
+	std::vector<std::vector<SeamCorrespondence>> matches; // per rig camera, the two images and features behind each
+	std::vector<poselib::CameraPose> cameraExt;          // per rig camera, its pose in the rig sub-scene's frame
+	std::vector<IIndex> localIDs;                        // per rig camera, its image index in the rig sub-scene
+	std::vector<double> pixelPerRadian;                  // per rig camera, its angular-to-pixel rate
+	double maxError{0};                                  // angular RANSAC threshold, radians
+	unsigned numCorrespondences{0};
+};
+
+// The rate at which a camera reads an angle in its own pixels at the reprojection bar, so every
+// camera model in a rig is judged at the same pixel error
+double PixelPerRadian(const Image& image, float maxReprojError)
+{
+	const REAL angular = AngularError(image, maxReprojError);
+	return angular > 0 ? (double)(maxReprojError / angular) : 0.0;
+}
+
+// Gather the observations, in the rig sub-scene's images, of the point sub-scene's inlier tracks:
+// one bearing per cross-sub-scene match whose point-side endpoint lies on such a track. Only that
+// one side has to be on a track, which is why a seam remains measurable from either direction
+// alone even when its other side's keypoints never formed one.
+RigCorrespondences CollectRigCorrespondences(
+	const Scene& rigScene, const Scene& pointScene,
+	const std::unordered_map<PairIdx, uint32_t>& pointObsToTrack,
+	const std::vector<PairLink>& links, bool rigIsB, float maxReprojError)
+{
+	RigCorrespondences rc;
+	std::unordered_map<IIndex, uint32_t> rigIndexOf;
+	for (const PairLink& link : links) {
+		const IIndex localIdRig = rigIsB ? link.localIdB : link.localIdA;
+		const IIndex localIdPoint = rigIsB ? link.localIdA : link.localIdB;
+		ASSERT(localIdRig < rigScene.images.size() && localIdPoint < pointScene.images.size());
+		const Image& imgRig = rigScene.images[localIdRig];
+		const Image& imgPoint = pointScene.images[localIdPoint];
+		if (!imgRig.IsValid() || !imgPoint.IsValid())
+			continue;
+		const unsigned numMatches = link.pair->GetNumTrackFormingMatches();
+		ASSERT(numMatches <= link.pair->matches.size());
+		for (unsigned i = 0; i < numMatches; ++i) {
+			const DMatch& match = link.pair->matches[i];
+			const uint32_t featureA = link.aIsQuery ? match.queryIdx : match.trainIdx;
+			const uint32_t featureB = link.aIsQuery ? match.trainIdx : match.queryIdx;
+			const uint32_t featureRig = rigIsB ? featureB : featureA;
+			const uint32_t featurePoint = rigIsB ? featureA : featureB;
+			const auto it = pointObsToTrack.find(PairIdx(localIdPoint, featurePoint));
+			if (it == pointObsToTrack.end())
+				continue;
+			if (featureRig >= imgRig.keypoints.size())
+				continue;
+			const auto [itRig, inserted] = rigIndexOf.emplace(localIdRig, (uint32_t)rc.cameraExt.size());
+			if (inserted) {
+				rc.cameraExt.emplace_back(imgRig.R, imgRig.GetT());
+				rc.localIDs.push_back(localIdRig);
+				rc.cameras.emplace_back();
+				rc.matches.emplace_back();
+				const double pixelPerRadian = PixelPerRadian(imgRig, maxReprojError);
+				rc.pixelPerRadian.push_back(pixelPerRadian);
+				rc.maxError = MAXF(rc.maxError, pixelPerRadian > 0 ? (double)maxReprojError / pixelPerRadian : 0.0);
+			}
+			const uint32_t r = itRig->second;
+			rc.cameras[r].Add(imgRig, featureRig, pointScene.tracks[it->second].position);
+			rc.matches[r].push_back(SeamCorrespondence{link.globalIdA, link.globalIdB, featureA, featureB});
+			++rc.numCorrespondences;
+		}
 	}
+	return rc;
+}
 
-	DEBUG("Estimated %u global scales from %u pairs",
-		(unsigned)globalScales.size(), (unsigned)scalePairs.size());
+// Flatten one direction's correspondences into seam observations, in the order the estimator sees
+// them (grouped per rig camera), with the parallel list of the two images and features behind each.
+void AppendRigObservations(
+	const RigCorrespondences& rc, const Scene& rigScene, bool pointsAreA,
+	std::vector<SeamObservation>& observations, std::vector<SeamCorrespondence>& correspondences)
+{
+	observations.reserve(observations.size() + rc.numCorrespondences);
+	correspondences.reserve(correspondences.size() + rc.numCorrespondences);
+	for (size_t r = 0; r < rc.cameraExt.size(); ++r) {
+		const Image& imgRig = rigScene.images[rc.localIDs[r]];
+		const CameraCorrespondences& camera = rc.cameras[r];
+		for (size_t i = 0; i < camera.points.size(); ++i) {
+			const SeamCorrespondence& match = rc.matches[r][i];
+			SeamObservation obs;
+			obs.X = camera.points[i];
+			obs.R = imgRig.R;
+			obs.C = imgRig.C;
+			obs.bearing = camera.bearings[i];
+			ASSERT(ABS(normSq(obs.bearing) - REAL(1)) < REAL(1e-4));
+			obs.pixelPerRadian = rc.pixelPerRadian[r];
+			obs.forward = pointsAreA;
+			obs.rigImage = pointsAreA ? match.imageB : match.imageA;
+			obs.pointImage = pointsAreA ? match.imageA : match.imageB;
+			observations.push_back(obs);
+			correspondences.push_back(match);
+		}
+	}
+}
+
+// The rig of the given observations of one direction, read back off them: per observing camera,
+// its pose, bearings and points; `indexOf` holds, per rig camera, the observation behind each
+// correspondence
+void GroupRigObservations(
+	const std::vector<SeamObservation>& observations, const std::vector<uint32_t>& indices,
+	float maxReprojError, RigCorrespondences& rc, std::vector<std::vector<uint32_t>>& indexOf)
+{
+	rc = RigCorrespondences();
+	indexOf.clear();
+	std::unordered_map<IIndex, uint32_t> rigIndexOf;
+	for (const uint32_t i : indices) {
+		const SeamObservation& obs = observations[i];
+		const auto [it, inserted] = rigIndexOf.emplace(obs.rigImage, (uint32_t)rc.cameraExt.size());
+		if (inserted) {
+			rc.cameraExt.emplace_back(obs.R, Point3(obs.R * (-obs.C)));
+			rc.cameras.emplace_back();
+			indexOf.emplace_back();
+			rc.maxError = MAXF(rc.maxError, obs.pixelPerRadian > 0 ? (double)maxReprojError / obs.pixelPerRadian : 0.0);
+		}
+		ASSERT(ABS(normSq(obs.bearing) - REAL(1)) < REAL(1e-4));
+		rc.cameras[it->second].bearings.emplace_back(obs.bearing);
+		rc.cameras[it->second].points.push_back(obs.X);
+		indexOf[it->second].push_back(i);
+		++rc.numCorrespondences;
+	}
+}
+
+// One rig against one set of points: the generalized absolute pose with scale of the rig, from
+// bearings alone. The estimator solves scale * p_rig = R * p_point + t, i.e. it scales the rig's
+// centers into the frame the points live in, so the similarity mapping the point frame into the
+// rig frame is p_rig = (1/scale) * R * p_point + (1/scale) * t, which is what comes out in `T`.
+// `inliers` says, per rig camera, which of its correspondences the estimate kept. Returns 0 when
+// the rig yields no usable estimate.
+unsigned EstimateRigAgainstPoints(
+	const RigCorrespondences& rc, const poselib::RansacOptions& ransac, Transform& T,
+	std::vector<std::vector<char>>& inliers)
+{
+	inliers.clear();
+	// the scale is observable only from points seen out of at least two distinct rig centers
+	if (rc.cameraExt.size() < 2 || rc.numCorrespondences == 0 || rc.maxError <= 0)
+		return 0;
+
+	poselib::AbsolutePoseOptions opt;
+	opt.ransac = ransac;
+	// the estimator scores the whole rig against one angular threshold, so the rig is judged at
+	// the widest of its cameras' thresholds; the refinement below charges each camera its own
+	opt.max_error = rc.maxError;
+
+	std::vector<std::vector<poselib::Point3D>> bearings, points;
+	bearings.reserve(rc.cameras.size());
+	points.reserve(rc.cameras.size());
+	for (const CameraCorrespondences& camera : rc.cameras) {
+		bearings.push_back(camera.bearings);
+		points.push_back(camera.points);
+	}
+	poselib::CameraPose pose;
+	double scale = 1;
+	const poselib::RansacStats stats = poselib::estimate_generalized_absolute_pose_scale_bearings(
+		bearings, points, rc.cameraExt, opt, &pose, &scale, &inliers);
+	if (stats.num_inliers == 0 || !ISFINITE(scale) || scale <= 0)
+		return 0;
+
+	T.R = pose.R();
+	T.scale = REAL(1) / scale;
+	T.t = Point3(pose.t) * T.scale;
+	return (unsigned)stats.num_inliers;
+}
+
+
+// Error of one seam observation under a candidate A -> B similarity, in pixels
+REAL SeamObservationError(const SeamObservation& obs, const Transform& T, const Transform& TInv)
+{
+	ASSERT(ABS(normSq(obs.bearing) - REAL(1)) < REAL(1e-4));
+	const Point3 p((obs.forward ? T : TInv) * obs.X);
+	const Point3 d(obs.R * (p - obs.C));
+	const REAL len = norm(d);
+	if (!(len > 0))
+		return std::numeric_limits<REAL>::max();
+	const REAL cosAngle = CLAMP((d / len).dot(obs.bearing), REAL(-1), REAL(1));
+	return obs.pixelPerRadian * ACOS(cosAngle);
+}
+
+
+// The merge stage cannot reach the reconstruction's RANSAC settings, so the camera alignment runs
+// the absolute-pose estimator on the options the resection configures for its own PnP.
+poselib::RansacOptions SeamRansacOptions()
+{
+	const RansacOptions resectionRansac = ResectionConfig().ransac;
+	poselib::RansacOptions ransacOptions;
+	ransacOptions.max_iterations = resectionRansac.max_iterations;
+	ransacOptions.min_iterations = resectionRansac.min_iterations;
+	ransacOptions.success_prob = resectionRansac.confidence;
+	return ransacOptions;
+}
+
+
+// One cross-block match, as the two directions that collect it both name it: the image and the
+// feature of side A, and those of side B
+struct CorrespondenceKey
+{
+	PairIdx a, b;
+	bool operator==(const CorrespondenceKey& other) const { return a == other.a && b == other.b; }
+};
+struct CorrespondenceKeyHash
+{
+	size_t operator()(const CorrespondenceKey& key) const {
+		return std::hash<PairIdx>()(key.a) * 0x9E3779B97F4A7C15ULL ^ std::hash<PairIdx>()(key.b);
+	}
+};
+CorrespondenceKey KeyOfCorrespondence(const SeamCorrespondence& corr)
+{
+	return CorrespondenceKey{PairIdx(corr.imageA, corr.featureA), PairIdx(corr.imageB, corr.featureB)};
+}
+
+
+// How a reading was measured, for the log
+const char* SourceWord(SeamCandidate::Source source)
+{
+	switch (source) {
+	case SeamCandidate::RIG_B_ON_A: return "rig B on A";
+	case SeamCandidate::RIG_A_ON_B: return "rig A on B";
+	default: return "points";
+	}
+}
+
+// Where one block triangulated what its cameras saw: (local image, feature) -> the inlier track
+// holding that observation, what the correspondence collection looks each match up in. Only inlier
+// tracks are indexed, an outlier's position being unreliable.
+void BuildBlockPointMap(const Scene& block, std::unordered_map<PairIdx, uint32_t>& pointMap)
+{
+	size_t numInlierObservations = 0;
+	for (const Track& track : block.tracks)
+		if (track.IsInlier())
+			numInlierObservations += track.GetNumInliers();
+	pointMap.clear();
+	pointMap.reserve(numInlierObservations);
+	FOREACH(t, block.tracks)
+		if (block.tracks[t].IsInlier())
+			for (const Observation& obs : block.tracks[t])
+				pointMap.emplace(PairIdx(obs.imageID, obs.featureID), (uint32_t)t);
+}
+
+// The similarity carrying one camera's own frame into the frame of the block it belongs to: the
+// camera reads that frame through its rotation, and sits where its centre says
+Transform CameraToBlock(const Image& image)
+{
+	Transform T;
+	T.R = RMatrix(image.R.t());
+	T.t = image.C;
+	return T;
+}
+
+// The observations at the given indices
+std::vector<SeamObservation> SelectObservations(
+	const std::vector<SeamObservation>& observations, const std::vector<uint32_t>& indices)
+{
+	std::vector<SeamObservation> selected;
+	selected.reserve(indices.size());
+	for (const uint32_t i : indices)
+		selected.push_back(observations[i]);
+	return selected;
+}
+
+// Refine one A -> B similarity against every reprojection the given observations carry: block A
+// gauges the fit at the identity, so the seam travels in and out through block B's pose, and every
+// observation is charged as the chord between its observed and predicted bearings in the observing
+// camera's own pixels under a Huber loss of the reprojection bar
+void RefineSimilarity(const std::vector<SeamObservation>& observations, float maxReprojError, Transform& T)
+{
+	if (observations.empty())
+		return;
+	BlockParameters gauge((Transform())), blockB(T.Invert());
+	ceres::Problem problem;
+	ceres::LossFunction* loss = new ceres::HuberLoss(maxReprojError);
+	for (const SeamObservation& obs : observations) {
+		BlockParameters& point = obs.forward ? gauge : blockB;
+		BlockParameters& camera = obs.forward ? blockB : gauge;
+		problem.AddResidualBlock(
+			new ceres::AutoDiffCostFunction<BlockSeamReprojectionError, 3, 4, 3, 1, 4, 3, 1>(
+				new BlockSeamReprojectionError(obs)),
+			loss, point.q, point.t, &point.logScale, camera.q, camera.t, &camera.logScale);
+	}
+	problem.SetManifold(blockB.q, new ceres::QuaternionManifold);
+	problem.SetParameterBlockConstant(gauge.q);
+	problem.SetParameterBlockConstant(gauge.t);
+	problem.SetParameterBlockConstant(&gauge.logScale);
+	ceres::Solver::Options options;
+	// seven parameters against many thousands of residuals
+	options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+	options.max_num_iterations = 50;
+	options.function_tolerance = 1e-8;
+	options.logging_type = ceres::SILENT;
+	options.minimizer_progress_to_stdout = false;
+	ceres::Solver::Summary summary;
+	ceres::Solve(options, &problem, &summary);
+	if (summary.IsSolutionUsable() && ISFINITE(blockB.logScale))
+		T = blockB.ToTransform().Invert();
+}
+
+// Whether the rig behind the given observations of one direction observes a scale: the spread of
+// the rig cameras holding minCameraInliers of them over the median depth of their points; fewer
+// than two such cameras observe none. A rig collapsed onto one point sees no parallax.
+bool RigObservesScale(
+	const std::vector<SeamObservation>& observations, const std::vector<uint32_t>& indices,
+	const Transform& T, const GlobalAlignmentConfig& config)
+{
+	const Transform TInv(T.Invert());
+	std::map<IIndex, std::pair<unsigned, Point3>> rig;
+	std::vector<REAL> depths;
+	for (const uint32_t i : indices) {
+		const SeamObservation& obs = observations[i];
+		std::pair<unsigned, Point3>& camera = rig[obs.rigImage];
+		++camera.first;
+		camera.second = obs.C;
+		depths.push_back(norm((obs.forward ? T : TInv) * obs.X - obs.C));
+	}
+	ASSERT(!depths.empty());
+	std::vector<Point3> centres;
+	for (const auto& [image, camera] : rig)
+		if (camera.first >= config.minCameraInliers)
+			centres.push_back(camera.second);
+	if (centres.size() < 2)
+		return false;
+	std::nth_element(depths.begin(), depths.begin() + depths.size() / 2, depths.end());
+	const REAL depth = depths[depths.size() / 2];
+	return depth > 0 && CentresSpread(centres) / depth >= config.minRigSpreadRatio;
+}
+
+// One reading of a block pair: the similarity (A -> B) an estimate found, how it was measured, the
+// observations of its direction it explains at the bar and whether it observes a scale
+struct SeamReading
+{
+	Transform T;
+	SeamCandidate::Source source{SeamCandidate::POINTS};
+	std::vector<uint32_t> inliers;
+	bool scaleObservable{true};
+};
+
+// The reading of one direction of a block pair (forward: the rig of B on the points of A): the
+// generalized estimate over every camera of the direction at once, refined over its inliers at the bar;
+// none when the direction holds fewer than minCommonTracks correspondences, comes from a single camera
+// (one centre observes no scale, and a block is joined by all its cameras together or not at all), or
+// the reading explains fewer
+bool EstimateDirectionReading(
+	const std::vector<SeamObservation>& observations, bool forward, const GlobalAlignmentConfig& config,
+	SeamReading& reading)
+{
+	std::vector<uint32_t> direction;
+	FOREACH(i, observations)
+		if (observations[i].forward == forward)
+			direction.push_back((uint32_t)i);
+	if (direction.size() < config.minCommonTracks)
+		return false;
+	RigCorrespondences rc;
+	std::vector<std::vector<uint32_t>> indexOf;
+	GroupRigObservations(observations, direction, config.maxReprojError, rc, indexOf);
+	Transform T;
+	std::vector<std::vector<char>> ransacInliers;
+	if (EstimateRigAgainstPoints(rc, SeamRansacOptions(), T, ransacInliers) == 0)
+		return false;
+	// the rig of B on A's points solves A into B, the rig of A on B's points B into A
+	reading.T = forward ? T : T.Invert();
+	reading.source = forward ? SeamCandidate::RIG_B_ON_A : SeamCandidate::RIG_A_ON_B;
+	std::vector<uint32_t> fitted;
+	FOREACH(r, ransacInliers)
+		FOREACH(k, ransacInliers[r])
+			if (ransacInliers[r][k])
+				fitted.push_back(indexOf[r][k]);
+	RefineSimilarity(SelectObservations(observations, fitted), config.maxReprojError, reading.T);
+	if (!ISFINITE(reading.T.scale) || reading.T.scale <= 0)
+		return false;
+	// what it explains at the bar, of its direction
+	const Transform TInv(reading.T.Invert());
+	for (const uint32_t i : direction)
+		if (SeamObservationError(observations[i], reading.T, TInv) <= config.maxReprojError)
+			reading.inliers.push_back(i);
+	if (reading.inliers.size() < config.minCommonTracks)
+		return false;
+	reading.scaleObservable = RigObservesScale(observations, reading.inliers, reading.T, config);
 	return true;
 }
-/*----------------------------------------------------------------*/
 
-bool GlobalAlignment::EstimateGlobalTranslations(
-	const std::vector<ScenePair>& scenePairs,
-	const std::vector<Point3d>& globalRotations,
-	const std::vector<REAL>& globalScales,
-	const uint32_t numSubScenes,
-	std::vector<Point3>& globalTranslations)
+// The reading of a block pair in the point alignment: the 3D-3D similarity of the matches lying on an
+// inlier track in both blocks
+bool EstimatePointReading(
+	const Scene& scene, const std::vector<PairIdx>& globalToLocal,
+	const std::vector<std::unordered_map<PairIdx, uint32_t>>& blockPointMaps,
+	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
+	const std::vector<uint32_t>& pairIndices, const GlobalAlignmentConfig& config,
+	SeamReading& reading)
 {
-	// Convert scene pairs to translation pairs
-	std::vector<TranslationPair> translationPairs;
-	translationPairs.reserve(scenePairs.size());
-
-	for (const ScenePair& sp : scenePairs) {
-		// Rotation averaging produces R_i mapping global→local, use transpose for local→global.
-		const RMatrix RA(globalRotations[sp.sceneA]);
-		const REAL sA = globalScales[sp.sceneA];
-
-		// C_{BA}: position of scene B's origin expressed in scene A's local frame.
-		// The relativeTransform satisfies p_B = scale * R * p_A + t (A -> B), so the
-		// inverse maps B's origin (0 in B) to  -(1/scale) * R^T * t  in A.
-		const Transform& T = sp.relativeTransform;
-		const Point3 relT_local = (T.R.t() * T.t) * (-REAL(1) / T.scale);
-
-		// Transform to global frame: t_B - t_A = s_A * R_A^T * C_{BA}
-		const Point3 relT_global = sA * (RA.t() * relT_local);
-
-		TranslationPair tp;
-		tp.idxA = sp.sceneA;
-		tp.idxB = sp.sceneB;
-		tp.relativeTranslation = relT_global;
-		tp.weight = (float)sp.numInliers;
-		translationPairs.push_back(tp);
+	std::vector<PairLink> links;
+	ResolvePairLinks(scene, globalToLocal, pairIndices, a, links);
+	const Scene& blockA = subScenes[a];
+	const Scene& blockB = subScenes[b];
+	Point3Arr srcPoints, dstPoints;
+	for (const PairLink& link : links) {
+		ASSERT(link.localIdA < blockA.images.size() && link.localIdB < blockB.images.size());
+		if (!blockA.images[link.localIdA].IsValid() || !blockB.images[link.localIdB].IsValid())
+			continue;
+		const unsigned numMatches = link.pair->GetNumTrackFormingMatches();
+		ASSERT(numMatches <= link.pair->matches.size());
+		for (unsigned i = 0; i < numMatches; ++i) {
+			const DMatch& match = link.pair->matches[i];
+			const uint32_t featureA = link.aIsQuery ? match.queryIdx : match.trainIdx;
+			const uint32_t featureB = link.aIsQuery ? match.trainIdx : match.queryIdx;
+			const auto itA = blockPointMaps[a].find(PairIdx(link.localIdA, featureA));
+			if (itA == blockPointMaps[a].end())
+				continue;
+			const auto itB = blockPointMaps[b].find(PairIdx(link.localIdB, featureB));
+			if (itB == blockPointMaps[b].end())
+				continue;
+			srcPoints.emplace_back(blockA.tracks[itA->second].position);
+			dstPoints.emplace_back(blockB.tracks[itB->second].position);
+		}
 	}
-
-	// Estimate global translations
-	GlobalTranslationEstimator translationEstimator;
-	if (!translationEstimator.EstimateTranslations(translationPairs, numSubScenes, globalTranslations)) {
-		VERBOSE("error: translation averaging failed");
+	if (srcPoints.size() < config.minCommonTracks)
 		return false;
-	}
-
-	DEBUG("Estimated %u global translations", (unsigned)globalTranslations.size());
+	// Characteristic length scale for the RANSAC threshold: a fraction (default 1%) of the
+	// destination point cloud's bounding-box diagonal. Using a relative scale keeps the criterion
+	// invariant to each block's arbitrary units.
+	AABB3 dstBbox(true);
+	for (const Point3& p : dstPoints)
+		dstBbox.InsertFull(p);
+	const double threshold = config.simInlierThresholdFactor * dstBbox.GetSize().norm();
+	if (!(threshold > 0))
+		return false;
+	reading.source = SeamCandidate::POINTS;
+	if (EstimateSimilarityTransform(srcPoints, dstPoints, reading.T, threshold, true, config.simRansacMaxIters) == 0)
+		return false;
+	unsigned numInliers = 0;
+	FOREACH(i, srcPoints)
+		if (norm(reading.T * srcPoints[i] - dstPoints[i]) <= threshold)
+			++numInliers;
+	if (numInliers < config.minCommonTracks || (double)numInliers < config.minSimInlierRatio * (double)srcPoints.size())
+		return false;
+	DEBUG_ULTIMATE("Seam (%u, %u) points: %u of %u 3D-3D correspondences", a, b, numInliers, (unsigned)srcPoints.size());
 	return true;
 }
-/*----------------------------------------------------------------*/
 
-// the per-sub-scene local→global Sim(3) the merge applies: rotation averaging
-// produces R_i mapping global→local (same convention as Image.R) while the
-// similarity transform applies local→global, hence the transpose; the validator
-// must construct exactly the transform the merge applies, so both build it here
-static SEACAVE::Transform BuildGlobalTransform(const Point3d& rotation, REAL scale, const Point3& translation)
+// the per-block local→model Sim(3) the averaging produces: it solves R_i mapping model→local
+// (the same convention as Image.R) while the similarity transform applies local→model, hence
+// the transpose
+Transform BuildGlobalTransform(const Point3d& rotation, REAL scale, const Point3& translation)
 {
-	SEACAVE::Transform G;
+	Transform G;
 	G.R = RMatrix(rotation).t();
 	G.scale = scale;
 	G.t = translation;
 	return G;
 }
 
-std::vector<bool> GlobalAlignment::ValidateAlignment(
-	const std::vector<Scene>& subScenes,
-	const std::vector<bool>& mergeMask,
-	const std::vector<ScenePair>& scenePairs,
-	const std::vector<Point3d>& globalRotations,
-	const std::vector<REAL>& globalScales,
-	const std::vector<Point3>& globalTranslations) const
+// How far apart two similarities that carry the same frame into the same one are
+struct SeamResidual {
+	REAL scale;       // ratio, >= 1
+	REAL rotation;    // degrees
+	REAL translation; // fraction of the spread of the reading's seam cameras
+};
+
+// Sim(3) cycle residual of one reading: T maps A-local to B-local and each block pose maps its local
+// frame to the model frame, so poseB*T and poseA both map A-local to the model and their discrepancy
+// E = poseA^-1 * poseB * T is what the reading is off by (identity when perfectly consistent). It is
+// read in A's local frame, its translation where the reading was measured: how far E moves the
+// centroid of the seam's cameras, against their spread (SeamCandidate::centre, extent). A camera
+// elsewhere in either block has no part in it, and neither has the origin of a block's frame.
+SeamResidual ComputeSeamResidual(const SeamCandidate& c, const Transform& poseA, const Transform& poseB)
 {
-	ASSERT(mergeMask.size() == subScenes.size());
-	const uint32_t numSubScenes = (uint32_t)subScenes.size();
-	// sub-scenes rotation averaging could not place have no usable transform
-	std::vector<bool> demoted(numSubScenes);
-	for (uint32_t s = 0; s < numSubScenes; ++s)
-		demoted[s] = !mergeMask[s];
+	ASSERT(c.extent > 0);
+	const Transform E = poseA.Invert() * (poseB * c.T);
+	SeamResidual res;
+	res.scale = MAXF(E.scale, REAL(1) / E.scale);
+	res.rotation = R2D(ACOS(ComputeAngle(Matrix3x3(E.R))));
+	res.translation = norm(E * c.centre - c.centre) / c.extent;
+	return res;
+}
 
-	// Per-sub-scene transform Stage 5 will apply, plus the local camera-bbox diagonal
-	// used to normalize the translation residuals.
-	std::vector<Transform> globalTransforms(numSubScenes);
-	std::vector<REAL> camBoxDiags(numSubScenes, REAL(0));
-	FOREACH(sceneIdx, subScenes) {
-		if (demoted[sceneIdx])
-			continue;
-		globalTransforms[sceneIdx] = BuildGlobalTransform(
-			globalRotations[sceneIdx], globalScales[sceneIdx], globalTranslations[sceneIdx]);
-		AABB3 bbox(true);
-		for (const Image& img : subScenes[sceneIdx].images)
-			if (img.IsValid())
-				bbox.InsertFull(img.C);
-		if (!bbox.IsEmpty())
-			camBoxDiags[sceneIdx] = bbox.GetSize().norm();
-	}
+REAL RotationResidual(
+	const RotationPair& p, const std::vector<Point3>& rotations, const std::vector<uint32_t>& frameOfNode)
+{
+	if (frameOfNode[p.idxA] == NO_ID || frameOfNode[p.idxA] != frameOfNode[p.idxB])
+		return REAL(FLT_MAX);
+	const RMatrix RA(rotations[p.idxA]), RB(rotations[p.idxB]);
+	return R2D(ACOS(ComputeAngle(p.relativeRotation, Matrix3x3(RB * RA.t()))));
+}
 
-	// Sim(3) cycle residual per surviving edge: relativeTransform maps A-local to B-local and
-	// G_i maps each local frame to the global frame, so G_B*T_AB and G_A both map A-local to
-	// global and E = G_A^-1 * (G_B * T_AB) is the A-frame discrepancy between the measured
-	// edge and the averaged consensus (identity when perfectly consistent).
-	struct EdgeStat {
-		uint32_t sceneA, sceneB;
-		float weight;
-		bool conflicting;
-	};
-	std::vector<EdgeStat> edges;
-	edges.reserve(scenePairs.size());
-	for (const ScenePair& sp : scenePairs) {
-		ASSERT(!demoted[sp.sceneA] && !demoted[sp.sceneB]);
-		const Transform E = globalTransforms[sp.sceneA].Invert() * (globalTransforms[sp.sceneB] * sp.relativeTransform);
-		const REAL errScale = MAXF(E.scale, REAL(1) / E.scale);
-		const REAL errRot = R2D(ACOS(ComputeAngle(Matrix3x3(E.R))));
-		// E.t is in A's local frame: express the discrepancy in global units and compare
-		// it against the smaller of the two global camera footprints, so the verdict does
-		// not depend on which endpoint happens to have the lower sub-scene index
-		const REAL diagA = camBoxDiags[sp.sceneA] * globalTransforms[sp.sceneA].scale;
-		const REAL diagB = camBoxDiags[sp.sceneB] * globalTransforms[sp.sceneB].scale;
-		const REAL diag = diagA > 0 && diagB > 0 ? MINF(diagA, diagB) : MAXF(diagA, diagB);
-		const REAL errTrans = diag > 0 ? globalTransforms[sp.sceneA].scale * norm(E.t) / diag : REAL(0);
-		const unsigned weight = MINF(sp.numInliers, 1000u);
-		const bool conflicting =
-			errScale > config.maxSimScaleRatio ||
-			errRot > config.maxSimRotationError ||
-			errTrans > config.maxSimTranslationError;
-		VERBOSE("Sub-scene pair (%u, %u) similarity residuals: scale %.1f%%, rotation %.2f deg, translation %.2f%% (weight %u)",
-			sp.sceneA, sp.sceneB, (errScale - 1) * 100, errRot, errTrans * 100, weight);
-		edges.push_back({sp.sceneA, sp.sceneB, (float)weight, conflicting});
-	}
+auto InverseErrorFactor(const REAL minError)
+{
+	return [minError](REAL r) { return (float)(REAL(1) / MAXF(r, minError)); };
+}
 
-	// Vote out the node most dominated by conflicting cycle evidence, one at a time; a node
-	// with a single incident edge is satisfied exactly by the averaging, so it carries no
-	// cycle evidence and can never be flagged.
-	for (;;) {
-		uint32_t worst = NO_ID;
-		float worstFrac = 0.5f;
-		for (uint32_t s = 0; s < numSubScenes; ++s) {
-			if (demoted[s])
-				continue;
-			float total = 0.f, conflict = 0.f;
-			unsigned numEdges = 0, numConflicting = 0;
-			for (const EdgeStat& e : edges) {
-				if (e.sceneA != s && e.sceneB != s)
-					continue;
-				if (demoted[e.sceneA] || demoted[e.sceneB])
-					continue;
-				++numEdges;
-				total += e.weight;
-				if (e.conflicting) {
-					++numConflicting;
-					conflict += e.weight;
-				}
+} // namespace
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::AverageBlockPoses(
+	const std::vector<SeamCandidate>& candidates,
+	const std::vector<uint32_t>& edges,
+	const uint32_t numBlocks,
+	const uint32_t fixedBlock,
+	std::vector<BlockPose>& poses) const
+{
+	poses.assign(numBlocks, BlockPose());
+	if (edges.empty())
+		return;
+
+	// the blocks the readings touch, renumbered 0..n-1 for the solvers
+	std::vector<uint32_t> nodeOfBlock(numBlocks, NO_ID), blockOfNode;
+	for (const uint32_t e : edges) {
+		const SeamCandidate& c = candidates[e];
+		for (const uint32_t block : {c.sceneA, c.sceneB})
+			if (nodeOfBlock[block] == NO_ID) {
+				nodeOfBlock[block] = (uint32_t)blockOfNode.size();
+				blockOfNode.push_back(block);
 			}
-			if (numEdges < 2 || numConflicting < 2)
+	}
+	const uint32_t n = (uint32_t)blockOfNode.size();
+	const uint32_t gauge = nodeOfBlock[fixedBlock];
+	ASSERT(gauge != NO_ID, "the gauge block carries none of the averaged readings");
+	// one connected component: the rotation estimator's tree reaches only the component it is
+	// rooted in, so readings outside it would take no part in its initialization
+	ASSERT([&]() {
+		DisjointSet<uint32_t> component(n);
+		for (const uint32_t e : edges)
+			component.Union(nodeOfBlock[candidates[e].sceneA], nodeOfBlock[candidates[e].sceneB]);
+		for (uint32_t node = 1; node < n; ++node)
+			if (component.Find(node) != component.Find(0))
+				return false;
+		return true;
+	}(), "the averaged readings span more than one connected component");
+
+	// rotations: each reading claims R_B * R_A^T
+	std::vector<RotationPair> rotationPairs;
+	rotationPairs.reserve(edges.size());
+	for (const uint32_t e : edges) {
+		const SeamCandidate& c = candidates[e];
+		rotationPairs.emplace_back(nodeOfBlock[c.sceneA], nodeOfBlock[c.sceneB], Matrix3x3(c.T.R), c.weight);
+	}
+	std::vector<uint32_t> frameOfNode;
+	std::vector<Point3> rotations;
+	const unsigned numFrames = GlobalRotationEstimator(GlobalRotationEstimatorOptions()).EstimateAllComponents(rotationPairs, n, rotations, frameOfNode);
+	if (numFrames == 0) {
+		VERBOSE("error: rotation averaging over %u readings failed", (unsigned)edges.size());
+		return;
+	}
+	std::vector<REAL> rotationResiduals(rotationPairs.size());
+	FOREACH(i, rotationPairs)
+		rotationResiduals[i] = RotationResidual(rotationPairs[i], rotations, frameOfNode);
+	DEBUG_EXTRA("Seam graph: component of %u blocks solved in %u frames", n, numFrames);
+	// scales: the readings within the rotation bar (every reading observes a scale and weighs something)
+	const REAL maxLogScaleResidual = std::log((REAL)config.maxGraphScaleResidual);
+	std::vector<uint32_t> scaleEdges; // positions in `edges`
+	std::vector<ScalePair> scalePairs;
+	FOREACH(k, edges) {
+		const SeamCandidate& c = candidates[edges[k]];
+		ASSERT(c.T.scale > 0 && c.weight > 0.f);
+		if (rotationResiduals[k] > config.maxGraphRotationResidual)
+			continue;
+		scaleEdges.push_back(k);
+		scalePairs.emplace_back(nodeOfBlock[c.sceneA], nodeOfBlock[c.sceneB], REAL(1) / c.T.scale, c.weight);
+	}
+	// the scale and translation solves see fewer readings than the rotation one, so they can leave a
+	// block the rotations joined without any metric tie to the gauge; such a block gets no pose
+	std::vector<REAL> scales(n, REAL(1));
+	std::vector<Point3> translations(n, Point3::ZERO);
+	DisjointSet<uint32_t> metricSets(n);
+	uint32_t metricGauge = NO_ID;
+	if (!scalePairs.empty()) {
+		const uint32_t scaleGauge = SelectGaugeNode(scalePairs, gauge);
+		GlobalScaleEstimator scaleEstimator;
+		std::vector<REAL> scaleResiduals;
+		if (!RobustAverageWith(scalePairs, kReweightRounds,
+			[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) { return scaleEstimator.EstimateScales(active, n, scaleGauge, s); },
+			[&](size_t i, const std::vector<REAL>& s) {
+				const ScalePair& p = scalePairs[i];
+				return std::log(p.scaleRatio) - (std::log(s[p.idxB]) - std::log(s[p.idxA]));
+			},
+			InverseErrorFactor(kReweightScaleFloor), scales, scaleResiduals))
+		{
+			VERBOSE("error: scale averaging over %u readings failed", (unsigned)scalePairs.size());
+			return;
+		}
+
+		// translations: the readings under both bars, each asking that its two blocks put the centre of its
+		// seam at one place: poseA * centre = poseB * (T * centre). That is the point the reading was measured
+		// at, so what its rotation and scale are off by moves nothing there, and it does not depend on where a
+		// block's frame has its origin
+		std::vector<TranslationPair> translationPairs;
+		std::vector<REAL> extents; // per translation pair, the spread of its seam's cameras in the frame the averaging solves in
+		FOREACH(i, scalePairs) {
+			if (scaleResiduals[i] > maxLogScaleResidual)
 				continue;
-			const float frac = conflict / total;
-			if (frac > worstFrac) {
-				worstFrac = frac;
-				worst = s;
+			const SeamCandidate& c = candidates[edges[scaleEdges[i]]];
+			ASSERT(c.extent > 0);
+			const uint32_t a = nodeOfBlock[c.sceneA], b = nodeOfBlock[c.sceneB];
+			translationPairs.emplace_back(a, b,
+				scales[a] * (RMatrix(rotations[a]).t() * c.centre) - scales[b] * (RMatrix(rotations[b]).t() * (c.T * c.centre)), c.weight);
+			extents.push_back(c.extent * scales[a]);
+			metricSets.Union(a, b);
+		}
+		if (!translationPairs.empty()) {
+			metricGauge = SelectGaugeNode(translationPairs, scaleGauge);
+			GlobalTranslationEstimator translationEstimator;
+			std::vector<REAL> translationResiduals;
+			if (!RobustAverageWith(translationPairs, kReweightRounds,
+				[&](const std::vector<TranslationPair>& active, std::vector<Point3>& t) { return translationEstimator.EstimateTranslations(active, n, metricGauge, t); },
+				[&](size_t i, const std::vector<Point3>& t) {
+					// against the spread of the seam's cameras, as everything that judges a reading's translation reads it
+					const TranslationPair& p = translationPairs[i];
+					return norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation) / extents[i];
+				},
+				InverseErrorFactor(kReweightTranslationFloor), translations, translationResiduals))
+			{
+				VERBOSE("error: translation averaging over %u readings failed", (unsigned)translationPairs.size());
+				return;
 			}
 		}
-		if (worst == NO_ID)
-			break;
-		VERBOSE("Sub-scene %u misaligned by similarity cycle consistency (%.0f%% conflicting edge weight); demoting to be rebuilt by resection",
-			worst, worstFrac * 100.f);
-		demoted[worst] = true;
 	}
 
-	// Never demote everything: keep as anchor the largest sub-scene rotation averaging placed
-	// (an unplaced one has no transform to anchor with)
-	if (std::find(demoted.begin(), demoted.end(), false) == demoted.end()) {
-		const uint32_t best = FindLargestSubScene(subScenes, &mergeMask);
-		ASSERT(best != NO_ID); // the caller merges only when at least one sub-scene was placed
-		demoted[best] = false;
-		VERBOSE("warning: all sub-scenes failed validation; keeping sub-scene %u as anchor", best);
+	// every block of the frame the poses are gauged in carries a transform, but only those the
+	// metric averaging reaches from the gauge are placed
+	const uint32_t poseFrame = frameOfNode[metricGauge != NO_ID ? metricGauge : gauge];
+	if (poseFrame == NO_ID)
+		return;
+	for (uint32_t node = 0; node < n; ++node) {
+		if (frameOfNode[node] != poseFrame || metricGauge == NO_ID || metricSets.Find(node) != metricSets.Find(metricGauge))
+			continue;
+		const uint32_t block = blockOfNode[node];
+		poses[block].T = BuildGlobalTransform(rotations[node], scales[node], translations[node]);
+		poses[block].model = 0;
 	}
-	return demoted;
 }
 /*----------------------------------------------------------------*/
 
-bool GlobalAlignment::RefineDemotedAlignment(
+void GlobalAlignment::PrepareSeamEvidence(
 	const std::vector<Scene>& subScenes,
-	std::vector<ScenePair>& scenePairs,
-	const std::vector<Point3d>& globalRotations,
-	std::vector<REAL>& globalScales,
-	std::vector<Point3>& globalTranslations,
-	std::vector<bool>& demoted)
+	const std::vector<IIndexArr>& localToGlobals)
 {
-	const uint32_t numSubScenes = (uint32_t)subScenes.size();
-	for (;;) {
-		// Demoting can disconnect the pair graph, while scale and translation averaging pin a
-		// single gauge node, so keep only the component holding the most calibrated images.
-		DisjointSet<uint32_t> ds(numSubScenes);
-		for (const ScenePair& sp : scenePairs)
-			if (!demoted[sp.sceneA] && !demoted[sp.sceneB])
-				ds.Union(sp.sceneA, sp.sceneB);
-		std::vector<unsigned> componentImages(numSubScenes, 0);
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			if (!demoted[s])
-				componentImages[ds.Find(s)] += subScenes[s].status.nCalibratedImages;
-		uint32_t bestRoot = NO_ID;
-		for (uint32_t s = 0; s < numSubScenes; ++s) {
-			if (demoted[s])
-				continue;
-			const uint32_t root = ds.Find(s);
-			if (bestRoot == NO_ID || componentImages[root] > componentImages[bestRoot])
-				bestRoot = root;
+	BuildGlobalToLocalMap(localToGlobals);
+
+	// where every block triangulated what its cameras saw
+	blockPointMaps.clear();
+	blockPointMaps.resize(subScenes.size());
+	FOREACH(blockIdx, subScenes)
+		BuildBlockPointMap(subScenes[blockIdx], blockPointMaps[blockIdx]);
+
+	// and which cross pairs join which two blocks
+	MapBlockPairLinks();
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::MapBlockPairLinks()
+{
+	blockPairLinks.clear();
+	FOREACH(idx, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idx];
+		const PairIdx loc1 = globalToLocal[pair.ID1];
+		const PairIdx loc2 = globalToLocal[pair.ID2];
+		if (loc1.i == NO_ID || loc2.i == NO_ID || loc1.i == loc2.i)
+			continue;
+		blockPairLinks[std::make_pair(MINF(loc1.i, loc2.i), MAXF(loc1.i, loc2.i))].push_back((uint32_t)idx);
+	}
+}
+/*----------------------------------------------------------------*/
+
+bool GlobalAlignment::EstimateSeamCandidates(
+	const std::vector<Scene>& subScenes,
+	const std::vector<IIndexArr>& localToGlobals,
+	std::vector<SeamCandidate>& candidates)
+{
+	TD_TIMER_STARTD();
+	PrepareSeamEvidence(subScenes, localToGlobals);
+
+	candidates.clear();
+	unsigned numMeasured = 0;
+	for (const auto& [blockPair, pairIndices] : blockPairLinks) {
+		const size_t numBefore = candidates.size();
+		EstimateSeamPair(subScenes, blockPair.first, blockPair.second, candidates);
+		numMeasured += candidates.size() > numBefore ? 1 : 0;
+	}
+	DEBUG("Measured %u readings on %u of %u block pairs (%s)",
+		(unsigned)candidates.size(), numMeasured, (unsigned)blockPairLinks.size(), TD_TIMER_GET_FMT().c_str());
+	return !candidates.empty();
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::CollectPairObservations(
+	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
+	std::vector<SeamObservation>& observations,
+	std::vector<SeamCorrespondence>& correspondences) const
+{
+	ASSERT(a < b);
+	observations.clear();
+	correspondences.clear();
+	const auto itLinks = blockPairLinks.find(std::make_pair(a, b));
+	if (itLinks == blockPairLinks.end())
+		return;
+	CollectLinkObservations(subScenes, a, b, itLinks->second, observations, correspondences);
+}
+
+void GlobalAlignment::CollectLinkObservations(
+	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b, const std::vector<uint32_t>& pairIndices,
+	std::vector<SeamObservation>& observations,
+	std::vector<SeamCorrespondence>& correspondences) const
+{
+	ASSERT(a < b);
+	#ifndef _RELEASE
+	for (const uint32_t idx : pairIndices) {
+		const uint32_t block1 = globalToLocal[scene.pairs[idx].ID1].i, block2 = globalToLocal[scene.pairs[idx].ID2].i;
+		ASSERT(MINF(block1, block2) == a && MAXF(block1, block2) == b);
+	}
+	#endif
+	observations.clear();
+	correspondences.clear();
+	std::vector<PairLink> links;
+	ResolvePairLinks(scene, globalToLocal, pairIndices, a, links);
+	// block B's cameras against block A's points, then block A's cameras against block B's
+	AppendRigObservations(CollectRigCorrespondences(
+		subScenes[b], subScenes[a], blockPointMaps[a], links, true, config.maxReprojError),
+		subScenes[b], true, observations, correspondences);
+	AppendRigObservations(CollectRigCorrespondences(
+		subScenes[a], subScenes[b], blockPointMaps[b], links, false, config.maxReprojError),
+		subScenes[a], false, observations, correspondences);
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::ScoreSeam(
+	const std::vector<SeamObservation>& observations,
+	const std::vector<SeamCorrespondence>& correspondences,
+	const Transform& T,
+	const std::function<int(IIndex)>& sideOf,
+	SeamScore& score, IIndexArr& supporters) const
+{
+	ASSERT(observations.size() == correspondences.size());
+	score = SeamScore();
+	supporters.clear();
+	const Transform TInv(T.Invert());
+	// every image the seam touches, in both its roles: the camera whose feature carries the point
+	// witnesses the seam as much as the camera that observed it. A match collected in both directions
+	// is one correspondence, whichever of its two observations the transform explains, so each of its
+	// two cameras counts it once
+	std::unordered_set<CorrespondenceKey, CorrespondenceKeyHash> counted;
+	std::unordered_map<IIndex, unsigned> inliersOf;
+	FOREACH(i, observations) {
+		if (SeamObservationError(observations[i], T, TInv) > config.maxReprojError)
+			continue;
+		++score.inliers;
+		if (!counted.insert(KeyOfCorrespondence(correspondences[i])).second)
+			continue;
+		++inliersOf[observations[i].rigImage];
+		++inliersOf[observations[i].pointImage];
+	}
+	// an image a pool step registered on the merged model is no supporting camera: its pose was fitted to the
+	// model and says nothing of the block's seam, so a block reaching the model only through such images has
+	// no support that tests the scale of its reading
+	for (const auto& [image, numInliers] : inliersOf)
+		if (numInliers >= config.minCameraInliers && poolImages.count(image) == 0) {
+			const int side = sideOf(image);
+			ASSERT(side == 0 || side == 1);
+			++score.support[side];
+			supporters.push_back(image);
 		}
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			if (!demoted[s] && ds.Find(s) != bestRoot) {
-				VERBOSE("Sub-scene %u disconnected from the merge component; demoting to be rebuilt by resection", s);
-				demoted[s] = true;
+}
+/*----------------------------------------------------------------*/
+
+PairAgreement GlobalAlignment::MeasureSeamPairs(
+	const std::vector<Scene>& subScenes, const uint32_t a, const uint32_t b, const Transform& T) const
+{
+	PairAgreement agreement;
+	if (config.maxPairRotationResidual <= 0.f)
+		return agreement;
+	const auto itLinks = blockPairLinks.find(std::make_pair(a, b));
+	if (itLinks == blockPairLinks.end())
+		return agreement;
+	const Transform BToA(T.Invert());
+	const auto PoseInA = [&](const PairIdx local) {
+		const Image& image = subScenes[local.i].images[local.j];
+		const Transform cameraToA(local.i == a ? CameraToBlock(image) : BToA * CameraToBlock(image));
+		Pose3D pose;
+		pose.R = RMatrix(cameraToA.R.t());
+		pose.C = cameraToA.t;
+		return pose;
+	};
+	for (const uint32_t idx : itLinks->second) {
+		const ImagePair& pair = scene.pairs[idx];
+		if (!IsPoseLinkPair(pair))
+			continue;
+		const PairIdx local1 = globalToLocal[pair.ID1];
+		const PairIdx local2 = globalToLocal[pair.ID2];
+		if (!subScenes[local1.i].images[local1.j].IsValid() ||
+			!subScenes[local2.i].images[local2.j].IsValid())
+			continue;
+		const bool firstInB = local1.i == b;
+		const PairDisagreement d = MeasurePairDisagreement(pair,
+			PoseInA(firstInB ? local1 : local2), PoseInA(firstInB ? local2 : local1),
+			firstInB ? pair.ID2 : pair.ID1);
+		++agreement.numPairs;
+		(d.Within(config.maxPairRotationResidual) ? agreement.agree : agreement.disagree) += (float)pair.GetNumWeightedInliers();
+	}
+	// the pairs are read together: the bar is on the inlier weight read in total, under which they say nothing
+	if (agreement.agree + agreement.disagree < (float)config.minPairInliers)
+		return PairAgreement();
+	return agreement;
+}
+/*----------------------------------------------------------------*/
+
+const char* GlobalAlignment::RefusedReading(const SeamScore& score, bool scaleObservable, const PairAgreement& pairs,
+	const GlobalAlignmentConfig& config)
+{
+	ASSERT(config.minSeamWeight > 0); // a reading that enters has a supporting camera on each side (ReadingWeight)
+	return score.Weight() < config.minSeamWeight ? "cameras" : !scaleObservable ? "no scale" : !pairs.Holds() ? "pairs" : NULL;
+}
+
+float GlobalAlignment::ReadingWeight(const SeamScore& score, const PairAgreement& pairs)
+{
+	ASSERT(score.Weight() > 0 && pairs.Holds());
+	return (float)score.Weight() * pairs.Share();
+}
+
+void GlobalAlignment::EstimateSeamPair(
+	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
+	std::vector<SeamCandidate>& candidates) const
+{
+	ASSERT(a < b && blockPointMaps.size() == subScenes.size());
+	const auto itLinks = blockPairLinks.find(std::make_pair(a, b));
+	if (itLinks == blockPairLinks.end())
+		return;
+	// every correspondence of the pair, both directions, and the readings the configured estimator
+	// finds in them
+	std::vector<SeamObservation> observations;
+	std::vector<SeamCorrespondence> correspondences;
+	CollectPairObservations(subScenes, a, b, observations, correspondences);
+	std::vector<SeamReading> readings;
+	const bool pointAlignment = config.alignment == GlobalAlignmentConfig::ALIGN_POINTS;
+	if (pointAlignment) {
+		SeamReading reading;
+		if (EstimatePointReading(scene, globalToLocal, blockPointMaps, subScenes, a, b, itLinks->second, config, reading))
+			readings.emplace_back(std::move(reading));
+	} else {
+		// B's cameras on A's points, then A's cameras on B's
+		for (int d = 0; d < 2; ++d) {
+			SeamReading reading;
+			if (EstimateDirectionReading(observations, d == 0, config, reading))
+				readings.emplace_back(std::move(reading));
+		}
+	}
+
+	const auto sideOf = [this, a](IIndex image) { return globalToLocal[image].i == a ? 0 : 1; };
+	for (const SeamReading& reading : readings) {
+		SeamCandidate c;
+		IIndexArr supporters;
+		ScoreSeam(observations, correspondences, reading.T, sideOf, c.score, supporters);
+		c.pairs = MeasureSeamPairs(subScenes, a, b, reading.T);
+		const char* const refused = RefusedReading(c.score, reading.scaleObservable, c.pairs, config);
+		DEBUG_EXTRA("Seam (%u, %u) %s: %u/%u inliers, cameras %u+%u, %u pairs weighing %.0f for / %.0f against%s%s",
+			a, b, SourceWord(reading.source), c.score.inliers, (unsigned)observations.size(), c.score.support[0], c.score.support[1],
+			c.pairs.numPairs, c.pairs.agree, c.pairs.disagree, refused ? ", refused by " : "", refused ? refused : "");
+		if (refused)
+			continue;
+		c.sceneA = a;
+		c.sceneB = b;
+		c.T = reading.T;
+		c.source = reading.source;
+		c.weight = ReadingWeight(c.score, c.pairs);
+		const Transform BToA(reading.T.Invert());
+		std::vector<Point3> centres;
+		for (const IIndex image : supporters) {
+			const PairIdx local = globalToLocal[image];
+			const Point3& C = subScenes[local.i].images[local.j].C;
+			centres.emplace_back(local.i == a ? C : BToA * C);
+			c.centre += centres.back();
+		}
+		c.centre /= (REAL)centres.size();
+		c.extent = CentresSpread(centres);
+		ASSERT(c.extent > 0); // a camera on each side at least, and no two cameras stand at one place
+		candidates.emplace_back(std::move(c));
+	}
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::SelectSeamGraph(
+	const uint32_t numBlocks,
+	std::vector<SeamCandidate>& candidates,
+	std::vector<BlockPose>& poses,
+	std::vector<uint32_t>& edgeSeams) const
+{
+	TD_TIMER_START();
+	// the view-graph filter's pattern over the block graph: every reading is a measurement of its
+	// block pair; every component of the readings kept is averaged; every reading is judged against
+	// the poses of its component and kept within the bars; repeated until the kept set settles; the
+	// poses are the averaging of each component left
+	std::vector<bool> kept(candidates.size(), true);
+	// every component of the kept readings averaged; poses per block, the model index its component's
+	const auto AverageKept = [&]() {
+		poses.assign(numBlocks, BlockPose());
+		DisjointSet<uint32_t> blockSets(numBlocks);
+		FOREACH(i, candidates)
+			if (kept[i])
+				blockSets.Union(candidates[i].sceneA, candidates[i].sceneB);
+		std::map<uint32_t, std::vector<uint32_t>> componentReadings;
+		FOREACH(i, candidates)
+			if (kept[i])
+				componentReadings[blockSets.Find(candidates[i].sceneA)].push_back((uint32_t)i);
+		uint32_t model = 0;
+		for (const auto& [root, readings] : componentReadings) {
+			// the gauge: the block the readings weigh most on
+			std::vector<float> blockWeights(numBlocks, 0.f);
+			for (const uint32_t i : readings) {
+				blockWeights[candidates[i].sceneA] += candidates[i].weight;
+				blockWeights[candidates[i].sceneB] += candidates[i].weight;
 			}
-		scenePairs.erase(std::remove_if(scenePairs.begin(), scenePairs.end(),
-			[&demoted](const ScenePair& sp) { return demoted[sp.sceneA] || demoted[sp.sceneB]; }),
-			scenePairs.end());
-
-		// A single survivor defines the gauge by itself; nothing left to average
-		const unsigned numActive = numSubScenes - (unsigned)std::count(demoted.begin(), demoted.end(), true);
-		if (numActive < 2 || scenePairs.empty())
-			return true;
-
-		globalScales.clear();
-		globalTranslations.clear();
-		if (!EstimateGlobalScales(scenePairs, numSubScenes, globalScales) ||
-			!EstimateGlobalTranslations(scenePairs, globalRotations, globalScales, numSubScenes, globalTranslations)) {
-			VERBOSE("error: failed to re-average scales/translations after demotions");
+			const uint32_t gauge = (uint32_t)(std::max_element(blockWeights.begin(), blockWeights.end()) - blockWeights.begin());
+			ASSERT(blockWeights[gauge] > 0.f);
+			std::vector<BlockPose> componentPoses;
+			AverageBlockPoses(candidates, readings, numBlocks, gauge, componentPoses);
+			FOREACH(blk, componentPoses)
+				if (componentPoses[blk].model != NO_ID) {
+					poses[blk].T = componentPoses[blk].T;
+					poses[blk].model = model;
+					poses[blk].state = BlockPose::ADMITTED;
+				}
+			++model;
+		}
+	};
+	// every reading against the poses of its component
+	const REAL barR = (REAL)config.maxGraphRotationResidual;
+	const REAL barS = (REAL)config.maxGraphScaleResidual;
+	const REAL barT = (REAL)config.maxGraphTranslationResidual;
+	const auto Within = [&](SeamCandidate& c) {
+		const BlockPose &pa = poses[c.sceneA], &pb = poses[c.sceneB];
+		if (pa.state != BlockPose::ADMITTED || pb.state != BlockPose::ADMITTED || pa.model != pb.model) {
+			c.residualRotation = FLT_MAX;
 			return false;
 		}
-
-		std::vector<bool> keepMask(numSubScenes);
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			keepMask[s] = !demoted[s];
-		std::vector<bool> revalidated = ValidateAlignment(subScenes, keepMask, scenePairs,
-			globalRotations, globalScales, globalTranslations);
-		if (revalidated == demoted)
-			return true;
-		demoted = std::move(revalidated);
+		const SeamResidual r(ComputeSeamResidual(c, pa.T, pb.T));
+		c.residualRotation = (float)r.rotation;
+		c.residualScale = (float)r.scale;
+		c.residualTranslation = (float)r.translation;
+		return r.rotation <= barR && r.scale <= barS && r.translation <= barT;
+	};
+	unsigned numRounds = 0;
+	for (bool settled = false; !settled; ) {
+		if (numRounds == kRobustRounds) {
+			VERBOSE("warning: the kept readings did not settle in %u rounds", kRobustRounds);
+			break;
+		}
+		++numRounds;
+		AverageKept();
+		std::vector<bool> next(candidates.size());
+		FOREACH(i, candidates)
+			next[i] = Within(candidates[i]);
+		settled = next == kept;
+		kept.swap(next);
 	}
+	AverageKept();
+	edgeSeams.clear();
+	std::vector<bool> touched(numBlocks, false), onEdge(numBlocks, false);
+	FOREACH(i, candidates) {
+		const SeamCandidate& c = candidates[i];
+		touched[c.sceneA] = touched[c.sceneB] = true;
+		if (!kept[i]) {
+			// a reading whose two blocks the averaging did not place in one model was not judged
+			if (c.residualRotation == FLT_MAX) {
+				DEBUG_EXTRA("Seam (%u, %u) %s cut: not judged, block %u has no pose in the model of the other (weight %.2f)",
+					c.sceneA, c.sceneB, SourceWord(c.source), poses[c.sceneA].state != BlockPose::ADMITTED ? c.sceneA : c.sceneB, c.weight);
+			} else {
+				DEBUG_EXTRA("Seam (%u, %u) %s cut: %.2f deg, %.1f%%, %.2f%% from the solution (weight %.2f)", c.sceneA, c.sceneB,
+					SourceWord(c.source), c.residualRotation, (c.residualScale - 1) * 100, c.residualTranslation * 100, c.weight);
+			}
+			continue;
+		}
+		onEdge[c.sceneA] = onEdge[c.sceneB] = true;
+		edgeSeams.push_back((uint32_t)i);
+	}
+	uint32_t numModels = 0;
+	for (const BlockPose& pose : poses)
+		if (pose.state == BlockPose::ADMITTED)
+			numModels = MAXF(numModels, pose.model + 1);
+	FOREACH(blk, poses) {
+		BlockPose& pose = poses[blk];
+		if (pose.state == BlockPose::ADMITTED)
+			continue;
+		pose.T = Transform();
+		pose.model = numModels++;
+		pose.state = BlockPose::ADMITTED;
+		pose.reason = !touched[blk] ? String("no reading entered (no cross pairs, or every reading refused)") :
+			onEdge[blk] ? String("no pose from the averaging") :
+			String("every reading off");
+	}
+	VERBOSE("Block graph: %u blocks, %u readings, %u kept after %u rounds, %u models (%s)",
+		numBlocks, (unsigned)candidates.size(), (unsigned)edgeSeams.size(), numRounds, numModels, TD_TIMER_GET_FMT().c_str());
 }
 /*----------------------------------------------------------------*/
 
+bool GlobalAlignment::MergeScenes(
+	std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals, MergeReport& report, bool releaseUnplaced,
+	uint32_t anchorBlock)
+{
+	TD_TIMER_START();
+
+	ASSERT(!subScenes.empty());
+	ASSERT(subScenes.size() == localToGlobals.size());
+	ASSERT(anchorBlock == NO_ID || anchorBlock < subScenes.size());
+	const uint32_t numBlocks = (uint32_t)subScenes.size();
+	report = MergeReport();
+	report.numBlocks = numBlocks;
+	VERBOSE("Merging %u blocks into the global scene", numBlocks);
+
+	// the readings of every block pair the cross pairs join
+	std::vector<SeamCandidate> candidates;
+	EstimateSeamCandidates(subScenes, localToGlobals, candidates);
+
+	// a single block has nothing to align against, so it is merged in its own frame
+	if (numBlocks == 1) {
+		VERBOSE("Single block, merged as it is");
+		report.poses.assign(1, BlockPose());
+		report.poses[0].model = 0;
+		report.poses[0].state = BlockPose::ADMITTED;
+		MergeTransformedScenes(subScenes, localToGlobals, report.poses, std::vector<SeamCorrespondence>(), releaseUnplaced);
+		report.numPlaced = 1;
+		report.numImagesPlaced = scene.status.nCalibratedImages;
+		DEBUG("Single-block merge completed (%s)", TD_TIMER_GET_FMT().c_str());
+		return true;
+	}
+
+	// the one decision over the block graph
+	std::vector<BlockPose> poses;
+	std::vector<uint32_t> edgeSeams;
+	SelectSeamGraph(numBlocks, candidates, poses, edgeSeams);
+
+	// the model the scene is merged at: the one holding the anchor block, else the one carrying the most images
+	std::map<uint32_t, unsigned> imagesOfModel, blocksOfModel;
+	FOREACH(b, poses)
+		if (poses[b].state == BlockPose::ADMITTED) {
+			imagesOfModel[poses[b].model] += subScenes[b].status.nCalibratedImages;
+			++blocksOfModel[poses[b].model];
+		}
+	uint32_t mergedModel = anchorBlock == NO_ID ? NO_ID : poses[anchorBlock].model;
+	if (anchorBlock == NO_ID)
+		for (const auto& [model, numImages] : imagesOfModel)
+			if (mergedModel == NO_ID || numImages > imagesOfModel[mergedModel])
+				mergedModel = model;
+	ASSERT(mergedModel != NO_ID);
+
+	// every block outside it is merged without its poses, for the resection to recover its images
+	// against the model, or left whole in its scene
+	FOREACH(b, poses) {
+		BlockPose& pose = poses[b];
+		const bool placed = pose.state == BlockPose::ADMITTED && pose.model == mergedModel;
+		if (placed)
+			++report.numPlaced;
+		else {
+			// a block of a model of several keeps no reason of its own, being placed in that model
+			if (blocksOfModel[pose.model] > 1)
+				pose.reason = String::FormatString("separate model of %u blocks", blocksOfModel[pose.model]);
+			pose.state = BlockPose::UNPLACEABLE;
+		}
+		unsigned numImages = 0;
+		FOREACH(localID, subScenes[b].images) {
+			const IIndex globalID = localToGlobals[b][localID];
+			if (globalID == NO_ID || !subScenes[b].images[localID].IsValid())
+				continue;
+			++numImages;
+			if (placed)
+				++report.numImagesPlaced;
+			else
+				report.unplacedImages.push_back(globalID);
+		}
+		if (!placed)
+			VERBOSE("Block %u not placed: %s (%u images)", (unsigned)b, pose.reason.c_str(), numImages);
+	}
+	report.numImagesUnplaced = report.unplacedImages.size();
+	for (const uint32_t e : edgeSeams)
+		if (poses[candidates[e].sceneA].state == BlockPose::ADMITTED && poses[candidates[e].sceneB].state == BlockPose::ADMITTED)
+			report.modelSeams.push_back(e);
+
+	// the closure, a join priority: the correspondences of the cross pairs of at least minCommonTracks
+	// weighted inliers of every pair of blocks the merged model holds, whether or not a reading of it was
+	// kept, that the final block poses explain within the loose bar (a block bent within the bars is off
+	// by about that at its far end) join their tracks first; the cross-block track merge then visits every
+	// track-forming match of every connecting pair, these heavy pairs' included, under the same guards,
+	// so a seam-consistent match takes a feature before a competing match to the same image
+	const REAL looseBar = config.looseSeamFactor * config.maxReprojError;
+	std::vector<SeamCorrespondence> seamInliers;
+	for (const auto& [blockPair, pairIndices] : blockPairLinks) {
+		const BlockPose &poseA = poses[blockPair.first], &poseB = poses[blockPair.second];
+		if (poseA.state != BlockPose::ADMITTED || poseB.state != BlockPose::ADMITTED)
+			continue;
+		std::vector<uint32_t> heavyPairs;
+		for (const uint32_t idx : pairIndices)
+			if (scene.pairs[idx].GetNumWeightedInliers() >= config.minCommonTracks)
+				heavyPairs.push_back(idx);
+		std::vector<SeamObservation> observations;
+		std::vector<SeamCorrespondence> correspondences;
+		CollectLinkObservations(subScenes, blockPair.first, blockPair.second, heavyPairs, observations, correspondences);
+		const Transform T(poseB.T.Invert() * poseA.T);
+		const Transform TInv(T.Invert());
+		FOREACH(i, observations)
+			if (SeamObservationError(observations[i], T, TInv) <= looseBar)
+				seamInliers.push_back(correspondences[i]);
+	}
+
+	// the blocks of the merged model moved into its frame, and every block merged in
+	MergeTransformedScenes(subScenes, localToGlobals, poses, seamInliers, releaseUnplaced);
+
+	report.candidates = std::move(candidates);
+	report.poses = std::move(poses);
+	VERBOSE("Merged %u/%u blocks into one model (%u images placed, %u unplaced) (%s)",
+		report.numPlaced, numBlocks, report.numImagesPlaced, report.numImagesUnplaced,
+		TD_TIMER_GET_FMT().c_str());
+	return report.numPlaced >= 1;
+}
+/*----------------------------------------------------------------*/
 
 bool GlobalAlignment::MergeTransformedScenes(
 	std::vector<Scene>& subScenes,
 	const std::vector<IIndexArr>& localToGlobals,
-	const std::vector<Point3d>& globalRotations,
-	const std::vector<REAL>& globalScales,
-	const std::vector<Point3>& globalTranslations,
-	const std::vector<bool>& demoted)
+	const std::vector<BlockPose>& poses,
+	const std::vector<SeamCorrespondence>& seamInliers,
+	bool releaseUnplaced)
 {
-	// Transform each trusted sub-scene into the global frame. Demoted sub-scenes are merged
-	// without poses below, so transforming them would be wasted work — and those rotation
-	// averaging left unplaced (always demoted) have unconstrained averaged transforms that
-	// would inject NaN/garbage poses.
+	// A block still admitted is one the merged model took in, and only its pose is applied: every
+	// other block is unplaceable, and transforming it would be wasted work -- and its pose, which
+	// the merged model does not hold, would inject garbage. An unplaced block is merged without
+	// poses below when releaseUnplaced is set, and kept whole in its own scene otherwise.
+	ASSERT(poses.size() == subScenes.size());
+	std::vector<bool> placed(subScenes.size(), false);
 	FOREACH(sceneIdx, subScenes) {
-		if (demoted[sceneIdx])
+		if (poses[sceneIdx].state != BlockPose::ADMITTED)
 			continue;
+		placed[sceneIdx] = true;
 		Scene& subScene = subScenes[sceneIdx];
 
-		// Apply the similarity transform to the sub-scene
-		subScene.Transform(BuildGlobalTransform(
-			globalRotations[sceneIdx], globalScales[sceneIdx], globalTranslations[sceneIdx]));
-
-		#if GLOBALALIGNMENT_DEBUG
-		// Export aligned sub-scene for debugging
-		subScene.ExportPLY(String::FormatString("subscene_%u_aligned.ply", sceneIdx));
-		#endif
+		// Apply the block's own pose to it, bringing it into the model frame
+		subScene.Transform(poses[sceneIdx].T);
 	}
 
-	// Demoted sub-scenes (see ValidateAlignment) are merged without poses, to be rebuilt by
-	// the post-merge resection.
-	std::vector<bool> untrustedImages(scene.images.size(), false);
+	// Unplaced blocks are merged without poses, to be rebuilt by the post-merge resection, or left whole
+	std::vector<bool> unplacedImages(scene.images.size(), false);
 	FOREACH(sceneIdx, subScenes)
-		if (demoted[sceneIdx])
+		if (!placed[sceneIdx])
 			for (const IIndex globalID : localToGlobals[sceneIdx])
 				if (globalID != NO_ID && globalID < scene.images.size())
-					untrustedImages[globalID] = true;
+					unplacedImages[globalID] = true;
 
 	// Track per-camera accumulation counts; destination cameras accumulate directly
 	std::unordered_map<Camera*, unsigned> cameraAccumCount;
@@ -740,11 +1345,10 @@ bool GlobalAlignment::MergeTransformedScenes(
 	FOREACH(sceneIdx, subScenes) {
 		Scene& subScene = subScenes[sceneIdx];
 		const IIndexArr& localToGlobal = localToGlobals[sceneIdx];
-		const bool trusted = !demoted[sceneIdx];
-		if (trusted) {
+		if (placed[sceneIdx]) {
 			++numMerged;
 			// Accumulate intrinsics from sub-scene cameras into destination cameras
-			// (demoted sub-scenes are excluded: their drifted geometry taints intrinsics too)
+			// (unplaced blocks are excluded: their drifted geometry taints intrinsics too)
 			for (IIndex localID = 0; localID < subScene.images.size(); ++localID) {
 				const IIndex globalID = localToGlobal[localID];
 				if (globalID == NO_ID || globalID >= scene.images.size())
@@ -761,8 +1365,11 @@ bool GlobalAlignment::MergeTransformedScenes(
 			}
 		}
 
+		// an unplaced block kept whole keeps its features, pairs and tracks in its own scene
+		if (!placed[sceneIdx] && !releaseUnplaced)
+			continue;
 		// Merge into global scene
-		MergeSingleScene(subScene, localToGlobal, trusted);
+		MergeSingleScene(subScene, localToGlobal, placed[sceneIdx]);
 	}
 
 	// Finalize intrinsics averaging
@@ -774,7 +1381,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 	}
 
 	// Merge sub-scene tracks and connect them via cross-sub-scene pairs
-	MergeTracksWithCrossSubScenePairs(untrustedImages);
+	MergeTracksWithCrossSubScenePairs(unplacedImages, seamInliers, releaseUnplaced);
 	FilterTracks(scene, 16.f, 0.5f);
 
 	DEBUG("Merged %u/%u transformed sub-scenes (%u tracks, %u calibrated images)",
@@ -783,10 +1390,10 @@ bool GlobalAlignment::MergeTransformedScenes(
 }
 /*----------------------------------------------------------------*/
 
-void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal, bool trusted)
+void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal, bool placed)
 {
 	// Copy image poses and move back keypoints/descriptors
-	// (keypoints/descriptors were moved to sub-scenes during ExtractSubScene to save memory)
+	// (keypoints/descriptors were moved to sub-scenes during SceneBlocks::Extract to save memory)
 	for (IIndex localID = 0; localID < subScene.images.size(); ++localID) {
 		const IIndex globalID = localToGlobal[localID];
 		if (globalID == NO_ID || globalID >= scene.images.size())
@@ -795,17 +1402,17 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 		Image& srcImg = subScene.images[localID];
 		Image& dstImg = scene.images[globalID];
 
-		if (srcImg.IsValid() && trusted) {
-			if (!dstImg.IsValid())
-				++scene.status.nCalibratedImages;
+		if (srcImg.IsValid() && placed) {
+			// counted whether or not the global shell is posed already (the merged model read again as block 0)
+			++scene.status.nCalibratedImages;
 			dstImg.R = srcImg.R;
 			dstImg.C = srcImg.C;
 		}
-		// Move keypoints/descriptors back from sub-scene to global scene
-		if (srcImg.HasFeatures() && !dstImg.HasFeatures()) {
-			dstImg.keypoints = std::move(srcImg.keypoints);
-			dstImg.descriptors = std::move(srcImg.descriptors);
-		}
+		// Move keypoints/descriptors back from sub-scene to global scene, described-keypoint
+		// boundary included: without it the dense keypoints the sub-scene carried would come back
+		// indistinguishable from the described ones
+		if (srcImg.HasFeatures() && !dstImg.HasFeatures())
+			dstImg.MoveFeaturesFrom(srcImg);
 	}
 
 	// Remap and merge image-pairs from local sub-scene into global scene.
@@ -853,8 +1460,8 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 			}
 		}
 
-		// Demoted sub-scene: keep the observations but none of the (drifted) 3D trust
-		if (!trusted)
+		// Unplaced block: keep the observations but none of the (drifted) 3D trust
+		if (!placed)
 			dstTrack.numInliers = 0;
 
 		if (!dstTrack.IsValid())
@@ -870,7 +1477,8 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 /*----------------------------------------------------------------*/
 
 
-void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>& untrustedImages)
+void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
+	const std::vector<bool>& unplacedImages, const std::vector<SeamCorrespondence>& seamInliers, bool releaseUnplaced)
 {
 	// Per-root metadata for union-find: 3D position, inlier count, and the set of images the
 	// track already observes (allocated only for the roots that hold a track, which are a
@@ -879,6 +1487,7 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 		Point3 position{Point3::ZERO};
 		uint32_t numInliers{0};
 		std::unique_ptr<std::unordered_set<IIndex>> images;
+		std::unique_ptr<ObservationArr> posedObs; // its observations in posed images, the ones a point joining it must explain
 		bool hasPosition{false};
 
 		void InitImages() {
@@ -895,14 +1504,9 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 	// sub-scene track into a single set. This preserves the track structure
 	// from each independently-reconstructed sub-scene.
 
-	// Compute feature offsets for O(1) global ID lookup (same as BuildTracks)
-	Unsigned32Arr featureOffsets(0, scene.images.size() + 1);
-	uint32_t totalFeatures = 0;
-	for (const Image& img : scene.images) {
-		featureOffsets.push_back(totalFeatures);
-		totalFeatures += (uint32_t)img.keypoints.size();
-	}
-	featureOffsets.push_back(totalFeatures); // sentinel
+	// Compute feature offsets for O(1) global ID lookup
+	const Unsigned32Arr featureOffsets = BuildFeatureOffsets(scene.images);
+	const uint32_t totalFeatures = featureOffsets.back();
 	if (totalFeatures == 0) {
 		DEBUG("warning: no features for track merging");
 		return;
@@ -917,17 +1521,16 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 	// observations (first numInliers entries, which passed reprojection filtering)
 	// or all observations including outliers.
 	const bool useOnlyInliers = config.mergeTrackInliersOnly;
-	AABB3 bbox(true);
 	for (const Track& track : scene.tracks) {
 		if (!track.IsValid())
 			continue;
-		// Tracks from demoted sub-scenes carry no inlier/3D trust (numInliers=0), but their
+		// Tracks from unplaced blocks carry no inlier/3D trust (numInliers=0), but their
 		// observation structure must survive so the post-merge resection can re-triangulate
 		// them: seed them with all observations and no position.
-		const bool untrustedTrack = !track.IsInlier() &&
-			track.observations[0].imageID < untrustedImages.size() &&
-			untrustedImages[track.observations[0].imageID];
-		const uint32_t numObs = untrustedTrack
+		const bool unplacedTrack = !track.IsInlier() &&
+			track.observations[0].imageID < unplacedImages.size() &&
+			unplacedImages[track.observations[0].imageID];
+		const uint32_t numObs = unplacedTrack
 			? (uint32_t)track.observations.size()
 			: (useOnlyInliers ? (uint32_t)track.numInliers : (uint32_t)track.observations.size());
 		if (numObs < 2)
@@ -959,32 +1562,27 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 		for (uint32_t i = 0; i < numObs; ++i) {
 			const Observation& obs = track.observations[i];
 			if (obs.imageID < scene.images.size() &&
-				obs.featureID < scene.images[obs.imageID].keypoints.size())
+				obs.featureID < scene.images[obs.imageID].keypoints.size()) {
 				meta.images->emplace(obs.imageID);
+				// the inliers of a positioned track (what its point was computed from), every posed one otherwise
+				if ((!meta.hasPosition || i < track.numInliers) && scene.images[obs.imageID].IsValid()) {
+					if (!meta.posedObs)
+						meta.posedObs = std::make_unique<ObservationArr>();
+					meta.posedObs->push_back(obs);
+				}
+			}
 		}
-		if (meta.hasPosition)
-			bbox.InsertFull(track.position);
 	}
 
-	// Compute proximity threshold from scene bounding box
-	const REAL proximityThreshold = bbox.IsEmpty() ? REAL(0) : REAL(0.02) * bbox.GetSize().norm();
-
-	// Phase 2: Process ONLY cross-sub-scene pairs (connecting pairs) to merge
-	// tracks across sub-scene boundaries.
-	//
-	// A pair is a "connecting pair" if its two images belong to different sub-scenes.
-	// Intra-sub-scene pairs are skipped: their tracks are already correctly formed
-	// by BuildTracks during sub-scene reconstruction. Re-processing them here would
-	// over-merge tracks within a sub-scene (because outlier observations removed
-	// during reconstruction can lift the duplicate-image guard that originally kept
-	// the tracks separate), bloating image sets and blocking legitimate cross-sub-scene
-	// connections via the duplicate-image guard.
-	unsigned numMerged = 0, numRejectedProximity = 0, numRejectedDupImage = 0, numNewPairTracks = 0;
-	unsigned numCrossScenePairs = 0;
+	// Cross-sub-scene connectivity: the seam inliers below, then every connecting pair in Phase 2,
+	// share one union-find, one set of root guards, and one summary.
+	unsigned numMerged = 0, numRejectedDupImage = 0, numRejectedLength = 0, numRejectedReprojection = 0, numNewPairTracks = 0;
+	unsigned numCrossScenePairs = 0, numSeamMerged = 0;
 
 	// Ensure root has metadata and feature is counted exactly once;
-	// new features from cross-sub-scene pairs are counted as additional observations
-	// but do NOT increment numInliers (these are unvalidated matches, not verified inliers)
+	// new features from cross-sub-scene pairs and seam inliers are counted as additional
+	// observations but do NOT increment numInliers (these are unvalidated matches, not verified
+	// inliers)
 	auto AccumulateFeature = [&](uint32_t gid, IIndex imgID) {
 		if (featureCounted[gid])
 			return;
@@ -992,27 +1590,143 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 		RootMeta& meta = rootMeta[ds.Find(gid)];
 		meta.InitImages();
 		meta.images->emplace(imgID);
+		if (scene.images[imgID].IsValid()) {
+			if (!meta.posedObs)
+				meta.posedObs = std::make_unique<ObservationArr>();
+			meta.posedObs->emplace_back(imgID, gid - featureOffsets[imgID]);
+		}
 	};
 
+	// Guard 1, shared by every union below: reject if merging would create duplicate image
+	// observations (same image twice in one track), which would be geometrically invalid
+	auto NoDuplicateImage = [](const RootMeta& metaDst, const RootMeta& metaSrc) -> bool {
+		for (const IIndex imgID : *metaSrc.images)
+			if (metaDst.images->count(imgID))
+				return false;
+		return true;
+	};
+
+	// The merge itself, shared by every union below once its guards pass: weighted-average 3D
+	// positions, accumulate inlier counts, and merge image sets
+	auto MergeRoots = [](RootMeta& metaDst, RootMeta& metaSrc) {
+		if (metaDst.hasPosition && metaSrc.hasPosition) {
+			const REAL wDst = (REAL)metaDst.numInliers;
+			const REAL wSrc = (REAL)metaSrc.numInliers;
+			metaDst.position = (metaDst.position * wDst + metaSrc.position * wSrc) / (wDst + wSrc);
+		} else if (metaSrc.hasPosition) {
+			metaDst.position = metaSrc.position;
+			metaDst.hasPosition = true;
+		}
+		metaDst.numInliers += metaSrc.numInliers;
+		metaDst.images->insert(metaSrc.images->begin(), metaSrc.images->end());
+		metaSrc.images.reset();
+		if (metaSrc.posedObs) {
+			if (!metaDst.posedObs)
+				metaDst.posedObs = std::move(metaSrc.posedObs);
+			else
+				metaDst.posedObs->Join(*metaSrc.posedObs);
+			metaSrc.posedObs.reset();
+		}
+	};
+
+	// Guard 2, shared by every union below: a track holds at most 255 observations (its inlier count is a
+	// byte), so a join that would make a longer one is refused; one image per observation (guard 1)
+	auto FitsInTrack = [](const RootMeta& metaDst, const RootMeta& metaSrc) -> bool {
+		return metaDst.images->size() + metaSrc.images->size() <= 255;
+	};
+
+	// Guard 3, for the matches of the connecting pairs: the point of a root, where it has one, must
+	// reproject within maxJoinReprojError into every posed observation of the other, judged as FilterTracks
+	// judges (the angle between the observed ray and the point, the bar converted per camera); a root
+	// without posed observations offers nothing to check. The closure's correspondences skip it: the final
+	// block poses already explain them within the loose bar
+	ASSERT(config.maxJoinReprojError >= 0.f);
+	auto ReprojectsInto = [&](const Point3& X, const RootMeta& meta) -> bool {
+		if (!meta.posedObs)
+			return true;
+		for (const Observation& obs : *meta.posedObs) {
+			const Image& img = scene.images[obs.imageID];
+			ASSERT(img.IsValid() && img.HasCamera());
+			const Point3 Xcam = img.TransformPointW2C(X);
+			const Point3 observedRay = img.pCamera->UnprojectNormalized(Cast<REAL>(img.keypoints[obs.featureID].pt));
+			if (ComputeAngle(observedRay.ptr(), Xcam.ptr()) < COS(img.pCamera->PixelErrorToAngular(config.maxJoinReprojError)))
+				return false;
+		}
+		return true;
+	};
+
+	// One join of two features' sets under guards 1 and 2, and guard 3 when asked, counted in `numJoined`
+	auto Join = [&](uint32_t gid1, uint32_t gid2, unsigned& numJoined, bool guarded) {
+		ds.UnionIf(gid1, gid2,
+			[&](uint32_t rootDst, uint32_t rootSrc) -> bool {
+				RootMeta& metaDst = rootMeta[rootDst];
+				RootMeta& metaSrc = rootMeta[rootSrc];
+				ASSERT(metaDst.images && metaSrc.images);
+				if (!NoDuplicateImage(metaDst, metaSrc)) {
+					++numRejectedDupImage;
+					return false;
+				}
+				if (!FitsInTrack(metaDst, metaSrc)) {
+					++numRejectedLength;
+					return false;
+				}
+				if (guarded && config.maxJoinReprojError > 0.f &&
+					((metaDst.hasPosition && !ReprojectsInto(metaDst.position, metaSrc)) ||
+					 (metaSrc.hasPosition && !ReprojectsInto(metaSrc.position, metaDst)))) {
+					++numRejectedReprojection;
+					return false;
+				}
+				MergeRoots(metaDst, metaSrc);
+				++numJoined;
+				return true;
+			}
+		);
+	};
+
+	// Seam inliers first: every kept correspondence of a seam the merged model rests on already agrees
+	// with the placement, so it joins before any other match of its features
+	for (const SeamCorrespondence& corr : seamInliers) {
+		ASSERT(corr.imageA < scene.images.size() && corr.imageB < scene.images.size());
+		ASSERT(corr.featureA < scene.images[corr.imageA].keypoints.size() &&
+			corr.featureB < scene.images[corr.imageB].keypoints.size());
+		const uint32_t gid1 = featureOffsets[corr.imageA] + corr.featureA;
+		const uint32_t gid2 = featureOffsets[corr.imageB] + corr.featureB;
+		AccumulateFeature(gid1, corr.imageA);
+		AccumulateFeature(gid2, corr.imageB);
+		Join(gid1, gid2, numSeamMerged, false);
+	}
+
+	// Phase 2: Process ONLY the connecting pairs to merge tracks across sub-scene boundaries.
+	//
+	// A pair is a "connecting pair" unless its two images belong to the same sub-scene: a pair
+	// joining two sub-scenes, or with an image in no sub-scene (the pool: no block registered it,
+	// and its observations left the block tracks with it, so its pairs are the only source of
+	// its tracks the post-merge resection can read).
+	// Intra-sub-scene pairs are skipped: their tracks are already correctly formed
+	// by BuildTracks during sub-scene reconstruction. Re-processing them here would
+	// over-merge tracks within a sub-scene (because outlier observations removed
+	// during reconstruction can lift the duplicate-image guard that originally kept
+	// the tracks separate), bloating image sets and blocking legitimate cross-sub-scene
+	// connections via the duplicate-image guard.
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.HasMatches())
 			continue;
 		ASSERT(pair.ID1 < scene.images.size() && pair.ID2 < scene.images.size());
-		ASSERT(scene.images[pair.ID1].HasFeatures() && scene.images[pair.ID2].HasFeatures());
-		// Filter: only process cross-sub-scene pairs.
-		// Both images must be in globalToLocal (assigned to a sub-scene)
-		// and must belong to different sub-scenes.
-		const auto itA = globalToLocal.find(pair.ID1);
-		const auto itB = globalToLocal.find(pair.ID2);
-		if (itA == globalToLocal.end() || itB == globalToLocal.end())
+		// an image of a block kept whole holds no features here
+		if (!releaseUnplaced && (unplacedImages[pair.ID1] || unplacedImages[pair.ID2]))
 			continue;
-		if (itA->second.first == itB->second.first)
+		ASSERT(scene.images[pair.ID1].HasFeatures() && scene.images[pair.ID2].HasFeatures());
+		const PairIdx locA = globalToLocal[pair.ID1];
+		const PairIdx locB = globalToLocal[pair.ID2];
+		if (locA.i != NO_ID && locA.i == locB.i)
 			continue; // same sub-scene, skip
 		++numCrossScenePairs;
 
 		const uint32_t offset1 = featureOffsets[pair.ID1];
 		const uint32_t offset2 = featureOffsets[pair.ID2];
-		FOREACHRAW(i, pair.GetNumFilteredInliers()) {
+		const unsigned numTrackForming = pair.GetNumTrackFormingMatches();
+		ASSERT(numTrackForming <= pair.matches.size());
+		FOREACHRAW(i, numTrackForming) {
 			const DMatch& match = pair.matches[i];
 			if ((unsigned)match.queryIdx >= scene.images[pair.ID1].keypoints.size() ||
 				(unsigned)match.trainIdx >= scene.images[pair.ID2].keypoints.size())
@@ -1024,43 +1738,7 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 			AccumulateFeature(gid1, pair.ID1);
 			AccumulateFeature(gid2, pair.ID2);
 
-			// Attempt union with image-uniqueness and 3D proximity guards
-			ds.UnionIf(gid1, gid2,
-				[&](uint32_t rootDst, uint32_t rootSrc) -> bool {
-					RootMeta& metaDst = rootMeta[rootDst];
-					RootMeta& metaSrc = rootMeta[rootSrc];
-					ASSERT(metaDst.images && metaSrc.images);
-					// Guard 1: reject if merging would create duplicate image observations
-					for (const IIndex imgID : *metaSrc.images) {
-						if (metaDst.images->count(imgID)) {
-							++numRejectedDupImage;
-							return false;
-						}
-					}
-					// Guard 2: if both sides have triangulated 3D positions,
-					// reject if they are too far apart (indicates false match)
-					if (metaDst.hasPosition && metaSrc.hasPosition && proximityThreshold > 0) {
-						if (norm(metaDst.position - metaSrc.position) > proximityThreshold) {
-							++numRejectedProximity;
-							return false;
-						}
-					}
-					// Merge metadata: weighted-average 3D positions, merge image sets
-					if (metaDst.hasPosition && metaSrc.hasPosition) {
-						const REAL wDst = (REAL)metaDst.numInliers;
-						const REAL wSrc = (REAL)metaSrc.numInliers;
-						metaDst.position = (metaDst.position * wDst + metaSrc.position * wSrc) / (wDst + wSrc);
-					} else if (metaSrc.hasPosition) {
-						metaDst.position = metaSrc.position;
-						metaDst.hasPosition = true;
-					}
-					metaDst.numInliers += metaSrc.numInliers;
-					metaDst.images->insert(metaSrc.images->begin(), metaSrc.images->end());
-					metaSrc.images.reset();
-					++numMerged;
-					return true;
-				}
-			);
+			Join(gid1, gid2, numMerged, true);
 		}
 	}
 
@@ -1087,7 +1765,6 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 	for (auto& [root, observations] : trackGroups) {
 		if (observations.size() < 2)
 			continue;
-		observations.Sort();
 		Track track;
 		track.observations = std::move(observations);
 		const RootMeta& meta = rootMeta[root];
@@ -1110,9 +1787,9 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 	}
 
 	DEBUG("Track merge: %u/%u tracks, %u cross-sub-scene merges from %u connecting pairs, "
-		"%u new from pairs, %u rejected by proximity, %u rejected by duplicate image",
+		"%u from seam inliers, %u new from pairs, %u rejected by duplicate image, %u rejected by length, %u rejected by reprojection (%g px)",
 		scene.status.nTracks, scene.tracks.size(), numMerged, numCrossScenePairs,
-		numNewPairTracks, numRejectedProximity, numRejectedDupImage);
+		numSeamMerged, numNewPairTracks, numRejectedDupImage, numRejectedLength, numRejectedReprojection, config.maxJoinReprojError);
 }
 /*----------------------------------------------------------------*/
 

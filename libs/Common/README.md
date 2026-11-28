@@ -93,7 +93,7 @@ Ray3f    // float, 3D ray
 Plane3f  // float, 3D plane
 ```
 
-**Important**: These geometry types use Eigen internally but are not Eigen types themselves. They provide `.IsValid()`, `.IsEmpty()` methods and conversion operators to/from Eigen. See the CLAUDE.md in the root project for notes on type interop.
+**Important**: These geometry types use Eigen internally but are not Eigen types themselves. They provide `.IsValid()`, `.IsEmpty()` methods and conversion operators to/from Eigen. See the AGENTS.md in the root project for notes on type interop.
 
 ## Threading
 

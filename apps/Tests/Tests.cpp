@@ -38,6 +38,9 @@
 #include "TestsMVS.h"
 #include "TestsSynthetic.h"
 #include "Tests.h"
+#include <atomic>
+#include <functional>
+#include <new>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -48,6 +51,79 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 DEFINE_LOG_NAME(lt, _T("Test    "));
+
+// The pool of ScopedDescendingHeap and the operator new that hands it out: constant-initialized, so it
+// is in place before any allocation of the program
+namespace {
+constexpr size_t DESCENDING_HEAP_ALIGNMENT = alignof(std::max_align_t);
+char* descendingHeapBegin = nullptr;
+char* descendingHeapEnd = nullptr;
+std::atomic<char*> descendingHeapTop{nullptr};
+std::atomic<bool> descendingHeapActive{false};
+} // namespace
+
+ScopedDescendingHeap::ScopedDescendingHeap()
+{
+	ASSERT(!descendingHeapActive.load());
+	if (descendingHeapBegin == nullptr) {
+		// with no memory for the pool every request goes to the allocator, and the scope changes nothing
+		descendingHeapBegin = static_cast<char*>(std::malloc(POOL_SIZE));
+		if (descendingHeapBegin != nullptr) {
+			descendingHeapEnd = descendingHeapBegin + POOL_SIZE;
+			descendingHeapTop.store(descendingHeapEnd);
+		}
+	}
+	startTop = descendingHeapTop.load();
+	descendingHeapActive.store(true);
+}
+ScopedDescendingHeap::~ScopedDescendingHeap()
+{
+	descendingHeapActive.store(false);
+}
+size_t ScopedDescendingHeap::BytesHandedOut() const
+{
+	return (size_t)(startTop - descendingHeapTop.load());
+}
+
+void* operator new(std::size_t size)
+{
+	if (descendingHeapActive.load(std::memory_order_relaxed) && size <= ScopedDescendingHeap::MAX_BLOCK) {
+		const std::size_t bytes = (MAXF(size, (std::size_t)1) + DESCENDING_HEAP_ALIGNMENT - 1) & ~(DESCENDING_HEAP_ALIGNMENT - 1);
+		char* top = descendingHeapTop.load();
+		while ((std::size_t)(top - descendingHeapBegin) >= bytes) {
+			if (descendingHeapTop.compare_exchange_weak(top, top - bytes))
+				return top - bytes;
+		}
+	}
+	for (;;) {
+		if (void* const ptr = std::malloc(MAXF(size, (std::size_t)1)))
+			return ptr;
+		const std::new_handler handler = std::get_new_handler();
+		if (handler == nullptr)
+			throw std::bad_alloc();
+		handler();
+	}
+}
+// GCC inlines this delete where a new-expression's block is released and reads the free() below as
+// releasing operator new's memory with the wrong function; the operator new above takes it from malloc
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+void operator delete(void* ptr) noexcept
+{
+	const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(ptr);
+	if (address >= reinterpret_cast<std::uintptr_t>(descendingHeapBegin) && address < reinterpret_cast<std::uintptr_t>(descendingHeapEnd))
+		return; // a pooled block: the pool is never given back
+	std::free(ptr);
+}
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+void operator delete(void* ptr, std::size_t) noexcept
+{
+	operator delete(ptr);
+}
 
 // test various algorithms independently
 bool UnitTests()
@@ -122,6 +198,10 @@ bool UnitTests()
 		VERBOSE("ERROR: MeshHalfMeshProcessingTest failed!");
 		return false;
 	}
+	if (!MVS::PlatformArrGrowOwnershipTest()) {
+		VERBOSE("ERROR: PlatformArrGrowOwnershipTest failed!");
+		return false;
+	}
 	if (!MVS::MeshRefineStepTest()) {
 		VERBOSE("ERROR: MeshRefineStepTest failed!");
 		return false;
@@ -167,6 +247,10 @@ bool UnitTests()
 
 
 // test OpenMVS functionality
+
+// one entry of the table of SFM tests that main() walks in order
+#define SFM_TEST(name) {#name, SFM::name}
+
 int main(int argc, LPCTSTR* argv)
 {
 	// Flush stdout/stderr per write so CI logs aren't lost on SIGKILL.
@@ -207,110 +291,123 @@ int main(int argc, LPCTSTR* argv)
 			if (!UnitTests())
 				return false;
 		} else if (std::atoi(argv[1]) == 1) {
-			// Run SFM smoke tests
-			if (!SEACAVE::TestCameraModels())
-				return false;
-			if (!SEACAVE::TestSphericalPatchWarp())
-				return false;
-			if (!MVS::SphericalImageSizeTest())
-				return false;
-			if (!SFM::TestSimilarityTransform())
-				return false;
-			if (!SFM::KnownPosesImportTest())
-				return false;
-			if (!SFM::FramesPoseFrameDetectionTest())
-				return false;
-			if (!SFM::KnownPosePairSelectionTest())
-				return false;
-			if (!SFM::AlignToPriorPosesTest())
-				return false;
-			if (!SFM::AlignToPriorPosesCollinearTest())
-				return false;
-			if (!SFM::AlignToGPSDegenerateTest())
-				return false;
-			if (!SFM::PairsWeightingTest())
-				return false;
-			if (!SFM::ViewGraphCalibratorTest())
-				return false;
-			if (!SFM::BAPinholeReprojectionJacobianTest())
-				return false;
-			if (!SFM::RotationEstimatorTest())
-				return false;
-			if (!SFM::ScaleEstimatorTest())
-				return false;
-			if (!SFM::TranslationEstimatorTest())
-				return false;
-			if (!SFM::TripletStarInitTest())
-				return false;
-			if (!SFM::PreMatchTest())
-				return false;
-			if (!SFM::PairMatcherTest())
-				return false;
-			if (!SFM::TwoViewTest())
-				return false;
-			if (!SFM::VocabularyTreeTest())
-				return false;
-			if (!SFM::PipelineTest())
-				return false;
-			if (!SFM::GPSPriorPoseUncertaintyTest())
-				return false;
-			if (!SFM::PoseUncertaintyExportTest())
-				return false;
-			if (!SFM::ReconstructSphericalSyntheticTest())
-				return false;
-			if (!SFM::PairsMatcherSphericalTest())
-				return false;
-			if (!SFM::MatchGeometricSphericalTest())
-				return false;
-			if (!SFM::CubeMapFaceRenderTest())
-				return false;
-			if (!SFM::UndistortDepthMapsTest() || !SFM::CubeMapBridgeGeometryTest())
-				return false;
-			if (!SFM::CubeMapBridgeEndToEndTest())
-				return false;
-			if (!SFM::CubeMapBridgeMVSLoadTest())
-				return false;
-			if (!SFM::CubeMapBridgeMixedSceneTest())
-				return false;
-			if (!SFM::CubeMapBridgeDropTopBottomTest())
-				return false;
-			if (!SFM::ReconstructTest(verbose))
-				return false;
-			// Hierarchical SFM tests - Phase 1: Scene Clustering
-			if (!SFM::SceneClusterSingleClusterTest())
-				return false;
-			if (!SFM::SceneClusterSizeConstraintsTest())
-				return false;
-			if (!SFM::SceneClusterDisconnectedComponentsTest())
-				return false;
-			if (!SFM::SceneClusterMemoryProtocolTest())
-				return false;
-			if (!SFM::SceneClusterIDRemappingTest())
-				return false;
-			if (!SFM::SceneClusterSmallClusterRescueTest())
-				return false;
-			// Hierarchical SFM tests - Phase 3: Global Alignment
-			if (!SFM::GlobalAlignmentBuildGlobalToLocalMapTest())
-				return false;
-			if (!SFM::GlobalAlignmentRotationAveragingExtendedTest())
-				return false;
-			if (!SFM::GlobalAlignmentScaleAveragingExtendedTest())
-				return false;
-			if (!SFM::GlobalAlignmentScaleAveragingFallbackTest())
-				return false;
-			if (!SFM::GlobalAlignmentTranslationAveragingExtendedTest())
-				return false;
-			if (!SFM::GlobalAlignmentMergeSingleSceneTest())
-				return false;
-			if (!SFM::GlobalAlignmentTrackMergeDuplicateImageGuardTest())
-				return false;
-			if (!SFM::GlobalAlignmentTrackMerge3DProximityGuardTest())
-				return false;
-			// Hierarchical SFM tests - End-to-End
-			if (!SFM::HierarchicalSFMSplitMergeRoundtripTest())
-				return false;
-			if (!SFM::HierarchicalSFMWithRandomTransformTest())
-				return false;
+			// Run SFM smoke tests, in this order: the table names the test that failed
+			const std::vector<std::pair<const char*, std::function<bool()>>> sfmTests = {
+				// TestsMath.cpp, TestsMVS.cpp: the camera models both libraries share
+				{"TestCameraModels", SEACAVE::TestCameraModels},
+				{"TestSphericalPatchWarp", SEACAVE::TestSphericalPatchWarp},
+				{"SphericalImageSizeTest", MVS::SphericalImageSizeTest},
+				// TestsSFMImport.cpp: import is the pipeline's first stage, and every test below starts with one
+				SFM_TEST(ImportMetadataDeterminismTest),
+				SFM_TEST(ExifFocalUntrustedTest),
+				SFM_TEST(CameraTypeImportTest),
+				SFM_TEST(KnownPosesImportTest),
+				// TestsSFMFeatures.cpp: features, matching and retrieval
+				SFM_TEST(VocabularyTreeTest),
+				SFM_TEST(BuildTracksConflictTest),
+				SFM_TEST(RetrievalTest),
+				SFM_TEST(PairSelectionTest),
+				SFM_TEST(SequenceNeighboursTest),
+				SFM_TEST(SequenceForcedMatchTest),
+				SFM_TEST(MatchOutcomeSignalsTest),
+				SFM_TEST(SphericalBottomBandTest),
+				SFM_TEST(DetectorConfigTest),
+				SFM_TEST(SphericalPairGeometryTest),
+				SFM_TEST(TwoViewGeometryTest),
+				SFM_TEST(SiftGPUTiledMatchTest),
+				// TestsSFMDense.cpp: dense matching
+				SFM_TEST(DenseWarpSamplingTest),
+				SFM_TEST(DenseWarpGridConventionTest),
+				SFM_TEST(DenseVerdictTest),
+				SFM_TEST(DenseGuidedMatchTest),
+				SFM_TEST(DenseAssemblyTest),
+				SFM_TEST(PlanarTwinSwitchTest),
+				SFM_TEST(DenseReverifyPartitionTest),
+				SFM_TEST(DenseKeypointBoundaryTest),
+				SFM_TEST(RoMa2PreprocessTest),
+				SFM_TEST(DenseModelFilesTest),
+				SFM_TEST(RoMa2OnnxParityTest),
+				SFM_TEST(DenseMatcherReconstructTest),
+				// TestsSFMCalibration.cpp: lens fit and focal calibration
+				SFM_TEST(LensMatchingTest),
+				SFM_TEST(LensFitRecoveryTest),
+				SFM_TEST(LensFitFocalTest),
+				SFM_TEST(LensFitLimitsTest),
+				SFM_TEST(LensFitStageTest),
+				SFM_TEST(LensFitUntrustedFocalTest),
+				SFM_TEST(ViewGraphCalibratorTest),
+				// TestsSFMViewGraph.cpp: view-graph filtering and averaging
+				SFM_TEST(PairWeightTest),
+				SFM_TEST(TripletFilterTest),
+				SFM_TEST(RotationAveragingTest),
+				SFM_TEST(ContradictionCutTest),
+				SFM_TEST(SequenceChainTest),
+				SFM_TEST(SequenceVetoTest),
+				SFM_TEST(FilteredSceneReloadTest),
+				SFM_TEST(PairScalesTest),
+				SFM_TEST(ScaleAveragingTest),
+				SFM_TEST(TranslationAveragingTest),
+				SFM_TEST(ScaleConjugateGradientsTest),
+				SFM_TEST(RobustAveragingTest),
+				// TestsSFMCluster.cpp: clustering into blocks
+				SFM_TEST(SceneClusterBasicsTest),
+				SFM_TEST(SceneClusterSmallClusterPassTest),
+				SFM_TEST(SceneClusterRefinePassesTest),
+				SFM_TEST(SceneClusterSeamTest),
+				// TestsSFMBlock.cpp: star initialization and resection inside a block
+				SFM_TEST(TripletStarInitTest),
+				SFM_TEST(StarInitTest),
+				SFM_TEST(NearDuplicateYardstickTest),
+				SFM_TEST(ResectionLinkChecksTest),
+				SFM_TEST(ResectionCandidateOrderTest),
+				SFM_TEST(ResectionFullAdjustmentTest),
+				SFM_TEST(ResectionDenseCorrespondencesTest),
+				SFM_TEST(LinkWalksTest),
+				SFM_TEST(ContradictingImagesTest),
+				SFM_TEST(SceneBlocksInsertTest),
+				SFM_TEST(PoolResectionTest),
+				// TestsSFMBundleAdjustment.cpp: bundle adjustment, filtering and triangulation
+				{"PinholeReprojectionJacobianTest", SFM::PinholeReprojectionJacobianTest}, // defined in the library: it needs the Ceres headers
+				SFM_TEST(BADenseWeightTest),
+				SFM_TEST(BAIntrinsicFlagsTest),
+				SFM_TEST(ReconstructSphericalSyntheticTest),
+				SFM_TEST(BundleAdjustmentBasicsTest),
+				SFM_TEST(PoseUncertaintyTest),
+				SFM_TEST(RepeatedFullAdjustmentTest),
+				SFM_TEST(FilterTracksTest),
+				SFM_TEST(TriangulationTest),
+				SFM_TEST(BundleAdjustmentPairConstraintTest),
+				SFM_TEST(ReprojectionReportOverUsedTest),
+				SFM_TEST(BAObservationCapTest),
+				SFM_TEST(BAInnerIterationOrderTest),
+				// TestsSFMMerge.cpp: the merge of the blocks
+				SFM_TEST(SeamGraphSelectionTest),
+				SFM_TEST(RingMergeTest),
+				SFM_TEST(MergeTrackJoinTest),
+				SFM_TEST(PooledSeamReadingTest),
+				SFM_TEST(MergeRoundsTest),
+				SFM_TEST(MergeWeakImagesTest),
+				SFM_TEST(UnobservableScaleTest),
+				SFM_TEST(PairAgreementMergeTest),
+				SFM_TEST(RingClosingSeamTest),
+				SFM_TEST(SeamCameraSupportTest),
+				SFM_TEST(FoldedBlockTest),
+				SFM_TEST(UnplacedBlocksReportedTest),
+				SFM_TEST(BentRingTest),
+				SFM_TEST(MergeRoundtripTest),
+				SFM_TEST(HierarchicalCameraAlignmentTest),
+				// TestsSFMPipeline.cpp: whole-pipeline checks
+				SFM_TEST(SceneAlignmentTest),
+				SFM_TEST(CubeMapExportTest),
+				SFM_TEST(UndistortDepthMapsTest),
+				{"RealImagesPipelineTest", [&]() { return SFM::RealImagesPipelineTest(verbose); }},
+			};
+			for (const auto& test : sfmTests) {
+				if (!test.second()) {
+					VERBOSE("ERROR: %s failed!", test.first);
+					return false;
+				}
+			}
 		} else {
 			if (!MVS::InterfaceV8Test())
 				return false;

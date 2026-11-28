@@ -873,6 +873,15 @@ endif()")
 	endif()
 endmacro()
 
+# export_dependency_code(<code>)
+# Run the CMake code that sets up by hand a dependency the exported targets link against
+# (an imported target created or repaired without find_package), and record it next to
+# the find_exported_dependency() lookups, so that the projects using OpenMVS run it too.
+function(export_dependency_code code)
+	cmake_language(EVAL CODE "${code}")
+	set_property(GLOBAL APPEND PROPERTY OpenMVS_EXPORTED_DEPENDENCIES "${code}")
+endfunction()
+
 function(create_rc_files name)
   # Create the manifest file
   file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/app.manifest"

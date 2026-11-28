@@ -38,14 +38,11 @@ struct SFM_API ScalePair
 /**
  * @brief Global scale estimation from pairwise scale ratios
  *
- * Estimates global scales by solving a weighted least-squares system:
- *   log(s_j) - log(s_i) ≈ log(scale_ratio_ij)
- *
- * This is solved via SVD decomposition with exact gauge enforcement by
- * eliminating one fixed-scale variable (scale = 1.0).
- *
- * Generalized from StarInitializer::EstimateGlobalScale() to work with
- * arbitrary indices (sub-scenes, images, etc.) instead of image pairs.
+ * Solves log(s_j) - log(s_i) ~= log(scale_ratio_ij) per connected component using
+ * Jacobi-preconditioned conjugate gradients on the normal equations with one step of
+ * iterative refinement. Pins fixedIdx (or the best-connected node) to scale 1 in its
+ * component, shifts unpinned components to zero-mean log scale, and leaves unreferenced
+ * indices at scale 1. Warm-starts from the previous solve when numIndices matches.
  */
 class SFM_API GlobalScaleEstimator
 {
@@ -55,7 +52,8 @@ public:
 	 * @param pairwiseScales Vector of pairwise scale ratios
 	 * @param numIndices Total number of indices (scenes/images)
 	 * @param fixedIdx Optional fixed index to set exact scale=1 (NO_ID = auto-select best-connected index)
-	 * @param outScales Output vector of global scales (indexed by scene/image ID)
+	 * @param outScales Output vector of global scales (indexed by scene/image ID), replaced, not
+	 *        resized: scale 1 at every index no equation names
 	 * @return true if estimation successful
 	 */
 	bool EstimateScales(
@@ -70,7 +68,30 @@ public:
 		std::vector<REAL>& outScales) {
 		return EstimateScales(pairwiseScales, numIndices, NO_ID, outScales);
 	}
+
+	/// the last solve: the conjugate gradients iterations it took from their start, summed over the components
+	/// (and those of the refinement of their answers), and whether all reached the tolerance, not the iteration bound
+	struct Solve {
+		unsigned iterations = 0;
+		unsigned refinementIterations = 0;
+		bool converged = false;
+	};
+	const Solve& GetSolve() const { return solve; }
+
+private:
+	Solve solve;
+	std::vector<REAL> previousScales; // the scales of the last solve, the start of the next
 };
+
+// Geman-McClure iteratively reweighted global scale averaging on log-scale residuals
+SFM_API bool RobustAverageScales(
+	const std::vector<ScalePair>& pairs,
+	uint32_t numIndices,
+	uint32_t fixedIdx,
+	REAL maxLogResidual,
+	unsigned maxRounds,
+	std::vector<REAL>& outScales,
+	std::vector<REAL>& outResiduals);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

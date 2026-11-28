@@ -35,6 +35,7 @@ private:
 	CuTexImage _texDot;
 	CuTexImage _texMatch[2];
 	CuTexImage _texCRT;
+	CuTexImage _texColBest;
 
 	//programs
 	//
@@ -47,6 +48,7 @@ private:
 	vector<int> sift_buffer;
 private:
 	int  GetBestMatch(int max_match, uint32_t match_buffer[][2], float distmax, float ratiomax, int mbm);
+	int  GetTiledSiftMatch(int max_match, uint32_t match_buffer[][2], float distmax, float ratiomax, int mbm);
 public:
 	SiftMatchCU(int max_sift);
 	virtual ~SiftMatchCU(){};

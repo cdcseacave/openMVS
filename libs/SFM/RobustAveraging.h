@@ -1,0 +1,107 @@
+/*
+ * RobustAveraging.h
+ *
+ * Copyright (c) 2014-2025 SEACAVE
+ */
+
+#ifndef _SFM_ROBUST_AVERAGING_H_
+#define _SFM_ROBUST_AVERAGING_H_
+
+
+// I N C L U D E S /////////////////////////////////////////////////
+
+#include "Camera.h"
+
+
+// D E F I N E S ///////////////////////////////////////////////////
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+namespace SFM {
+
+// Reweighting rounds of every averaging of the seam graph and of the view graph's contradiction cut.
+constexpr unsigned kRobustRounds = 10;
+
+// Iteratively reweighted averaging around any weighted least-squares solve over pairs that carry a
+// float `weight`:
+//  solve(activePairs, solution) -> bool   the plain solver over the pairs with weight > 0
+//  residual(i, solution) -> REAL          pair i's signed error, in the units the caller's factor takes
+//  factor(r) -> float                     the weight of a pair with error r, in units of its initial weight
+// Every round each pair's weight is recomputed as its initial weight times factor(|residual|) of the
+// current solution; a pair under 1e-3 of its initial weight sits the next round out, never permanently
+// (it is weighed again from the next solution). Stops after maxRounds or when no weight moved by more
+// than 1e-3 of its initial value. Returns false when the first solve fails; a later failure keeps the
+// previous solution. residuals[i] = |residual(i, solution)| against the returned solution.
+template <typename Pair, typename Solution, typename SolveFn, typename ResidualFn, typename FactorFn>
+bool RobustAverageWith(const std::vector<Pair>& pairs, unsigned maxRounds, SolveFn solve, ResidualFn residual, FactorFn factor, Solution& solution, std::vector<REAL>& residuals)
+{
+	if (pairs.empty())
+		return false;
+	std::vector<Pair> weighted(pairs);
+	residuals.assign(pairs.size(), REAL(0));
+	for (unsigned round = 0; ; ++round) {
+		std::vector<Pair> active;
+		active.reserve(weighted.size());
+		for (const Pair& p : weighted)
+			if (p.weight > 0)
+				active.push_back(p);
+		Solution current;
+		if (active.empty() || !solve(active, current)) {
+			if (round == 0)
+				return false;
+			break; // keep the previous round's solution and residuals
+		}
+		solution = std::move(current);
+		// every pair's weight for the next round comes from its initial weight and this solution
+		REAL maxChange = 0;
+		for (size_t i = 0; i < pairs.size(); ++i) {
+			ASSERT(pairs[i].weight > 0.f);
+			const REAL r = residuals[i] = ABS(residual(i, solution));
+			const float w = pairs[i].weight * factor(r);
+			maxChange = MAXF(maxChange, REAL(ABS(w - weighted[i].weight)) / pairs[i].weight);
+			weighted[i].weight = (w < 1e-3f * pairs[i].weight ? 0.f : w);
+		}
+		if (round + 1 >= maxRounds || maxChange < REAL(1e-3))
+			break;
+	}
+	return true;
+}
+
+// RobustAverageWith with the Geman-McClure factor (sigma^2 / (sigma^2 + r^2))^2, residual(i, solution)
+// and sigma in the same units (a pair at an error of sigma keeps a quarter of its weight)
+template <typename Pair, typename Solution, typename SolveFn, typename ResidualFn>
+bool RobustAverage(const std::vector<Pair>& pairs, REAL sigma, unsigned maxRounds, SolveFn solve, ResidualFn residual, Solution& solution, std::vector<REAL>& residuals)
+{
+	const REAL sigma2 = sigma * sigma;
+	return RobustAverageWith(pairs, maxRounds, solve, residual,
+		[sigma2](REAL r) { return (float)SQUARE(sigma2 / (sigma2 + r * r)); }, solution, residuals);
+}
+
+// Deterministic gauge-node selector for pairwise graphs whose pairs carry {idxA, idxB, weight}.
+// Returns preferred if it appears in pairs, otherwise the node with largest incident weight (ties by lower index).
+template <typename Pair>
+uint32_t SelectGaugeNode(const std::vector<Pair>& pairs, uint32_t preferred = NO_ID)
+{
+	std::unordered_map<uint32_t, double> nodeWeights;
+	for (const Pair& p : pairs) {
+		nodeWeights[p.idxA] += p.weight;
+		nodeWeights[p.idxB] += p.weight;
+	}
+	if (preferred != NO_ID && nodeWeights.count(preferred))
+		return preferred;
+	uint32_t bestNode = NO_ID;
+	double maxWeight = -1.0;
+	for (const auto& kv : nodeWeights) {
+		if (kv.second > maxWeight || (kv.second == maxWeight && kv.first < bestNode)) {
+			maxWeight = kv.second;
+			bestNode = kv.first;
+		}
+	}
+	return bestNode;
+}
+/*----------------------------------------------------------------*/
+
+} // namespace SFM
+
+#endif // _SFM_ROBUST_AVERAGING_H_

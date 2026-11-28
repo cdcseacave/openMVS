@@ -26,9 +26,6 @@ namespace SFM {
 
 // Forward declarations
 class SFM_API Scene;
-class SFM_API Image;
-class SFM_API ImagePair;
-class SFM_API Track;
 
 // Options struct for Global Positioning
 struct SFM_API GlobalPositionerOptions
@@ -54,9 +51,8 @@ struct SFM_API GlobalPositionerOptions
 	double functionTolerance = 1e-5;
 
 	// Whether initialize the reconstruction randomly
-	bool generateRandomPositions = true;
 	bool generateRandomPoints = true;
-	bool generateScales = true; // Now using fixed 1 as initializaiton
+	bool generateScales = true; // Now using fixed 1 as initialization
 
 	// Flags for which parameters to optimize
 	bool optimizePositions = true;
@@ -90,8 +86,6 @@ public:
 	// Returns true if the optimization was successfull
 	bool Solve(Scene& scene);
 
-	GlobalPositionerOptions& GetOptions() { return options; }
-
 protected:
 	// Creates camera to camera constraints from relative translations
 	unsigned AddCameraToCameraConstraints(Scene& scene);
@@ -100,14 +94,13 @@ protected:
 	unsigned AddPointToCameraConstraints(Scene& scene, size_t numPtToCam);
 
 	// Set the parameter groups and parameterize the variables
-	void ConfigureProblem(Scene& scene);
+	void ConfigureProblem(Scene& scene, void* pSolverOptions);
 
 protected:
 	GlobalPositionerOptions options;
 
 	std::mt19937 randomGenerator;
 	std::unique_ptr<ceres::Problem> problem;
-	void* solverOptionsPtr = NULL; // ceres::Solver::Options*
 
 	// Loss functions for reweighted terms
 	std::shared_ptr<ceres::LossFunction> lossFunction;

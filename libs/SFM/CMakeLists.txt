@@ -2,7 +2,6 @@
 
 # Additional SfM-specific packages (all available via vcpkg)
 find_exported_dependency(TinyEXIF CONFIG REQUIRED)
-find_exported_dependency(TinyNPY CONFIG REQUIRED)
 find_exported_dependency(PoseLib CONFIG REQUIRED)
 find_exported_dependency(Ceres CONFIG REQUIRED)
 
@@ -13,13 +12,6 @@ IF(TinyEXIF_FOUND)
 	LIST(APPEND SFM_EXTRA_LIBS TinyEXIF::TinyEXIF)
 ELSE()
 	MESSAGE(FATAL_ERROR "TinyEXIF not found. Install tinyexif via vcpkg (it's listed in vcpkg.json).")
-ENDIF()
-
-IF(TinyNPY_FOUND)
-	MESSAGE(STATUS "TinyNPY found via CMake config")
-	LIST(APPEND SFM_EXTRA_LIBS TinyNPY::TinyNPY)
-ELSE()
-	MESSAGE(FATAL_ERROR "TinyNPY not found. Install tinynpy via vcpkg (it's listed in vcpkg.json).")
 ENDIF()
 
 IF(PoseLib_FOUND)
@@ -43,6 +35,11 @@ if(_USE_SIFTGPU)
 	LIST(APPEND SFM_EXTRA_LIBS siftgpu::siftgpu)
 endif()
 
+# Optional ONNX Runtime support (detected in the top-level CMakeLists, defined in ConfigLocal.h)
+if(_USE_ONNXRUNTIME)
+	list(APPEND SFM_EXTRA_LIBS onnxruntime::onnxruntime)
+endif()
+
 # List sources files
 FILE(GLOB LIBRARY_FILES_C "*.cpp")
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
@@ -63,6 +60,11 @@ endif()
 
 # Link its dependencies
 TARGET_LINK_LIBRARIES(SFM PUBLIC Common Math IO ${SFM_EXTRA_LIBS})
+
+# Default install location for fetched dense matcher bundles (PUBLIC for ODR with inline ResolveModelPath)
+IF(CMAKE_INSTALL_PREFIX)
+	TARGET_COMPILE_DEFINITIONS(SFM PUBLIC OPENMVS_MODEL_INSTALL_DIR="${CMAKE_INSTALL_PREFIX}/share/openMVS")
+ENDIF()
 
 # Install
 SET_TARGET_PROPERTIES(SFM PROPERTIES

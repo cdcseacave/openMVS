@@ -48,12 +48,6 @@ public:
 	// Returns the camera's view forward direction
 	inline Point3 Direction() const { return R.row(2); /* equivalent to R.t() * Vec(0,0,1) */ }
 
-	// Returns the camera's view up direction
-	inline Point3 UpDirection() const { return -R.row(1); /* equivalent to R.t() * Vec(0,-1,0) */ }
-
-	// Returns the camera's view right direction
-	inline Point3 RightDirection() const { return R.row(0); /* equivalent to R.t() * Vec(1,0,0) */ }
-
 	// Returns the depth of a 3D point from world to camera coordinates
 	inline REAL Depth(const Point3& X) const { return Direction().dot(X - C); }
 
@@ -61,9 +55,7 @@ public:
 	inline Point3 RayCameraToWorld(const Point3& X) const { return R.t() * X; }
 
 	// Compose/decompose projection matrix P = K*R*[I|-C]
-	Matrix4x4 GetP4fromRC() const; // composed transform matrix from R and C only (4x4)
 	PMatrix GetPfromRC() const; // compose P from R and C only
-	void DecomposePfromRC(const PMatrix&); // decompose P in R and C only
 
 	// Compute the inverse pose (world to camera -> camera to world)
 	inline Pose3D Inverse() const {
@@ -86,14 +78,7 @@ public:
 
 	// Compute the relative pose from this to other: result * this = other
 	// Returns the transformation that when composed with 'this' yields 'other'.
-	// Useful for computing how to transform from one absolute pose to another.
-    // Usage: RelPose = Pose2 / Pose1
-    // 'this' is the Target Pose (Pose2)
-    // 'other' is the Source Pose (Pose1)
-    // Logic: Find RelPose such that Pose2 = RelPose * Pose1
-	// This is equivalent to: this * other.Inverse()
-	// or: other * (this / other) = this
-	// (equivalent to ComputeRelativePose, but swapped i and j)
+	// Usage: RelPose = Pose2 / Pose1 ('this' is Pose2, 'other' is Pose1)
 	inline Pose3D operator / (const Pose3D& other) const {
 		return Pose3D(
 			R * other.R.t(),
@@ -111,16 +96,6 @@ public:
 		return R.t() * X + C;
 	}
 
-	// Update camera position with delta
-	inline void UpdatePosition(const Point3& delta) {
-		C += delta;
-	}
-
-	// Update the camera rotation with the given delta (axis-angle)
-	inline void UpdateRotation(const Point3& delta) {
-		R.Apply((const Vec3&)delta);
-	}
-
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template<class Archive>
@@ -130,6 +105,23 @@ public:
 	}
 	#endif
 };
+
+// Build an orthonormal tangent basis (e1, e2) perpendicular to unit vector n
+inline void OrthonormalBasis(const Point3& n, Point3& e1, Point3& e2)
+{
+	ASSERT(ABS(normSq(n) - REAL(1)) < REAL(1e-4));
+	const Point3 ref = (ABS(n.x) < REAL(0.9)) ? Point3(1, 0, 0) : Point3(0, 1, 0);
+	e1 = normalized(n.cross(ref));
+	e2 = n.cross(e1);
+}
+
+// Angle in degrees between two non-zero 3D directions
+inline REAL DirectionAngleDeg(const Point3& a, const Point3& b)
+{
+	const REAL na = norm(a), nb = norm(b);
+	ASSERT(na > ZEROTOLERANCE<REAL>() && nb > ZEROTOLERANCE<REAL>());
+	return R2D(ACOS(CLAMP(a.dot(b) / (na * nb), REAL(-1), REAL(1))));
+}
 
 } // namespace SFM
 

@@ -12,7 +12,7 @@ It does not hold the per-library camera classes: `SFM::PinholeCamera` / `SFM::Sp
 (`libs/SFM/Camera.h`) and `MVS::Camera` / `MVS::Image` (`libs/MVS/Camera.h`, `Image.h`) keep their
 own state and call the models. The depth-map algorithms built on the models are described in
 `SphericalPatchMatch.md`; the SfM side of spherical cameras and the MVS scene loading in
-`SphericalCameraSupport.md`.
+`SphericalCameras.md`.
 
 ## 2. Algorithm as implemented
 
@@ -139,7 +139,7 @@ own state and call the models. The depth-map algorithms built on the models are 
 - SfM export (`SFM::ExportMVS`, `libs/SFM/InterfaceMVS.cpp`) writes Brown cameras natively with the
   original image paths and no undistortion, unless `CreateStructure --undistort-extension` is set;
   spherical cameras are written natively (`--spherical-export native`, default) or through the
-  cube-map bridge (`--spherical-export cubemap`). Details: `SphericalCameraSupport.md`.
+  cube-map bridge (`--spherical-export cubemap`). Details: `SphericalCameras.md`.
 - MVS: `Scene::LoadInterface` (`libs/MVS/Scene.cpp`) keeps `model` and the Brown lens in
   `MVS::Platform::Camera`; for `BROWN` the camera `K` every consumer sees is
   `UndistortedK(lens.K, lens.distortion, lens.size)` (alpha 0.6). `Image::ReadPixels` remaps the image

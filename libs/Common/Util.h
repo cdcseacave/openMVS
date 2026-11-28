@@ -750,6 +750,21 @@ public:
 		return str;
 	}
 
+	#ifdef _MSC_VER
+	// Convert a UTF-8 string to UTF-16: the inverse of toString(const wchar_t*) above, needed
+	// for Windows APIs that only take wide paths (e.g. ONNX Runtime's ORTCHAR_T model path)
+	static std::wstring toWString(const String& str) {
+		if (str.empty())
+			return std::wstring();
+		const int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.length(), NULL, 0);
+		if (len <= 0)
+			return std::wstring(); // malformed input: report empty rather than touch wstr.front() on an empty buffer
+		std::wstring wstr((size_t)len, L'\0');
+		MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.length(), &wstr.front(), len);
+		return wstr;
+	}
+	#endif
+
 	static int64_t toInt64(LPCTSTR aString) {
 		#ifdef _MSC_VER
 		return _atoi64(aString);

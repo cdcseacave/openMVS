@@ -81,6 +81,7 @@ bool Image::LoadPixels(bool gray)
 
 Image8U3 Image::GetImage8U3() const
 {
+	ASSERT(!pixels.empty());
 	// Fast path: already BGR/8U, return a shared view (no copy).
 	if (pixels.channels() == 3 && pixels.depth() == CV_8U)
 		return Image8U3(pixels);
@@ -113,7 +114,7 @@ bool Image::SavePixels() const
 	return true;
 }
 
-bool Image::LoadMetadata(float defaultFocalRatio)
+bool Image::LoadMetadata(float defaultFocalRatio, CameraType cameraType)
 {
 	if (fileName.empty()) {
 		VERBOSE("Image::LoadMetadata: empty file name");
@@ -154,6 +155,13 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 	// item, exposed by GetMetadataEXIF()) and fall back to the classic stream-based scan
 	// (JPEG/TIFF-style APP1 segment) used by every other format
 	TinyEXIF::EXIFInfo exif;
+	// TinyEXIF's default constructor initializes only 'Fields': every scalar member is left with
+	// whatever was on the stack, and parseFromEXIFSegment() -- unlike parseFrom(), which starts
+	// with a clear() -- fills in the tags the file carries and leaves the rest alone. So the
+	// container path below has to clear the record itself, or a file without, say, the
+	// focal-plane resolution tags reports whatever the previous work at this stack depth left
+	// there, and the intrinsics derived from it change from run to run.
+	exif.clear();
 	bool parsed = false, containerOriented = false;
 	std::vector<uint8_t> blob;
 	if (pImage->GetMetadataEXIF(blob)) {
@@ -208,6 +216,17 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 		}
 		// Projection type: 2 = equirectangular/spherical
 		isSpherical = (exif.ProjectionType == 2);
+		// A focal length no lens can carry is EXIF garbage, not a measurement: below a fifth of the
+		// long side (a 7 mm 35mm-equivalent fisheye) or above a hundred times it (a 3.6 m lens). A
+		// finite, positive and absurd value gets through every arithmetic test below -- a
+		// focal-plane resolution tag of 2.5e-5 px/cm seen in the wild yields a 2e-5 px focal --
+		// and the view-graph calibrator then refuses the camera as infeasible and the whole
+		// reconstruction fails on it. Every rung of the ladder below applies this test and falls
+		// through to the next source when it fails.
+		const auto plausibleFocal = [w, h](REAL f) {
+			const REAL ratio = f / (REAL)MAXF(w, h);
+			return ISFINITE(f) && ratio >= REAL(0.2) && ratio <= REAL(100);
+		};
 		// Focal estimation priority
 		// F1: FocalLength (mm) * FocalPlaneResolution (px per unit)
 		double mmPerUnit = 0.0;
@@ -244,6 +263,26 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 				setFromFocalAndSensor = true;
 				trustIntrinsics = true;
 			}
+			// Nothing validates EXIF: a corrupt tag (a resolution of a denormal, a width that
+			// overflows the int cast above) arrives here as a number no camera can carry, and
+			// the sensor size in particular is never used in arithmetic afterwards, only as part
+			// of the key Scene::Import clusters cameras by -- so a non-finite one silently splits
+			// a shared camera instead of failing anything. The same test also catches merely
+			// incomplete metadata (a FocalPlaneYResolution without an X, say), which otherwise
+			// leaves half a sensor size behind for a focal that came from another source. Drop
+			// everything this branch derived and let the ladder fall through to the sources below.
+			if (!setFromFocalAndSensor || !plausibleFocal(fx) || !plausibleFocal(fy) ||
+				!ISFINITE(sensorWmm) || !ISFINITE(sensorHmm) ||
+				sensorWmm < 0 || sensorHmm < 0)
+			{
+				VERBOSE("warning: image '%s' has incomplete or unusable EXIF focal-plane metadata "
+					"(focal %g x %g px, sensor %g x %g mm); ignoring it",
+					Util::getFileName(fileName).c_str(), fx, fy, sensorWmm, sensorHmm);
+				fx = fy = 0;
+				sensorWmm = sensorHmm = 0;
+				setFromFocalAndSensor = false;
+				trustIntrinsics = false;
+			}
 		}
 		// F2: 35mm equivalent
 		if (!setFromFocalAndSensor && exif.LensInfo.FocalLengthIn35mm > 0.0) {
@@ -253,13 +292,29 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 			//    Diagonal distance of image area on the image sensor of the DSC)
 			// see: https://en.wikipedia.org/wiki/35_mm_equivalent_focal_length
 			const REAL diagonal = SQRT(SQUARE((REAL)w) + SQUARE((REAL)h));
-			fx = fy = diagonal * exif.LensInfo.FocalLengthIn35mm / REAL(43.27);
-			trustIntrinsics = true;
+			const REAL focal = diagonal * exif.LensInfo.FocalLengthIn35mm / REAL(43.27);
+			if (plausibleFocal(focal)) {
+				// a guess, not a calibration: the tag describes the lens on the full sensor, which a video frame
+				// can crop (a video frame cropped from the sensor, whose focal in pixels is far from the full-sensor one), so the lens stage fits
+				// the focal with the lens straight from it (CalibrateFocalsAndFitLenses)
+				fx = fy = focal;
+				trustIntrinsics = false;
+			} else {
+				VERBOSE("warning: image '%s' has an unusable EXIF 35mm-equivalent focal length "
+					"(%g mm); ignoring it", Util::getFileName(fileName).c_str(), exif.LensInfo.FocalLengthIn35mm);
+			}
 		}
 		// F3: Calibration focal in pixels (if present)
 		if ((fx <= 0.f || fy <= 0.f) && exif.Calibration.FocalLength > 0.0) {
-			fx = fy = (REAL)exif.Calibration.FocalLength;
-			trustIntrinsics = true;
+			// the test above already rejects a NaN or negative calibration focal; infinity and
+			// an absurd magnitude are what is left to catch
+			if (plausibleFocal((REAL)exif.Calibration.FocalLength)) {
+				fx = fy = (REAL)exif.Calibration.FocalLength;
+				trustIntrinsics = true;
+			} else {
+				VERBOSE("warning: image '%s' has an unusable EXIF calibration focal length "
+					"(%g px); ignoring it", Util::getFileName(fileName).c_str(), exif.Calibration.FocalLength);
+			}
 		}
 	}
 	// F4: fallback
@@ -267,11 +322,16 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 		fx = fy = defaultFocalRatio * (REAL)MAXF(w, h);
 	}
 
-	// Instantiate per-image camera
+	// Instantiate per-image camera, of the model the caller forces or else the one the metadata gives
+	if (cameraType != CameraType::UNDEFINED)
+		isSpherical = (cameraType == CameraType::SPHERICAL);
 	if (isSpherical) {
+		// a wrong input file, not an internal state: the load fails naming the image, which the
+		// import keeps without a camera (the SphericalCamera constructor asserts the 2:1 shape)
 		if (w != 2 * h) {
-			VERBOSE("warning: image '%s' is marked spherical but has %dx%d; equirectangular input requires width == 2 * height",
+			VERBOSE("error: image '%s' is marked spherical but has %dx%d; equirectangular input requires width == 2 * height",
 				Util::getFileName(fileName).c_str(), w, h);
+			return false;
 		}
 		SphericalCamera* cam = new SphericalCamera(cv::Size(w, h));
 		pCamera = cam;
@@ -307,7 +367,10 @@ UnsignedArr Image::SelectTopKeypoints(unsigned maxKeypoints) const
 	UnsignedArr indices;
 	if (keypoints.empty())
 		return indices;
-	const unsigned numKeypoints = (unsigned)keypoints.size();
+	// the described prefix only: every caller uses the returned index to reach a descriptor row
+	const unsigned numKeypoints = (unsigned)NumDescribedKeypoints();
+	if (numKeypoints == 0)
+		return indices;
 	if (numKeypoints <= maxKeypoints) {
 		// Return all indices if we have fewer keypoints than requested
 		indices.resize(numKeypoints);
@@ -325,6 +388,7 @@ UnsignedArr Image::SelectTopKeypoints(unsigned maxKeypoints) const
 	std::vector<UnsignedArr> cellKeypoints(9);
 	for (unsigned i = 0; i < numKeypoints; ++i) {
 		const cv::Point2f& pt = keypoints[i].pt;
+		ASSERT(pt.x >= 0.f && pt.y >= 0.f);
 		const int col = MINF(2, (int)(pt.x / cellWidth));
 		const int row = MINF(2, (int)(pt.y / cellHeight));
 		const int cellIdx = row * 3 + col;

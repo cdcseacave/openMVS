@@ -1,0 +1,322 @@
+/*
+ * MatchDense.h
+ *
+ * Copyright (c) 2014-2026 SEACAVE
+ *
+ * Author(s):
+ *
+ *      cDc <cdc.seacave@gmail.com>
+ *
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#ifndef _SFM_MATCHDENSE_H_
+#define _SFM_MATCHDENSE_H_
+
+// I N C L U D E S /////////////////////////////////////////////////
+
+#include "ImagePair.h" // the pair the verdict fits and the assembly fills, and Pose3D through it
+
+
+// D E F I N E S ///////////////////////////////////////////////////
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+namespace SFM {
+
+// Forward declarations
+class SFM_API Scene;
+class SFM_API Image;
+class SFM_API DenseMatcher;
+class SFM_API PairsMatcher;
+struct SFM_API PairWarps;
+
+// Configuration of the in-process dense matcher (RoMa2 or FlexGlue, ONNX Runtime) retrieval and dense matching
+struct SFM_API DenseMatchConfig {
+	bool enabled = false;          // enable the in-process dense matcher model (explicit opt-in)
+	String modelPath;              // folder of the exported graphs (empty = $OPENMVS_ROMA2_MODEL_PATH, else the installed share/openMVS/roma2)
+	String setting = "base";       // preset: turbo|fast|base
+	String provider = "auto";      // execution provider: auto|cuda|coreml|dml|cpu
+	bool useMatching = false;      // one-pass dense pair matching (verdict, guided, fill, store)
+	float minConfidence = 0.1f;    // a warp cell takes part (verdict, tracking, fill) at this confidence or above
+	// Bottom band of the spherical images (FeatureExtractionConfig::sphericalBottomBand), where no dense correspondence
+	// has an end: the one value the feature extraction and the dense matching share, copied from it by Scene::Reconstruct
+	// (direct callers of Scene::MatchPairs set it themselves). 0 = off, which perspective images are always.
+	float sphericalBottomBand = 0.f;
+	float minOverlap = 0.10f;      // verdict: min(inlier area A, inlier area B) >= minOverlap
+	// The dense matcher behind the retrieval descriptors and the warps: "roma2" or "flexglue" (docs/design/DenseMatching.md).
+	// Everything above and below (the verdict, the guided matching, the fill, the lens fit) reads the same warps whichever it is.
+	String matcher = "roma2";
+	String flexglueModelPath;      // folder of FlexGlue's graphs (empty = $OPENMVS_FLEXGLUE_MODEL_PATH, else the installed share/openMVS/flexglue), for matcher == "flexglue"
+	// Gate before the verdict: a pair whose matcher gives a covisibility score ("do the two images show the same place", 0..1)
+	// below this is dropped without a verdict. 0 = off. A matcher that gives no score (RoMa2) is not gated.
+	float minCovisibility = 0.5f;
+	// Dense correspondences the fill may draw per FULL FRAME of overlap: a density, not a count per
+	// pair. A pair's draw is that density over the part of its overlap its guided matches did not
+	// already cover (DenseFillGridSide sets the pitch that makes it so), capped by DenseFillCeiling.
+	unsigned denseMatchesPerFrame = 2000;
+	// Multiple of MatchConfig::maxEpipolarError a dense correspondence is held to when the pair's
+	// geometry classifies it: the coarse warp lands a correspondence several pixels off on a
+	// full-resolution image, and a correspondence admitted at half a warp cell (8.7 px on a 2789 px
+	// frame with the 160-cell grid) pollutes every track it enters, so the dense segment answers to
+	// the same bar the sparse matches do. A lower factor keeps fewer, more exact dense correspondences
+	// but leaves weakly held images out of the reconstruction; a higher one admits correspondences most
+	// of which are past 4 px and lowers the accuracy; no other value beat 1.
+	float denseEpipolarErrorFactor = 1.f;
+	// Weight of a dense correspondence against a sparse one's 1 in the refinement that closes the
+	// pair's relative pose: the robust fit runs on guided u dense, whose depth breaks the degeneracy
+	// of a near-planar sparse set, and the final polish over its inliers lets the sub-pixel sparse
+	// matches set the pose wherever they are many. One dense correspondence is a coarse warp sample
+	// whose error its neighbours share, so it is worth little on its own, and a constant weight makes
+	// the dense share of the fit fall as the pair's sparse inliers grow. Against reference poses this
+	// weight gave a lower median and 90th-percentile relative rotation error than weight 1 and than
+	// the sparse-only fit, which keeps a long tail; 0 drops the dense matches from the polish and
+	// brings that tail back.
+	float denseFitWeight = 0.003f;
+	// The guided sparse match of an admitted pair looks for each described keypoint of A along its
+	// epipolar line in B, in a band centred on the warp's prediction (GuidedSearch, MatchGeometric.h):
+	// guidedBandLengthCells warp cells either way along the line (the coarse warp's along-line error
+	// at warp-free SIFT matches is a fraction of a cell at the median and a few cells in the tail; a
+	// cell is the image's long side over the 160-cell grid) -- and guidedBandHalfWidthCells either way
+	// across it (the across-line error is smaller still: neither constant in pixels nor across
+	// captures, so the band stays in cells). The band holds most of those matches and picks a wrong
+	// keypoint for none of them; a wider band gains true matches at the cost of cross-line wrong ones,
+	// a shorter one the reverse, and neither changes a reconstruction. The band is centred on the
+	// prediction, which lives in B's own pixels, so an imprecise focal or principal point and lens
+	// distortion, none of which the geometry the verdict fitted models, enter only as a rotation of the
+	// band by a few degrees. A half-width of 0 searches the disc of the length's radius. Every winner
+	// must also beat the closest keypoint OUTSIDE the band by the matcher's ratio, the reference that
+	// refuses an impostor where the true keypoint was never detected (see MatchGeometric.h).
+	float guidedBandLengthCells = 2.f;
+	float guidedBandHalfWidthCells = 0.5f;
+	// A rival within this distance (pixels) of the winner is the same feature described twice (a
+	// scale or orientation duplicate) and does not count as a rival in the ratio test.
+	float guidedSameFeatureDistance = 3.f;
+	// The planar twin switch (SwitchPlanarTwinsDense): the matches of a pair that lie mostly on one
+	// plane admit two relative poses, the stored one and its planar twin, which explain them equally
+	// well, so the matches cannot tell which is right and the rotation loops with the pair's
+	// neighbours decide. A pair is plane dominated when a homography explains at least
+	// twinMinPlaneShare of its track-forming matches; a loop of three pairs closes when its rotation
+	// is within twinMaxLoopAngle degrees; a pair takes its twin when that closes at least
+	// twinMinLoopGain more loops than its current pose, every other pair at its current pose,
+	// largest gain first, repeated until no switch gains that much. 0 loops turns the switch off.
+	float twinMinPlaneShare = 0.75f;
+	float twinMaxLoopAngle = 3.f;
+	unsigned twinMinLoopGain = 3;
+	unsigned slotBudget = 64;      // image descriptors kept resident on the device
+	bool useGPU = true;            // allow the GPU execution providers
+
+	// Return the folder holding the selected matcher's model bundle, the same way for every matcher: its explicit setting
+	// (modelPath for roma2, flexglueModelPath for flexglue) if given, else the OPENMVS_<MATCHER>_MODEL_PATH environment variable
+	// if set, else the install prefix's own copy (what `cmake --build . --target <matcher>-model` fetched into
+	// share/openMVS/<matcher>) if that is actually present on disk, else empty
+	inline String ResolveModelPath() const {
+		ASSERT(matcher == "roma2" || matcher == "flexglue");
+		const String& explicitPath = matcher == "flexglue" ? flexglueModelPath : modelPath;
+		if (!explicitPath.empty())
+			return explicitPath;
+		const char* const envModelPath = getenv(matcher == "flexglue" ? "OPENMVS_FLEXGLUE_MODEL_PATH" : "OPENMVS_ROMA2_MODEL_PATH");
+		if (envModelPath)
+			return String(envModelPath);
+		#ifdef OPENMVS_MODEL_INSTALL_DIR
+		// last: what the fetch target installed. Only when it is actually there -- an uninstalled build must keep producing
+		// the "needs a model" error rather than a path that does not exist.
+		const String installPath(String(OPENMVS_MODEL_INSTALL_DIR "/") + matcher);
+		if (File::isFolder(installPath))
+			return installPath;
+		#endif
+		return String();
+	}
+};
+/*----------------------------------------------------------------*/
+
+// Run the dense matcher describe pass over every image of the scene: pipelines each image's load
+// and preprocessing on the thread pool while matcher.Describe() (which may only be driven from
+// one thread) runs on the calling thread, then stores the descriptor graph's own on-device
+// retrieval pooling of every successfully described image in Image::globalDescriptor. matcher
+// must already be loaded (RoMa2Onnx::Load); this pass never touches the coarse-match graph.
+// Returns the number of images successfully described; a per-image load/describe failure is
+// logged individually and leaves that image's globalDescriptor empty, so a return value below
+// scene.images.size() is the caller's cue to treat the whole pass as failed.
+SFM_API unsigned ComputeGlobalDescriptorsDense(Scene& scene, DenseMatcher& matcher);
+/*----------------------------------------------------------------*/
+
+// What the verdict knows about one pair once it ran
+struct SFM_API PairVerdict {
+	bool admitted = false;
+	float confidentAreaA = 0.f, confidentAreaB = 0.f; // share of each warp grid at conf >= minConfidence and landing in-frame
+	float inlierAreaA = 0.f, inlierAreaB = 0.f;       // share of each warp grid the fitted geometry explains
+	// A's inlier cells in raster order, index-parallel: pixel coordinates, confidences, and warp cell indices (y*cols + x)
+	std::vector<Point2f> inliersA, inliersB;
+	std::vector<float> confidences;
+	std::vector<int> inlierCells;
+};
+
+// The most dense correspondences one pair may keep: the configured density over the SMALLER of the
+// two inlier areas the verdict measured. The fill's bucket grid lives in image A's frame, so it
+// bounds the dense keypoint density there and nowhere else -- but every dense correspondence costs a
+// keypoint in B as well, and a warp that puts a large part of A onto a small part of B would pile
+// them up in it. This is the term that stops that, and it binds only when B is the constraining
+// frame: with inlierAreaA <= inlierAreaB it sits above the draw the pitch produces anyway, so it
+// never charges the sparse matches' coverage a second time.
+// Rounded in double and clamped into the unsigned the knob itself is, rather than through the int a
+// float rounding would land in: the density has no upper bound the CLI enforces, and the product of
+// an absurd one with an area near 1 has no int to be converted to.
+inline unsigned DenseFillCeiling(const DenseMatchConfig& config, const PairVerdict& verdict) {
+	const double ceiling = std::floor((double)config.denseMatchesPerFrame *
+		(double)MINF(verdict.inlierAreaA, verdict.inlierAreaB) + 0.5);
+	return (unsigned)MINF(MAXF(ceiling, 0.0), (double)std::numeric_limits<unsigned>::max());
+}
+
+// Judge one candidate pair from its bidirectional warp alone. Fits one geometry on a coverage-uniform
+// sample (SampleWarpByCoverage, target VERDICT_SAMPLE = 4000) of A's cells at conf >= config.minConfidence
+// through pairsMatcher.GeometricFilter(tmpA, tmpB, pair, WarpTolerance(...)) on temporary Image copies
+// carrying the sample as keypoints and no pose (a scene holding a ground-truth solution must not leak
+// it into the fit); scores ALL of A's eligible cells against pair.F (Sampson distance <=
+// WarpTolerance) -> inlierAreaA; scores all of B's eligible cells, each as the correspondence
+// (DenormCoord(ba.warp[cell]) in A, cell centre in B), against the same pair.F -> inlierAreaB;
+// admits iff min(inlierAreaA, inlierAreaB) >= config.minOverlap.
+// On admission `pair` carries the fit's F/E/relativePose (whichever the branch produced) and no
+// matches; verdict.inliersA/B are A's inlier cells. On rejection pair is Reset() and verdict says why
+// (areas filled as far as they were computed). A sample under 8 cells is rejected without a fit.
+// Pure function of its inputs; runs on the pool (GeometricFilter is const and thread-safe).
+SFM_API void JudgePairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const PairWarps& warps, const DenseMatchConfig& config, ImagePair& pair, PairVerdict& verdict);
+/*----------------------------------------------------------------*/
+
+// One pair's dense segment before it is appended
+struct SFM_API DenseMatches {
+	std::vector<Point2f> pointsA, pointsB;
+	std::vector<float> confidences;
+};
+
+// Turn an admitted pair's evidence into the pair the scene stores: draw the dense fill from the
+// verdict's inlier cells where the guided candidates are not (SampleWarpComplementary with occupiedA =
+// the A positions of `guided`, at config.denseMatchesPerFrame's density, capped by DenseFillCeiling);
+// then fit ONE geometry on guided u dense and classify both kinds against it, which is
+// FitAndClassifyPairDense (with the warp's half cell, WarpTolerance, for the dense bar when the
+// verification is off): the guided matches within the matcher's maxEpipolarError are the sparse
+// segment (`pair.matches[0, numFilteredInliers)`, the pair's descriptor evidence), the dense
+// correspondences within config.denseEpipolarErrorFactor times that same bar are the dense segment
+// (returned in `dense`, appended by StorePairDense after the pair exists). When the union fit fails
+// (too few inliers at the sparse tolerance, or the branch's strict filters), the verdict's geometry
+// stands: the classification runs against it instead, so an admitted pair is always stored -- a pair
+// with zero sparse inliers is a dense-only pair, its dense segment its whole evidence.
+// `pair` must arrive carrying the verdict's geometry (F or E, asserted) and no matches, and `guided`
+// in increasing queryIdx (MatchFeaturesGuided's own order), which is the order the sparse segment
+// keeps.
+// Returns true when the pair carries at least one correspondence of either kind.
+SFM_API bool AssemblePairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const PairVerdict& verdict, const std::vector<DMatch>& guided, const DenseMatchConfig& config, int warpSize,
+	ImagePair& pair, DenseMatches& dense);
+
+// The fit and the classification of one dense pair's correspondences, shared by the assembly at
+// matching (AssemblePairDense) and the re-verification of a stored pair (ReverifyPairDense): ONE
+// geometry fitted on sparse u dense through pairsMatcher.GeometricFilter at the matcher's
+// maxEpipolarError on temporary Image copies whose keypoints are those correspondences, polished by
+// PairsMatcher::RefineRelativePose with each dense correspondence at config.denseFitWeight; when that
+// fails the geometry `pair` arrives with stands. Then the classification against the kept geometry
+// (through E on the bearings when a camera has a lens and both trust their intrinsics, else the
+// pixel F): a sparse correspondence within maxEpipolarError is an inlier, the others outliers (all
+// inliers when maxEpipolarError is 0, or when `pair` holds no geometry at all); a dense one within
+// config.denseEpipolarErrorFactor times that bar is kept (within denseTolerance when
+// maxEpipolarError is 0, every one when denseTolerance is 0 too).
+// `pair` must arrive with no matches; on return pair.matches holds the sparse inliers in the order
+// of `sparse`, pair.outlierMatches the rest, numFilteredInliers their count and numDenseInliers 0 --
+// the dense segment is the caller's to materialise -- and denseKept one flag per dense correspondence.
+// Returns whether the union fit succeeded: when it did not, the classification ran against the
+// geometry `pair` arrived with, which the assembly keeps (the verdict's) and the re-verification
+// refuses. With bFit false the fit is skipped and the classification runs against the geometry
+// `pair` arrives with (a relative pose, asserted), which is then kept: true is returned.
+SFM_API bool FitAndClassifyPairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA, const std::vector<Point2f>& densePointsB,
+	const DenseMatchConfig& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept, bool bFit = true);
+
+// Re-verify a stored dense pair through its cameras as they are now (a lens fitted, a focal
+// calibrated), the way it was assembled: its sparse candidates -- the sparse segment, any RANSAC
+// inlier a strict filter rejected, and the outliers -- and its dense segment go through
+// FitAndClassifyPairDense, on a geometry fitted to them afresh; a match with a dense end outside
+// the dense segment (a pair invalidated after its fill was stored holds its dense matches among its
+// outliers) is a dense candidate too. The pair comes back partitioned as at matching, [sparse
+// inliers | kept dense], every other sparse candidate an outlier; a dense match that fails is
+// dropped (its keypoints stay in the images), the weight is left to be recomputed
+// (weightedInliers -1) and the ray angle is measured again. A pair whose re-fit fails (too few
+// candidates, or too few inliers for the estimator) is invalidated, as GeometricFilter leaves a pair
+// it cannot verify: its geometry reset, every candidate, sparse and dense, an outlier, and no
+// partition (numFilteredInliers -1, numDenseInliers 0).
+// With bRefit false the candidates are gathered the same way but no geometry is fitted: they are
+// classified against the geometry the pair carries (a relative pose, asserted), which it keeps.
+SFM_API void ReverifyPairDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const DenseMatchConfig& config, ImagePair& pair, bool bRefit = true);
+
+// The planar twin of a dense pair: a homography fitted (RANSAC, 2000 iterations, on the cameras'
+// normalized planes, at the angular equivalent of the matches' classification bar maxEpipolarError)
+// on the pair's track-forming matches; `share` is the part of them it explains. When that is at
+// least config.twinMinPlaneShare, the physically valid decompositions of the homography (90% of
+// its inliers in front of both cameras) are the stored pose (the one nearest to it) and the twin
+// (the other), which is polished with the union fit's polish (RefineRelativePose, sparse matches
+// at 1, dense at config.denseFitWeight) on the same matches, so `twin` comes back with pose, E and
+// F and no matches. Returns false when the pair is not plane dominated or has no distinct twin
+// (rotation within 0.5 deg and direction within 10 deg of the stored pose).
+SFM_API bool PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const DenseMatchConfig& config, const ImagePair& pair, ImagePair& twin, float& share);
+
+// The planar twin switch, once every pair is verified (after the lens fit) and before anything
+// reads the poses: the candidates are the posed dense pairs with a planar twin (PlanarTwinDense);
+// a triangle is a candidate (a,b) and an image c with (a,c) and (b,c) posed, and it closes when its
+// rotation loop is within config.twinMaxLoopAngle degrees. The gain of a candidate is the number of
+// its triangles that close after switching it minus before, every other pair at its current pose
+// (so a twin that depends on a neighbour that is itself a candidate is judged with that
+// neighbour's current choice). The largest gain switches when it is at least
+// config.twinMinLoopGain (ties: more sparse inliers, then the larger (ID1,ID2)), the gains of the
+// candidates sharing a triangle with it are updated, and this repeats until no gain is that large;
+// a pair may switch back. Every switch raises the number of closed triangles by at least
+// twinMinLoopGain, so this ends. A pair that ends at its twin takes the twin's pose, E and F and
+// re-classifies its matches against them (ReverifyPairDense without the refit); its weight is
+// left to be recomputed. twinMinLoopGain 0 turns the switch off.
+// Returns the number of pairs that end at their twin.
+SFM_API unsigned SwitchPlanarTwinsDense(PairsMatcher& pairsMatcher, const DenseMatchConfig& config);
+
+// Store one assembled pair: create it, or replace the same-key pair a previous Match() left, then
+// append its dense segment (AppendDenseMatches). Serial, in (ID1,ID2) order -- the keypoint indices
+// the append hands out depend on what the two images already carry.
+SFM_API void StorePairDense(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
+	ImagePair&& pair, const DenseMatches& dense, int warpSize);
+/*----------------------------------------------------------------*/
+
+// One-pass dense pair matching of the given candidate pairs (each unordered pair once, i < j): sorts
+// them in (ID1,ID2) order, plans the device slots (Belady, config.slotBudget), and on the calling
+// thread describes the slots and runs the bidirectional coarse-match graph pair by pair while the pool
+// judges each pair (JudgePairDense), guides its sparse matching (TrackKeypointsByWarp,
+// MatchFeaturesGuided) and assembles it (AssemblePairDense); assembled pairs are stored serially in
+// (ID1,ID2) order (StorePairDense). A candidate already in scene.pairs is skipped (the feedback round
+// proposes only new pairs, and a re-run must not double-store). A pair whose image could not be
+// described or whose graph call failed is dropped with a message.
+// The summary line reports candidates, judged, admitted, stored, dense-only, the slot plan's
+// loads/reloads (the cache cost of the order), and the two skip counts apart: the candidates the
+// scene already held (ordinary) and the ones an image without a camera or descriptors cost (a
+// failure of an earlier stage).
+// Fills `numStored` with the number of pairs stored and returns true, a pass whose verdict rejected
+// every candidate storing none and still succeeding; returns false only when the pass could not run
+// at all (the device slot pool could not be allocated), which the caller must treat as a failed
+// matching round rather than as an empty one.
+SFM_API bool MatchPairsDense(PairsMatcher& pairsMatcher, DenseMatcher& matcher, const PairIdxArr& candidatePairs,
+	const DenseMatchConfig& config, unsigned& numStored);
+/*----------------------------------------------------------------*/
+
+} // namespace SFM
+
+#endif // _SFM_MATCHDENSE_H_

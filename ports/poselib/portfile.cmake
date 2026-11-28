@@ -1,9 +1,9 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO cdcseacave/PoseLib
-    REF 26d397d5ad487959b0c4243d61ef6f75715eb040
-    SHA512 85345F76C7816665F6FD5CB86E6B35823D209CB1E7A6EE54521143CC05E1700FA3D54E808CC2D17A9CBC08D2B277313D3B977B1B8723AEDF7D9782FE8CFF12CD
-    HEAD_REF feature/spherical-camera-support
+    REF 2845f80b908360b4ebb9dddba94be80e5499d374
+    SHA512 697666404d21dd8c92dc22beed0eff12e70382cc67d37c2ab61a924074d3ed5b83e5e86bb7038ea1c1ed60ab24d6c5bfe8a00ea87b8088f3c815e3f099caa7fe
+    HEAD_REF feature/generalized-absolute-pose-scale
 )
 
 # PoseLib headers do not export symbols (no __declspec(dllexport)),

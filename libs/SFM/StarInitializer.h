@@ -11,6 +11,9 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Image.h"
+#include "BundleAdjustment.h"
+#include "GlobalScaleAveraging.h"
+#include "PairsWeighting.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -23,18 +26,48 @@ namespace SFM {
 // forward declarations to avoid circular includes
 class SFM_API Scene;
 
+// The pair-scale equations of the given scene pairs (indices into scene.pairs, each with a relative
+// pose): for every (view, feature) two pairs both triangulate in their own unit frame, the ratio of
+// the distances they give; per pair of pairs the 10%-trimmed mean of those ratios over at least 15
+// common points, as ScalePair(pairIdx2, pairIdx1, mean ratio, sqrt(points kept)) with
+// pairIdx1 < pairIdx2 (the indices are scene pair indices): log s(pairIdx1) - log s(pairIdx2)
+// = log of the ratio, s the scale that takes a pair's unit frame to the common one. The equations
+// come sorted by (pairIdx1, pairIdx2). With anchors (per scene pair), only the equations between an
+// anchor and a pair that is none are formed; their ratios equal the plain call's up to rounding (the
+// order of summation may differ), not bit for bit.
+std::vector<ScalePair> SFM_API ComputePairScales(const Scene& scene, const IIndexArr& pairIndices, const std::vector<bool>* anchors = NULL);
+
 /**
  * @brief Configuration for star initialization
  */
 struct SFM_API StarInitConfig
 {
-	unsigned minViews{4};           // Minimum connected views
+	unsigned minViews{4};           // Minimum views of the star, the reference included (at least 2)
 	unsigned maxViews{36};          // Maximum connected views
-	unsigned minTracksPerView{50};  // Minimum tracks per view
-	float ratioInliersFilter{0.2f}; // Ratio threshold for inlier views filter (optional, 0 to disable)
+	float ratioInliersFilter{0.2f}; // Floor of a neighbour's evidence: this share (at most 1) of the mean evidence of the three strongest candidates that are not near-duplicates (pairsWeighting; all candidates when every one is) (optional, 0 to disable)
 	float maxReprojError{6.f};      // Maximum reprojection error (pixels)
-	float minAngleThreshold{1.f};   // Minimum angle between cameras (degrees)
-	bool globalRotations{false};    // Use global rotation averaging to initialize rotations (optional)
+	float minAngleThreshold{1.f};   // Minimum triangulation angle (degrees) of the star's first triangulation; the later passes raise it by 0.5 and 1
+	float evidenceMinAngle{1.5f};   // Ray angle a pair's inlier must reach to count as star evidence (degrees): the reconstruction's minAngleThreshold, which Scene sets it from
+
+	// Refine the focal length in the star's own bundle adjustment (step 7 of Initialize()); the
+	// distortion is left to the resection's global bundle adjustments once the model is large
+	// enough to constrain it (a star of a handful of views is not). False for a forced or
+	// otherwise known focal, which must come out of the star exactly as it went in.
+	bool refineFocalLength{true};
+
+	// The images the reference view is chosen among; empty, every image. The triplet filter fills
+	// it with the largest piece its ceiling leaves (ViewGraphTriplets.h).
+	IIndexArr seedViews;
+
+	// Base BA settings the mini bundle adjustments derive from (dense-observation weight, GPS
+	// weights, keypoint-confidence gating, ...); the star initializer applies its own local
+	// overrides (iteration budget, intrinsics refinement) on top, same as ResectionConfig.
+	BAConfig baConfig;
+
+	// The pair weighting the scene was weighted with: which pairs are near-duplicates, never the yardstick of the
+	// reference view's choice, of the floor of a neighbour's evidence or of the scale gauge (Scene sets it, as for
+	// ResectionConfig).
+	PairsWeightingConfig pairsWeighting;
 };
 
 /**
@@ -55,23 +88,34 @@ public:
 	static bool Initialize(Scene& scene, const StarInitConfig& config);
 
 	/**
-	 * @brief Select reference view (highest connectivity)
+	 * @brief Select the reference view: the image whose valid pairs carry the most weighted
+	 * inliers, among the seed views when any of them qualifies, else among every image. A
+	 * candidate qualifies with at least minPairs valid pairs, the smallest star the caller
+	 * accepts less its centre; when no image qualifies the heaviest image is returned, so that
+	 * the caller reports the shortfall.
 	 * @param scene Scene with image pairs
+	 * @param seedViews Candidate images (empty: every image)
+	 * @param minPairs Valid pairs a candidate needs (StarInitConfig::minViews - 1)
+	 * @param weighting Which pairs are near-duplicates: their inliers count toward a view's weight only when the view has no
+	 *        other pair (an image of near-duplicates keeps its whole weight)
 	 * @return Image ID of reference view
 	 */
-	static IIndex SelectReferenceView(const Scene& scene);
+	static IIndex SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs,
+		const PairsWeightingConfig& weighting);
 
 	/**
 	 * @brief Estimate global scale from multiple baselines
 	 * @param scene Scene with initialized poses
 	 * @param refViewID Reference view ID
 	 * @param connectedViews IDs of connected views
+	 * @param weighting Which pairs are near-duplicates: the scale is fixed on the reference's strongest pair that is not one
 	 * @return true if scale estimation successful
 	 */
 	static bool EstimateGlobalScale(
 		Scene& scene,
 		IIndex refViewID,
-		const IIndexArr& connectedViews);
+		const IIndexArr& connectedViews,
+		const PairsWeightingConfig& weighting);
 };
 
 } // namespace SFM

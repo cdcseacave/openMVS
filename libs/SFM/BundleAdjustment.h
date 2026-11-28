@@ -10,7 +10,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "Camera.h"
+#include "ImagePair.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -26,6 +26,15 @@ namespace SFM {
 class SFM_API Pose3D;
 class SFM_API Scene;
 
+// The weight of one DENSE (ROMAv2 warp sampled) observation in bundle adjustment when it cannot be
+// measured: EstimateDenseObservationWeight's fallback for a scene with no dense keypoints, a
+// population too small to give a sigma, or a sigma of exactly zero. The measured weight is 1/k^2 for
+// k the ratio of the dense to the described reprojection sigma, taken at the head of every solve,
+// because a warp correspondence localizes a point several times less precisely than a descriptor
+// one. Not the view graph's number: what a dense match is worth as evidence that two images overlap
+// is PairsWeightingConfig::denseFrameInliers, a different question.
+constexpr double DENSE_OBSERVATION_WEIGHT = 0.25;
+
 /**
  * @brief Configuration for bundle adjustment
  */
@@ -40,18 +49,93 @@ struct SFM_API BAConfig
 	bool refineFocalLength = false;            // Refine fx, fy
 	bool refineFocalLengthAspectRatio = false; // Refine fx, fy while keeping aspect ratio constant
 	bool refinePrincipalPoint = false;         // Refine cx, cy
-	bool refineRadialDistortion123 = false;    // Refine k1, k2, k3
+	bool refineRadialDistortion12 = false;     // Refine k1, k2
 	bool refineTangentialDistortion = false;   // Refine p1, p2
 	bool refineRadialDistortion456 = false;    // Refine k4, k5, k6
+	bool refineRadialDistortion3 = false;      // Refine k3
 
 	// GPS position constraints (weight = 0 disables)
 	double gpsPositionWeight = 0.0;     // Horizontal GPS constraint weight
 	double gpsPositionWeightZ = 0.0;    // Vertical GPS constraint weight
 	double gpsWeightScaleFactor = 1.0;  // Manual scaling override for GPS weights
 
+	// Relative-pose constraints from the verified image pairs, as the standard deviation (degrees)
+	// of the two angles a pair measures: how far the model's relative rotation may sit from the
+	// pair's, and how far the model's baseline direction may sit from the pair's. A pair carries a
+	// relative pose measured from hundreds of correspondences, which the reprojection residuals
+	// never see: where the tracks joining two parts of the model are few or two-view only, they
+	// leave the joint between them free to bend, and these residuals are what holds it.
+	// Either sigma at 0 switches its half off; both at 0 leaves the solve fitting reprojections
+	// alone. Smaller = the pairs are trusted more against the tracks.
+	float relativeRotationSigma = 1.f;
+	float relativeTranslationSigma = 2.f;
+
 	// Angular reprojection error with keypoint confidence weighting
+	// Its SQUARE(2/max(size,1)) precision term already reads measurement precision off the sampling
+	// scale, which is the same statement denseObservationWeight below makes, so turning this on
+	// SUPERSEDES that weight rather than composing with it (see SelectReprojectionLoss).
 	bool useKeypointConfidence = false; // Weight observations by keypoint response and size
 	float minKeypointResponse = 0.001f; // Minimum keypoint response to include in BA (0 = include all)
+
+	// Loss weight of a reprojection residual on a DENSE (descriptor-less) keypoint relative to the
+	// 1.0 a described one carries, as an OVERRIDE: negative (the default) means the weight is
+	// measured on the scene each solve is about to fit, positive pins it -- which is what a sweep or
+	// a regression test wants. It is a measurement-precision weight, not a fifth gate threshold, and
+	// it follows the KEYPOINT rather than the match that created it (see SelectReprojectionLoss).
+	// Ignored when useKeypointConfidence is set: that term expresses the same thing by another
+	// route, and only one of the two may apply.
+	// This is NOT the view graph's dense evidence (PairsWeightingConfig::denseFrameInliers),
+	// which answers a different question -- see DENSE_OBSERVATION_WEIGHT above.
+	double denseObservationWeight = -1.0;
+
+	// Described observations at which an image's dense residuals weigh half the dense weight above:
+	// each dense residual of an image weighs N / (N + n) of it, n the image's described observations
+	// in the scene's inlier tracks, 0 = the same dense weight for every image. An image with hundreds
+	// of detections already has its pose fixed by them, and the warp samples of its matchings, a
+	// coarser measurement whose errors neighbouring samples share, can only pull it; an image with
+	// few detections keeps most of its dense say. Used together with maxDenseObservationWeight below:
+	// alone it leaves more images wrong than the same dense weight for every image.
+	unsigned denseHalfWeightObservations = 300;
+
+	// The most an image's dense residual weighs, after the scaling above, 0 = no ceiling. The weight
+	// the scene measures (0.06-0.15 on the captures) puts the warp samples, whose errors neighbouring
+	// samples share, well above what they are worth against the detections, so nearly every image is
+	// held to the ceiling and only one rich in detections goes below it. Against the same dense weight
+	// for every image this lowers the weight of the images that need it least and improves the accuracy
+	// of the result, and it avoids the real failure of an interior capture that a tail entering the
+	// model on a guessed baseline does not escape either way.
+	double maxDenseObservationWeight = 0.01;
+
+	// The most observations one image contributes to a solve, of any keypoint kind, 0 = all. What a
+	// bundle adjustment costs is the number of observations it fits, and one image can bring
+	// thousands of them -- warp samples where it was matched densely, detections where it was not --
+	// while a few hundred spread over its frame already fix its pose. The budget goes to the
+	// described observations first -- a detected position is the precise measurement, so an image
+	// keeps all of its own unless they alone exceed the budget -- and the warp samples fill what is
+	// left of it, each kind spread over the frame rather than clustered where the matcher was
+	// densest. Most of the budget then goes to warp samples on an image with few detections and
+	// little on one with many, and the scene stays as well constrained as the residual count it
+	// costs allows (see BuildObservationCap).
+	unsigned maxObservationsPerImage = 1500;
+
+	// The widest angle, in degrees, the kept views of a track must span at the point for the budget
+	// above to leave the track in the solve (the caller's minimum triangulation angle). Two views
+	// closer than that fix the point's depth too weakly: the point slides along their rays and takes
+	// the views that see it wide with it. A track the budget leaves with such a narrow set gets back
+	// the dropped view that spans the widest angle with a kept one, and one no dropped view widens
+	// stays out of the solve. Must be positive wherever the budget can apply.
+	float minTriangulationAngle = 0.f;
+
+	// Observations the scene must hold -- every inlier track's observations in every registered
+	// image, summed once over the whole scene -- before the budget above applies to any solve,
+	// 0 = always. A scene small enough to be solved whole is solved whole: dropping observations
+	// there costs accuracy to save time that was not being spent. Sized by the scene rather than by
+	// any one solve so that a local window, which alone rarely holds many observations, is budgeted
+	// too once the scene it is part of has grown large.
+	unsigned minObservationsForCap = 1500000;
+
+	// Reprojection residuals from which the adjustment factorizes the reduced camera system sparsely, with inner iterations, instead of densely.
+	unsigned minResidualsForSparseSolver = 500000;
 
 	// Solver parameters
 	unsigned maxIterations = 100;    // Maximum solver iterations
@@ -59,27 +143,33 @@ struct SFM_API BAConfig
 	unsigned numThreads = 0;         // Number of threads (0 = auto)
 	double functionTolerance = 1e-6; // Convergence tolerance
 
-	// enable all intrinsic refinement flags
+	// Disable all intrinsic refinement flags
+	void ClearIntrinsicRefinement() {
+		refineFocalLength = false;
+		refineFocalLengthAspectRatio = false;
+		refinePrincipalPoint = false;
+		refineRadialDistortion12 = false;
+		refineTangentialDistortion = false;
+		refineRadialDistortion456 = false;
+		refineRadialDistortion3 = false;
+	}
+	// Enable main intrinsic refinement flags (focal length + k1, k2)
 	void RefineMainIntrinsics() {
 		refineFocalLength = true;
-		refineRadialDistortion123 = true;
+		refineRadialDistortion12 = true;
 	}
 	void RefineExtendedIntrinsics() {
 		RefineMainIntrinsics();
+		refineRadialDistortion3 = true;
 		refinePrincipalPoint = true;
 		refineTangentialDistortion = true;
-	}
-	void RefineAllIntrinsics() {
-		RefineExtendedIntrinsics();
-		refineFocalLengthAspectRatio = true;
-		refineRadialDistortion456 = true;
 	}
 
 	// check if any intrinsic refinement is enabled
 	bool IsRefiningIntrinsics() const {
 		return refineFocalLength || refinePrincipalPoint ||
-		       refineRadialDistortion123 || refineTangentialDistortion ||
-		       refineRadialDistortion456;
+		       refineRadialDistortion12 || refineRadialDistortion3 ||
+		       refineTangentialDistortion || refineRadialDistortion456;
 	}
 	// check if any pose component is being refined
 	bool IsRefiningPoses() const {
@@ -88,6 +178,10 @@ struct SFM_API BAConfig
 	// check if any GPS-related refinement is enabled
 	bool IsRefiningGPS() const {
 		return gpsPositionWeight > 0 || gpsPositionWeightZ > 0;
+	}
+	// check if the verified pairs' relative poses constrain the solve
+	bool IsUsingPairConstraints() const {
+		return relativeRotationSigma > 0.f || relativeTranslationSigma > 0.f;
 	}
 };
 /*----------------------------------------------------------------*/
@@ -218,6 +312,14 @@ public:
 	PoseUncertaintyArr ComputePoseUncertaintyCeres();
 
 	/**
+	 * @brief Reprojection residuals the last solve created, per image
+	 *
+	 * Summed over the images this is what the solve fitted, which is what
+	 * BAConfig::maxObservationsPerImage bounds per image.
+	 */
+	const UnsignedArr& GetNumReprojResidualsPerImage() const { return numReprojResidualsPerImage; }
+
+	/**
 	 * @brief One-shot global bundle adjustment
 	 * @param scene Scene with cameras, poses, and points
 	 * @param config BA configuration
@@ -258,19 +360,37 @@ private:
 /*----------------------------------------------------------------*/
 
 
+// What EstimateDenseObservationWeight measured, for a caller that reports the weight as well as
+// applying it -- so the report costs no second walk of the scene and cannot disagree with the
+// estimate. `measured` says the returned weight is 1/k^2 of these two sigmas; where it is false they
+// are whatever was read before the sample was refused, or nothing at all, and printing them beside
+// the weight would invite a reader to divide one by the other and get a number nothing applied.
+struct DenseObservationSigmas {
+	double sigmaDescribed = 0; // median raw-pixel reprojection error of the described observations
+	double sigmaDense = 0;     // and of the dense ones
+	size_t numDescribed = 0;   // how many observations each median was taken over
+	size_t numDense = 0;
+	bool measured = false;
+};
+
+// The weight a dense reprojection residual carries relative to a described one, measured rather than
+// configured: 1/k^2 for k = sigma_dense/sigma_described, the two populations' robust reprojection
+// sigmas on the scene as it stands (ComputeObservationSigmas). Returns config.denseObservationWeight
+// as given whenever that is non-negative, and DENSE_OBSERVATION_WEIGHT when no image carries a dense
+// keypoint -- recognized before the scene is walked, since there is then nothing to weight -- or when
+// either population is under MIN_SIGMA_OBSERVATIONS or either sigma is zero.
+// `sigmas`, when given, receives what was measured and whether the weight came from it.
+SFM_API double EstimateDenseObservationWeight(const Scene& scene, const BAConfig& config,
+	DenseObservationSigmas* sigmas = NULL);
+/*----------------------------------------------------------------*/
+
+
 // Convert OpenMVS pose to/from Ceres quaternion parameterization
 // params[7] = { qw, qx, qy, qz, Cx, Cy, Cz }
 SFM_API void Pose3DToQuaternionAndCenter(const Pose3D& pose, double* params);
 SFM_API void QuaternionAndCenterToPose3D(const double* params, Pose3D& pose);
 
-// Convert OpenMVS pose to/from Ceres angle-axis parameterization
-// params[6] = { ax, ay, az, Cx, Cy, Cz }
-SFM_API void Pose3DToAngleAxisAndCenter(const Pose3D& pose, double* params);
-SFM_API void AngleAxisAndCenterToPose3D(const double* params, Pose3D& pose);
-/*----------------------------------------------------------------*/
-
-
-// Test PinholeReprojectionErrorAnalytic Jacobians using Auto-diff
+// Test PinholeReprojectionErrorAnalytic (residual and Jacobians) against the auto-diff PinholeReprojectionError
 SFM_API bool PinholeReprojectionJacobianTest();
 /*----------------------------------------------------------------*/
 

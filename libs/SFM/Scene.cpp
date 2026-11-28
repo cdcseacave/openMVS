@@ -7,23 +7,18 @@
 
 #include "Common.h"
 #include "Scene.h"
-#include "Image.h"
 #include "../Math/GeodeticTransforms.h"
 #include "../Math/Camera/CameraUndistort.h"
-#include "Track.h"
 #include "Triangulation.h"
-#include "SceneCluster.h"
-#include "StarInitializer.h"
-#include "Resection.h"
-#include "BundleAdjustment.h"
-#include "GlobalAlignment.h"
+#include "SceneBlocks.h"
 #include "GlobalRotationAveraging.h"
 #include "GlobalPositioning.h"
 #include "SimilarityTransform.h"
 #include "InterfaceMVS.h"
-#include "ImportCOLMAP.h"
+#include "DenseMatcher.h"
+#include "LensFit.h"
 
-#include <TinyEXIF.h>
+#include <unordered_set>
 
 using namespace SFM;
 
@@ -36,7 +31,7 @@ using namespace SFM;
 #endif
 
 #define SFM_PROJECT_ID "SFM\0" // identifies the SFM project stream
-#define SFM_PROJECT_VERSION 0  // SFM project stream layout version (bump on any breaking header/serialization change)
+#define SFM_PROJECT_VERSION 2  // SFM project stream layout version (bump on any breaking header/serialization change)
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -44,14 +39,38 @@ using namespace SFM;
 DEFINE_LOG_NAME(lt, _T("Scene   "));
 
 // Translate the reconstruction intrinsic flags into the matching bundle-adjustment switches
-static void SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags)
+void SFM::SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags)
 {
 	baCfg.refineFocalLength = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
 	baCfg.refineFocalLengthAspectRatio = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO) != 0;
 	baCfg.refinePrincipalPoint = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_PRINCIPAL_POINT) != 0;
-	baCfg.refineRadialDistortion123 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_123) != 0;
+	baCfg.refineRadialDistortion12 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_12) != 0;
 	baCfg.refineTangentialDistortion = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_TANGENTIAL_DIST) != 0;
 	baCfg.refineRadialDistortion456 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_456) != 0;
+	baCfg.refineRadialDistortion3 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_3) != 0;
+}
+
+// Copy the reconstruction's relative-pose sigma onto a bundle-adjustment configuration
+void SFM::SetBAPairConstraints(BAConfig& baCfg, float relativeRotationSigma)
+{
+	baCfg.relativeRotationSigma = relativeRotationSigma;
+	baCfg.relativeTranslationSigma = ReconstructionConfig::relativeTranslationSigmaFactor * relativeRotationSigma;
+}
+
+void SFM::AdjustMergedScene(Scene& scene, const ReconstructionConfig& cfg)
+{
+	TD_TIMER_STARTD();
+	const float looseBar = GlobalAlignmentConfig::looseSeamFactor * cfg.maxReprojError;
+	FilterTracks(scene, looseBar, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	TriangulateTracks(scene, true, looseBar, cfg.minAngleThreshold);
+	FilterTracks(scene, looseBar, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	scene.status.nState.set(Scene::Status::STATE::CALIBRATED);
+	BAConfig baCfg = cfg.baConfig;
+	SetBAIntrinsicFlags(baCfg, cfg.baIntrinsicFlags);
+	baCfg.minTriangulationAngle = cfg.minAngleThreshold;
+	BundleAdjustment::Adjust(scene, baCfg);
+	VERBOSE("Merged scene adjusted at the loose bar of %g px: %u images, %u tracks (%s)",
+		looseBar, scene.status.nCalibratedImages, scene.status.nTracks, TD_TIMER_GET_FMT().c_str());
 }
 
 
@@ -92,6 +111,7 @@ Scene& Scene::operator=(const Scene& scene) {
 	}
 	// Copy pairs
 	pairs = scene.pairs;
+	seedViews = scene.seedViews;
 	// Copy tracks
 	for (const Track& track : scene.tracks)
 		tracks.emplace_back(track);
@@ -112,6 +132,7 @@ Scene& Scene::operator=(Scene&& scene) noexcept {
 	cameras = std::move(scene.cameras);
 	images = std::move(scene.images);
 	pairs = std::move(scene.pairs);
+	seedViews = std::move(scene.seedViews);
 	tracks = std::move(scene.tracks);
 	colors = std::move(scene.colors);
 	poseUncertainty = std::move(scene.poseUncertainty);
@@ -127,6 +148,7 @@ void Scene::Release() {
 	cameras.ReleaseDelete();
 	images.Release();
 	pairs.Release();
+	seedViews.Release();
 	tracks.Release();
 	colors.clear();
 	poseUncertainty.Release();
@@ -268,7 +290,8 @@ bool Scene::Load(const String& fileName)
 	// load stream type (compression layer used by boost serialization)
 	uint32_t nType;
 	fs.read((char*)&nType, sizeof(uint32_t));
-	// load the stream layout version and reject files written by a newer, incompatible writer
+	// load the stream layout version and reject any file not written by this exact layout:
+	// the stream carries no per-class versions, so an older layout would silently desynchronize
 	uint32_t nVersion;
 	fs.read((char*)&nVersion, sizeof(uint32_t));
 	// skip reserved bytes
@@ -278,8 +301,8 @@ bool Scene::Load(const String& fileName)
 		VERBOSE("error: invalid SFM project header '%s'", fileName.c_str());
 		return false;
 	}
-	if (nVersion > SFM_PROJECT_VERSION) {
-		VERBOSE("error: unsupported SFM project version %u (this build supports up to %u) in '%s'",
+	if (nVersion != SFM_PROJECT_VERSION) {
+		VERBOSE("error: unsupported SFM project version %u (this build reads only version %u) in '%s'",
 			nVersion, (unsigned)SFM_PROJECT_VERSION, fileName.c_str());
 		return false;
 	}
@@ -373,7 +396,7 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 			img.fileName = imgPath;
 			Util::ensureValidPath(img.fileName);
 			img.fileName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, img.fileName);
-			if (!img.LoadMetadata(config.defaultFocalRatio)) {
+			if (!img.LoadMetadata(config.defaultFocalRatio, config.cameraType)) {
 				VERBOSE("error: failed to load metadata for '%s'", imgPath.c_str());
 				continue;
 			}
@@ -491,40 +514,29 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 					break;
 				}
 			}
+			PinholeCamera* targetCamera = pinholeCamera;
 			if (sharedWithNonSelected) {
 				// Duplicate camera for selected images only
-				PinholeCamera* newCamera = static_cast<PinholeCamera*>(pinholeCamera->Clone());
-				if (config.focalLength > 0.f)
-					newCamera->fx = newCamera->fy = config.focalLength;
-				if (config.k1 != 0.f)
-					newCamera->k1 = config.k1;
-				if (config.k2 != 0.f)
-					newCamera->k2 = config.k2;
-				newCamera->trustIntrinsics = true;
-				// Add to cameras array and assign to all selected images using this camera
+				targetCamera = static_cast<PinholeCamera*>(pinholeCamera->Clone());
 				const IIndex newCamID = cameras.size();
-				cameras.emplace_back(newCamera);
+				cameras.emplace_back(targetCamera);
 				for (IIndex usedBy : usageList) {
 					if (uniqueIndices.count(usedBy)) {
-						images[usedBy].pCamera = newCamera;
+						images[usedBy].pCamera = targetCamera;
 						images[usedBy].cameraID = newCamID;
 					}
 				}
-				processedCameras.insert(newCamera);
 				++nDuplicated;
-				++nModified;
-			} else {
-				// Camera only used by selected images - modify directly
-				if (config.focalLength > 0.f)
-					pinholeCamera->fx = pinholeCamera->fy = config.focalLength;
-				if (config.k1 != 0.f)
-					pinholeCamera->k1 = config.k1;
-				if (config.k2 != 0.f)
-					pinholeCamera->k2 = config.k2;
-				pinholeCamera->trustIntrinsics = true;
-				processedCameras.insert(pinholeCamera);
-				++nModified;
 			}
+			if (config.focalLength > 0.f)
+				targetCamera->fx = targetCamera->fy = config.focalLength;
+			if (config.k1 != 0.f)
+				targetCamera->k1 = config.k1;
+			if (config.k2 != 0.f)
+				targetCamera->k2 = config.k2;
+			targetCamera->trustIntrinsics = true;
+			processedCameras.insert(targetCamera);
+			++nModified;
 		}
 		if (config.focalLength > 0.f)
 			VERBOSE("Forced focal length %.2f pixels for %u cameras (%u duplicated)",
@@ -559,174 +571,381 @@ bool Scene::ExtractFeatures(const FeatureExtractionConfig& config)
 	return true;
 }
 
-bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, const ViewGraphCalibratorConfig& vgConfig)
+bool Scene::MatchPairs(const MatchConfig& config, const DenseMatchConfig& denseCfg, const ViewGraphCalibratorConfig& vgConfig)
 {
+	// In-process dense matcher (RoMa2 or FlexGlue): one loaded model serves the retrieval descriptors and the dense
+	// matching; it lives for this call only. Declared before
+	// pairsMatcher: anything holding a DenseMatcher* or a MakeCode() tensor (pairsMatcher.SetDense
+	// below) must be destroyed before the model, so the model must outlive it and therefore be
+	// declared first (destructors run in reverse declaration order).
+	std::unique_ptr<DenseMatcher> denseMatcher;
 	PairsMatcher pairsMatcher(*this, config);
 
-	// Import matches from ROMA2 NPZ file
-	if (!roma2Cfg.importROMA2Path.empty() && ImportROMA2Matches(pairsMatcher, roma2Cfg) == 0) {
-		VERBOSE("error: failed to import from '%s'", roma2Cfg.importROMA2Path.c_str());
-		return false;
+	// Global descriptors a scene carries from another matcher are not this matcher's (RoMa2 2048-D, FlexGlue 256-D): the images are described
+	// again by the selected one. Only known where the selected matcher's descriptor size is (it comes from the model bundle's manifest; 0, unknown, when no bundle is reachable: the stored descriptors are then kept)
+	if (denseCfg.enabled && config.mode == MatchConfig::RETRIEVAL && status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS) &&
+		!status.nState.isSet(Status::STATE::MATCHED) && !images.empty()) {
+		const unsigned expectedDim = DenseMatcher::ExpectedRetrievalSize(denseCfg);
+		if (expectedDim != 0 && (unsigned)images[0].globalDescriptor.cols != expectedDim) {
+			VERBOSE("warning: the scene's global descriptors are %d-D, the %s matcher's are %u-D: describing the images again",
+				images[0].globalDescriptor.cols, denseCfg.matcher.c_str(), expectedDim);
+			status.nState.unset(Status::STATE::GLOBAL_DESCRIPTORS);
+		}
 	}
 
-	if (status.nState.isSet(Status::STATE::MATCHED)) {
-		VERBOSE("warning: pairs already matched, skipping");
+	// SKIP runs no matching, so no dense matcher has anything to do, and the scene holds the matches (Scene::Reconstruct)
+	ASSERT(config.mode != MatchConfig::SKIP || !denseCfg.enabled);
+	ASSERT(config.mode != MatchConfig::SKIP || std::any_of(pairs.begin(), pairs.end(), [](const ImagePair& pair) { return pair.GetNumMatches() > 0; }));
+
+	// Which passes this run needs: RETRIEVAL is what makes the global descriptors necessary
+	const bool needsDescriptors = config.mode == MatchConfig::RETRIEVAL && !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS);
+	const bool needsWarps = denseCfg.useMatching;
+
+	const String modelPath(denseCfg.ResolveModelPath());
+	if (denseCfg.enabled && (needsDescriptors || needsWarps) && modelPath.empty()) {
+		// a requested-but-unavailable model is a named error here, not the
+		// generic "failed to load the roma2 model ''" that Load() below would report if this
+		// fell through to it unchecked
+		if (denseCfg.matcher == "flexglue")
+			VERBOSE("error: the FlexGlue dense matcher requested but no model path given (set --flexglue-model or OPENMVS_FLEXGLUE_MODEL_PATH, or install the model into the install prefix)");
+		else
+			VERBOSE("error: ROMA2 requested but no model path given (set --roma2-model or OPENMVS_ROMA2_MODEL_PATH, or install the model into the install prefix)");
+		return false;
+	}
+	const bool useDense = denseCfg.enabled && (needsDescriptors || needsWarps) && !status.nState.isSet(Status::STATE::MATCHED);
+	if (useDense) {
+		if (!DenseMatcher::IsAvailable()) {
+			VERBOSE("error: the %s model '%s' requested, but this build has no ONNX Runtime support", denseCfg.matcher.c_str(), modelPath.c_str());
+			return false;
+		}
+		denseMatcher = DenseMatcher::Create(denseCfg);
+		if (!denseMatcher->Load(modelPath, denseCfg.setting, denseCfg.useGPU ? denseCfg.provider : String("cpu"))) {
+			VERBOSE("error: failed to load the %s model '%s'", denseCfg.matcher.c_str(), modelPath.c_str());
+			return false;
+		}
+		if (needsDescriptors && !ComputeGlobalDescriptors(*denseMatcher))
+			return false;
+	} else if (denseCfg.enabled && config.mode == MatchConfig::RETRIEVAL && !status.nState.isSet(Status::STATE::MATCHED)) {
+		// descriptors are wanted and already stored, and no warps are needed either: retrieval over
+		// an earlier run's descriptors ranks the pairs straight from Image::globalDescriptor
+		// (PairsMatcher::QueryRetrieval) and never enters a session, so loading 1.2 GB of graph
+		// weights onto the device for it would buy nothing
+		DEBUG("ROMA2 retrieval reuses the %u global descriptors stored in the scene; no model loaded", images.size());
+	}
+	pairsMatcher.SetDense(useDense && needsWarps ? denseMatcher.get() : NULL, denseCfg);
+
+	if (status.nState.isSet(Status::STATE::MATCHED) || config.mode == MatchConfig::SKIP) {
+		VERBOSE(config.mode == MatchConfig::SKIP ? "Matching skipped: the scene's own matches are used" : "warning: pairs already matched, skipping");
 		pairsMatcher.ComputeRelativePoses();
+		status.nState.set(Status::STATE::MATCHED);
 	} else {
-		// Convert lightweight config to typed MatchConfig
-		pairsMatcher.Match();
+		bool bFatal = false;
+		pairsMatcher.Match(bFatal);
+		// A matching round that exited on an error instead of finishing its candidates says so,
+		// because nothing else can: a round which follows one that already stored pairs leaves a
+		// non-empty view graph behind, only a truncated one.
+		if (bFatal) {
+			VERBOSE("error: matching failed, a matching round could not be completed");
+			return false;
+		}
+		// The returned count alone can not tell success from failure either: it counts pairs
+		// processed, and a scene whose candidates were all matched already, or one with fewer than
+		// two images, legitimately processes none. An empty view graph after matching two or more
+		// images is unambiguous though -- it is what both the dense pass and the descriptor pass
+		// leave behind when either one stores nothing at all -- so treat that combination, and only
+		// that one, as the stage having failed.
+		if (pairs.empty() && images.size() > 1) {
+			VERBOSE("error: matching failed, no pairs could be matched among %u images", images.size());
+			return false;
+		}
 		status.nState.set(Status::STATE::MATCHED);
 	}
 
-	if (config.viewGraphCalibrationEnabled) {
-		// Run ViewGraph calibration in order to improve focal-length and relative poses
-		ViewGraphCalibrator calibrator(vgConfig);
-		if (!calibrator.Solve(*this)) {
-			DEBUG("warning: ViewGraph calibration failed");
-			return false;
-		}
-		// Recompute relative-pose for all pairs with updated image cameras
-		if (!calibrator.GetUpdatedCameras().empty())
-			pairsMatcher.ComputeRelativePoses(true, false, calibrator.GetUpdatedCameras());
-	}
+	// the focals of the cameras that do not trust theirs, and the radial lens of every camera that has none (LensFit.h):
+	// after every pair is verified, before anything reads the pairs' geometry (the pairs export, the triplet filter
+	// and the contradiction cut, the clustering, every reconstruction stage)
+	if (!CalibrateFocalsAndFitLenses(pairsMatcher, vgConfig))
+		return false;
+
+	// a plane-dominated dense pair keeps the planar twin its rotation loops prefer (SwitchPlanarTwinsDense): after the
+	// last refit of the pairs (the lens fit's), before anything reads their poses (FilterViewGraph
+	// recomputes the pair weights first)
+	SwitchPlanarTwinsDense(pairsMatcher, denseCfg);
+
 	return true;
 }
+
+bool Scene::ComputeGlobalDescriptors(DenseMatcher& matcher)
+{
+	if (status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS))
+		return true;
+	if (images.empty()) {
+		// an empty scene would otherwise make "0 described == 0 images" vacuously true below
+		VERBOSE("error: no images to describe");
+		return false;
+	}
+	// the retrieval index needs one row per image; Scene::Import already rejected unreadable
+	// images, so a miss here (a per-image load/describe failure) is a real failure
+	if (ComputeGlobalDescriptorsDense(*this, matcher) != images.size()) {
+		VERBOSE("error: failed to describe all %u images with the dense matcher's model", (unsigned)images.size());
+		return false;
+	}
+	status.nState.set(Status::STATE::GLOBAL_DESCRIPTORS);
+	return true;
+}
+
+namespace {
+// Export the pairs CSV of a matched scene (ReconstructionConfig::exportPairsCSV, when non-empty)
+// right after Scene::Reconstruct() finishes pair matching, before any later reconstruction step
+// (largest-connected-component clustering, weak-image filtering, resection) can drop pairs or
+// leave images unregistered. A failed export only logs a warning: the file is a diagnostic and
+// must never cost the caller the reconstructed scene itself -- not a member of
+// Scene since it has an implicit precondition (must run right after matching) that makes it
+// unsuitable as public API, and it has no callers outside Reconstruct().
+void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
+{
+	if (!config.exportPairsCSV.empty() &&
+		!PairsMatcher::ExportPairsCSV(scene, config.exportPairsCSV,
+			config.tripletFilterCfg.minYield, config.matchCfg.weightingCfg))
+		VERBOSE("warning: failed to export image pairs to CSV file '%s'", config.exportPairsCSV.c_str());
+}
+
+ResectionConfig PrepareResectionConfig(const ReconstructionConfig& config)
+{
+	ResectionConfig resectionCfg = config.resectionCfg;
+	resectionCfg.pairsWeighting = config.matchCfg.weightingCfg;
+	BAConfig resectionBaCfg = config.baConfig;
+	SetBAIntrinsicFlags(resectionBaCfg, config.baIntrinsicFlags);
+	resectionCfg.DeriveBAConfigs(resectionBaCfg);
+	return resectionCfg;
+}
+
+// Weigh the pairs of a matched scene and export its pairs CSV: a saved scene's pair weights reflect
+// the config it was matched with (the dense frame weight among them); the reconstruction weighs with
+// its own, so they are computed again before anything reads them. The CSV describes the graph the
+// scene holds: the whole matched graph before the view-graph filters, the filtered one after.
+void WeighAndExportPairs(Scene& scene, const ReconstructionConfig& config)
+{
+	ComputePairsWeights(scene, config.matchCfg.weightingCfg);
+	ExportMatchingCSVs(scene, config);
+}
+
+// Export the pairs CSV of a matched scene, then disambiguate its view graph: the camera-triplet
+// filter (ViewGraphTriplets.h) scores every pair and, by default, removes nothing, and the
+// contradiction cut (FilterPairsByContradiction), weighted by those scores, removes the pairs the
+// global rotation and translation averaging contradict. The CSV describes the whole matched graph,
+// each pair with its triplet score, the pairs the filters remove included. The scene keeps the
+// images of the largest piece the triplet filter's ceiling leaves as its seed views (empty without
+// the filter) and reaches PAIRS_FILTERED: the filters run once on a scene's pairs. In a sequence run
+// (MatchConfig::IsImageSequence) the cut is given the neighbours of the sequence, the ones the matcher
+// forced: it trusts the chain of the verified neighbour pairs, vetoes the pairs that contradict it and
+// removes none of its links.
+void FilterViewGraph(Scene& scene, const ReconstructionConfig& config)
+{
+	ASSERT(scene.status.nState.isSet(Scene::Status::STATE::MATCHED));
+	ASSERT(!scene.status.nState.isSet(Scene::Status::STATE::PAIRS_FILTERED));
+	WeighAndExportPairs(scene, config);
+	std::vector<float> scores;
+	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &scene.seedViews, &scores);
+	const std::optional<SequenceNeighbours> sequence = SequenceNeighbours::FromConfig(scene, config.matchCfg);
+	if (sequence) {
+		VERBOSE("Image sequence: %u name break(s) among %u images (overlap %u, max gap %u)",
+			sequence->NumBreaks(), scene.images.size(), sequence->Overlap(), config.matchCfg.sequenceMaxGap);
+		// the chain is solved, and its veto and protection act, only in the translation stage and on neighbours
+		if (config.maxPairDirectionResidual <= 0.f)
+			VERBOSE("warning: the image sequence (--image-sequence or --match-mode 2) does nothing in the contradiction cut: its translation stage is off (--max-pair-direction-residual 0), so the sequence's chain is neither solved nor trusted");
+		else if (sequence->Overlap() == 0)
+			VERBOSE("warning: the image sequence (--image-sequence or --match-mode 2) does nothing in the contradiction cut: --match-sequence-overlap 0 leaves no neighbours, so the sequence has no chain");
+	}
+	// the repair confirms a refitted direction against the centres of the translation stage, so
+	// without that stage (a bar of 0) there is nothing for it to act on
+	FilterPairsByContradiction(scene, scores, config.minPairWeight, config.maxPairDirectionResidual, config.matchCfg.weightingCfg,
+		config.repairContradictedPairs && config.maxPairDirectionResidual > 0.f,
+		sequence ? &*sequence : nullptr);
+	scene.status.nState.set(Scene::Status::STATE::PAIRS_FILTERED);
+}
+
+// The seed views of one sub-scene: the images of `seedViews` (indices of the whole scene) it holds,
+// in its own local indices. An unclustered scene is its own single sub-scene and the indices coincide.
+IIndexArr SubSceneSeedViews(const IIndexArr& seedViews, const std::vector<IIndexArr>& localToGlobals, IIndex idxSubScene)
+{
+	if (localToGlobals.empty())
+		return seedViews;
+	std::unordered_set<IIndex> isSeed(seedViews.begin(), seedViews.end());
+	const IIndexArr& localToGlobal = localToGlobals[idxSubScene];
+	IIndexArr local;
+	FOREACH(l, localToGlobal)
+		if (isSeed.count(localToGlobal[l]))
+			local.push_back((IIndex)l);
+	return local;
+}
+} // namespace
 
 bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config)
 {
 	TD_TIMER_START();
 	VERBOSE("Starting reconstruction from '%s'", source.c_str());
 
-	#if 1
+	// A forced focal length (--focal-length) is a value the star initializer keeps: a star of a
+	// few views cannot improve it and can bend it. The global bundle adjustments refine it like
+	// any other focal once the model is large enough to hold it.
+	ReconstructionConfig cfg = config;
+	// Every bundle adjustment below derives its configuration from cfg.baConfig, so mapping the
+	// relative-pose sigma onto it here is what carries it to all of them: the star initializer's
+	// solves, the resection's local and full ones, and the global passes alike.
+	SetBAPairConstraints(cfg.baConfig, cfg.relativeRotationSigma);
+	cfg.baConfig.minTriangulationAngle = cfg.minAngleThreshold; // the budget of the observations keeps every track this wide
+	cfg.denseCfg.sphericalBottomBand = cfg.featuresCfg.sphericalBottomBand; // the dense matching keeps out of the band the features keep out of
+	if (cfg.importCfg.focalLength > 0) {
+		cfg.initCfg.refineFocalLength = false;
+		VERBOSE("Focal length forced at %g px: kept by the star initializer, refined by bundle adjustment", cfg.importCfg.focalLength);
+	}
+
 	if (!source.empty()) {
 		// Start a new reconstruction from the source list or folder of images
 		// or load existing scene if source is pointing to a SFM file
 		Release(); // clear existing scene if any
-		if (!Import(source, config.importCfg))
+		if (!Import(source, cfg.importCfg))
 			return false;
 		if (status.nState.isSet(Status::STATE::CALIBRATED)) {
 			VERBOSE("warning: scene already calibrated after import");
 			return false;
 		}
-		if (config.matchImagesOnly && status.nState.isSet(Status::STATE::MATCHED)) {
-			// the requested work is already done; still resolve an AUTO frames.json
-			// convention before the caller re-persists the scene (the loaded pairs are
-			// already matched, so the detection can run)
-			VERBOSE("warning: scene already matched after import");
-			if (config.HasKnownPoses() && !ResolveFramesConvention(*this,
-					config.importCfg.framesConvention, config.importCfg.importPosesFile))
-				return false;
-			return true;
+		// the matching thresholds belong to the descriptors the scene holds, not to the detector the configuration names
+		// (features imported from another tool carry no type: NONE, the configured thresholds stay)
+		if (status.nState.isSet(Status::STATE::FEATURES_EXTRACTED) && status.nFeaturesType != FeatureType::NONE &&
+			status.nFeaturesType != cfg.featuresCfg.detectorType) {
+			VERBOSE("warning: the saved scene holds %s features, not the configured %s: the matching thresholds follow the saved ones",
+				FeatureTypeToString(status.nFeaturesType).c_str(), FeatureTypeToString(cfg.featuresCfg.detectorType).c_str());
+			cfg.matchCfg.DefaultsForFeatureType(status.nFeaturesType);
 		}
 	}
 
-	// ImportCOLMAP(MAKE_PATH("colmap/scene_init.glmp"), *this);
-	// ImportCOLMAP(MAKE_PATH("colmap/scene_init.glmp"), *this, false, false);
-	// PairsMatcher pairsMatcher(*this, config.matchCfg);
-	// pairsMatcher.ComputeRelativePoses(false, false);
-
-	// Extract image features
-	if (!ExtractFeatures(config.featuresCfg))
+	// SKIP runs no matching: it can only use the matches the scene already holds, a pair with at least one match
+	// (a --match-images-only run or ExtractKeyframes stores them)
+	if (cfg.matchCfg.mode == MatchConfig::SKIP &&
+		std::none_of(pairs.begin(), pairs.end(), [](const ImagePair& pair) { return pair.GetNumMatches() > 0; })) {
+		VERBOSE("error: --match-mode -1 (SKIP) runs no matching, it needs a saved scene (.sfm) that already holds matches (after ExtractKeyframes or a --match-images-only run)");
 		return false;
+	}
 
-	// Match image pairs
-	if (!MatchPairs(config.matchCfg, config.roma2Cfg, config.viewgraphCfg))
+	// the GPS prior weighs its metric terms by a pinhole focal, which panoramas do not have
+	if (cfg.baConfig.IsRefiningGPS() && std::any_of(cameras.begin(), cameras.end(),
+			[](const Camera* camera) { return camera->GetType() == CameraType::SPHERICAL; })) {
+		VERBOSE("error: --gps-position-weight and --gps-position-weight-z do not apply to panoramas (spherical cameras): the GPS prior is weighed by a pinhole focal");
 		return false;
+	}
 
-	if (config.matchImagesOnly) {
+	if (status.nState.isSet(Status::STATE::PAIRS_FILTERED)) {
+		// a scene saved after the view-graph filters (a match-images-only run) holds the pairs, their repair
+		// marks and the seed views the reconstruction starts from: it is neither matched nor filtered again,
+		// its pairs are only weighed with this configuration and exported
+		VERBOSE("The scene's %u pairs are matched and filtered already: the reconstruction starts from them", pairs.size());
+		if (cfg.matchCfg.IsImageSequence())
+			VERBOSE("warning: the image sequence (--image-sequence or --match-mode 2) is not read for this scene: its view-graph filters ran already, with the options of the run that saved it; "
+				"to run them with the sequence's chain veto and protection, give back the scene before the filters (scene_matched.sfm of a -v 4 run)");
+		WeighAndExportPairs(*this, cfg);
+	} else {
+		// Extract image features
+		if (!ExtractFeatures(cfg.featuresCfg))
+			return false;
+
+		// Match image pairs
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		// does the matching run: not for a scene loaded matched, nor in the SKIP mode, which uses the scene's matches
+		const bool matchingRuns = !status.nState.isSet(Status::STATE::MATCHED) && cfg.matchCfg.mode != MatchConfig::SKIP;
+		#endif
+		if (!MatchPairs(cfg.matchCfg, cfg.denseCfg, cfg.viewgraphCfg))
+			return false;
+
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 3 && matchingRuns) {
+			// Save the scene this run matched, before the view-graph filters, for debugging (-v 4: the file
+			// holds every match): the filters run once on a scene's pairs, so only this scene can be given
+			// back to run them with other options. A run whose matching did not run saves nothing: the scene
+			// it was given holds those matches already
+			if (!Save(MAKE_PATH("scene_matched.sfm"), cfg.importCfg.archiveType))
+				VERBOSE("warning: failed to save the matched scene 'scene_matched.sfm' (the run continues)");
+		}
+		#endif
+
+		// export the pairs CSV right after matching, before any reconstruction step (clustering,
+		// weak-image filtering, resection) can drop pairs or leave images unregistered; covers both
+		// the match-images-only run and a full reconstruction, and is immediately followed by the
+		// view-graph filters, which run once on a scene's pairs
+		FilterViewGraph(*this, cfg);
+	}
+
+	if (cfg.matchImagesOnly) {
 		// a frames.json imported with an AUTO convention must be resolved before the scene
 		// is persisted, otherwise possibly-flipped poses are saved with no record of the
 		// ambiguity and every later consumer inherits reversed optical axes
-		if (config.HasKnownPoses() && !ResolveFramesConvention(*this,
-				config.importCfg.framesConvention, config.importCfg.importPosesFile))
+		if (cfg.HasKnownPoses() && !ResolveFramesConvention(*this,
+				cfg.importCfg.framesConvention, cfg.importCfg.importPosesFile))
 			return false;
-		VERBOSE("Image pairs matched only as per configuration, reconstruction skipped");
+		VERBOSE("Image pairs matched and filtered only as per configuration, reconstruction skipped");
 		return true;
 	}
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
-		// Save intermediate scene after matching for debugging
-		Save(MAKE_PATH("scene_pre_reconstruction.sfm"), config.importCfg.archiveType);
+		// Save the scene the reconstruction starts from (matched and filtered) for debugging
+		Save(MAKE_PATH("scene_pre_reconstruction.sfm"), cfg.importCfg.archiveType);
 	}
 	#endif
-	#else
-	// Shortcut features and matching by directly loading a pre-reconstruction scene (for debugging)
-	Load(MAKE_PATH("scene_pre_reconstruction.sfm"));
-	#endif
 
-	// Run reconstruction method
-	if (config.HasKnownPoses() ? !ReconstructKnownPoses(config)
-	    : config.useGlobalSolver ? !ReconstructGlobal(config)
-	                             : !ReconstructHierarchical(config))
+	// Run reconstruction method; the hierarchical one takes a copy of the seed views, since its
+	// blocks take the scene's data over
+	if (cfg.HasKnownPoses() ? !ReconstructKnownPoses(cfg)
+	    : cfg.useGlobalSolver ? !ReconstructGlobal(cfg)
+	                             : !ReconstructHierarchical(cfg, IIndexArr(seedViews)))
 		return false;
 
-	// Pre-final global bundle adjustment
-	BAConfig finalBaCfg = config.baConfig;
-	finalBaCfg.maxIterations = 25;
-	finalBaCfg.refineFocalLength = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
-	finalBaCfg.refineRadialDistortion123 = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_123) != 0;
-	BundleAdjustment::Adjust(*this, finalBaCfg);
-	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold);
-	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-	status.nState.set(Status::STATE::CALIBRATED);
 
 	// Final global bundle adjustment
-	finalBaCfg.maxIterations = config.baConfig.maxIterations;
-	SetBAIntrinsicFlags(finalBaCfg, config.baIntrinsicFlags);
+	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	TriangulateTracks(*this, true, cfg.maxReprojError, cfg.minAngleThreshold);
+	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	status.nState.set(Status::STATE::CALIBRATED);
+	BAConfig finalBaCfg = cfg.baConfig;
+	SetBAIntrinsicFlags(finalBaCfg, cfg.baIntrinsicFlags);
 	BundleAdjustment::Adjust(*this, finalBaCfg);
-	FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 
-	// Filter weakly connected images and resection remaining images into the reconstruction
-	FilterWeaklyConnectedImages(*this);
-	if (status.nCalibratedImages < images.size()) {
-		Resection resection(*this, config.resectionCfg);
-		resection.RegisterImages();
+	// Filter weakly connected images and resection remaining images into the reconstruction;
+	// images removed for contradicting the model are withheld from resection, while images
+	// removed for weak evidence are retried. The closing full BA re-admits observations
+	// dropped by the tighter final bar.
+	const RemovedImages removed = FilterWeaklyConnectedImages(*this);
+	const ResectionConfig resectionCfg = PrepareResectionConfig(cfg);
+	Resection resection(*this, resectionCfg);
+	resection.ImagesRemoved(removed);
+	if (resection.RegisterImages())
 		FilterWeaklyConnectedImages(*this);
-	}
 
-	// Align the scene back to the imported prior poses in known-poses mode (preserving the
-	// input frame is the point of that path, so it takes precedence over GPS, which would
-	// yank the scene out of that very frame), else to GPS if available. A failed prior-pose
-	// alignment leaves the scene in the refined (arbitrary-gauge) frame: it is reported, but
-	// must not discard the finished reconstruction
-	if (config.HasKnownPoses() && !priorPoses.empty()) {
+	// Align back to imported prior poses in known-poses mode, else to GPS if available.
+	if (cfg.HasKnownPoses() && !priorPoses.empty()) {
 		if (!AlignToPriorPoses())
 			VERBOSE("warning: could not align the reconstruction back to the imported pose frame; "
 				"the result is left in the refined (arbitrary) frame");
-	} else if (config.thAlignGPS > 0 && HasImagesWithGPS())
-		AlignToGPS(config.thAlignGPS);
+	} else if (cfg.thAlignGPS > 0 && HasImagesWithGPS())
+		AlignToGPS(cfg.thAlignGPS);
 
-	// Refine the geo-aligned reconstruction with GPS position priors (if enabled): the GPS
-	// residuals are gated on GEO_ALIGN and their meters-vs-pixels weighting assumes the metric
-	// ENU frame, so this is the earliest point in the pipeline where they can take effect
-	// (validated for pinhole cameras; spherical scenes use angular residuals the weighting
-	// does not account for).
-	// Disable intrinsics which already converged in the final bundle adjustment.
-	BAConfig uncBaCfg = finalBaCfg;
-	uncBaCfg.refineFocalLength = uncBaCfg.refineFocalLengthAspectRatio = uncBaCfg.refinePrincipalPoint =
-	uncBaCfg.refineRadialDistortion123 = uncBaCfg.refineTangentialDistortion = uncBaCfg.refineRadialDistortion456 = false;
-	if (config.baConfig.IsRefiningGPS() && status.nState.isSet(Status::STATE::GEO_ALIGN)) {
+	// Post-alignment GPS-prior BA and/or pose-uncertainty estimation (intrinsics already converged).
+	const bool runGPSBA = cfg.baConfig.IsRefiningGPS() && status.nState.isSet(Status::STATE::GEO_ALIGN);
+	if (runGPSBA || cfg.estimatePoseUncertainty) {
+		BAConfig uncBaCfg = finalBaCfg;
+		uncBaCfg.ClearIntrinsicRefinement();
 		BundleAdjustment ba(*this, uncBaCfg);
 		if (ba.Adjust()) {
-			if (config.estimatePoseUncertainty) {
-				// the GPS priors anchor the gauge, so this supersedes the earlier record
-				// with absolute ENU covariances (and covers the images resected since)
+			if (cfg.estimatePoseUncertainty)
 				poseUncertainty = ba.ComputePoseUncertainty();
-			}
-			FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-		}
-	} else if (config.estimatePoseUncertainty) {
-		BundleAdjustment ba(*this, uncBaCfg);
-		if (ba.Adjust()) {
-			poseUncertainty = ba.ComputePoseUncertainty();
-			FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+			FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 		}
 	}
 
 	// Estimate color for points
-	if (config.extractColors)
+	if (cfg.extractColors)
 		SampleColors();
 
 	VERBOSE("Reconstruction complete: %u images (%u total), %u points (%u total) in %s",
@@ -734,7 +953,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	return true;
 }
 
-bool Scene::ReconstructHierarchical(const ReconstructionConfig& config)
+bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const IIndexArr& seeds)
 {
 	if (status.nState.isSet(Status::STATE::CALIBRATED)) {
 		VERBOSE("warning: scene already calibrated");
@@ -743,16 +962,16 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config)
 
 	TD_TIMER_STARTD();
 
-	// 1. Cluster scene if necessary
-	std::vector<Scene> subScenes;
-	std::vector<IIndexArr> localToGlobals;
-	#if 1
-	if (config.clusterCfg.maxViewsPerCluster > 0 && images.size() > config.clusterCfg.maxViewsPerCluster) {
-		SceneCluster clusterer(*this, config.clusterCfg);
-		subScenes = clusterer.SplitScene(&localToGlobals);
-	} else {
-		subScenes.emplace_back(std::move(*this));
-	}
+	// 1. Partition the scene if necessary, and extract its blocks
+	SceneBlocks sceneBlocks(*this);
+	if (config.clusterCfg.maxViewsPerCluster > 0 && images.size() > config.clusterCfg.maxViewsPerCluster)
+		sceneBlocks.Extract(SceneCluster(*this, config.clusterCfg).Partition());
+	else
+		sceneBlocks.TakeWhole();
+	std::vector<Scene>& subScenes = sceneBlocks.blocks;
+	const std::vector<IIndexArr>& localToGlobals = sceneBlocks.localToGlobal;
+
+	const ResectionConfig resectionCfg = PrepareResectionConfig(config);
 
 	// 2. Reconstruct each sub-scene in parallel
 	threadPool.detach_loop(IIndex(0), (IIndex)subScenes.size(), [&](IIndex i) {
@@ -760,44 +979,39 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config)
 		DEBUG("Reconstructing sub-scene %u with %u images...", i, subScene.images.size());
 
 		// Build tracks
-		BuildTracks(subScene, config.minPairWeight);
+		BuildTracks(subScene, config.minPairWeight, config.trackConflictCfg);
 
 		// Initialize with star initializer
-		if (!StarInitializer::Initialize(subScene, config.initCfg)) {
+		StarInitConfig initCfg = config.initCfg;
+		initCfg.baConfig = config.baConfig;
+		initCfg.seedViews = SubSceneSeedViews(seeds, localToGlobals, i);
+		initCfg.evidenceMinAngle = config.minAngleThreshold;
+		initCfg.pairsWeighting = config.matchCfg.weightingCfg;
+		if (!StarInitializer::Initialize(subScene, initCfg)) {
 			VERBOSE("error: star initialization failed for sub-scene %u (skipping)", i);
-			return; // skip this sub-scene
+			return;
 		}
 
-		// Incrementally resect images into the reconstruction; every Ceres solve
-		// clamps itself to the sub-scene's thread budget (see BundleAdjustment)
-		Resection resection(subScene, config.resectionCfg);
+		// Incrementally resect images into the reconstruction
+		Resection resection(subScene, resectionCfg);
 		resection.RegisterImages();
-
-		// Local / global bundle adjustment for this sub-scene
-		BAConfig baCfg = config.baConfig;
-		SetBAIntrinsicFlags(baCfg, config.baIntrinsicFlags);
-		BundleAdjustment::Adjust(subScene, baCfg);
 		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	});
 	threadPool.wait();
-	#if 0
-	SerializeSave(*this, MAKE_PATH("scene_pre_hierarchical_scene.sfm"), config.importCfg.archiveType);
-	SerializeSave(subScenes, MAKE_PATH("scene_pre_hierarchical_reconstruction.sfm"), config.importCfg.archiveType);
-	SerializeSave(localToGlobals, MAKE_PATH("scene_pre_hierarchical_local_to_globals.sfm"), config.importCfg.archiveType);
-	#endif
-	#else
-	SerializeLoad(*this, MAKE_PATH("scene_pre_hierarchical_scene.sfm"), config.importCfg.archiveType);
-	SerializeLoad(subScenes, MAKE_PATH("scene_pre_hierarchical_reconstruction.sfm"), config.importCfg.archiveType);
-	SerializeLoad(localToGlobals, MAKE_PATH("scene_pre_hierarchical_local_to_globals.sfm"), config.importCfg.archiveType);
-	#endif
 
-	// 3. Merge/align sub-scenes (simple merge + final BA)
-	if (subScenes.size() == 1) {
+	if (!sceneBlocks.IsSplit()) {
 		*this = std::move(subScenes[0]);
 	} else {
-		// merge sub-scenes, or, if not possible, keep only the largest sub-scene
-		GlobalAlignment globalAlign(*this, config.globalAlignmentCfg);
-		globalAlign.MergeScenes(subScenes, localToGlobals);
+		// 3. The pool resection: the images a block did not register, and the ones the partition left
+		// in no block, registered into the blocks they connect to best
+		sceneBlocks.ResectPool(resectionCfg, config);
+		if (subScenes.empty()) {
+			VERBOSE("warning: no block initialized; every image is left to the resection");
+			return true;
+		}
+
+		// 4. The merge, one iterative stage (SceneBlocks::MergeInRounds)
+		sceneBlocks.MergeInRounds(resectionCfg, config);
 	}
 	DEBUG("Hierarchical reconstruction complete: %u/%u images, %u/%u points (%s)",
 		status.nCalibratedImages, images.size(), status.nTracks, tracks.size(), TD_TIMER_GET_FMT().c_str());
@@ -828,12 +1042,8 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 		return false;
 	}
 
-	// CompareScenes(*this, MAKE_PATH("rscene_init.mvs"));
-	// ImportCOLMAP(MAKE_PATH("colmap/scene_rotations.glmp"), *this);
-	// CompareScenes(*this, MAKE_PATH("rscene_init.mvs"));
-
 	// Build tracks
-	BuildTracks(*this, config.minPairWeight);
+	BuildTracks(*this, config.minPairWeight, config.trackConflictCfg);
 
 	// 2. Global Positioning
 	GlobalPositionerOptions posOptions;
@@ -849,7 +1059,8 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 	status.nState.set(Status::STATE::CALIBRATED);
 
 	// 4. Bundle Adjustment for position and structure refinement only
-	BAConfig baCfg;
+	BAConfig baCfg = config.baConfig;
+	baCfg.minTriangulationAngle = config.minAngleThreshold;
 	baCfg.refinePosesRotation = false;
 	baCfg.maxIterations = 12;
 	BundleAdjustment::Adjust(*this, baCfg);
@@ -929,7 +1140,7 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 	// approximate (and the intrinsics may still come from EXIF), so triangulate with a
 	// permissive reprojection threshold - the accurate-pose threshold would reject most of
 	// the correct tracks before the bundle adjustment ever gets a chance to fix the geometry
-	BuildTracks(*this, config.minPairWeight);
+	BuildTracks(*this, config.minPairWeight, config.trackConflictCfg);
 	if (tracks.empty()) {
 		VERBOSE("error: no tracks could be built from the matched pairs");
 		return false;
@@ -957,6 +1168,7 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 	// second pass - the same mini-BA -> re-triangulate -> BA convergence pattern the star
 	// initializer uses
 	BAConfig baCfg = config.baConfig;
+	baCfg.minTriangulationAngle = config.minAngleThreshold;
 	SetBAIntrinsicFlags(baCfg, config.baIntrinsicFlags);
 	bool trustedIntrinsics = true;
 	for (const Camera* cam: cameras) {
@@ -1019,13 +1231,8 @@ bool Scene::SampleColors()
 			const Image& img = images[obs.imageID];
 			ASSERT(img.IsValid());
 			ASSERT(obs.featureID < img.keypoints.size());
-			// Compute pixel reprojection error
-			const cv::KeyPoint& kp = img.keypoints[obs.featureID];
-			const auto [projected, valid] = img.ProjectPoint(track.position);
-			if (!valid)
-				continue;
-			const float pixelError = norm(Cast<float>(projected) - kp.pt);
-			if (pixelError < minError) {
+			const auto [pixelError, valid] = ComputeReprojectionErrorPixels(img, track.position, obs.featureID);
+			if (valid && pixelError < minError) {
 				minError = pixelError;
 				bestObsIdx = obsIdx;
 			}
@@ -1114,18 +1321,7 @@ bool Scene::AlignToGPS(double threshold)
 	// at least 3 distinct, non-collinear positions spread wider than the GPS noise
 	// (consumer devices often tag consecutive images with the same stale GPS fix)
 	if (threshold > 0) {
-		Point3 mean(Point3::ZERO);
-		for (const Point3& enu : enuPositions)
-			mean += enu;
-		mean /= (double)enuPositions.size();
-		Eigen::Matrix3d cov(Eigen::Matrix3d::Zero());
-		for (const Point3& enu : enuPositions) {
-			const Eigen::Vector3d d(Point3d(enu - mean));
-			cov += d * d.transpose();
-		}
-		cov /= (double)enuPositions.size();
-		// standard deviation along each principal axis, in increasing order
-		const Eigen::Vector3d spread(Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(cov, Eigen::EigenvaluesOnly).eigenvalues().cwiseMax(0.).cwiseSqrt());
+		const Eigen::Vector3d spread = ComputePrincipalSpread(enuPositions);
 		if (spread(1) < threshold) {
 			VERBOSE("error: GPS positions nearly coincident or collinear (spread %.1fx%.1fx%.1fm, need %.1fm+), skipping GPS alignment",
 				spread(2), spread(1), spread(0), threshold);
@@ -1278,10 +1474,7 @@ void Scene::Transform(const struct Transform& T)
 		for (PoseUncertainty& u : poseUncertainty) {
 			if (!u.IsValid())
 				continue;
-			const Matrix3x3 cov(
-				u.posVar.x, u.posCov.x, u.posCov.y,
-				u.posCov.x, u.posVar.y, u.posCov.z,
-				u.posCov.y, u.posCov.z, u.posVar.z);
+			const Matrix3x3 cov(u.GetPositionCovariance());
 			const Matrix3x3 covT(T.R * cov * T.R.t() * s2);
 			u.posVar = Point3f((float)covT(0,0), (float)covT(1,1), (float)covT(2,2));
 			u.posCov = Point3f((float)covT(0,1), (float)covT(0,2), (float)covT(1,2));
@@ -1365,123 +1558,6 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 	}
 	return failures == 0;
 }
-
-// Precompute neighbor views based on shared track observations
-void Scene::PrecomputeTrackBasedNeighbors(std::vector<ViewScoreArr>& neighbors) const
-{
-	neighbors.clear();
-	neighbors.resize(images.size());
-	if (images.empty() || tracks.empty())
-		return;
-
-	TD_TIMER_STARTD();
-
-	// Helper struct to accumulate neighbor statistics
-	struct TrackNeighborStats {
-		float angleSum = 0.f;       // sum of angles between viewing rays
-		uint32_t angleCount = 0;    // count of valid angle computations
-		CLISTDEF0(uint32_t) sharedTrackIDs; // IDs of shared tracks
-	};
-
-	// Process each reference image
-	FOREACH(refID, images) {
-		const Image& refImage = images[refID];
-		if (!refImage.IsValid())
-			continue;
-
-		// Statistics per potential neighbor image
-		std::vector<TrackNeighborStats> stats(images.size());
-
-		// Iterate over all tracks and find shared observations
-		FOREACH(trackID, tracks) {
-			const Track& track = tracks[trackID];
-			if (!track.IsInlier())
-				continue;
-
-			// Check if reference image observes this track
-			bool refObserves = false;
-			for (const Observation& obs : track) {
-				if (obs.imageID == refID) {
-					refObserves = true;
-					break;
-				}
-			}
-			if (!refObserves)
-				continue;
-
-			// Compute depth and viewing direction for reference image
-			const auto [trackInRefImg, validRef] = refImage.ProjectPoint(track.position);
-			if (!validRef)
-				continue;
-			Point3 V1 = refImage.C - track.position;
-
-			// Count shared observations and compute angles
-			for (const Observation& obs : track) {
-				if (obs.imageID == refID)
-					continue;
-				const Image& otherImage = images[obs.imageID];
-				ASSERT(otherImage.IsValid());
-				const auto [trackInOtherImg, validOther] = otherImage.ProjectPoint(track.position);
-				if (!validOther)
-					continue;
-				TrackNeighborStats& stat = stats[obs.imageID];
-				stat.sharedTrackIDs.emplace_back(trackID);
-				const Point3 V2 = otherImage.C - track.position;
-				const float cosAngle = static_cast<float>(CLAMP(V1.dot(V2) / (norm(V1) * norm(V2)), -1.0, 1.0));
-				stat.angleSum += ACOS(cosAngle);
-				++stat.angleCount;
-			}
-		}
-
-		// Build ViewScoreArr for this reference image
-		ViewScoreArr& refNeighbors = neighbors[refID];
-		CLISTDEF0(Point2f) projs(0, 256);
-
-		// Get reference image size for area computation
-		const Point2f boundsA(refImage.GetSize());
-		FOREACH(viewID, images) {
-			const TrackNeighborStats& stat = stats[viewID];
-			if (stat.sharedTrackIDs.empty())
-				continue;
-
-			const Image& otherImage = images[viewID];
-			ASSERT(otherImage.IsValid());
-
-			// Compute overlap area by projecting shared tracks
-			const Point2f boundsB(otherImage.GetSize());
-			projs.Empty();
-			for (const uint32_t trackID : stat.sharedTrackIDs) {
-				const Track& track = tracks[trackID];
-				const auto [ptB, validB] = otherImage.ProjectPoint(track.position);
-				if (!validB || ptB.x < 0 || ptB.x >= boundsB.x || ptB.y < 0 || ptB.y >= boundsB.y)
-					continue;
-				// bounds tested on the single precision position the area is binned by: a double just
-				// inside the image can round to its size
-				const auto [ptAd, validA] = refImage.ProjectPoint(track.position);
-				const Point2f ptA(Cast<float>(ptAd));
-				if (!validA || ptA.x < 0 || ptA.x >= boundsA.x || ptA.y < 0 || ptA.y >= boundsA.y)
-					continue;
-				projs.emplace_back(ptA);
-			}
-
-			// Add neighbor entry
-			ViewScore& neighbor = refNeighbors.AddEmpty();
-			neighbor.ID = static_cast<uint32_t>(viewID);
-			neighbor.points = stat.sharedTrackIDs.size();
-			neighbor.angle = stat.angleCount > 0 ? stat.angleSum / stat.angleCount : 0.f;
-			neighbor.area = projs.empty() ? 0.f : ComputeCoveredArea<float,2,16,false>(reinterpret_cast<const float*>(projs.data()), projs.size(), &boundsA.x);
-		}
-
-		// Sort neighbors by number of shared tracks (descending)
-		refNeighbors.Sort([](const ViewScore& a, const ViewScore& b) {
-			return a.points > b.points;
-		});
-	}
-
-	DEBUG_EXTRA("Track-based neighbors precomputed: %u images (%s)", images.size(), TD_TIMER_GET_FMT().c_str());
-}
-/*----------------------------------------------------------------*/
-
 
 // Export tracks and optionally image positions to PLY format
 bool Scene::ExportPLY(const String& fileName, bool bExportImages, bool bInliersOnly, bool bBinary) const
@@ -1575,28 +1651,24 @@ bool SFM::CompareScenes(const Scene& scene, const String& gtFile, bool matchByNa
 			continue;
 		if (isCalibrated && !img.HasPose())
 			continue;
+		IIndex matchGtID = NO_ID;
 		if (matchByName) {
-			const String key(Util::getFileName(img.fileName));
-			auto it = gtByName.find(key);
-			if (it == gtByName.end())
-				continue;
-			sceneIdx.push_back(i);
-			gtIdx.push_back(it->second);
-			srcCenters.push_back(img.C);
-			dstCenters.push_back(gtScene.images[it->second].C);
-			srcRots.push_back(img.R);
-			dstRots.push_back(gtScene.images[it->second].R);
+			const auto it = gtByName.find(Util::getFileName(img.fileName));
+			if (it != gtByName.end())
+				matchGtID = it->second;
 		} else {
-			auto it = gtById.find(img.ID);
-			if (it == gtById.end())
-				continue;
-			sceneIdx.push_back(i);
-			gtIdx.push_back(it->second);
-			srcCenters.push_back(img.C);
-			dstCenters.push_back(gtScene.images[it->second].C);
-			srcRots.push_back(img.R);
-			dstRots.push_back(gtScene.images[it->second].R);
+			const auto it = gtById.find(img.ID);
+			if (it != gtById.end())
+				matchGtID = it->second;
 		}
+		if (matchGtID == NO_ID)
+			continue;
+		sceneIdx.push_back(i);
+		gtIdx.push_back(matchGtID);
+		srcCenters.push_back(img.C);
+		dstCenters.push_back(gtScene.images[matchGtID].C);
+		srcRots.push_back(img.R);
+		dstRots.push_back(gtScene.images[matchGtID].R);
 	}
 	if (sceneIdx.size() < 3) {
 		VERBOSE("error: insufficient common posed images (%zu) using %s matching to compare scenes",
@@ -1610,52 +1682,36 @@ bool SFM::CompareScenes(const Scene& scene, const String& gtFile, bool matchByNa
 	unsigned numLargeRotErrors = 0, numVeryLargeRotErrors = 0;
 	DoubleArr rotErrDeg, posErr;
 	rotErrDeg.reserve(sceneIdx.size());
-	if (isCalibrated)
-		posErr.reserve(sceneIdx.size());
+	const auto recordRotError = [&](const Matrix3x3& R_aligned, const Matrix3x3& R_gt) {
+		const double ang = R2D(ACOS(ComputeAngle(R_aligned, R_gt)));
+		if (ang > rotErrorLargeThresholdDeg)
+			++numVeryLargeRotErrors;
+		else if (ang > rotErrorThresholdDeg)
+			++numLargeRotErrors;
+		rotErrDeg.push_back(ang);
+	};
 	if (isCalibrated) {
-		// Full calibrated scene: estimate similarity transform and compare both rotation and
-		// position; the rotation-aware estimation keeps a (nearly) collinear capture (corridor
-		// walk) comparable, where a center-only fit would report an arbitrary roll about the
-		// trajectory as rotation error
+		posErr.reserve(sceneIdx.size());
 		const double threshold = 0.5 * (double)MedianNearestCameraDistance(gtScene.threadPool, dstCenters);
 		Transform align;
 		if (EstimateSimilarityTransformWithRotations(srcCenters, dstCenters, srcRots, dstRots, align, threshold) == 0) {
 			VERBOSE("error: compare scenes similarity estimation failed (%zu matches)", srcCenters.size());
 			return false;
 		}
-
 		FOREACH(k, sceneIdx) {
 			const Image& img = scene.images[sceneIdx[k]];
 			const Image& gtImg = gtScene.images[gtIdx[k]];
-
-			const Point3 C_aligned = align * img.C;
-			posErr.push_back(norm(C_aligned - gtImg.C));
-
-			const Matrix3x3 R_aligned(img.R * align.R.t());
-			const double ang = R2D(ACOS(ComputeAngle(R_aligned, gtImg.R)));
-			if (ang > rotErrorLargeThresholdDeg)
-				++numVeryLargeRotErrors;
-			else if (ang > rotErrorThresholdDeg)
-				++numLargeRotErrors;
-			rotErrDeg.push_back(ang);
+			posErr.push_back(norm((align * img.C) - gtImg.C));
+			recordRotError(img.R * align.R.t(), gtImg.R);
 		}
 	} else {
-		// Uncalibrated scene (rotation-only): robustly estimate common alignment then compare
 		Matrix3x3 alignR;
 		if (!EstimateRotationAlignment(srcRots, dstRots, alignR)) {
 			VERBOSE("error: rotation alignment estimation failed (%zu matches)", srcRots.size());
 			return false;
 		}
-		FOREACH(k, sceneIdx) {
-			const Matrix3x3 R_rel_scene(scene.images[sceneIdx[k]].R * alignR);
-			const Matrix3x3& R_gt = gtScene.images[gtIdx[k]].R;
-			const double ang = R2D(ACOS(ComputeAngle(R_rel_scene, R_gt)));
-			if (ang > rotErrorLargeThresholdDeg)
-				++numVeryLargeRotErrors;
-			else if (ang > rotErrorThresholdDeg)
-				++numLargeRotErrors;
-			rotErrDeg.push_back(ang);
-		}
+		FOREACH(k, sceneIdx)
+			recordRotError(scene.images[sceneIdx[k]].R * alignR, gtScene.images[gtIdx[k]].R);
 	}
 
 	const MeanStdMinMax<double> rotStats(rotErrDeg.data(), rotErrDeg.size());

@@ -25,7 +25,8 @@ namespace SFM {
 
 // Forward declarations
 class SFM_API Scene;
-class SFM_API Image;
+struct SFM_API PairsWeightingConfig;
+class SFM_API SequenceNeighbours;
 
 // Pairwise relative rotation
 struct SFM_API RotationPair
@@ -66,6 +67,13 @@ struct SFM_API GlobalRotationEstimatorOptions
 		HALF_NORM,
 	} weightType = GEMAN_MCCLURE;
 
+	// The median the pair weights are scaled to inside the estimator (> 0): the weights count only
+	// relative to each other, so the result does not depend on their absolute scale. It sets where
+	// the L1 step's fixed-iteration ADMM sits between a weighted least-squares fit (large values) and
+	// an L1 fit (small values); the reconstructions are flat from 1 to 1000 on the captures measured
+	// (docs/design/ContradictionCut.md).
+	double weightMedian = 10.0;
+
 	// Flag to use maximum spanning tree for initialization
 	bool skipInitialization = false;
 
@@ -100,6 +108,22 @@ public:
 		const std::vector<RotationPair>& pairwiseRotations,
 		const uint32_t numNodes,
 		std::vector<Point3>& globalRotations);
+
+	// Estimate global rotations across all connected components (largest first).
+	// Fills rotations (angle-axis, INF where unreached) and componentOf (0..numComponents-1, NO_ID where unreached).
+	// Returns the number of solved components.
+	unsigned EstimateAllComponents(
+		const std::vector<RotationPair>& pairwiseRotations,
+		const uint32_t numNodes,
+		std::vector<Point3>& rotations,
+		std::vector<uint32_t>& componentOf) const;
+
+	// Build maximum spanning tree of pairwiseRotations and propagate rotations from the best-connected
+	// node of the largest component at identity. Returns the root node, or NO_ID if none.
+	static uint32_t RotationsFromMaximumSpanningTree(
+		uint32_t numNodes,
+		const std::vector<RotationPair>& pairwiseRotations,
+		std::vector<Point3>& rotations);
 
 	// Filter relative rotations that are inconsistent with current global estimates
 	//  - maxRelativeAngle: maximum allowed angle (degrees) between stored and computed relative rotation
@@ -160,6 +184,23 @@ private:
 	uint32_t fixedNodeId = NO_ID;
 };
 /*----------------------------------------------------------------*/
+
+// What the chain of an image sequence did in the contradiction cut (FilterPairsByContradiction given the neighbours;
+// the terms are SequenceChain.h's)
+struct SFM_API SequenceFilterStats {
+	unsigned numSegments{0};  // segments of the chain
+	unsigned numLinks{0};     // links of the chain
+	unsigned numJudged{0};    // pairs the veto judged against the chain
+	unsigned numVetoed{0};    // of them, the pairs it removed
+	unsigned numProtected{0}; // links the translation stage would have removed
+};
+
+// Filter view-graph pairs contradicted by robust global rotation averaging (and optionally translation
+// averaging when maxDirectionResidual > 0, with optional repair and image-sequence chain veto/protection).
+// Recomputes pair weights if any pair was removed or repaired; returns total removed pairs.
+unsigned SFM_API FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
+	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair = false,
+	const SequenceNeighbours* neighbours = nullptr, SequenceFilterStats* stats = nullptr);
 
 } // namespace SFM
 

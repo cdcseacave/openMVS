@@ -1,0 +1,4 @@
+# Raw little-endian fp32 test vectors and a lossless PNG source. Mark them binary so git
+# never applies CRLF conversion to byte values inside floats.
+*.bin -text
+*.png -text

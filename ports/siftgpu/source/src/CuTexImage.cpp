@@ -186,7 +186,7 @@ bool CuTexImage::InitTexture(int width, int height, int nchannel)
 	_imgHeight = height;
 	_numChannel = min(max(nchannel, 1), 4);
 
-	const size_t size = width * height * _numChannel * sizeof(float);
+	const size_t size = (size_t)width * height * _numChannel * sizeof(float); // in size_t: width * height overflows int past 46340^2
 
   if (size < 0) {
     return false;
@@ -219,13 +219,13 @@ bool CuTexImage::InitTexture(int width, int height, int nchannel)
 void CuTexImage::CopyFromHost(const void * buf)
 {
 	if(_cuData == NULL) return;
-	cudaMemcpy( _cuData, buf, _imgWidth * _imgHeight * _numChannel * sizeof(float), cudaMemcpyHostToDevice);
+	cudaMemcpy( _cuData, buf, (size_t)_imgWidth * _imgHeight * _numChannel * sizeof(float), cudaMemcpyHostToDevice);
 }
 
 void CuTexImage::CopyToHost(void * buf)
 {
 	if(_cuData == NULL) return;
-	cudaMemcpy(buf, _cuData, _imgWidth * _imgHeight * _numChannel * sizeof(float), cudaMemcpyDeviceToHost);
+	cudaMemcpy(buf, _cuData, (size_t)_imgWidth * _imgHeight * _numChannel * sizeof(float), cudaMemcpyDeviceToHost);
 }
 
 void CuTexImage::CopyFromPBO(int width, int height, GLuint pbo)

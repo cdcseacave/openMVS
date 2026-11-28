@@ -57,11 +57,14 @@
 // NVidia Cuda Runtime API
 #cmakedefine _USE_CUDA
 
+// SiftGPU feature extraction and matching
+#cmakedefine _USE_SIFTGPU
+
+// ONNX Runtime inference (RoMa v2 dense matching, DINOv3 retrieval)
+#cmakedefine _USE_ONNXRUNTIME
+
 // Apple Metal compute backend
 #cmakedefine _USE_METAL
-
-// SiftGPU feature extractor (CUDA and/or OpenGL)
-#cmakedefine _USE_SIFTGPU
 
 // Fast float to int support
 #cmakedefine _USE_FAST_FLOAT2INT

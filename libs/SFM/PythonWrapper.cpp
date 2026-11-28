@@ -42,6 +42,7 @@
 #define BOOST_PYTHON_STATIC_LIB
 #endif
 #include <boost/python.hpp>
+#include <stdexcept>
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -72,7 +73,7 @@ public:
 		return Reconstruct(MAKE_PATH_SAFE(source), config);
 	}
 	bool pyReconstructHierarchical(const SFM::ReconstructionConfig& config) {
-		return ReconstructHierarchical(config);
+		return ReconstructHierarchical(config, SFM::IIndexArr(seedViews));
 	}
 	bool pyReconstructGlobal(const SFM::ReconstructionConfig& config) {
 		return ReconstructGlobal(config);
@@ -89,9 +90,9 @@ public:
 		return ExtractFeatures(config);
 	}
 	bool pyMatchPairs(const SFM::MatchConfig& matchCfg,
-	                  const SFM::ROMA2Config& roma2Cfg,
+	                  const SFM::DenseMatchConfig& denseCfg,
 	                  const SFM::ViewGraphCalibratorConfig& vgConfig) {
-		return MatchPairs(matchCfg, roma2Cfg, vgConfig);
+		return MatchPairs(matchCfg, denseCfg, vgConfig);
 	}
 
 	bool pyAlignToGPS(double threshold=0.0) {
@@ -186,6 +187,43 @@ static bool ExportToMVSFile(const Scene& scene, const std::string& fileName,
 	return SFM::ExportMVS(MAKE_PATH_SAFE(fileName), scene, config);
 }
 
+// The camera-triplet disambiguation scores of a matched scene (ViewGraphTriplets.h) as a dict:
+// "scores" holds one float per scene pair, in scene.pairs order, -1 marking an unscored pair;
+// "tau" is the threshold derived from min_score (the scores themselves do not depend on it); the
+// remaining entries are the statistics of the scored graph. grid_size is the coverage grid the
+// pair strengths are discounted on, min_yield the look-alike triangle bar of TripletFilterConfig.
+static boost::python::dict ComputeTripletScoresDict(const Scene& scene, float minScore, float minYield, int gridSize) {
+	SFM::PairsWeightingConfig weighting;
+	weighting.gridSize = gridSize;
+	const SFM::TripletScores tripletScores = SFM::ComputeTripletScores(scene, minScore, minYield, weighting);
+	boost::python::list scores;
+	for (float score : tripletScores.scores)
+		scores.append(score);
+	boost::python::dict out;
+	out["scores"] = scores;
+	out["tau"] = tripletScores.tau;
+	out["num_triplets"] = tripletScores.numTriplets;
+	out["num_triplet_components"] = tripletScores.numTripletComponents;
+	out["num_doppelganger_triplets"] = tripletScores.numDoppelgangerTriplets;
+	out["num_scored_pairs"] = tripletScores.numScoredPairs;
+	out["num_nodes"] = tripletScores.numNodes;
+	out["max_degree"] = tripletScores.maxDegree;
+	return out;
+}
+
+// ReconstructionConfig::maxPairDirectionResidual, the contradiction cut's translation stage bar in
+// degrees: a value set from Python is external input, refused (ValueError) unless it is in [0,180]
+// (NaN included; 0 = no translation stage), as the command line is.
+static float GetMaxPairDirectionResidual(const SFM::ReconstructionConfig& config) {
+	return config.maxPairDirectionResidual;
+}
+static void SetMaxPairDirectionResidual(SFM::ReconstructionConfig& config, float value) {
+	if (!(value >= 0.f && value <= 180.f))
+		throw std::invalid_argument(SEACAVE::String::FormatString(
+			"max_pair_direction_residual is the translation stage's bar in degrees, it must be in [0,180] (got %g; 0 = no translation stage)", value));
+	config.maxPairDirectionResidual = value;
+}
+
 
 // SEACAVE::String <-> Python str converters.
 // SEACAVE::String publicly derives from std::string, but Boost.Python keys
@@ -260,11 +298,15 @@ void RegisterBindings()
 		.value("AUTO", SFM::FramesConvention::AUTO)
 		.value("ARKIT", SFM::FramesConvention::ARKIT)
 		.value("OPENCV", SFM::FramesConvention::OPENCV);
+	enum_<SFM::CameraType>("CameraType")
+		.value("UNDEFINED", SFM::CameraType::UNDEFINED)
+		.value("PINHOLE", SFM::CameraType::PINHOLE)
+		.value("SPHERICAL", SFM::CameraType::SPHERICAL);
 
 	// SFM::ImportConfig — image import + camera priors
 	class_<SFM::ImportConfig>("ImportConfig")
-		.def_readwrite("use_exif", &SFM::ImportConfig::useExif)
 		.def_readwrite("default_focal_ratio", &SFM::ImportConfig::defaultFocalRatio)
+		.def_readwrite("camera_type", &SFM::ImportConfig::cameraType)
 		.def_readwrite("focal_length", &SFM::ImportConfig::focalLength)
 		.def_readwrite("k1", &SFM::ImportConfig::k1)
 		.def_readwrite("k2", &SFM::ImportConfig::k2)
@@ -272,12 +314,29 @@ void RegisterBindings()
 		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode)
 		.def_readwrite("frames_convention", &SFM::ImportConfig::framesConvention);
 
-	// SFM::ROMA2Config — semi-dense matching
-	class_<SFM::ROMA2Config>("ROMA2Config")
-		.DEF_STR_RW("import_path", &SFM::ROMA2Config::importROMA2Path)
-		.def_readwrite("min_pair_weight", &SFM::ROMA2Config::minPairWeight)
-		.def_readwrite("epipolar_threshold", &SFM::ROMA2Config::epipolarThreshold)
-		.def_readwrite("erode_border", &SFM::ROMA2Config::erodeBorder);
+	// SFM::DenseMatchConfig — in-process ROMAv2 retrieval and one-pass dense matching
+	class_<SFM::DenseMatchConfig>("DenseMatchConfig")
+		.def_readwrite("enabled", &SFM::DenseMatchConfig::enabled)
+		.DEF_STR_RW("model_path", &SFM::DenseMatchConfig::modelPath)
+		.DEF_STR_RW("setting", &SFM::DenseMatchConfig::setting)
+		.DEF_STR_RW("provider", &SFM::DenseMatchConfig::provider)
+		.def_readwrite("use_matching", &SFM::DenseMatchConfig::useMatching)
+		.DEF_STR_RW("matcher", &SFM::DenseMatchConfig::matcher)
+		.DEF_STR_RW("flexglue_model_path", &SFM::DenseMatchConfig::flexglueModelPath)
+		.def_readwrite("min_covisibility", &SFM::DenseMatchConfig::minCovisibility)
+		.def_readwrite("min_confidence", &SFM::DenseMatchConfig::minConfidence)
+		.def_readwrite("min_overlap", &SFM::DenseMatchConfig::minOverlap)
+		.def_readwrite("dense_matches_per_frame", &SFM::DenseMatchConfig::denseMatchesPerFrame)
+		.def_readwrite("slot_budget", &SFM::DenseMatchConfig::slotBudget)
+		.def_readwrite("use_gpu", &SFM::DenseMatchConfig::useGPU);
+
+	// SFM::TripletFilterConfig — camera-triplet view-graph disambiguation
+	class_<SFM::TripletFilterConfig>("TripletFilterConfig")
+		.def_readwrite("enabled", &SFM::TripletFilterConfig::enabled)
+		.def_readwrite("cut", &SFM::TripletFilterConfig::cut)
+		.def_readwrite("min_score", &SFM::TripletFilterConfig::minScore)
+		.def_readwrite("min_yield", &SFM::TripletFilterConfig::minYield)
+		.def_readwrite("second_face_score", &SFM::TripletFilterConfig::secondFaceScore);
 
 	// SFM::ViewGraphCalibratorConfig — focal-length verification
 	class_<SFM::ViewGraphCalibratorConfig>("ViewGraphCalibratorConfig");
@@ -292,11 +351,14 @@ void RegisterBindings()
 	class_<SFM::ReconstructionConfig>("ReconstructionConfig")
 		.def_readwrite("import_cfg", &SFM::ReconstructionConfig::importCfg)
 		.def_readwrite("features_cfg", &SFM::ReconstructionConfig::featuresCfg)
-		.def_readwrite("roma2_cfg", &SFM::ReconstructionConfig::roma2Cfg)
+		.def_readwrite("dense_cfg", &SFM::ReconstructionConfig::denseCfg)
 		.def_readwrite("match_cfg", &SFM::ReconstructionConfig::matchCfg)
 		.def_readwrite("match_images_only", &SFM::ReconstructionConfig::matchImagesOnly)
+		.DEF_STR_RW("export_pairs_csv", &SFM::ReconstructionConfig::exportPairsCSV)
+		.def_readwrite("triplet_filter_cfg", &SFM::ReconstructionConfig::tripletFilterCfg)
 		.def_readwrite("viewgraph_cfg", &SFM::ReconstructionConfig::viewgraphCfg)
 		.def_readwrite("min_pair_weight", &SFM::ReconstructionConfig::minPairWeight)
+		.add_property("max_pair_direction_residual", &GetMaxPairDirectionResidual, &SetMaxPairDirectionResidual)
 		.def_readwrite("max_reproj_error", &SFM::ReconstructionConfig::maxReprojError)
 		.def_readwrite("max_fine_reproj_error", &SFM::ReconstructionConfig::maxFineReprojError)
 		.def_readwrite("min_angle_threshold", &SFM::ReconstructionConfig::minAngleThreshold)
@@ -333,7 +395,7 @@ void RegisterBindings()
 				(arg("source"), arg("config")))
 		.def("extract_features", &Scene::pyExtractFeatures, (arg("config")))
 		.def("match_pairs", &Scene::pyMatchPairs,
-				(arg("match_config"), arg("roma2_config"), arg("viewgraph_config")))
+				(arg("match_config"), arg("dense_config"), arg("viewgraph_config")))
 		.def("reconstruct", &Scene::pyReconstruct,
 				(arg("source"), arg("config")))
 		.def("reconstruct_hierarchical", &Scene::pyReconstructHierarchical, (arg("config")))
@@ -356,6 +418,11 @@ void RegisterBindings()
 	// Free function: convenience SFM->MVS bridge via .mvs file.
 	def("export_sfm_to_mvs", &ExportToMVSFile,
 			(arg("scene"), arg("file_path"), arg("config")=SFM::ExportMVSConfig()));
+
+	// Free function: the camera-triplet disambiguation scores of a matched scene.
+	def("compute_triplet_scores", &ComputeTripletScoresDict,
+			(arg("scene"), arg("min_score")=0.f, arg("min_yield")=SFM::TripletFilterConfig().minYield,
+				arg("grid_size")=SFM::PairsWeightingConfig().gridSize));
 }
 
 } // namespace pySFM

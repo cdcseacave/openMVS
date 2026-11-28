@@ -52,18 +52,23 @@ When the input is a `.sfm` produced by `ExtractKeyframes` or `CreateStructure` w
 Notable options:
 
 - `--detector-type` (default `SIFTGPU` when built with SiftGPU, `SIFT` otherwise) — feature detector; same choices as above.
-- `--match-mode` (`-1` skip, `0` exhaustive, `1` vocabulary, `2` sequential, `3` known-poses; default `1`) — pairwise-matching strategy.
-- `--match-sequence-overlap` (default `3`) — sequence overlap when using sequential matching.
+- `--match-mode` (`-1` skip: no matching, only for a saved `.sfm` that already holds matches; `0` exhaustive, `1` vocabulary, `2` sequential, `3` known-poses, `4` retrieval; default `1`) — pairwise-matching strategy.
+- `--dense-matcher` (`none` | `roma2` | `flexglue`, default `none`) — in-process dense matcher for `--match-mode 4` retrieval descriptors and `--dense-match` one-pass dense matching (requires ONNX Runtime and a fetched model bundle; see `docs/DenseMatcherModels.md`).
+- `--match-sequence-overlap` (default `3`) — images ahead each image is matched with: all the candidates of sequential matching, and extra candidates added to vocabulary and retrieval matching (`0` = no extra candidates); for an image sequence (`--image-sequence` or `--match-mode 2`), how many positions apart two images may be to be neighbours (`0` = no neighbours).
+- `--image-sequence` (default `0`; always on with `--match-mode 2`) — the images, in import order, are frames of one capture that may be interrupted (several takes, a stop and restart). Images at most `--match-sequence-overlap` positions apart are neighbours unless the file names break the sequence between them; neighbour pairs are always matched, in every match mode, and the contradiction cut removes the pairs that contradict the camera path they form (look-alikes of a repetitive place) and keeps the neighbour pairs (needs `--max-pair-direction-residual` above `0`). A matched scene given back as the source needs the option again.
+- `--sequence-max-gap` (default `10`; for an image sequence) — for file names ending in a frame number: a jump of more than this many times the usual step (the median step of its run of names with one prefix) breaks the sequence; a change of directory or prefix, or a number that does not increase, always breaks it; `0` = jumps never break (names that are timestamps).
 - `--vocab-max-pairs` (default `50`) — target pairs per image for vocabulary-tree and known-poses matching (with `--match-verification-feedback`, the default, part of this budget is re-invested in pairs suggested by the verified matches).
 - `--import-poses-file` (default `poses.csv`) with `--import-poses-mode` (`0` none, `1` poses+intrinsics, `2` poses only, `3` positions only) — import camera data from an OpenMVS pose `.csv` or a Polycam-style `frames.json`; modes `1` and `2` select the known-poses workflow described below.
 - `--known-poses-convention` (`auto` | `arkit` | `opencv`, default `auto`) — camera-axes convention of the poses in a `frames.json`.
-- `--export-poses-csv` — write the recovered poses alongside the scene.
+- `--export-poses-csv` — write the recovered poses alongside the scene (skipped, with a message, by a `--match-images-only` run: nothing is reconstructed).
 - `--export-pose-quality` — estimate the per-image pose covariance during the final bundle adjustment and write a per-image quality report to CSV: 1-sigma camera-position accuracy per axis (with the full 3x3 covariance), rotation accuracy per axis in degrees, observation counts and the a-priori GPS accuracy. On a GPS-aligned scene the position values are ENU meters (East/North/Up); with GPS priors enabled they are absolute accuracies, otherwise relative to a reference (datum) image. The report can be visualized as per-camera error ellipsoids by the `Viewer` (`--pose-quality-file`).
 - `--align-gps-threshold` (default `5` m, `0` disabled) — rigidly align the reconstruction to the image GPS metadata (metric ENU frame).
 - `--gps-position-weight` / `--gps-position-weight-z` (default `0`, disabled) — after GPS alignment, refine the reconstruction with a bundle adjustment that constrains each camera to its GPS position (weighted by the per-image accuracy metadata); this anchors the global position, orientation and scale to the GPS data.
 - `--import-openmvg-dir` / `--export-openmvg-dir` — interoperate with OpenMVG feature files.
 - `--focal-length` (default `0`, disabled) and `--default-focal-ratio` (default `1.2`, used as `ratio * max(width,height)` when the focal length is unknown) — intrinsic overrides.
 - `--extract-colors` (default `false`) — attach image colors to the reconstructed sparse points.
+- `--undistort-extension` (default empty) — with `--export-mvs`, write undistorted copies of the images in this format (`.jpg`, `.png`, `.jxl`) into an `undistorted` folder; left empty, the `.mvs` holds the distorted Brown cameras with the original images, undistorted when the MVS modules load them. `--undistort-alpha` (default `0.6`) sets how much of the image the undistorted copies keep.
+- `--spherical-export` (`native` | `cubemap`, default `native`) — how the `.mvs` export writes spherical cameras: as native equirectangular cameras, or as rendered pinhole cube-map faces (needed by the mesh modules).
 
 </details>
 
@@ -89,7 +94,7 @@ Run these from a working subfolder of the dataset (`-w`); the other paths are re
 
 Images with no entry are simply left unposed and are registered by the usual resection at the end of the pipeline; if fewer than 20% of the images end up posed, the run stops and lists the unmatched names rather than quietly degrading into a from-scratch reconstruction — the gate catches a file-name mismatch between the poses file and the images, while partially covered captures are legitimate.
 
-**Modes.** `--import-poses-mode 1` imports the intrinsics (when the file carries them) *and* the poses, `2` imports the poses only and leaves the intrinsics to EXIF, `3` imports only the camera positions and does *not* select this workflow. Note that mode `1` previously imported the intrinsics *without* the poses, and mode `2` the poses without the intrinsics — no mode imported both. They now do what their names say, which is a behavior change if you were relying on the old, undocumented meaning.
+**Modes.** `--import-poses-mode 1` imports the intrinsics (when the file carries them) *and* the poses, `2` imports the poses only and leaves the intrinsics to EXIF, `3` imports only the camera positions and does *not* select this workflow.
 
 **Camera-axes convention.** A `frames.json` does not record whether its `transform` uses the ARKit/OpenGL camera axes (X right, Y up, Z backward) or the OpenCV ones (X right, Y down, Z forward), and the two differ by a 180&deg; rotation about the camera X axis — pick wrong and every optical axis is reversed. The default `--known-poses-convention auto` decides after matching, by checking the imported relative rotations against the ones recovered from the images themselves; when the evidence is inconclusive the run stops and asks you to pass `arkit` or `opencv` explicitly. EXIF-rotated portrait images are handled automatically.
 

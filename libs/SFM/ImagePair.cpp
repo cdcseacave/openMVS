@@ -8,6 +8,7 @@
 #include "Common.h"
 #include "ImagePair.h"
 #include "Image.h"
+#include <PoseLib/misc/essential.h>
 
 using namespace SFM;
 
@@ -59,27 +60,28 @@ Pose3D ImagePair::DecomposeEssentialMatrix(const Matrix3x3& E)
 
 unsigned ImagePair::RecoverPose(
 	const Matrix3x3& E,
-	const std::vector<Point2f>& points1,
-	const std::vector<Point2f>& points2,
-	const Matrix3x3& K,
-	Pose3D& pose,
-	cv::InputOutputArray inliers)
+	const std::vector<Eigen::Vector3d>& bearings1,
+	const std::vector<Eigen::Vector3d>& bearings2,
+	Pose3D& pose)
 {
-	// Use OpenCV's recoverPose which handles the 4-fold ambiguity and cheirality check.
-	// TODO: implement our own version to support different K for both images
-	cv::Mat R_cv, t_cv;
-	int numInliers = cv::recoverPose(E, points1, points2, K, R_cv, t_cv, inliers);
-	if (numInliers > 0) {
-		pose.R = R_cv;
-		pose.SetT(Point3(t_cv.at<double>(0), t_cv.at<double>(1), t_cv.at<double>(2)));
+	ASSERT(bearings1.size() == bearings2.size());
+	// the four factorizations of the SVD of E (no correspondence given, so none is filtered out here)
+	poselib::CameraPoseVector candidates;
+	poselib::motion_from_essential_svd(E, {}, {}, &candidates);
+	ASSERT(candidates.size() == 4);
+	unsigned numBest = 0;
+	for (const poselib::CameraPose& candidate : candidates) {
+		unsigned numInFront = 0;
+		FOREACH(i, bearings1)
+			if (poselib::check_cheirality(candidate, bearings1[i], bearings2[i]))
+				++numInFront;
+		if (numBest < numInFront) {
+			numBest = numInFront;
+			pose.R = candidate.R();
+			pose.SetT(candidate.t);
+		}
 	}
-	return static_cast<unsigned>(numInliers);
-}
-
-Point3 ImagePair::EpipoleFromEssentialMatrix(const Matrix3x3& E, bool leftImage) {
-	Eigen::Matrix3d eE(leftImage ? E : Matrix3x3(E.t()));
-	Eigen::JacobiSVD<Eigen::Matrix3d> svd(eE, Eigen::ComputeFullU | Eigen::ComputeFullV);
-	return svd.matrixV().block<3, 1>(0, 2).eval();
+	return numBest;
 }
 
 Matrix3x3 ImagePair::ComposeFundamentalMatrix(const Matrix3x3& E, const Matrix3x3& K1, const Matrix3x3& K2, bool normalize)
@@ -103,30 +105,11 @@ Matrix3x3 ImagePair::DecomposeFundamentalMatrix(const Matrix3x3& F, const Matrix
 float ImagePair::ComputeAngleBaselineWeight(float meanAngleDegrees)
 {
 	if (meanAngleDegrees <= 0.f)
-		return 1.f; // no angle info, return neutral weight
-
-	#if 0
-	// Multiplicative Factor:
-	//   - Small θ_avg (< 2°): Poor baseline - noisy depth estimation
-	//   - Medium θ_avg (5-30°): Good baseline - reliable triangulation
-	//   - Large θ_avg (> 60°): Wide baseline - harder matching but potentially better if matches exist
-	// use a Gaussian-like weighting centered at an optimal angle (e.g., 15°) to favor medium baselines
-	constexpr float OPTIMAL_ANGLE = 15.f;
-	constexpr float ANGLE_WIDTH = 25.f;
-	constexpr float SMALL_ANGLE = 4.f;
-    constexpr float STEEPNESS = 0.8f;
-	constexpr float COMMON = 6.68099f;
-
-	// Avoid too small angles
-	if (meanAngleDegrees < COMMON) {
-		// Sigmoid that transition fast to 0 below SMALL_ANGLE
-		return 1.f / (1.f + EXP(-STEEPNESS * (meanAngleDegrees - SMALL_ANGLE)));
-	}
-
-	// Gaussian-like weighting centered at OPTIMAL_ANGLE
-	return EXP(-SQUARE((meanAngleDegrees - OPTIMAL_ANGLE) / ANGLE_WIDTH));
-
-	#else
+		return 1.f; // NOT a neutral value: 1 is this function's MAXIMUM, the score of an optimal
+		            // baseline. A pair with no measured angle is therefore not demoted at all, which
+		            // is only defensible while "no angle" means "not measurable" -- with a relative
+		            // pose the angle IS measurable over every track-forming match (FilterMatches,
+		            // ImagePair::ComputeMeanRayAngle), and a pair that has one must carry it
 
 	// Angle Baseline Weighting:
 	// Penalize very small angles (weak baseline) and very large angles (harder matching)
@@ -155,7 +138,6 @@ float ImagePair::ComputeAngleBaselineWeight(float meanAngleDegrees)
 	// Rapid exponential decay beyond threshold (C1-continuous with the quadratic penalty)
 	const float excessDeviation = deviation - slowThreshold;
 	return (1.f - maxSlowPenalty) * EXP(-excessDeviation / 10.5f);
-	#endif
 }
 
 
@@ -208,95 +190,246 @@ std::pair<std::vector<Point2f>, std::vector<Point2f>> ImagePair::GetMatchedPoint
 	return std::make_pair(pts1, pts2);
 }
 
+std::pair<std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector3d>> ImagePair::GetMatchedBearings(const Image& img1, const Image& img2, bool allInliers) const
+{
+	const unsigned numInliers = allInliers ? GetNumInliers() : GetNumFilteredInliers();
+	std::vector<Eigen::Vector3d> bearings1, bearings2;
+	bearings1.reserve(numInliers);
+	bearings2.reserve(numInliers);
+	for (unsigned i = 0; i < numInliers; ++i) {
+		const DMatch& m = matches[i];
+		bearings1.emplace_back(img1.pCamera->UnprojectNormalized(Cast<REAL>(img1.keypoints[m.queryIdx].pt)));
+		bearings2.emplace_back(img2.pCamera->UnprojectNormalized(Cast<REAL>(img2.keypoints[m.trainIdx].pt)));
+	}
+	return std::make_pair(bearings1, bearings2);
+}
+
+bool ImagePair::IsDense(const Image& img1, const Image& img2) const
+{
+	return GetNumDenseInliers() > 0 || img1.HasDenseKeypoints() || img2.HasDenseKeypoints();
+}
+
+bool ImagePair::UseFundamentalForPair(const Image& img1, const Image& img2)
+{
+	return img1.GetCameraType() == CameraType::PINHOLE && img2.GetCameraType() == CameraType::PINHOLE &&
+		(!img1.TrustIntrinsics() || !img2.TrustIntrinsics());
+}
+
+bool ImagePair::TriangulateVerifiedMatch(
+	const Pose3D& relPose,
+	const Camera& cam1,
+	const Camera& cam2,
+	const Point2f& pt1,
+	const Point2f& pt2,
+	REAL cosReprojAngle,
+	REAL maxCosAngle,
+	Point3& X,
+	REAL& cosAngle,
+	REAL epipoleCosAngle,
+	const Point3& epipoleDir1,
+	const Point3& epipoleDir2)
+{
+	const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(pt1));
+	const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(pt2));
+	if (epipoleCosAngle <= REAL(1) &&
+		(b1.dot(epipoleDir1) > epipoleCosAngle || b2.dot(epipoleDir2) > epipoleCosAngle))
+		return false;
+	if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, X))
+		return false;
+	const REAL nX = norm(X);
+	if (nX < ZEROTOLERANCE<REAL>())
+		return false;
+	const REAL cosErr1 = b1.dot(X * (REAL(1) / nX));
+	if (cosErr1 <= 0)
+		return false;
+	const Point3 Xcam2 = relPose.TransformPointW2C(X);
+	const REAL nXc2 = norm(Xcam2);
+	if (nXc2 < ZEROTOLERANCE<REAL>())
+		return false;
+	const REAL cosErr2 = b2.dot(Xcam2 * (REAL(1) / nXc2));
+	if (cosErr2 <= 0)
+		return false;
+	if (cosReprojAngle > REAL(-1) && (cosErr1 < cosReprojAngle || cosErr2 < cosReprojAngle))
+		return false;
+	const Point3 V2 = X - relPose.C;
+	cosAngle = ComputeAngle(X.ptr(), V2.ptr());
+	if (maxCosAngle < REAL(1) && cosAngle > maxCosAngle)
+		return false;
+	return true;
+}
+
+std::pair<std::vector<Point2f>, std::vector<Point2f>> ImagePair::GetTrackFormingPoints(const Image& img1, const Image& img2) const
+{
+	std::vector<Point2f> pts1, pts2;
+	const unsigned numTrackForming = GetNumTrackFormingMatches();
+	pts1.reserve(numTrackForming);
+	pts2.reserve(numTrackForming);
+	for (unsigned i = 0; i < numTrackForming; ++i) {
+		const DMatch& m = matches[i];
+		pts1.push_back(img1.keypoints[m.queryIdx].pt);
+		pts2.push_back(img2.keypoints[m.trainIdx].pt);
+	}
+	return std::make_pair(pts1, pts2);
+}
+
+FloatArr ImagePair::ComputeRayAngleCosines(const Image& img1, const Image& img2) const
+{
+	if (!relativePose.has_value() || matches.empty())
+		return FloatArr(); // no pose, no measurable baseline
+	const Pose3D& relPose = relativePose.value();
+	const Camera& cam1 = *img1.pCamera;
+	const Camera& cam2 = *img2.pCamera;
+	const unsigned numTrackForming = GetNumTrackFormingMatches();
+	FloatArr cosAngles(0, numTrackForming);
+	for (unsigned i = 0; i < numTrackForming; ++i) {
+		const DMatch& m = matches[i];
+		const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(img1.keypoints[m.queryIdx].pt));
+		const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(img2.keypoints[m.trainIdx].pt));
+		Point3 X;
+		if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, X))
+			continue;
+		const Point3 V2 = X - relPose.C;
+		cosAngles.push_back((float)ComputeAngle(X.ptr(), V2.ptr()));
+	}
+	return cosAngles;
+}
+
+REAL ImagePair::ComputeBaselineDirectionSigma(const Image& img1, const Image& img2, REAL noiseAngle) const
+{
+	ASSERT(relativePose.has_value());
+	ASSERT(noiseAngle > 0);
+	const Pose3D& relPose = relativePose.value();
+	const REAL baselineLength = norm(relPose.C);
+	ASSERT(baselineLength > 0); // a relative pose has a baseline
+	const Camera& cam1 = *img1.pCamera;
+	const Camera& cam2 = *img2.pCamera;
+	const Point3 t(relPose.C * (REAL(1) / baselineLength));
+	Point3 e1, e2;
+	OrthonormalBasis(t, e1, e2);
+	const Matrix3x3 Rt(relPose.R.t());
+	REAL a11 = 0, a12 = 0, a22 = 0;
+	const unsigned numTrackForming = GetNumTrackFormingMatches();
+	for (unsigned i = 0; i < numTrackForming; ++i) {
+		const DMatch& m = matches[i];
+		const Point3 b1(cam1.UnprojectNormalized(Cast<REAL>(img1.keypoints[m.queryIdx].pt)));
+		const Point3 b2(Rt * cam2.UnprojectNormalized(Cast<REAL>(img2.keypoints[m.trainIdx].pt)));
+		ASSERT(ISEQUAL(normSq(b1), REAL(1), REAL(1e-4)) && ISEQUAL(normSq(b2), REAL(1), REAL(1e-4)));
+		Point3 n(t.cross(b1)); // the normal of the epipolar plane of the match
+		const REAL sinBaseline = norm(n);
+		if (sinBaseline <= REAL(1e-9))
+			continue; // the match lies on the baseline: the epipolar plane is undefined
+		n *= REAL(1) / sinBaseline;
+		const Point3 j(b1.cross(b2 - n * n.dot(b2)) * (REAL(1) / sinBaseline));
+		const REAL j1 = j.dot(e1), j2 = j.dot(e2);
+		a11 += j1 * j1;
+		a12 += j1 * j2;
+		a22 += j2 * j2;
+	}
+	const REAL lambdaMin = REAL(0.5) * ((a11 + a22) - SQRT((a11 - a22) * (a11 - a22) + REAL(4) * a12 * a12));
+	return lambdaMin > 0 ? noiseAngle / SQRT(lambdaMin) : std::numeric_limits<REAL>::infinity();
+}
+
+float ImagePair::ComputeMeanRayAngle(const Image& img1, const Image& img2) const
+{
+	FloatArr cosAngles(ComputeRayAngleCosines(img1, img2));
+	return cosAngles.empty() ? 0.f : ACOS(CLAMP(cosAngles.GetMedian(), -1.f, 1.f));
+}
+
+float ImagePair::ComputeShareAboveAngle(const Image& img1, const Image& img2, float minAngle) const
+{
+	const FloatArr cosAngles(ComputeRayAngleCosines(img1, img2));
+	const float maxCosAngle = COS(D2R(minAngle));
+	unsigned numWide = 0;
+	for (float cosAngle : cosAngles)
+		numWide += cosAngle <= maxCosAngle ? 1 : 0;
+	return (float)numWide / MAXF(GetNumTrackFormingMatches(), 1u);
+}
+
+void ImagePair::CheckSparseSegmentIsDescribed(const Image& img1, const Image& img2) const
+{
+	#ifndef _RELEASE
+	if (numFilteredInliers < 0) {
+		ASSERT(numDenseInliers == 0); // no partition claimed, so no segment to check
+		return;
+	}
+	ASSERT((size_t)numFilteredInliers + (size_t)numDenseInliers <= matches.size());
+	for (int i = 0; i < numFilteredInliers; ++i) {
+		const DMatch& m = matches[i];
+		ASSERT(!img1.IsDenseKeypoint(m.queryIdx) && !img2.IsDenseKeypoint(m.trainIdx),
+			"a dense supplement match drifted into the pair's descriptor evidence");
+	}
+	#endif
+}
+
 unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float minAngle, float reprojThreshold, float epipoleThresh)
 {
 	if (!relativePose.has_value() || matches.empty())
 		return matches.size(); // nothing to do
 
-	// Prepare relative pose data
 	const Pose3D& relPose = relativePose.value();
 	const Camera& cam1 = *img1.pCamera;
 	const Camera& cam2 = *img2.pCamera;
 
-	// Convert pixel-based thresholds to angular (radians) so equirectangular images are handled correctly:
-	// a pixel metric near the poles/±π seam doesn't correspond linearly to angular separation.
-	// For pinhole this is equivalent to the pixel distance check within atan(δ/f) ≈ δ/f.
+	// Angular thresholds work uniformly for pinhole and spherical cameras
 	const REAL cosReprojAngle = reprojThreshold > 0 ?
-		COS(REAL(0.5) * (cam1.PixelErrorToAngular(reprojThreshold) + cam2.PixelErrorToAngular(reprojThreshold))) :
-		REAL(-1);
+		COS(PairPixelErrorToAngular(cam1, cam2, reprojThreshold)) : REAL(-1);
 
-	// Precompute epipole directions (unit bearings) in each camera frame
 	Point3 epipoleDir1(Point3::ZERO), epipoleDir2(Point3::ZERO);
-	REAL cosEpipoleAngle = REAL(2); // > 1 means epipole filter never triggers
+	REAL cosEpipoleAngle = REAL(2); // > 1 disables epipole filter
 	if (epipoleThresh > 0) {
-		cosEpipoleAngle = COS(REAL(0.5) * (cam1.PixelErrorToAngular(epipoleThresh) + cam2.PixelErrorToAngular(epipoleThresh)));
-		// Epipole 1 direction: C2 position in Cam1 frame = relPose.C
+		cosEpipoleAngle = COS(PairPixelErrorToAngular(cam1, cam2, epipoleThresh));
 		const REAL nC = norm(relPose.C);
 		if (nC > ZEROTOLERANCE<REAL>())
 			epipoleDir1 = relPose.C / nC;
-		// Epipole 2 direction: C1 (origin) in Cam2 frame = relPose.GetT()
 		const Point3 t = relPose.GetT();
 		const REAL nT = norm(t);
 		if (nT > ZEROTOLERANCE<REAL>())
 			epipoleDir2 = t / nT;
 	}
 
-	// Filter matches
-	const REAL maxCosAngle = COS(D2R(REAL(minAngle)));
-	const auto [pts1, pts2] = GetMatchedPoints(img1, img2);
+	const REAL maxCosAngle = minAngle > 0 ? COS(D2R(REAL(minAngle))) : REAL(2);
+	const auto [pts1, pts2] = GetMatchedPoints(img1, img2, true);
+	const bool bHasDenseKeypoints = img1.HasDenseKeypoints() || img2.HasDenseKeypoints();
+	const auto HasDenseEnd = [&img1, &img2](const DMatch& m) {
+		return img1.IsDenseKeypoint(m.queryIdx) || img2.IsDenseKeypoint(m.trainIdx);
+	};
 	std::vector<char> mask(matches.size(), 0);
-	FloatArr cosAngles(0, matches.size()); // per-inlier ray-angle cosines
+	FloatArr cosAngles(0, matches.size());
 	unsigned numInliers = 0;
 	FOREACH(i, matches) {
-		// Observed unit bearings (works for both pinhole and spherical)
-		const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(pts1[i]));
-		const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(pts2[i]));
-		// 1. Epipole filtering (angular distance to epipole direction)
-		if (epipoleThresh > 0 &&
-			(b1.dot(epipoleDir1) > cosEpipoleAngle || b2.dot(epipoleDir2) > cosEpipoleAngle))
-			continue;
-		// 2. Triangulate (midpoint is scale-invariant on unit bearings)
 		Point3 X;
-		if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, X))
+		REAL cosAngle;
+		if (!TriangulateVerifiedMatch(relPose, cam1, cam2, pts1[i], pts2[i],
+				cosReprojAngle, maxCosAngle, X, cosAngle, cosEpipoleAngle, epipoleDir1, epipoleDir2))
 			continue;
-		// 3. Cheirality + angular reprojection in Cam1
-		const REAL nX = norm(X);
-		if (nX < ZEROTOLERANCE<REAL>())
-			continue;
-		const Point3 b1Proj = X / nX;
-		const REAL cosErr1 = b1.dot(b1Proj);
-		if (cosErr1 <= 0) // >= 90° from observation (behind camera for pinhole / antipodal for spherical)
-			continue;
-		// 4. Cheirality + angular reprojection in Cam2
-		const Point3 Xcam2 = relPose.TransformPointW2C(X);
-		const REAL nXc2 = norm(Xcam2);
-		if (nXc2 < ZEROTOLERANCE<REAL>())
-			continue;
-		const Point3 b2Proj = Xcam2 / nXc2;
-		const REAL cosErr2 = b2.dot(b2Proj);
-		if (cosErr2 <= 0)
-			continue;
-		// 5. Reprojection error threshold (angular)
-		if (reprojThreshold > 0 && (cosErr1 < cosReprojAngle || cosErr2 < cosReprojAngle))
-			continue;
-		// 6. Triangulation angle check
-		const Point3 V1 = X; // ray from C1 to X (in Cam1 frame)
-		const Point3 V2 = X - relPose.C; // ray from C2 to X (in Cam1 frame)
-		const REAL cosAngle = ComputeAngle(V1.ptr(), V2.ptr());
-		if (minAngle > 0 && cosAngle > maxCosAngle)
-			continue;
-		// Accepted as inlier
 		cosAngles.push_back((float)cosAngle);
 		mask[i] = 1;
 		++numInliers;
 	}
 
-	// Update ray angle with the median of per-inlier angles: cosine is monotone in the angle,
-	// so the median cosine maps exactly to the median angle, and a robust order statistic keeps
-	// mismatch-contaminated or badly triangulated matches from skewing the pair statistic
-	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(cosAngles.GetMedian());
-	// Partition matches by inlier mask
-	return numFilteredInliers = (int)PartitionMatchesByMask(mask, (int)numInliers, true);
+	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(CLAMP(cosAngles.GetMedian(), -1.f, 1.f));
+	// Count surviving dense supplement matches whose endpoints both collapsed onto described keypoints
+	unsigned numSupplementReclassifiedSparse = 0;
+	if (bHasDenseKeypoints && numFilteredInliers >= 0 && numDenseInliers > 0) {
+		const unsigned oldDenseBegin = (unsigned)numFilteredInliers;
+		const unsigned oldDenseEnd = oldDenseBegin + GetNumDenseInliers();
+		for (unsigned i = oldDenseBegin; i < oldDenseEnd; ++i)
+			if (mask[i] && !HasDenseEnd(matches[i]))
+				++numSupplementReclassifiedSparse;
+	}
+	numFilteredInliers = (int)PartitionMatchesByMask(mask, (int)numInliers, true);
+	// Re-derive the dense segment after reordering so dense matches stay separated from sparse evidence
+	if (bHasDenseKeypoints) {
+		const auto denseBegin = std::stable_partition(matches.begin(), matches.begin() + numFilteredInliers,
+			[&HasDenseEnd](const DMatch& m) { return !HasDenseEnd(m); });
+		numDenseInliers = (int)(matches.begin() + numFilteredInliers - denseBegin);
+		numFilteredInliers -= numDenseInliers;
+		if (numSupplementReclassifiedSparse > 0)
+			DEBUG("FilterMatches: %u dense supplement match(es) re-classified as sparse in pair (%u, %u)",
+				numSupplementReclassifiedSparse, ID1, ID2);
+	}
+	CheckSparseSegmentIsDescribed(img1, img2);
+	return (unsigned)numFilteredInliers;
 }
 
 
@@ -394,8 +527,8 @@ unsigned ImagePair::CheckEpipolarInliers(const Image& img1, const Image& img2, f
 	if (matches.empty())
 		return 0;
 
-	// Extract matched points from keypoints
-	auto [pts1, pts2] = GetMatchedPoints(img1, img2);
+	// Extract all matched points (all segments, matching inlierMask length)
+	auto [pts1, pts2] = GetMatchedPoints(img1, img2, true);
 
 	// Prepare output mask
 	const float thresholdSq = SQUARE(threshold);

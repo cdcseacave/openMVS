@@ -1493,13 +1493,15 @@ int ProgramCU::CheckCudaDevice(int device)
 #define MULT_BLOCK_DIMX (MULT_TBLOCK_DIMX)
 #define MULT_BLOCK_DIMY (8 * MULT_TBLOCK_DIMY)
 
-void __global__ MultiplyDescriptor_Kernel(cudaTextureObject_t texDes1, cudaTextureObject_t texDes2, int* d_result, int num1, int num2, int3* d_temp)
+// row0: the first row of des1 this launch covers (rows row0 .. row0+num1-1); the dot rows are local to the launch,
+// the indices stored in d_temp are global (row0 + local row)
+void __global__ MultiplyDescriptor_Kernel(cudaTextureObject_t texDes1, cudaTextureObject_t texDes2, int* d_result, int num1, int num2, int3* d_temp, int row0)
 {
 	int idx01 = (blockIdx.y  * MULT_BLOCK_DIMY),  idx02 = (blockIdx.x  * MULT_BLOCK_DIMX);
 
 	int idx1 = idx01 + threadIdx.y, idx2 = idx02 + threadIdx.x;
 	__shared__ int data1[17 * 2 * MULT_BLOCK_DIMY];
-	int read_idx1 = idx01 * 8 +  threadIdx.x, read_idx2 = idx2 * 8;
+	int read_idx1 = (row0 + idx01) * 8 +  threadIdx.x, read_idx2 = idx2 * 8;
 	int col4 = threadIdx.x & 0x3, row4 = threadIdx.x >> 2;
 	int cache_idx1 = IMUL(row4, 17) + (col4 << 2);
 
@@ -1562,7 +1564,7 @@ void __global__ MultiplyDescriptor_Kernel(cudaTextureObject_t texDes1, cudaTextu
 			if(idx1 + i < num1)
 			{
 				cmp_result = results[i] > cmp_result.x?
-				make_int3(results[i], idx1 + i, cmp_result.x) :
+				make_int3(results[i], row0 + idx1 + i, cmp_result.x) :
 				make_int3(cmp_result.x, cmp_result.y, max(cmp_result.z, results[i]));
 				d_result[dst_idx + IMUL(i, num2)] = results[i];
 			}
@@ -1582,7 +1584,14 @@ void __global__ MultiplyDescriptor_Kernel(cudaTextureObject_t texDes1, cudaTextu
 
 void ProgramCU::MultiplyDescriptor(CuTexImage* des1, CuTexImage* des2, CuTexImage* texDot, CuTexImage* texCRT)
 {
-	int num1 = des1->GetImgWidth() / 8;
+	MultiplyDescriptorRows(des1, 0, des1->GetImgWidth() / 8, des2, texDot, texCRT);
+}
+
+// The dot products of rows row0 .. row0+num1-1 of des1 against all of des2: texDot becomes num1 x num2 and texCRT
+// holds, per block of MULT_BLOCK_DIMY rows and per column, the best dot, its (global) row and the second best.
+// Lets the matcher tile a pair whose full num1 x num2 product does not fit (int-indexed, and memory).
+void ProgramCU::MultiplyDescriptorRows(CuTexImage* des1, int row0, int num1, CuTexImage* des2, CuTexImage* texDot, CuTexImage* texCRT)
+{
 	int num2 = des2->GetImgWidth() / 8;
 	dim3 grid(	(num2 + MULT_BLOCK_DIMX - 1)/ MULT_BLOCK_DIMX,
 		(num1 + MULT_BLOCK_DIMY - 1)/MULT_BLOCK_DIMY);
@@ -1593,7 +1602,7 @@ void ProgramCU::MultiplyDescriptor(CuTexImage* des1, CuTexImage* des2, CuTexImag
 	const cudaTextureObject_t des2Tex = des2->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
 
 	MultiplyDescriptor_Kernel<<<grid, block>>>(des1Tex, des2Tex, (int*)texDot->_cuData, num1, num2,
-												(texCRT? (int3*)texCRT->_cuData : NULL));
+												(texCRT? (int3*)texCRT->_cuData : NULL), row0);
 }
 
 struct Matrix33
@@ -1869,6 +1878,34 @@ void __global__  ColMatch_Kernel(int3*d_crt, int* d_result, int height, int num2
 		//float ratio = dist / distn;
 	d_result[col] = (dist < distmax) && (dist < distn * ratiomax) ? result.y : -1;//?  : -1;
 
+}
+
+// Per column of texCRT, the best dot, its row and the second best over all its row blocks (no decision): the tiled
+// matcher merges these over the tiles of rows and takes the column decision on the host.
+void __global__  ColBest_Kernel(int3*d_crt, int3* d_result, int height, int num2)
+{
+	int col = COLMATCH_BLOCK_WIDTH * blockIdx.x + threadIdx.x;
+	if(col >= num2) return;
+	int3 result = d_crt[col];
+	int read_idx = col + num2;
+	for(int i = 1; i < height; ++i, read_idx += num2)
+	{
+		int3 temp = d_crt[read_idx];
+		result = result.x < temp.x?
+			make_int3(temp.x, temp.y, max(result.x, temp.z)) :
+			make_int3(result.x, result.y, max(result.z, temp.x));
+	}
+	d_result[col] = result;
+}
+
+void ProgramCU::GetColBest(CuTexImage* texCRT, CuTexImage* texBest)
+{
+	int height = texCRT->GetImgHeight();
+	int num2 = texCRT->GetImgWidth();
+	texBest->InitTexture(num2, 1, 3);
+	dim3 grid((num2 + COLMATCH_BLOCK_WIDTH -1) / COLMATCH_BLOCK_WIDTH);
+	dim3 block(COLMATCH_BLOCK_WIDTH);
+	ColBest_Kernel<<<grid, block>>>((int3*)texCRT->_cuData, (int3*)texBest->_cuData, height, num2);
 }
 
 void ProgramCU::GetColMatch(CuTexImage* texCRT, CuTexImage* texMatch, float distmax, float ratiomax)

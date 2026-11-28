@@ -2,6 +2,8 @@
 
 The SFM (Structure from Motion) library provides complete photogrammetric reconstruction from images or video. It takes a collection of images, finds feature correspondences, estimates camera poses, and produces a sparse 3D point cloud -- the input that the MVS library needs for dense reconstruction.
 
+The stage-by-stage reference (order, options, option combinations, saved-scene resume) is `docs/design/SfMPipeline.md`.
+
 ## What You Need to Know First
 
 ### SFM vs MVS: two halves of a pipeline
@@ -16,14 +18,13 @@ Images → [SFM: poses + sparse points] → [MVS: dense mesh + texture]
 
 These are **different classes in different namespaces**. `SFM::Scene` stores feature descriptors, image pairs, and tracks. `MVS::Scene` stores depth maps, meshes, and textures. At the handoff point, `SFM::Scene` is converted to `MVS::Scene` via the export functions in `InterfaceMVS.h`.
 
-### Four reconstruction strategies
+### Three solvers
 
-The library supports four approaches, each suited to different scenarios:
+`Scene::Reconstruct` is the entry point: it imports, extracts features, matches, filters the view graph, then calls one of three solvers and runs the shared tail. There is no stand-alone incremental solver; incremental registration runs inside each block of the hierarchical one.
 
-1. **Incremental** (`Scene::Reconstruct`): Registers images one at a time. Most robust, handles difficult cases, but O(N) bundle adjustments.
-2. **Hierarchical** (`Scene::ReconstructHierarchical`): Splits into clusters, reconstructs each independently, then merges. Best for large datasets (1000+ images).
-3. **Global** (`Scene::ReconstructGlobal`): Solves all rotations and translations simultaneously. Fastest when it works, but less robust to outliers.
-4. **Known-poses finetune** (`Scene::ReconstructKnownPoses`): Starts from camera poses that are already known (AR capture, drone flight log, another SfM), triangulates with them and refines. Not a way to reconstruct an unknown scene -- it *requires* the poses.
+1. **Hierarchical** (`Scene::ReconstructHierarchical`, the default): Splits into clusters, reconstructs each independently by star initialization and incremental resection, then merges. Handles small scenes (one cluster) and large ones (1000+ images).
+2. **Global** (`Scene::ReconstructGlobal`): Solves all rotations and translations simultaneously. Fastest when it works, but less robust to outliers (design: `docs/design/GlobalSolver.md`).
+3. **Known-poses finetune** (`Scene::ReconstructKnownPoses`): Starts from camera poses that are already known (AR capture, drone flight log, another SfM), triangulates with them and refines. Not a way to reconstruct an unknown scene -- it *requires* the poses.
 
 ## Architecture
 
@@ -87,17 +88,20 @@ class ImagePair {
     MatchArr matches;              // Inlier feature correspondences
     std::optional<Matrix3> F, E, H; // Estimated geometry matrices
     Pose3D relativePose;           // Relative camera pose
+    float overlapArea;             // Share of the frame its track-forming matches cover (10x10 grid)
     float weightSpatial;           // How well features cover the image
     float weightConnectivity;      // Importance in the view graph
     float weightTriplet;           // 3-view consistency score
 };
 ```
 
-The **composite weight** (`spatial × connectivity × triplet`) ranks pairs by reliability. Triplet weight is the strongest quality signal -- it measures consistency across three-view loops.
+The **composite weight** (capped weighted inliers × coverage × ∛(angle × connectivity) × (0.25 + triplet), `docs/design/PairWeight.md`) ranks pairs by reliability. Triplet weight is the strongest quality signal -- it measures consistency across three-view loops.
+
+A **near-duplicate** pair -- two frames from almost the same spot, covering nearly the same view -- gets the most matches of any pair yet fixes no distance. `ImagePair::IsNearDuplicate` flags it when its overlap (`overlapArea`, rewritten by every weighting pass) is above `PairsWeightingConfig::maxDuplicateOverlap` (0.75) and its measured ray angle is under `maxDuplicateRayAngle` (1.5 degrees); such a pair is never the yardstick of an image's connectivity (`Yardstick`: the image's strongest pair that is not one, or its strongest pair when every pair is one) -- not in the connectivity weight, the star's reference view, floor and scale gauge, nor the triplet yield's capacity. The pair itself stays: it makes tracks and links like any other.
 
 ## The Reconstruction Pipeline
 
-All reconstruction workflows share a common front-end that extracts features, matches images, and builds tracks. They diverge after that: the **hierarchical** workflow clusters the scene and uses incremental reconstruction per cluster, the **global** workflow solves all poses simultaneously, and the **known-poses** workflow skips pose estimation entirely and refines the poses it was given.
+All reconstruction workflows share a common front-end that extracts features, matches images, verifies the pairs and filters the view graph. They diverge after that: the **hierarchical** workflow clusters the scene and uses incremental reconstruction per cluster, the **global** workflow solves all poses simultaneously, and the **known-poses** workflow skips pose estimation entirely and refines the poses it was given.
 
 ```
 Input: Images (or video keyframes)          [+ optional poses file]
@@ -106,13 +110,15 @@ Input: Images (or video keyframes)          [+ optional poses file]
 ┌─────────────────────────────────────────────────────────┐
 │                    COMMON FRONT-END                      │
 │                                                          │
-│  1. Feature Extraction (AKAZE/ORB/SIFT)                 │
+│  1. Feature Extraction (SiftGPU default; AKAZE/ORB/SIFT)│
 │  2. Feature Matching (Vocabulary/Exhaustive/             │
 │                       Sequential/Known-Poses)            │
 │  3. Geometric Verification (RANSAC: E/F/H matrices)      │
 │  4. View Graph Calibration (focal length estimation)     │
-│  5. Track Building (union-find on matches)               │
-│  6. Track & Image Filtering (outliers, weak views)       │
+│  4b. Lens fit from pairs (k1, k2 per camera)            │
+│  4c. Planar twin switch (RoMa2 pairs on one plane)      │
+│  5. Pair weighting, camera-triplet scoring, and the      │
+│     contradiction cut (view-graph filtering)             │
 │                                                          │
 └──────────────────────┬──────────────────────────────────┘
                        │
@@ -133,7 +139,7 @@ Input: Images (or video keyframes)          [+ optional poses file]
 │      ▼        │ │ rotations    │ │Triangulate with the  │
 │Global         │ │ held fixed)  │ │  imported poses      │
 │  Alignment    │ │      │       │ │      │               │
-│(5-stage merge)│ │      ▼       │ │      ▼               │
+│(seams, merge) │ │      ▼       │ │      ▼               │
 │      │        │ │Optional      │ │Finetune BA ->        │
 │      ▼        │ │  final BA    │ │ re-triangulate -> BA │
 │  Final BA     │ │              │ │                      │
@@ -142,7 +148,8 @@ Input: Images (or video keyframes)          [+ optional poses file]
         └────────────────┼────────────────────┘
                          ▼
          Shared tail: pre-final BA, filtering, final BA,
-         weak-image filtering, resection of unposed images,
+         weak-image filtering, resection of unposed images
+         (closing with a full bundle adjustment either way),
          GPS alignment *or* re-alignment to the prior poses
                          │
                          ▼
@@ -159,10 +166,10 @@ These steps are shared by all reconstruction workflows.
 #### 1. Feature Extraction (`FeaturesExtractor.h`)
 
 Supported detectors:
-- **AKAZE** (default): Fast binary descriptors, good for most cases
+- **AKAZE**: Fast binary descriptors
 - **ORB**: Lighter weight, binary descriptors
 - **SIFT**: Highest quality, float descriptors (slower)
-- **SiftGPU**: CUDA-accelerated SIFT (optional)
+- **SiftGPU**: CUDA-accelerated SIFT (optional; the `CreateStructure --detector-type` default)
 
 The 3x3 grid extraction ensures features aren't concentrated in textured areas while ignoring featureless regions. Each cell targets up to 3000 features, giving ~27k features per image.
 
@@ -170,26 +177,50 @@ SiftGPU uses a very low DoG peak threshold (0.001) together with a minimum scale
 
 #### 2. Feature Matching (`PairsMatcher.h`, `MatchGeometric.h`)
 
-Four matching strategies:
+Five matching strategies:
 - **VOCABULARY** (recommended): Build a visual vocabulary tree and query each image's ranked similar-image list. The two directed rankings are fused with symmetric reciprocal-rank fusion (each direction contributes `1/(k0+rank)`, so a pair both images retrieve early outranks a pair only one image scores high, and the rank-based fusion is immune to per-query score-scale drift), then only the pairs present in the fused top-K lists of *both* endpoints are kept — mutual agreement suppresses the one-sided, mostly false tail of each retrieval list that wastes matching budget at small `maxPairsPerImage`. Finally the connected components of the selected pair graph are bridged with the best-scoring cross-component pairs, so a sparse selection cannot silently split the view graph. O(N log N) instead of O(N²).
 - **EXHAUSTIVE**: Match all pairs. Only practical for small datasets (<100 images).
-- **SEQUENTIAL**: Match consecutive frames only. For ordered video sequences.
-- **KNOWN_POSES**: Pick the pairs geometrically, from poses that were imported rather than estimated. Each pair is scored by baseline (normalized by the median nearest-neighbor camera distance, so the score is independent of the units the poses came in) times viewing-direction agreement; pairs whose optical axes diverge by more than 75° are rejected outright. Selection mirrors VOCABULARY: a pair is kept only if each image ranks the other within its own top candidates (mutual agreement), every posed image additionally keeps its 2 nearest posed cameras with *no* angle gating (under occlusion — e.g. an indoor camera turning back at the end of a corridor — all top covisible partners can exceed the gate), and remaining components are bridged by the best-scoring cross pairs. Pair selection itself needs no descriptors and therefore builds no vocabulary tree when every image is posed. If the poses file is incomplete, vocabulary retrieval adds pairs touching the unposed images so the reconstruction tail can resect them. Auto-selected when poses were imported and `--match-mode` was not passed explicitly; falls back to exhaustive if fewer than two images are posed.
+- **SEQUENTIAL**: Match consecutive frames only, `--match-sequence-overlap` (default 3) images ahead of each. For ordered video sequences.
+- **KNOWN_POSES**: Pick the pairs geometrically, from poses that were imported rather than estimated. Each pair is scored by baseline (normalized by the median nearest-neighbor camera distance, so the score is independent of the units the poses came in) times viewing-direction agreement; pairs whose optical axes diverge by more than 75° are rejected outright. Selection mirrors VOCABULARY: a pair is kept only if each image ranks the other within its own top candidates (mutual agreement), every posed image additionally keeps its 2 nearest posed cameras with *no* angle gating (under occlusion — e.g. an indoor camera turning back at the end of a corridor — all top covisible partners can exceed the gate), and remaining components are bridged by the best-scoring cross pairs. Pair selection itself needs no descriptors and therefore builds no vocabulary tree when every image is posed. If the poses file is incomplete, the vocabulary tree adds pairs touching the unposed images so the reconstruction tail can resect them — **always the vocabulary tree**, even in a `--dense-matcher roma2` or `flexglue` run that already carries global descriptors (it used to be able to use those instead; no longer, per the no-crossover rule above). Auto-selected when poses were imported and `--match-mode` was not passed explicitly; falls back to exhaustive if fewer than two images are posed.
+- **RETRIEVAL**: Rank candidate pairs by the RoMa v2 DINOv3+GeM(p=3) global descriptors instead of the vocabulary tree, with the same reciprocal-rank fusion, mutual-agreement and component-bridging selection as VOCABULARY. See RoMa v2 below.
+
+  VOCABULARY and RETRIEVAL also get a sequential prior on top of whatever they rank: the visual ranking alone leaves out a share of the truly overlapping consecutive pairs, exactly the ones that hold a video or hand-held interior's matched graph together end to end, so every image's next `--match-sequence-overlap` (default 3) neighbours in import order are proposed unconditionally alongside its ranked candidates (`PairsMatcher::AddSequentialPairs`; 0 turns it off).
 
   Note that the score deliberately has **no** camera-center cheirality (mutual-frustum) test: in an orbit capture the neighboring camera centers lie tangentially to the view direction, and in a nadir aerial capture perpendicularly to it, so the strongest overlapping pairs are exactly the ones such a test would discard. Baseline is a ranking preference, not a rejection criterion -- the distance at which two views still overlap varies by orders of magnitude between close-range and aerial captures.
 
-**Verification feedback** (VOCABULARY and KNOWN_POSES, on by default when `maxPairsPerImage >= 10`, disable with `--match-verification-feedback 0`): matching runs in two rounds. The first round collects and matches candidates from *uninflated* per-image lists at 80% of the target (single-round matching inflates the lists to compensate the strictness of mutual agreement; here the second round does that job instead); the remaining budget — everything up to `maxPairsPerImage*N/2` total attempted pairs, including the part the strict mutual-agreement rule leaves unspent — is then re-invested in pairs suggested by the geometrically *verified* matches of the first round: KNOWN_POSES closes the triangles of the verified pair graph (two images sharing verified neighbors most likely overlap too, ranked by the number of common neighbors — this recovers true pairs the view-angle gate or the baseline preference mis-ranked), while VOCABULARY propagates each verified pair to the top-5 retrieval candidates of its endpoints (the retrieval analogue of triangle closing). Images left with the weakest verified connectivity refill any leftover budget from their next best-ranked first-round candidates (2 pairs per image).
+  **Image sequence** (`--image-sequence 1`, or the SEQUENTIAL mode): the images, in import order, are frames of a possibly interrupted sequence, and the pairs of neighbours (at most `--match-sequence-overlap` apart, no file-name break between) are matched in every mode, in place of the sequential prior. The contradiction cut then removes the pairs that contradict the camera path the neighbour pairs form and keeps the neighbour pairs it rests on. See [docs/design/PairSelection.md](../../docs/design/PairSelection.md#sequence-neighbours) and [docs/design/ContradictionCut.md](../../docs/design/ContradictionCut.md#the-chain-of-an-image-sequence).
+
+**Verification feedback** (VOCABULARY, RETRIEVAL and KNOWN_POSES, on by default when `maxPairsPerImage >= 10`, disable with `--match-verification-feedback 0`): matching runs in two rounds. The first round collects and matches candidates from *uninflated* per-image lists at 80% of the target (single-round matching inflates the lists to compensate the strictness of mutual agreement; here the second round does that job instead); the remaining budget — everything up to `maxPairsPerImage*N/2` total attempted pairs, including the part the strict mutual-agreement rule leaves unspent — is then re-invested in pairs suggested by the geometrically *verified* matches of the first round: KNOWN_POSES closes the triangles of the verified pair graph (two images sharing verified neighbors most likely overlap too, ranked by the number of common neighbors — this recovers true pairs the view-angle gate or the baseline preference mis-ranked), while VOCABULARY and RETRIEVAL propagate each verified pair to the top-5 retrieval candidates of its endpoints (the retrieval analogue of triangle closing). Images left with the weakest verified connectivity refill any leftover budget from their next best-ranked first-round candidates (2 pairs per image).
 
 The matching pipeline:
 1. **Descriptor matching**: FLANN (LSH for binary, KDTree for float) or brute-force
-2. **Lowe's ratio test**: Keep match only if best/second-best distance ratio < 0.8
+2. **Lowe's ratio test**: Keep match only if best/second-best distance ratio below `matchRatio` (0.9 for AKAZE/ORB, 0.8 for SIFT and SiftGPU)
 3. **Cross-check** (optional): Both images must agree on the match
 4. **Geometric verification**: RANSAC to estimate E (calibrated) or F (uncalibrated) matrix
 5. **Cheirality check**: Points must be in front of both cameras
 
+**RoMa v2 (optional, `CreateStructure --dense-matcher roma2`)**: an in-process ONNX Runtime deployment of RoMa v2 (a DINOv3 descriptor graph + a bidirectional coarse-match graph, no refiner) offers two independent passes over the classical matching above. Pair-selection ranking is a property of `--match-mode` alone, with no crossover between the two backends:
+
+| `--match-mode` | ranking backend | model needed |
+|---|---|---|
+| `1` VOCABULARY | the SIFT/AKAZE vocabulary tree, **always** | no |
+| `4` RETRIEVAL | the DINOv3+GeM(p=3) 2048-D global descriptors, **always** | only to compute them |
+
+RETRIEVAL ranks candidate pairs using the descriptor graph's own on-device pooling of its output as the global descriptor per image (`RoMa2Onnx::Describe`'s `retrieval` output, read by `GlobalDescriptors.h`); `--dense-matcher` only needs to compute those descriptors when the scene does not already carry them, and RETRIEVAL runs with `--dense-match false` (the default) — robust DINOv3 pair selection feeding the ordinary SIFT/AKAZE/ORB matching, no dense matching required. `--dense-match` (**default off**) replaces the descriptor matching round outright with one dense pass per candidate pair (A, B): the coarse-match graph returns both warps from a single call; the pair is admitted only if the smaller of the two inlier areas one fitted geometry explains — measured on A's confident cells and, through the B→A warp, on B's — reaches `--dense-min-overlap` (0.10, about 0.15–0.17 of true overlap); the described keypoints of A are then tracked into B through the warp and matched inside a disc of two warp cells, each winner having to beat the best keypoint OUTSIDE the disc by the matcher's ratio; the rest of the confident overlap is filled at `--dense-matches` (2000) correspondences per FULL FRAME of overlap — a density, not a per-pair count — drawn from the part of the verdict's confident overlap the guided matches did not already cover, and capped by that same density over the smaller of the two inlier areas so the draw stays bounded in both images; and one geometry is fitted on the union. A pair the verdict rejects is dropped — there is no fallback to descriptor matching for it, and no union of SIFT-verified and warp-verified pairs. Needs an exported model (`--roma2-model DIR`, default `$OPENMVS_ROMA2_MODEL_PATH`, see `docs/DenseMatcherModels.md` for how to obtain it; `--dense-matcher flexglue` with `--flexglue-model DIR` selects the FlexGlue bundle instead) and a build with `-DOpenMVS_USE_ONNXRUNTIME=ON`. Flags: `--dense-matcher none|roma2|flexglue`, `--roma2-model`, `--dense-match`, `--dense-slots N`, `--dense-min-confidence F`, `--dense-min-overlap F`, `--dense-matches N`, `--dense-provider auto|cuda|coreml|dml|cpu`. See `docs/design/DenseMatching.md` for the full design.
+
+**Triplet view-graph disambiguation** (on by default, `CreateStructure --filter-triplets`, `ViewGraphTriplets.h`): reimplements Manam & Govindu (CVPR 2024): each pair is scored by its coverage-discounted inlier count relative to the strongest edge of every triangle it belongs to, and the threshold is `tau(m)=m(1-r)+r` (default `m` 0.3). By default the scores remove nothing: they weigh the **contradiction cut** (`FilterPairsByContradiction`, `GlobalRotationAveraging.h`) that follows, whose rotation stage removes every pair more than 12 degrees from the global rotations a robust averaging of the usable pairs gives (each weighted by its composite weight times its score), and whose translation stage removes every pair whose baseline direction is more than `--max-pair-direction-residual` degrees (default 45; 0 = the rotation stage alone) from the camera centres the pairs place (pair scales by `ComputePairScales` and `GlobalScaleEstimator`, centres by `GlobalTranslationEstimator`); `--triplet-cut` is the paper's own rule, every scored pair below the threshold goes, which unfolds a symmetric building at an interior's expense. Complementary to `ImagePair::weightTriplet`. Flags: `--filter-triplets B`, `--triplet-cut B`, `--triplet-min-score F`, `--triplet-second-face-score F`, `--max-pair-direction-residual F`, `--repair-contradicted-pairs B` (default true; does not act with `--max-pair-direction-residual 0`: a pair the cut removes comes back when its matches, the centres and a neighbouring spot agree on a refitted baseline direction). See `docs/design/TripletScores.md` and `docs/design/ContradictionCut.md`.
+
 #### 3. View Graph Calibration (`ViewGraphCalibrator.h`)
 
-If camera intrinsics aren't fully trusted (no EXIF or imprecise calibration), this stage estimates focal lengths globally across all image pairs using the Fetzer method.
+For a camera whose intrinsics aren't trusted and that the lens fit below cannot take (too few pairs, a lens given, the lens fit off), this stage estimates its focal globally across its image pairs using the Fetzer method; it runs after the lens fit, since it reads the uncorrected lens as focal.
+
+#### 3b. Lens fit from pairs (`LensFit.h`)
+
+Once the pairs are verified, every untrusted pinhole camera with no lens given is trusted at its import focal (an EXIF 35 mm-equivalent focal, or the default ratio of the long side) and its pairs posed from their F there; `FitLensesAndReverifyPairs` then fits the radial lens (k1, k2) of every pinhole camera that has none and trusts its focal, from its heaviest verified pairs (`FitLensesFromPairs`): up to 150 that turn 5-45 deg with 200 sparse inliers each, the Sampson error under soft L1, each pair's pose eliminated and re-estimated through the lens for up to 10 rounds (`MatchConfig::lensFitRounds`). A focal check follows the fit: from the lenses and poses it reached, the fit runs again with every fitted camera's focal free, and a camera takes the free fit's focal when its median error falls 10% below the held fit's (an untrusted start with no bar, checked before the trusted focals), the fit then built again at the moved focal; a camera whose focal the lens fit does not take is calibrated instead (stage 3). A lens is kept only when it stays one to one past the image corner and lowers the median error 10% below the poses' own refinement; every pair of a camera whose lens was fitted or whose focal moved is then verified again through them. No command-line flag; `MatchConfig::lensFitEnabled` (on by default) turns it off, and a camera's already-fitted or given lens is held as is.
+
+#### 3c. Planar twin switch (`MatchDense.h`, `SwitchPlanarTwinsDense`)
+
+Right after the lens fit, before anything reads the pairs' poses (on a fresh run and on a reload of a matched scene not yet at `PAIRS_FILTERED` alike): a RoMa2 pair whose track-forming matches lie mostly on one plane (a homography fitted on the cameras' normalized planes at the 4 px classification bar explains at least `DenseMatchConfig::twinMinPlaneShare`, 0.75, of them) admits two relative poses that explain its matches equally well, the stored one and its planar twin (the other physically valid decomposition of the homography, polished as the union fit polishes a pair; a twin within 0.5 deg rotation and 10 deg direction of the stored pose is the same pose). The matches cannot tell them apart, so the rotation loops decide: a triangle is the pair and an image both its images are posed with, and it closes when its loop rotation is within `twinMaxLoopAngle` (3 deg). A candidate's gain is the number of its triangles that close with the twin minus with its current pose, every other pair at its current pose, so a twin whose loops run through other candidates is judged with their current choices. The largest gain switches when it is at least `twinMinLoopGain` (3), the gains of the candidates that share a triangle with it are counted again, and this repeats until no gain is that large (a pair may switch back; ties by more sparse inliers, then the larger pair key); each switch closes at least that many more triangles in all, so it ends. A pair that ends at its twin takes the twin's pose, E and F and re-classifies its matches against them (`ReverifyPairDense` without the refit); its weight is recomputed with every other pair's before the pairs are exported. One log line per switched pair and a summary (plane-dominated pairs, candidates, switches and switches back, triangles, pairs switched). No command-line flag; `twinMinLoopGain` 0 turns it off.
 
 #### 4. Track Building & Filtering (`Track.h`)
 
@@ -197,6 +228,9 @@ Union-find merges matched features across all image pairs into tracks. Filtering
 - Tracks with too few observations
 - Images with spatially clustered tracks (likely degenerate geometry)
 - Images with small triangulation angles
+- Images outside the largest covisibility component, or peeled off it for too few independent covisibility neighbours (`FilterWeaklyConnectedImages`, `Track.h`)
+
+See `docs/design/IncrementalReconstruction.md` for the full design of pair selection, the star initializer, the resection and its bundle adjustments, and this filter.
 
 ---
 
@@ -210,9 +244,10 @@ Input: Images + matched pairs (from common front-end)
   ▼
 ┌─────────────────────────────────────────────────────────┐
 │ 1. Scene Clustering                                      │
-│    SceneCluster.h/cpp                                    │
+│    SceneCluster.h/cpp, SceneBlocks.h/cpp                 │
 │    Aggregative clustering on covisibility graph          │
-│    Partition into clusters of ≤200 images                │
+│    Partition into clusters of ≤200 images (default),     │
+│    images no cluster holds well left in the pool         │
 │    (if scene ≤ maxViewsPerCluster → 1 cluster = pure    │
 │     incremental reconstruction, no alignment needed)     │
 └─────────────────────────────────────────────────────────┘
@@ -227,7 +262,7 @@ Input: Images + matched pairs (from common front-end)
 │    │    Select most-connected reference view       │     │
 │    │    Register multiple views simultaneously     │     │
 │    │    Triangulate initial points                 │     │
-│    │    Estimate global scale from median depths   │     │
+│    │    Estimate global scale from pair scales        │     │
 │    └───────────────────┬───────────────────────────┘     │
 │                        ▼                                 │
 │    ┌───────────────────────────────────────────────┐     │
@@ -252,33 +287,35 @@ Input: Images + matched pairs (from common front-end)
   │  (skip if only 1 cluster)
   ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 3. Global Alignment -- 5-stage merge                     │
+│ 3. Global Alignment                                       │
 │    GlobalAlignment.h/cpp                                 │
 │                                                          │
-│    a. Estimate relative poses between sub-scene pairs    │
-│       (PoseLib generalized absolute pose from            │
-│        cross-cluster 2D-3D correspondences)              │
+│    a. Read every block pair once per direction:          │
+│       generalized-camera PnP with scale (or one 3D-3D    │
+│       similarity), weighed by the cameras of its weaker  │
+│       side x the verified pairs' share                   │
 │                        ▼                                 │
-│    b. Rotation averaging (GlobalRotationAveraging.h)     │
-│       MST init → L1-ADMM → IRLS on SO(3)                │
+│    b. Average every component of the kept readings       │
+│       (rotation, log-scale, translation), cut every      │
+│       reading past 5 deg / 1.20 / 0.20, repeat           │
 │                        ▼                                 │
-│    c. Scale averaging (GlobalScaleAveraging.h)           │
-│       Log-space least-squares on pairwise scale ratios   │
+│    c. Merge one model (the most images; from round 2     │
+│       the one holding the merged model): apply its       │
+│       block poses, average shared camera intrinsics,     │
+│       merge tracks via union-find (duplicate-image and   │
+│       length guards; seam-consistent matches first);     │
+│       every other block is kept whole for the next       │
+│       round, released to the resection at the end        │
 │                        ▼                                 │
-│    d. Translation averaging (GlobalTranslationAveraging) │
-│       Linear system solve with gauge constraint          │
-│                        ▼                                 │
-│    e. Merge sub-scenes into reference scene              │
-│       Apply similarity transforms to each cluster        │
-│       Average shared camera intrinsics                   │
-│       Merge tracks via union-find + 3D proximity guards  │
+│    d. AdjustMergedScene: filter at the loose bar, one BA │
 │                                                          │
 └─────────────────────────────────────────────────────────┘
   │
   ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 4. Final Bundle Adjustment (optional)                    │
-│    Global BA on the merged scene                         │
+│ 4. Shared tail of Scene::Reconstruct (always runs)       │
+│    Track filter, one global BA on the merged scene,      │
+│    weak-image filter, resection of leftover images       │
 │    Optional GPS alignment (SimilarityTransform.h)        │
 └─────────────────────────────────────────────────────────┘
   │
@@ -288,13 +325,19 @@ Output: Calibrated poses + sparse point cloud
 
 **Key implementation details**:
 
-- **Scene Clustering** (`SceneCluster.h`): Builds a covisibility graph (nodes = images, edges = inlier match counts), then uses bottom-up aggregative clustering. It merges the highest-weight edge at each step until all clusters have ≤ `maxViewsPerCluster` images (default 200). A refinement pass merges small clusters, moves boundary images for better modularity, and splits disconnected components.
+- **Scene Clustering** (`SceneCluster.h`): Builds a covisibility graph (nodes = images, edges = inlier match counts), then uses bottom-up aggregative clustering. It merges the highest-weight edge at each step, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 133) and never crossing the ceiling itself. Six refinement passes then merge small clusters, move boundary images for better modularity and balance, split disconnected or thin-waisted components, and merge away any cluster the merge could not otherwise register against; a cluster still under the floor (not a standalone community) goes to the pool.
 
-- **Data protocol**: Keypoints and descriptors are **moved** (not copied) from the global scene into sub-scenes to save memory. Cross-cluster image pairs remain in the global scene for use during alignment. After merge, data is moved back.
+- **Pool resection** (`SceneBlocks.h`): after the blocks are reconstructed and before the merge, every image a block could not register goes to a common pool with the images the clustering left in no block; each pool image is tried by the block its links (verified pairs with a relative pose) to registered images weigh most on (the sum the resection orders its candidates by), with that block's ordinary resection, in passes and rounds until a round registers nothing.
 
-- **Star Initialization** (`StarInitializer.h`): Instead of the classic two-view initialization (sensitive to baseline selection), OpenMVS uses a star configuration: the most-connected image becomes the reference, and multiple views are registered simultaneously. This averages over multiple baselines for a more stable initial estimate.
+- **Data protocol**: Keypoints and descriptors are **moved** (not copied) from the global scene into sub-scenes to save memory, and between a block and the pool when the pool resection moves an image. Cross-cluster image pairs and the pool's pairs remain in the global scene for use during alignment. After merge, data is moved back.
 
-- **Bundle Adjustment** (`BundleAdjustment.h`): Uses Ceres Solver. **Local BA** optimizes a window of cameras + their points with fixed intrinsics (fast, used during resection). **Global BA** optimizes everything including intrinsics (slower, used at end). GPS constraints can be added when EXIF GPS data is available.
+- **Star Initialization** (`StarInitializer.h`): Instead of the classic two-view initialization (sensitive to baseline selection), OpenMVS uses a star configuration: the most-connected image (by inlier count) becomes the reference, and its neighbours are registered simultaneously, each listed by the inliers that fix its distance -- those whose ray angle at the pair's pose reaches the reconstruction's `minAngleThreshold` (`StarInitConfig::evidenceMinAngle`) -- so that a far view sharing only far points with the reference, whose unit baseline guesses a distance no match backs, is left to the resection, however many inliers it has; a neighbour is kept when its evidence reaches a share (`StarInitConfig::ratioInliersFilter`, 0.2) of the mean evidence of the three strongest. Near-duplicate pairs (see Image Pairs) count toward neither the reference's choice, nor that floor, nor the pair the scale is fixed on. The star refines the focal length alone (a star this small cannot also constrain distortion) -- a focal forced with `--focal-length` is left untouched here and refined by the global bundle adjustments instead.
+
+- **Resection** (`Resection.h`, `PoseLink.h`): tries next the image whose links to registered images weigh most, among every image holding `minCorrespondences` (15) 2D-3D correspondences and at least one link (a verified pair with a relative pose to a registered image; an image without one waits), one registration per round (the list is read again after each), and at a stall runs the full bundle adjustment and tries again when images were registered since the last one or removed by the weak-image filter right before the resection; accepts a pose only when its inliers are a large share of the correspondences (or reach an absolute count regardless of share), its rotation agrees with the quorum of the image's verified pairs to already-registered neighbours, not just the single strongest one, and the quorum links that contradict its baseline direction do not outweigh the ones that agree: each link held to `atan(tan(5°)/a)`, `a` the larger of the pair's ray angle and the model's parallax of the two cameras, a link both see under 2 degrees agreeing and one only one of them does abstaining (`--max-link-direction-error`, 5; 0 = no direction check); and the mean angle between its rotation and the rotations EVERY link to a registered image predicts, weighted by the pair weights, does not exceed `maxLinkRotationDisagreement` (8 degrees, no flag; 0 = off; also when the quorum is contested, an image with no link not judged).
+
+- **Global Alignment** (`GlobalAlignment.h`): the blocks are the nodes of a graph and every block pair the cross pairs join (all its cross pairs read together) an edge holding its readings, one per direction (`--cluster-alignment 1`, generalized-camera PnP with scale over all the cameras of the direction; a direction of one camera gives no reading) or one 3D-3D similarity (`--cluster-alignment 0`). A reading enters the block graph only with two supporting cameras on its weaker side, an observed scale and the verified image pairs across it not against it, and weighs those cameras times the share of the pairs' inlier weight it reproduces. Every component of the kept readings is averaged robustly and every reading the averaged poses leave past 5 degrees, a scale ratio of 1.20 or 0.20 of the pair's camera footprint is cut, until the kept set settles. The component of the most images is the model (from the second round on, the one holding the merged model); the correspondences of its heavy cross pairs within 12 px join their tracks first, every other cross match then on the duplicate-image and length guards and, for a match of a connecting pair, a reprojection guard (`maxJoinReprojError`, 48 px), and `AdjustMergedScene` filters at that loose bar and adjusts once. The merge runs in rounds (`SceneBlocks::MergeInRounds`): an unplaced block is kept whole and read again against the merged model after a pool step, until nothing changes, then released to the final pass's resection. See `docs/design/HierarchicalSFM.md`.
+
+- **Bundle Adjustment** (`BundleAdjustment.h`, `BundleAdjustmentCostFunctions.h`): Uses Ceres Solver. **Local BA** optimizes a window of cameras + their points with fixed intrinsics (fast, used during resection). **Full/Global BA** refines the main-set intrinsics (focal, k1, k2) by default, `--refine-intrinsics 2` and `minRefineExtIntrs` opening the rest, and adds a robustified relative-pose residual per verified pair (`--ba-pair-sigma`, default 1°) that holds a joint straight where the tracks joining it are few or two-view only. GPS constraints can be added when EXIF GPS data is available.
 
 ---
 
@@ -343,8 +386,9 @@ Input: Images + matched pairs (from common front-end)
   │
   ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 4. Optional Bundle Adjustment                            │
-│    Refine all poses + points + intrinsics jointly         │
+│ 4. Two Bundle Adjustments (always run)                   │
+│    12 iterations with rotations fixed, then 25 with      │
+│    poses + points free; intrinsics per --refine-intrinsics│
 │    Optional GPS alignment                                │
 └─────────────────────────────────────────────────────────┘
   │
@@ -429,7 +473,7 @@ Output: Refined poses + sparse point cloud, handed to the
 
 - **Clustering never runs.** This path does not go through `ReconstructHierarchical`; `Scene::priorPoses` is transient (not serialized) but is preserved by regular scene copies and moves.
 
-- **The shared tail still runs.** After this method returns, `Scene::Reconstruct` continues through final bundle adjustment, filtering, and `Resection::RegisterImages()`, which registers images that had no entry in the poses file.
+- **The shared tail still runs.** After this method returns, `Scene::Reconstruct` continues through final bundle adjustment, filtering, and `Resection::RegisterImages()`, which registers images that had no entry in the poses file and always closes with a full bundle adjustment, whether or not an image is left for it.
 
 #### The frames.json format (`PoseIO.h`)
 
@@ -494,13 +538,24 @@ The log line it emits -- median and maximum camera-center delta, median and maxi
 
 | Module | Format | Direction |
 |--------|--------|-----------|
-| `ImportCOLMAP.h` | COLMAP binary | Import cameras, poses, tracks |
-| `ImportROMA2.h` | ROMA2 .npz | Import robust matches + depth |
 | `PoseIO.h` | OpenMVS pose CSV and Polycam-style frames.json | Import/export per-image intrinsics and poses |
 | `InterfaceMVS.h` | OpenMVS .mvs | Export to MVS pipeline |
 | Scene::ExportPLY | PLY | Export sparse point cloud |
 
 The pose CSV schema is `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per row. Both pose importers share the `PoseImportMode` selector: `POSES_INTRINSICS` applies the intrinsics (when the row/entry carries them, marking them trusted) *and* the rotation + camera center, `POSES` applies only the rotation + center, `POSITIONS` only the center. `ImportConfig::importPosesFile` dispatches on the file extension -- `.csv` to `ImportPosesCSV`, `.json` to `ImportFramesJSON`.
+
+RoMa v2 correspondences are not an external format: the descriptor and coarse-match ONNX graphs run in-process through `OnnxRuntime.h` (the ONNX Runtime session/tensor wrapper, CUDA/CoreML/DirectML/CPU) and `RoMa2Matcher.h` (the two RoMa v2 sessions); the graph-pooled global retrieval descriptors are read through `GlobalDescriptors.h` and the dense warps through `DenseWarp.h` (the warp coordinate conventions, all align_corners=false -- `PixelToCell`, `CellToPixel`, `DenormCoord`, `NormCoord` -- `WarpTolerance`, keypoint tracking, the coverage-uniform and complementary warp draws, `AppendDenseMatches`), configured and orchestrated by `MatchDense.h`: the one pass that judges a candidate pair on its bidirectional warp, matches it guided, fills it densely, fits the union and stores it once. See `docs/design/DenseMatching.md` for the full design.
+
+### Scene-file compatibility (`.sfm`)
+
+The SFM project stream carries a layout version (`SFM_PROJECT_VERSION`, `Scene.cpp`) and
+`Scene::Load` accepts **that exact version only**, so a `.sfm` written by any other layout is refused
+with `error: unsupported SFM project version N (this build reads only version M) in '<file>'`. This
+branch's stream layout is **version 2**: a pair carries its repair mark, covisibility score and pose prior, the scene its
+seed views, so a scene saved after the view-graph filters (`PAIRS_FILTERED`, every `--match-images-only` output) is
+where a reconstruction that loads it starts, without matching or filtering again. There is no converter and none is planned: a file written by
+another layout is regenerated by re-running the matching stage from the images
+(`CreateStructure -s <images> -o scene.sfm ...`), never converted. `.mvs` files are unaffected.
 
 ## Usage Examples
 
@@ -508,7 +563,7 @@ The pose CSV schema is `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per row
 
 ```cpp
 KeyframeConfig config;
-config.detectorType = "AKAZE";
+config.detectorType = FeatureType::AKAZE; // the default is FeatureType::DEFAULT (SiftGPU, or SIFT without it)
 config.overlapThreshold = 0.8f;     // 80% overlap between keyframes
 
 Scene scene;
@@ -518,16 +573,10 @@ KeyframeExtractor::ExtractFromVideo("video.mp4", config, scene);
 ### Full Reconstruction
 
 ```cpp
+// One call runs import, features, matching, view-graph filtering, the solver and the tail
+ReconstructionConfig config;           // defaults: hierarchical solver, vocabulary matching
 Scene scene;
-// ... load images, extract features ...
-
-// Match image pairs (builds the vocabulary tree on demand in VOCABULARY mode)
-scene.MatchPairs(matchConfig);
-
-// Build tracks and reconstruct
-BuildTracks(scene);
-StarInitializer().Initialize(scene);
-// ... incremental resection + BA ...
+scene.Reconstruct("images_folder", config);
 
 // Export to MVS format
 SFM::ExportMVS("scene.mvs", scene);
@@ -579,25 +628,41 @@ libs/SFM/
 ├── Scene.h/cpp                         # Central container
 │
 │ # Feature pipeline
-├── FeaturesExtractor.h/cpp             # AKAZE/ORB/SIFT extraction
+├── FeaturesExtractor.h/cpp             # AKAZE/ORB/SIFT/SiftGPU extraction
 ├── VocabularyTree.h/cpp                # Visual vocabulary for retrieval
+├── GlobalDescriptors.h/cpp             # Cosine retrieval index over global descriptors
+├── SequenceNeighbours.h/cpp            # Ordered-sequence neighbour rules and name breaks
+├── SequenceChain.h/cpp                 # Sequence camera chain and look-alike veto
 ├── PairsMatcher.h/cpp                  # Matching strategies
 ├── MatchGeometric.h/cpp                # RANSAC geometric verification
+├── OnnxRuntime.h/cpp                   # ONNX Runtime session/tensor wrapper (CUDA/CoreML/DML/CPU)
+├── RoMa2Matcher.h/cpp                  # RoMa v2 ONNX graphs: describe + coarse-match sessions
+├── DenseMatcher.h/cpp                  # Dense matcher interface (RoMa v2 or FlexGlue)
+├── FlexGlueMatcher.h/cpp               # FlexGlue ONNX graphs: describe + match sessions
+├── MatchDense.h/cpp                    # Dense describe pass, one-pass dense matching, planar twin switch
+├── DenseWarp.h/cpp                     # Warp coordinates, keypoint tracking, warp draws, dense append
 ├── PairsWeighting.h/cpp                # Composite pair quality scores
+├── ViewGraphTriplets.h/cpp             # Camera-triplet view-graph scoring (removes nothing by default, --triplet-cut cuts)
 │
 │ # Reconstruction
 ├── StarInitializer.h/cpp               # Star-config initialization
 ├── Resection.h/cpp                     # Incremental PnP registration
+├── PoseLink.h                          # An image's links to a model (ForEachLink, CollectPoseLinks) and their quorum
+├── Link2D3D.h/cpp                      # One camera's 2D-3D correspondences, shared by the resection's PnP and the merge's gPnP
 ├── Triangulation.h/cpp                 # Multi-view triangulation
 ├── BundleAdjustment.h/cpp              # Ceres-based optimization
 ├── BundleAdjustmentCostFunctions.h     # Reprojection error residuals
 ├── ViewGraphCalibrator.h/cpp           # Global focal estimation
+├── LensFit.h/cpp                       # Radial lens of each camera from its verified pairs
 ├── RelativePoseRefine.h/cpp            # Two-view calibration refinement
 │
 │ # Hierarchical / Global reconstruction
-├── SceneCluster.h/cpp                  # Aggregative scene clustering
-├── GlobalAlignment.h/cpp               # 5-stage sub-scene merging
+├── SceneCluster.h/cpp                  # Aggregative scene clustering (the partition)
+├── SceneBlocks.h/cpp                   # The blocks and the pool: extraction, pool resection
+├── GlobalAlignment.h/cpp               # Block pair readings, block-graph averaging, merging
 ├── GlobalRotationAveraging.h/cpp       # SO(3) rotation averaging
+├── ContradictionCut.h/cpp              # View-graph contradiction cut and pair repair
+├── RobustAveraging.h                   # Robust (Geman-McClure) averaging shared by the global estimators
 ├── GlobalScaleAveraging.h/cpp          # Log-space scale averaging
 ├── GlobalTranslationAveraging.h/cpp    # Linear translation solving
 ├── GlobalPositioning.h/cpp             # Translation refinement
@@ -607,11 +672,12 @@ libs/SFM/
 ├── KeyframeExtractor.h/cpp             # Keyframe selection from video
 │
 │ # External format support
-├── ImportCOLMAP.h/cpp                  # COLMAP import
-├── ImportROMA2.h/cpp                   # ROMA2 match import
 ├── PoseIO.h/cpp                        # CSV/frames.json pose I/O + convention detection
 └── InterfaceMVS.h/cpp                  # MVS format export
 ```
+
+The camera models the SfM cameras wrap (`Pinhole`, `BrownDistortion`, `Spherical`) and the `SphereCubeMap` namespace
+(equirectangular to tangent cube-map faces) live in `libs/Math/Camera/` (`CameraModels.h`, `CameraUndistort.h/cpp`).
 
 ## Conventions
 
@@ -627,8 +693,8 @@ libs/SFM/
 - **Ceres Solver** (required): Bundle adjustment
 - **PoseLib** (required): Pose estimation (E/F/H matrices, PnP)
 - **TinyEXIF** (required): EXIF metadata parsing
-- **TinyNPY** (required): NumPy .npz file I/O (ROMA2 support)
 - **OpenCV** (inherited): Feature detection, matching, image I/O
 - **Eigen3** (inherited): Linear algebra
 - **Boost** (inherited): Serialization
 - **SiftGPU** (optional): GPU-accelerated SIFT
+- **ONNX Runtime** (optional): In-process RoMa v2 and FlexGlue dense matching and retrieval
