@@ -1064,7 +1064,7 @@ inline void AddReprojectionResidual(ceres::Problem& problem, ceres::LossFunction
 		problem.AddResidualBlock(
 			// the hand-written Jacobians of PinholeReprojectionError, an order of magnitude cheaper
 			// to evaluate than differentiating the projection through 22 dual numbers, and equal to
-			// what that differentiation gives (BAPinholeReprojectionJacobianTest)
+			// what that differentiation gives (PinholeReprojectionJacobianTest)
 			new PinholeReprojectionErrorAnalytic(kp.pt.x, kp.pt.y),
 			loss,
 			posePtr,                                  // Pose params
@@ -1116,7 +1116,8 @@ inline CeresManifold* CreatePartialPoseManifold(bool refineRot, bool refinePos) 
 	return new ceres::SubsetManifold(7, {0, 1, 2, 3});
 	#else
 	if (refineRot)
-		return new ceres::SubsetParameterization(7, {4, 5, 6});
+		return new ceres::ProductParameterization(new ceres::QuaternionParameterization,
+			new ceres::SubsetParameterization(3, {0, 1, 2}));
 	return new ceres::SubsetParameterization(7, {0, 1, 2, 3});
 	#endif
 }
@@ -1794,6 +1795,102 @@ bool BundleAdjustment::AdjustLocal(
 	    numReprojResiduals, summary.initial_cost, summary.final_cost, TD_TIMER_GET_FMT().c_str());
 
 	ComputeTracksMeanReprojectionError(scene);
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// Lives in the library, not in the Tests app: it needs the Ceres headers, and a second copy of the
+// statically linked Ceres/glog in the Tests executable aborts it at start-up (glog flags registered twice)
+bool SFM::PinholeReprojectionJacobianTest()
+{
+	TD_TIMER_START();
+	// The analytic and the auto-diff reprojection functors are two derivations of the same
+	// projection, and auto-diff differentiates it exactly, so the two Jacobians must agree to
+	// numerical precision -- not to a finite-difference tolerance. Every parameter is randomized
+	// over many trials with the whole distortion model live (k3, p1, p2 and the rational
+	// denominator k4-k6 all non-zero), since a hand-written derivative goes wrong in the terms a
+	// single hand-picked test case leaves at zero.
+	//
+	// The quaternion columns are the one exception: both functors extend the rotation off the unit
+	// sphere, by different amounts along the radial direction, and Ceres never sees that direction
+	// (the quaternion manifold projects it out), so the auto-diff block is projected onto the
+	// tangent space before the comparison -- which is what the solver differentiates.
+	// "Relative" is per parameter block: the largest entry-wise difference over the largest entry
+	// of the block, so a block whose entries span orders of magnitude is judged on its own scale.
+	constexpr double maxRelativeError = 1e-6;
+	constexpr unsigned numTrials = 256;
+	std::mt19937 rng(20260909u);
+	const auto rnd = [&rng](double lo, double hi) {
+		return std::uniform_real_distribution<double>(lo, hi)(rng);
+	};
+	double worstRelativeError = 0, worstResidualError = 0;
+	for (unsigned trial = 0; trial < numTrials; ++trial) {
+		// random pose
+		double pose[7] = { rnd(-1.0, 1.0), rnd(-1.0, 1.0), rnd(-1.0, 1.0), rnd(-1.0, 1.0),
+			rnd(-3.0, 3.0), rnd(-3.0, 3.0), rnd(-3.0, 3.0) };
+		Eigen::Map<Eigen::Vector4d> quat(pose);
+		if (quat.norm() < 0.1)
+			continue; // too close to zero to normalize into a rotation
+		quat.normalize();
+		// random point in front of the camera, placed through the camera-space point it projects
+		// to, so that the trial is never spent on a point behind it
+		const double pointCamera[3] = { rnd(-4.0, 4.0), rnd(-4.0, 4.0), rnd(1.0, 10.0) };
+		const double quatInverse[4] = { pose[0], -pose[1], -pose[2], -pose[3] };
+		double point[3];
+		ceres::UnitQuaternionRotatePoint(quatInverse, pointCamera, point);
+		point[0] += pose[4]; point[1] += pose[5]; point[2] += pose[6];
+		// random intrinsics: [fx, fy/fx, cx, cy, k1, k2, k3, p1, p2, k4, k5, k6]
+		const double intrinsics[12] = { rnd(400.0, 2000.0), rnd(0.95, 1.05), rnd(300.0, 340.0), rnd(220.0, 260.0),
+			rnd(-0.3, 0.3), rnd(-0.2, 0.2), rnd(-0.1, 0.1), rnd(-0.01, 0.01), rnd(-0.01, 0.01),
+			rnd(-0.2, 0.2), rnd(-0.1, 0.1), rnd(-0.05, 0.05) };
+		const double* parameters[3] = { pose, intrinsics, point };
+
+		const double observedX = rnd(0.0, 640.0), observedY = rnd(0.0, 480.0);
+		PinholeReprojectionErrorAnalytic analytic(observedX, observedY);
+		double analyticResiduals[2], analyticPose[2*7], analyticIntrinsics[2*12], analyticPoint[2*3];
+		double* analyticJacobians[3] = { analyticPose, analyticIntrinsics, analyticPoint };
+		std::unique_ptr<ceres::CostFunction> autodiff(PinholeReprojectionError::Create(observedX, observedY));
+		double autodiffResiduals[2], autodiffPose[2*7], autodiffIntrinsics[2*12], autodiffPoint[2*3];
+		double* autodiffJacobians[3] = { autodiffPose, autodiffIntrinsics, autodiffPoint };
+		if (!analytic.Evaluate(parameters, analyticResiduals, analyticJacobians) ||
+			!autodiff->Evaluate(parameters, autodiffResiduals, autodiffJacobians)) {
+			VERBOSE("PinholeReprojectionJacobianTest FAILED: cost evaluation failed");
+			return false;
+		}
+		// project the auto-diff quaternion columns onto the manifold's tangent space
+		for (int i = 0; i < 2; ++i) {
+			Eigen::Map<Eigen::Vector4d> jacobianQuat(autodiffPose + i*7);
+			jacobianQuat -= jacobianQuat.dot(quat)*quat;
+		}
+		for (int i = 0; i < 2; ++i)
+			worstResidualError = MAXF(worstResidualError,
+				ABS(analyticResiduals[i] - autodiffResiduals[i])/MAXF(ABS(autodiffResiduals[i]), 1.0));
+		const int blockSizes[3] = { 2*7, 2*12, 2*3 };
+		const char* const blockNames[3] = { "pose", "intrinsics", "point" };
+		for (int block = 0; block < 3; ++block) {
+			double maxDifference = 0, maxValue = 0;
+			for (int i = 0; i < blockSizes[block]; ++i) {
+				maxDifference = MAXF(maxDifference, ABS(analyticJacobians[block][i] - autodiffJacobians[block][i]));
+				maxValue = MAXF(maxValue, MAXF(ABS(analyticJacobians[block][i]), ABS(autodiffJacobians[block][i])));
+			}
+			const double relativeError = maxValue > 0 ? maxDifference/maxValue : maxDifference;
+			worstRelativeError = MAXF(worstRelativeError, relativeError);
+			if (relativeError > maxRelativeError) {
+				VERBOSE("PinholeReprojectionJacobianTest FAILED: trial %u %s Jacobian differs by %g relative (max entry %g)",
+					trial, blockNames[block], relativeError, maxValue);
+				return false;
+			}
+		}
+	}
+	// the analytic functor evaluates the projection itself, so its residual is held to the auto-diff one too
+	constexpr double maxResidualError = 1e-9;
+	if (worstResidualError > maxResidualError) {
+		VERBOSE("PinholeReprojectionJacobianTest FAILED: residuals differ by %g relative", worstResidualError);
+		return false;
+	}
+	VERBOSE("PinholeReprojectionJacobianTest PASSED: %u trials, worst relative Jacobian difference %.2e, residual %.2e (%s)",
+		numTrials, worstRelativeError, worstResidualError, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

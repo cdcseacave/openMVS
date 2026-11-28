@@ -367,7 +367,7 @@ int main(int argc, LPCTSTR* argv)
 				SFM_TEST(SceneBlocksInsertTest),
 				SFM_TEST(PoolResectionTest),
 				// TestsSFMBundleAdjustment.cpp: bundle adjustment, filtering and triangulation
-				SFM_TEST(PinholeReprojectionJacobianTest),
+				{"PinholeReprojectionJacobianTest", SFM::PinholeReprojectionJacobianTest}, // defined in the library: it needs the Ceres headers
 				SFM_TEST(BADenseWeightTest),
 				SFM_TEST(BAIntrinsicFlagsTest),
 				SFM_TEST(ReconstructSphericalSyntheticTest),

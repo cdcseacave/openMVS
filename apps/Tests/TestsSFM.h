@@ -414,9 +414,6 @@ bool PoolResectionTest();
 
 // TestsSFMBundleAdjustment.cpp --------------------------------
 
-// Analytic vs automatic-differentiation Jacobian check for PinholeReprojectionErrorAnalytic.
-bool PinholeReprojectionJacobianTest();
-
 // The weights a bundle adjustment gives dense observations: ComputeObservationSigmas reads the bulk of a scene's described
 // and dense displacements (a median), EstimateDenseObservationWeight returns 1/k^2 of their ratio (clamped to 1, floored,
 // the configured constant when the dense sample is absent or too small), and the per-image scaling and the ceiling each at

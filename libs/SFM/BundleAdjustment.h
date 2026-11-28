@@ -389,6 +389,9 @@ SFM_API double EstimateDenseObservationWeight(const Scene& scene, const BAConfig
 // params[7] = { qw, qx, qy, qz, Cx, Cy, Cz }
 SFM_API void Pose3DToQuaternionAndCenter(const Pose3D& pose, double* params);
 SFM_API void QuaternionAndCenterToPose3D(const double* params, Pose3D& pose);
+
+// Test PinholeReprojectionErrorAnalytic (residual and Jacobians) against the auto-diff PinholeReprojectionError
+SFM_API bool PinholeReprojectionJacobianTest();
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

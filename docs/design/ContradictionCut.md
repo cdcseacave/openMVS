@@ -254,7 +254,7 @@ One log line reports the pairs repaired of those removed and the seconds.
 | `GlobalRotationEstimatorOptions::weightMedian` | none | 10 | median the weights are scaled to |
 | `GlobalRotationEstimatorOptions::irlsLossParameterSigma` | none | 5 | Geman-McClure scale, degrees |
 | `GlobalRotationEstimatorOptions::maxNumL1Iterations`, `maxNumIrlsIterations` | none | 5, 100 | solver rounds |
-| repair constants (`GlobalRotationAveraging.cpp`) | none | 1 degree, 200 rounds, 8 matches, 80%, 20 degrees | epipolar band, RANSAC rounds, minimum matches, minimum agreeing share, maximum angle to the centres |
+| repair constants (`ContradictionCut.cpp`) | none | 1 degree, 200 rounds, 8 matches, 80%, 20 degrees | epipolar band, RANSAC rounds, minimum matches, minimum agreeing share, maximum angle to the centres |
 | translation constants | none | 10 pairs, 40 rounds, 0.001, 1.05 | smallest solved component, reweighting rounds, L1 floor, scale bar |
 | `MatchConfig::imageSequence` | `--image-sequence B` | false (on with `--match-mode 2`) | the chain of an image sequence, with the options of its neighbours (`PairSelection.md`, "Parameters and defaults"); needs the bar above 0 |
 | veto constants (`SequenceChain.cpp`) | none | 8, 0.2, 3 | `kVetoLocalSteps`, `kVetoPathShare`, `kVetoShortDivisor` of `ChainVetoes` |

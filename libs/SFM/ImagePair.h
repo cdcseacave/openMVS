@@ -231,7 +231,9 @@ public:
 		return (unsigned)numDenseInliers;
 	}
 	// Track-forming prefix (sparse inliers + dense supplement) unioned by BuildTracks
-	unsigned GetNumTrackFormingMatches() const { return GetNumFilteredInliers() + GetNumDenseInliers(); }
+	// (clamped to the stored matches, so a release build reading the prefix stays in range even if a
+	// writer broke the counts the ASSERT above guards)
+	unsigned GetNumTrackFormingMatches() const { return MINF(GetNumFilteredInliers() + GetNumDenseInliers(), GetNumInliers()); }
 	// Effective inlier evidence: sparse + w * dense (rounded), or sparse count before weighting
 	unsigned GetNumWeightedInliers() const {
 		return weightedInliers >= 0.f ? ROUND2INT<unsigned>(weightedInliers) : GetNumFilteredInliers();

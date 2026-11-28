@@ -822,12 +822,11 @@ bool SFM::PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, c
 	share = 0.f;
 	const Camera& camA = *imgA.pCamera;
 	const Camera& camB = *imgB.pCamera;
-	if (camA.GetType() != CameraType::PINHOLE || camB.GetType() != CameraType::PINHOLE)
-		return false;
 	const unsigned numSparse = pair.GetNumFilteredInliers(), numMatches = pair.GetNumTrackFormingMatches();
 	if (numMatches < 8)
 		return false;
-	// Project track-forming matches onto each camera's normalized image plane
+	// Project track-forming matches onto each camera's normalized image plane (the front hemisphere
+	// of a spherical or wide-angle camera)
 	std::vector<cv::Point2f> pointsA, pointsB;
 	pointsA.reserve(numMatches);
 	pointsB.reserve(numMatches);
@@ -887,10 +886,13 @@ bool SFM::PlanarTwinDense(const PairsMatcher& pairsMatcher, const Image& imgA, c
 			nearest = (int)valid.size()-1;
 		}
 	}
-	ASSERT(valid.size() <= 2);
-	if (valid.size() < 2)
+	// the twin: any valid decomposition other than the stored pose
+	int other = -1;
+	FOREACH(v, valid)
+		if ((int)v != nearest)
+			other = (int)v;
+	if (other < 0)
 		return false;
-	const int other = 1 - nearest;
 	// Refine the twin on the same weighted union of matches
 	twin = ImagePair(pair.ID1, pair.ID2);
 	twin.matches.assign(pair.matches.begin(), pair.matches.begin() + numMatches);

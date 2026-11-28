@@ -243,7 +243,7 @@ One definition each, shared by every caller:
 
 ### Scene Clustering (`SceneCluster.h`)
 Aggregative clustering on covisibility graph for hierarchical reconstruction.
-- Bottom-up: merge highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 200), never past the ceiling itself
+- Bottom-up: merge highest-weight edges, aiming for `targetViewsPerCluster` (default 133, two thirds of `maxViewsPerCluster`, default 200), never past the ceiling itself
 - `maxOverCapacity` (20): extra images allowed over the ceiling when absorbing a small cluster
 - Refinement (six passes): local search, merge small clusters, balance load across clusters, split disconnected components, split thin-waisted clusters, merge away any cluster the merge could not register against (`IsStrongSeam`); a cluster still under the floor (not a standalone community) goes to the pool
 - `Partition()` returns a `ScenePartition`: the clusters that become blocks and the pool (images in no block)

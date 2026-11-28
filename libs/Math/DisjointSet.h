@@ -48,11 +48,18 @@ public:
 		return *this;
 	}
 
-	// Find representative with path compression.
+	// Find representative with full path compression (every node on the path then points to the root, which
+	// CompressAllPaths relies on); iterative, since UnionMin (no rank) can build chains as long as the set.
 	Type Find(Type x) {
-		if (parent[x] != x)
-			parent[x] = Find(parent[x]);
-		return parent[x];
+		Type root = x;
+		while (parent[root] != root)
+			root = parent[root];
+		while (parent[x] != root) {
+			const Type next = parent[x];
+			parent[x] = root;
+			x = next;
+		}
+		return root;
 	}
 
 	// Standard union-by-rank merge; no metadata guards.

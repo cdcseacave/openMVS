@@ -38,7 +38,6 @@
 #include "../../libs/SFM/PairsWeighting.h"
 #include "../../libs/SFM/ViewGraphCalibrator.h"
 #include "../../libs/SFM/BundleAdjustment.h"
-#include "../../libs/SFM/BundleAdjustmentCostFunctions.h"
 #include "../../libs/SFM/SceneCluster.h"
 #include "../../libs/SFM/SceneBlocks.h"
 #include "../../libs/SFM/GlobalAlignment.h"
@@ -431,71 +430,6 @@ bool ReconstructSphericalSyntheticTest()
 	TEST_CHECK(detH > 0, "the reconstruction aligns to the truth only under a reflection (det %.4g <= 0): left-right mirror", detH);
 	return scope.Pass("%u/%u tracks recovered within 0.1 m, %.4f px and %.4f deg before the BA, %.4f px and %.4f deg after, the equirect convention is not "
 		"mirrored and the handedness is proper (det %.4g)", recovered, (unsigned)scene.tracks.size(), meanReprojErr, meanAng, baMeanErr, baMeanAng, detH);
-}
-/*----------------------------------------------------------------*/
-
-bool PinholeReprojectionJacobianTest()
-{
-	TestScope scope("PinholeReprojectionJacobianTest");
-	// Compare analytic and auto-diff reprojection Jacobians over randomized poses, points, and
-	// full distortion models (k1-k6, p1-p2). Auto-diff quaternion columns are projected onto the
-	// tangent space of the unit quaternion manifold before comparison.
-	constexpr double maxRelativeError = 1e-6;
-	constexpr unsigned numTrials = 256;
-	std::mt19937 rng(20260909u);
-	const auto rnd = [&rng](double lo, double hi) {
-		return std::uniform_real_distribution<double>(lo, hi)(rng);
-	};
-	double worstRelativeError = 0, worstResidualError = 0;
-	for (unsigned trial = 0; trial < numTrials; ++trial) {
-		double pose[7] = { rnd(-1.0, 1.0), rnd(-1.0, 1.0), rnd(-1.0, 1.0), rnd(-1.0, 1.0),
-			rnd(-3.0, 3.0), rnd(-3.0, 3.0), rnd(-3.0, 3.0) };
-		Eigen::Map<Eigen::Vector4d> quat(pose);
-		if (quat.norm() < 0.1)
-			continue;
-		quat.normalize();
-		const double pointCamera[3] = { rnd(-4.0, 4.0), rnd(-4.0, 4.0), rnd(1.0, 10.0) };
-		const double quatInverse[4] = { pose[0], -pose[1], -pose[2], -pose[3] };
-		double point[3];
-		ceres::UnitQuaternionRotatePoint(quatInverse, pointCamera, point);
-		point[0] += pose[4]; point[1] += pose[5]; point[2] += pose[6];
-		const double intrinsics[12] = { rnd(400.0, 2000.0), rnd(0.95, 1.05), rnd(300.0, 340.0), rnd(220.0, 260.0),
-			rnd(-0.3, 0.3), rnd(-0.2, 0.2), rnd(-0.1, 0.1), rnd(-0.01, 0.01), rnd(-0.01, 0.01),
-			rnd(-0.2, 0.2), rnd(-0.1, 0.1), rnd(-0.05, 0.05) };
-		const double* parameters[3] = { pose, intrinsics, point };
-
-		const double observedX = rnd(0.0, 640.0), observedY = rnd(0.0, 480.0);
-		PinholeReprojectionErrorAnalytic analytic(observedX, observedY);
-		double analyticResiduals[2], analyticPose[2*7], analyticIntrinsics[2*12], analyticPoint[2*3];
-		double* analyticJacobians[3] = { analyticPose, analyticIntrinsics, analyticPoint };
-		std::unique_ptr<ceres::CostFunction> autodiff(PinholeReprojectionError::Create(observedX, observedY));
-		double autodiffResiduals[2], autodiffPose[2*7], autodiffIntrinsics[2*12], autodiffPoint[2*3];
-		double* autodiffJacobians[3] = { autodiffPose, autodiffIntrinsics, autodiffPoint };
-		TEST_CHECK(analytic.Evaluate(parameters, analyticResiduals, analyticJacobians) &&
-			autodiff->Evaluate(parameters, autodiffResiduals, autodiffJacobians), "cost evaluation failed");
-		for (int i = 0; i < 2; ++i) {
-			Eigen::Map<Eigen::Vector4d> jacobianQuat(autodiffPose + i*7);
-			jacobianQuat -= jacobianQuat.dot(quat)*quat;
-		}
-		for (int i = 0; i < 2; ++i)
-			worstResidualError = MAXF(worstResidualError,
-				ABS(analyticResiduals[i] - autodiffResiduals[i])/MAXF(ABS(autodiffResiduals[i]), 1.0));
-		const int blockSizes[3] = { 2*7, 2*12, 2*3 };
-		const char* const blockNames[3] = { "pose", "intrinsics", "point" };
-		for (int block = 0; block < 3; ++block) {
-			double maxDifference = 0, maxValue = 0;
-			for (int i = 0; i < blockSizes[block]; ++i) {
-				maxDifference = MAXF(maxDifference, ABS(analyticJacobians[block][i] - autodiffJacobians[block][i]));
-				maxValue = MAXF(maxValue, MAXF(ABS(analyticJacobians[block][i]), ABS(autodiffJacobians[block][i])));
-			}
-			const double relativeError = maxValue > 0 ? maxDifference/maxValue : maxDifference;
-			worstRelativeError = MAXF(worstRelativeError, relativeError);
-			TEST_CHECK(relativeError <= maxRelativeError, "trial %u %s Jacobian differs by %g relative (max entry %g)",
-				trial, blockNames[block], relativeError, maxValue);
-		}
-	}
-	return scope.Pass("%u trials, worst relative Jacobian difference %.2e, residual %.2e",
-		numTrials, worstRelativeError, worstResidualError);
 }
 /*----------------------------------------------------------------*/
 

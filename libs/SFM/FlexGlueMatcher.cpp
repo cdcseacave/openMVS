@@ -84,14 +84,13 @@ bool FlexGlueManifest::Load(const String& fileName)
 
 #ifdef _USE_ONNXRUNTIME
 
-#ifndef _RELEASE
-static bool ConfidenceInRange(const Image32F& confidence)
+// only read by an ASSERT (which MSVC Code Analysis also reads in a release build)
+[[maybe_unused]] static bool ConfidenceInRange(const Image32F& confidence)
 {
 	double minValue, maxValue;
 	cv::minMaxLoc(confidence, &minValue, &maxValue);
 	return minValue >= 0. && maxValue <= 1.;
 }
-#endif
 
 bool FlexGlueMatcher::Load(const String& _modelDir, const String& setting, const String& providerName)
 {

@@ -155,7 +155,8 @@ unsigned SFM::EstimateSimilarityTransform(
 			srcInliers.push_back(srcPoints[idx]);
 			dstInliers.push_back(dstPoints[idx]);
 		}
-		return EstimateSimilarityTransform(srcInliers, dstInliers, transform, 0.0, refine);
+		// refined only when RANSAC dropped points (on all of them the closed form is already the optimum)
+		return EstimateSimilarityTransform(srcInliers, dstInliers, transform, 0.0, refine && inliers.size() < n);
 	}
 
 	transform = EstimateSimilarityTransform(srcPoints, dstPoints);

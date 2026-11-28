@@ -44,7 +44,7 @@ struct SFM_API TranslationPair
  *
  * The system is solved by its normal equations (a weighted graph Laplacian) and a sparse
  * Cholesky factorization. Gauge freedom is resolved by pinning the node the caller names, and
- * the best-connected node of the pairs when it names none; a component of the pairs that holds
+ * the best-connected node of the pairs when it names none or one the pairs do not hold; a component of the pairs that holds
  * no gauge node is placed with its lowest node at the origin.
  */
 class SFM_API GlobalTranslationEstimator

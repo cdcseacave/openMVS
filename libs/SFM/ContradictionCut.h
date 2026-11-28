@@ -55,7 +55,7 @@ struct ScaleComponentSolve {
 };
 // The scale + centres solve of the translation stage, which the chain of a sequence runs on its candidate links: the
 // components of the graph of the given pair-scale equations (ComputePairScales), largest first (by pairs, ties to the
-// lower pair), and per component of at least minScaleComponent pairs (GlobalRotationAveraging.cpp) the scales by
+// lower pair), and per component of at least minScaleComponent pairs (ContradictionCut.cpp) the scales by
 // RobustAverage (Geman-McClure) around GlobalScaleEstimator, then the centres from C_2 - C_1 = scale * baseline
 // (baselines and weights: per scene pair; a pair of an equation has a baseline with a length) by
 // GlobalTranslationEstimator reweighted towards the sum of norms (convex, so no start decides). Returns the solved

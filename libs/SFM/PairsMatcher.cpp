@@ -387,9 +387,8 @@ bool PairsMatcher::GeometricFilter(
 	ImagePair& pair,
 	float maxEpipolarError) const
 {
-	// Preserve any prior geometry (e.g. from PreMatch) to guide RANSAC before clearing pair state
-	const std::optional<Pose3D> initPose = pair.relativePose;
-	const std::optional<Matrix3x3> initF = pair.F;
+	// Start from no geometry: RANSAC is not seeded with a pose or F the pair may still hold (re-verified
+	// under new intrinsics, such a seed is stale)
 	pair.ResetInlierMatches();
 	pair.ResetGeometry();
 	if (pair.matches.size() < 8) {
@@ -480,10 +479,6 @@ bool PairsMatcher::GeometricFilter(
 		const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2, true);
 
 		poselib::CameraPose plPose;
-		if (initPose.has_value()) {
-			plPose = poselib::CameraPose(initPose->R, initPose->GetT());
-			opt.ransac.score_initial_model = true;
-		}
 		poselib::RansacStats stats = poselib::estimate_relative_pose_bearings(
 			bearings1, bearings2,
 			opt,
@@ -501,10 +496,6 @@ bool PairsMatcher::GeometricFilter(
 	// Uncalibrated branch: estimate fundamental matrix
 	const auto [pts1, pts2] = FetchPoints();
 	Eigen::Matrix3d F;
-	if (initF.has_value()) {
-		F = initF.value();
-		opt.ransac.score_initial_model = true;
-	}
 	poselib::RansacStats stats = poselib::estimate_fundamental(pts1, pts2, opt, &F, &inliers);
 	if (stats.num_inliers < config.minMatches) {
 		pair.InvalidateMatches();
@@ -2186,8 +2177,12 @@ unsigned PairsMatcher::Match(bool& bFatal)
 			stats.densePairs += numStored;
 			return true;
 		}
-		if (vocabularyTree && config.preMatchThreshold > 0)
-			PreMatch(pairs);
+		if (vocabularyTree) {
+			if (config.preMatchThreshold > 0)
+				PreMatch(pairs);
+			// the tree's descriptor copies are only read by PreMatch: free them before the matching
+			vocabularyTree->ClearDescriptorsCache();
+		}
 		// Reorder pairs to minimize GPU transfers and improve load balancing
 		OptimizePairsOrder(pairs);
 		if (!MatchPairsBatch(pairs, progressCaption, stats))
@@ -2212,7 +2207,7 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		}
 	}
 	if (vocabularyTree)
-		vocabularyTree->ClearDescriptorsCache();
+		vocabularyTree->ClearDescriptorsCache(); // anything cached since (the dense round skips the clear above)
 	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
 
 	if (denseMatcher && denseCfg.useMatching) {

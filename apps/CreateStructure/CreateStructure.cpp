@@ -199,10 +199,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description matching("Pair selection and matching options");
 	matching.add_options()
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value((int)defaults.matchCfg.mode), "match mode: -1=SKIP (saved .sfm with matches), 0=EXHAUSTIVE, 1=VOCABULARY, 2=SEQUENTIAL, 3=KNOWN_POSES, 4=RETRIEVAL")
-		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(defaults.matchCfg.matchSequenceOverlap), "number of ahead neighbors to match sequentially (or add to vocabulary/retrieval; 0=disabled)")
+		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(defaults.matchCfg.matchSequenceOverlap), "number of ahead neighbors to match sequentially (or add to vocabulary/retrieval; 0=disabled); for an image sequence, how many positions apart two images may be to be neighbours")
 		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(defaults.matchCfg.maxPairsPerImage), "target pairs per image for vocabulary and pose-guided matching")
-		("image-sequence", boost::program_options::value(&OPT::imageSequence)->default_value(defaults.matchCfg.imageSequence), "treat images in import order as an ordered sequence (always on for --match-mode 2): forces neighbor pairs and trusts the sequence chain in the contradiction cut")
-		("sequence-max-gap", boost::program_options::value(&OPT::sequenceMaxGap)->default_value(defaults.matchCfg.sequenceMaxGap), "max multiple of the median frame-number step before breaking an image sequence (0=never break on numeric jumps)")
+		("image-sequence", boost::program_options::value(&OPT::imageSequence)->default_value(defaults.matchCfg.imageSequence), "treat images in import order as an ordered sequence (always on for --match-mode 2): forces neighbor pairs and trusts the sequence chain in the contradiction cut (needs --max-pair-direction-residual above 0); a matched scene given back as the source needs the option again")
+		("sequence-max-gap", boost::program_options::value(&OPT::sequenceMaxGap)->default_value(defaults.matchCfg.sequenceMaxGap), "max multiple of the median frame-number step before breaking an image sequence (0=never break on numeric jumps); a change of directory or name prefix always breaks it")
 		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(defaults.matchCfg.verificationFeedback), "re-invest part of the matching budget in pairs suggested by geometrically verified matches")
 		("release-descriptors", boost::program_options::value(&OPT::releaseDescriptors)->default_value(defaults.matchCfg.releaseDescriptors), "release descriptors after matching to save memory")
 		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(defaults.matchImagesOnly), "match pairs, filter the view graph, and save the scene without reconstruction")
@@ -246,7 +246,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("ba-dense-weight", boost::program_options::value(&OPT::baDenseWeight)->default_value(defaults.baConfig.denseObservationWeight), "relative loss weight for dense-keypoint residuals (<0=auto from robust sigmas, >=0=fixed)")
 		("ba-max-obs", boost::program_options::value(&OPT::baMaxObservations)->default_value(defaults.baConfig.maxObservationsPerImage), "max observations per image in bundle adjustment (0=uncapped)")
 		("ba-cap-min-obs", boost::program_options::value(&OPT::baCapMinObservations)->default_value(defaults.baConfig.minObservationsForCap), "scene observation count threshold above which --ba-max-obs activates (0=always)")
-		("ba-pair-sigma", boost::program_options::value(&OPT::baPairSigma)->default_value(defaults.relativeRotationSigma), "relative-pose pair constraint rotation sigma in degrees (0=disabled)")
+		("ba-pair-sigma", boost::program_options::value(&OPT::baPairSigma)->default_value(defaults.relativeRotationSigma), "relative-pose pair constraint rotation sigma in degrees, the baseline direction getting twice it (0=disabled)")
 		;
 
 	boost::program_options::options_description geo("Geo-alignment options");

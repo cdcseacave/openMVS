@@ -183,7 +183,7 @@ bool RelativePoseRefine::RefineTwoViewCalibration(
 	constantIndices.push_back(3);
 	constantIndices.push_back(4);
 
-	#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
+	#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 1)
 	ceres::SubsetManifold* subsetManifold = new ceres::SubsetManifold(5, constantIndices);
 	problem.SetManifold(intr.data(), subsetManifold);
 	// Set quaternion manifold for pose using ProductManifold

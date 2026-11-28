@@ -20,7 +20,6 @@
 namespace ceres {
 	class Problem;
 	class LossFunction;
-	struct Solver;
 } // namespace ceres
 
 namespace SFM {

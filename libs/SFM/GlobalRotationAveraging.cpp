@@ -125,16 +125,21 @@ unsigned GlobalRotationEstimator::EstimateAllComponents(
 		GlobalRotationEstimator estimator(options);
 		if (!estimator.EstimateRotations(remaining, numNodes, solved))
 			break;
+		// a node is placed once, by the first run that solves it; a run placing nothing ends the loop
+		unsigned numPlaced = 0;
 		for (uint32_t i = 0; i < numNodes; ++i) {
-			if (solved[i] == Point3::INF)
+			if (solved[i] == Point3::INF || componentOf[i] != NO_ID)
 				continue;
 			rotations[i] = solved[i];
 			componentOf[i] = numComponents;
+			++numPlaced;
 		}
+		if (numPlaced == 0)
+			break;
 		std::vector<RotationPair> next;
 		for (const RotationPair& pair : remaining) {
 			ASSERT((solved[pair.idxA] == Point3::INF) == (solved[pair.idxB] == Point3::INF));
-			if (solved[pair.idxA] == Point3::INF)
+			if (componentOf[pair.idxA] == NO_ID && componentOf[pair.idxB] == NO_ID)
 				next.push_back(pair);
 		}
 		remaining.swap(next);
