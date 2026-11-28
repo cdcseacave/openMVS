@@ -225,11 +225,11 @@
 #	define FORCEINLINE inline
 #endif
 
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIP__)
 	// the CUDA keyword, on the device as on the host side of the same function
 #	undef FORCEINLINE
 #	define FORCEINLINE __forceinline__
-	// function callable from both host code and CUDA device code
+	// function callable from both host code and CUDA (or HIP) device code
 #	define HOST_DEVICE __host__ __device__
 #else
 #	define HOST_DEVICE
@@ -238,7 +238,7 @@
 // a constructor leaving members uninitialized on purpose (the code analysis rule type.6 is silenced):
 // a value type (pixel, index pair, SIMD register) left uninitialized as a built-in type is, or
 // members filled before being read on a per-pixel path, where clearing them would cost
-#if defined(_MSC_VER) && !defined(__CUDACC__)
+#if defined(_MSC_VER) && !defined(__CUDACC__) && !defined(__HIP__)
 #	define NO_INIT_MEMBERS [[gsl::suppress("type.6")]]
 #else
 #	define NO_INIT_MEMBERS
@@ -297,9 +297,10 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 
 #ifdef _DEBUG
 
-#if defined(__CUDA_ARCH__)
-// Device-side form. __CUDA_ARCH__ is defined only while nvcc compiles the device side of a .cu
-// file -- never for an ordinary host translation unit, and never for the __host__ side of one --
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+// Device-side form. __CUDA_ARCH__ (hipcc: __HIP_DEVICE_COMPILE__) is defined only while the device
+// side of a .cu file is compiled -- never for an ordinary host translation unit, and never for the
+// __host__ side of one --
 // so the host forms below stay in force everywhere else. Device code cannot call the primitives
 // they report and break with, so it uses CUDA's own assert instead: __assertfail() plus a trap,
 // with the message surfacing at the next cudaStreamSynchronize() or error check. This has to be

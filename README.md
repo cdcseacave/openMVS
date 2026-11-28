@@ -17,6 +17,7 @@ See the complete [documentation](https://github.com/cdcseacave/openMVS/wiki) on 
 
 See the [building](https://github.com/cdcseacave/openMVS/wiki/Building) wiki page. Windows, Ubuntu and MacOS x64 continuous integration status [![Continuous Integration](https://github.com/cdcseacave/openMVS/actions/workflows/continuous_integration.yml/badge.svg)](https://github.com/cdcseacave/openMVS/actions/workflows/continuous_integration.yml)
 Automatic Windows x64 binary builds can be found for each commit on its Artifacts page.
+For a reproducible build, follow the [CI workflow](.github/workflows/continuous_integration.yml): it builds the repository on Windows, Ubuntu and macOS, and its `VCPKG_COMMIT` is the vcpkg release the dependencies are tested with (a newer vcpkg can resolve different port versions and features).
 
 ## Example
 

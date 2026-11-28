@@ -202,24 +202,24 @@ void PatchMatch::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap, bool bSpherical)
 {
 	const cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
-	// bilinear filtering; unnormalized coordinates clamp at the borders (CUDA ignores the wrap mode
-	// for them), an equirectangular view takes normalized coordinates, the only ones the hardware
-	// wraps, to sample across its seam (the rows clamp)
+	// bilinear filtering; a pinhole view clamps at the borders, an equirectangular view takes
+	// normalized coordinates, the only ones CUDA wraps, to sample across its seam (the rows clamp);
+	// the clamp is explicit: CUDA clamps unnormalized coordinates whatever their mode, HIP need not
 	const auto SetAddressing = [bSpherical](cudaTextureDesc& texDesc) {
-		texDesc.addressMode[0] = cudaAddressModeWrap;
-		texDesc.addressMode[1] = bSpherical ? cudaAddressModeClamp : cudaAddressModeWrap;
+		texDesc.addressMode[0] = bSpherical ? cudaAddressModeWrap : cudaAddressModeClamp;
+		texDesc.addressMode[1] = cudaAddressModeClamp;
 		texDesc.normalizedCoords = bSpherical ? 1 : 0;
 	};
 
 	if (bInitImage) {
 		CUDA_CHECK(cudaMallocArray(&cudaImageArrays[i], &channelDesc, image.cols, image.rows));
 
-		struct cudaResourceDesc resDesc;
+		cudaResourceDesc resDesc;
 		memset(&resDesc, 0, sizeof(cudaResourceDesc));
 		resDesc.resType = cudaResourceTypeArray;
 		resDesc.res.array.array = cudaImageArrays[i];
 
-		struct cudaTextureDesc texDesc;
+		cudaTextureDesc texDesc;
 		memset(&texDesc, 0, sizeof(cudaTextureDesc));
 		SetAddressing(texDesc);
 		texDesc.filterMode = cudaFilterModeLinear;
@@ -237,12 +237,12 @@ void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitI
 
 		CUDA_CHECK(cudaMallocArray(&cudaDepthArrays[i-1], &channelDesc, image.cols, image.rows));
 
-		struct cudaResourceDesc resDesc;
+		cudaResourceDesc resDesc;
 		memset(&resDesc, 0, sizeof(cudaResourceDesc));
 		resDesc.resType = cudaResourceTypeArray;
 		resDesc.res.array.array = cudaDepthArrays[i-1];
 
-		struct cudaTextureDesc texDesc;
+		cudaTextureDesc texDesc;
 		memset(&texDesc, 0, sizeof(cudaTextureDesc));
 		SetAddressing(texDesc);
 		texDesc.filterMode = cudaFilterModeLinear;

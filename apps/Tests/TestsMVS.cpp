@@ -3421,6 +3421,12 @@ bool MeshRefineSyntheticTest(bool forceCPU, bool verbose)
 
 	// --- CUDA run, unit scale, fresh copy of the same fixture ---
 	#ifdef _USE_CUDA
+	#ifdef _USE_HIP
+	// AMD devices running 64-lane wavefronts refine on the CPU (MeshRefineCUDA::InitKernels)
+	if (!forceCPU && SEACAVE::CUDA::isEnabled() && SEACAVE::CUDA::devices[0].warpSize != 32)
+		VERBOSE("MeshRefineSyntheticTest: GPU run skipped, the HIP device runs %d-lane wavefronts", SEACAVE::CUDA::devices[0].warpSize);
+	else
+	#endif
 	if (!forceCPU && SEACAVE::CUDA::isEnabled()) {
 		Scene sceneCUDA(1);
 		Mesh gtMeshCUDA;

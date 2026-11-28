@@ -402,7 +402,7 @@ void GlobalPositioner::ConfigureProblem(Scene& scene)
 
 	// Configure GPU/CUDA acceleration if available and requested; applied after the solver
 	// type is chosen so the sparse backend is only switched on a path cuDSS can handle
-	#ifdef _USE_CUDA
+	#if defined(_USE_CUDA) && !defined(_USE_HIP) // Ceres has no HIP backend
 	if (options.useGpu && scene.images.size() >= options.minNumImagesGpuSolver) {
 		#if (CERES_VERSION_MAJOR >= 3 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2))
 		// Offload dense direct solves to the GPU via cuSOLVER when available.

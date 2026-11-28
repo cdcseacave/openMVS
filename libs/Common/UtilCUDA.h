@@ -26,15 +26,7 @@ GENERAL_API bool isCpuRequested(const String& deviceIDs);
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-// CUDA driver
-#include <cuda.h>
-
-// CUDA toolkit
-#include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
-#include <curand_kernel.h>
-#include <vector_types.h>
-
+#include "UtilCUDARuntime.h"
 #include "UtilCUDADevice.h"
 
 
@@ -51,8 +43,9 @@ namespace CUDA {
 struct Device {
 	int ID;
 	int major, minor;
+	int warpSize; // threads per warp (AMD: 32 or 64 per wavefront)
 
-	inline Device() : ID(-1), major(0), minor(0) {}
+	inline Device() : ID(-1), major(0), minor(0), warpSize(0) {}
 };
 typedef CLISTDEF0(Device) Devices;
 extern GENERAL_API Devices devices;

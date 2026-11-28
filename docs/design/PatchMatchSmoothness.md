@@ -11,9 +11,9 @@ the per-pixel decision: a hypothesis that agrees with a smoothed plane of the pi
 behaviour, with no option to turn it off.
 
 Scope: every CUDA and Metal estimation pass (photometric and geometric, every pyramid level, every camera
-model). Out of scope: the CPU estimator (`DepthEstimatorT`, `libs/MVS/DepthMap.cpp`), which keeps its own
-term (`DENSE_SMOOTHNESS_PLANE`, `fRandomSmoothBonus`: a bonus per agreeing already-estimated neighbour), and
-the HIP backend.
+model), and so every HIP pass, which runs the CUDA kernel (`docs/design/HIPBackend.md`). Out of scope: the
+CPU estimator (`DepthEstimatorT`, `libs/MVS/DepthMap.cpp`), which keeps its own term
+(`DENSE_SMOOTHNESS_PLANE`, `fRandomSmoothBonus`: a bonus per agreeing already-estimated neighbour).
 
 ## 2. Algorithm as implemented
 
@@ -189,7 +189,7 @@ runs per scene; the run-to-run spread of the total is 0.4-3 %.
 
 ## 7. Open items
 
-- HIP: the backend port takes the CUDA kernel as it is now, coupling included.
+- HIP: compiled with the coupling (the CUDA kernel), not yet run on AMD hardware.
 - Scenes mixing weak and strong texture keep only part of what the unweighted normal term gave them
   (Holo360D fused F@5% 0.670 against 0.700, kicker F@2cm 0.7178 against 0.7223, courtyard 0.8834 against
   0.8855): the texture weight is per patch, and tuned for the precision of the textured scenes.
